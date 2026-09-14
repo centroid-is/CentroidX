@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:ui' as ui show TextDirection;
 
 import 'package:intl/intl.dart';
 import 'package:flutter/material.dart';
@@ -167,49 +168,272 @@ class GraphPanEvent {
         totalDelta = info.totalDelta;
 }
 
-/// What a chart shows before it has anything to plot: the plot area's
-/// gridlines, faintly.
+/// Where cristalyse will put the plot inside the box it is given.
+///
+/// Reproduces `AnimatedChartPainter`'s own arithmetic -- tick marks, the gap to
+/// the labels, the labels themselves, and an axis title where there is one --
+/// because that is what lets the loading frame draw the plot's edges where the
+/// chart is about to draw them. The widget's own `_estimateYAxisSpace` is no
+/// use here: it answers a flat 60px whatever the labels say, which is most of
+/// a pane tile's width.
+///
+/// The label widths have to be guessed, since the domain arrives with the data
+/// -- [sampleYLabel] and friends are a representative tick, measured in the
+/// same style the axis draws with. The axis font is monospaced, so a sample of
+/// the right shape is the right width.
+EdgeInsets chartPlotInsets({
+  required cs.ChartTheme theme,
+  required String sampleYLabel,
+  String? sampleY2Label,
+  required String sampleXLabel,
+  String? yTitle,
+  String? y2Title,
+  String? xTitle,
+}) {
+  final style = theme.axisLabelStyle ??
+      const TextStyle(color: Colors.black, fontSize: 12);
+  final titleFontSize = (style.fontSize ?? 12) + 1;
+
+  Size measure(String text) {
+    final painter = TextPainter(
+      text: TextSpan(text: text, style: style),
+      textDirection: ui.TextDirection.ltr,
+    )..layout();
+    return painter.size;
+  }
+
+  double titleSpace(String? title) =>
+      title != null ? _labelToTitleSpacing + titleFontSize : 0.0;
+
+  final yAxisSpace = theme.axisWidth * 2 +
+      _tickToLabelSpacing +
+      measure(sampleYLabel).width +
+      titleSpace(yTitle);
+  final y2AxisSpace = sampleY2Label == null
+      ? 0.0
+      : theme.axisWidth * 2 +
+          _tickToLabelSpacing +
+          measure(sampleY2Label).width +
+          titleSpace(y2Title);
+  final xAxisSpace = theme.axisWidth * 2 +
+      _tickToLabelSpacing +
+      measure(sampleXLabel).height +
+      titleSpace(xTitle);
+
+  return EdgeInsets.only(
+    left: theme.padding.left + yAxisSpace,
+    right: theme.padding.right + y2AxisSpace,
+    top: theme.padding.top,
+    bottom: theme.padding.bottom + xAxisSpace,
+  );
+}
+
+/// The gap cristalyse leaves between the plot and a right-hand legend, from
+/// `LegendConfig.spacing`'s default. Named here because the loading frame has
+/// to leave the same one or the plot moves when the legend arrives.
+const double kChartLegendSpacing = 12.0;
+
+/// cristalyse's gap between a tick mark and its label.
+const double _tickToLabelSpacing = 4.0;
+
+/// cristalyse's gap between an axis' labels and its title.
+const double _labelToTitleSpacing = 8.0;
+
+/// What a chart shows before it has anything to plot: the frame it is about to
+/// draw in.
 ///
 /// It used to be a spinner in the middle of the window. A spinner says
 /// "nothing here yet" and nothing else, and when the data arrives the whole
-/// area changes at once. Gridlines say "a chart goes here", and the arrival
-/// fills in a frame the eye has already taken in. No axis text: a label here
-/// would be a guess at a domain the data has not given yet.
+/// area changes at once. Gridlines say "a chart goes here" -- but the gridlines
+/// that replaced the spinner ran the full width and height of the box, and the
+/// chart that landed on top of them drew its plot 90px further in, with a
+/// legend column taking another 140 off the right and the time row another 30
+/// off the bottom. Every line moved. The frame the eye had taken in was not the
+/// frame it got, which is worse than having taken in nothing.
+///
+/// So this draws the plot where the plot is going: the same gutters
+/// ([chartPlotInsets]), the same axis lines, the legend already in its column.
+/// The gridlines inside it are evenly spaced rather than placed on the ticks
+/// the data has not chosen yet -- a texture that says "plot area", not a claim
+/// about where 48.4 Hz will be.
+///
+/// No axis text, for the same reason: a label here would be a guess at a domain
+/// nothing has given yet.
 class _GraphSkeleton extends StatelessWidget {
-  const _GraphSkeleton();
+  const _GraphSkeleton({
+    required this.theme,
+    required this.insets,
+    required this.legend,
+  });
+
+  final cs.ChartTheme theme;
+
+  /// Where the plot will sit inside this box; see [chartPlotInsets].
+  final EdgeInsets insets;
+
+  /// cristalyse's own legend, built from the series the config names, or null
+  /// for a chart drawn without one.
+  final Widget? legend;
 
   @override
   Widget build(BuildContext context) {
-    return CustomPaint(
+    final plot = CustomPaint(
       size: Size.infinite,
-      painter: _GridSkeletonPainter(
-        Theme.of(context).colorScheme.outlineVariant.withAlpha(110),
-      ),
+      painter: _PlotFrameSkeletonPainter(theme: theme, insets: insets),
+    );
+    if (legend == null) return plot;
+    // The same Row cristalyse's `_buildFlexLegend` makes for a right-hand
+    // legend, with the same gap, so the plot is already the width it will keep.
+    return Row(
+      children: [
+        Expanded(child: plot),
+        const SizedBox(width: kChartLegendSpacing),
+        legend!,
+      ],
     );
   }
 }
 
-class _GridSkeletonPainter extends CustomPainter {
-  _GridSkeletonPainter(this.color);
+/// The plot's ground, its axes and a neutral grid, drawn inside the gutters the
+/// chart will use.
+class _PlotFrameSkeletonPainter extends CustomPainter {
+  _PlotFrameSkeletonPainter({required this.theme, required this.insets});
 
-  final Color color;
+  final cs.ChartTheme theme;
+  final EdgeInsets insets;
 
-  static const _lines = 4;
+  /// How many cells the grid is divided into, each way.
+  ///
+  /// cristalyse asks its tick engine for between 2 and 10 gridlines depending
+  /// on how much room the plot has, so this cannot be right every time; four
+  /// divisions -- five lines, the plot's edges included -- is what it settles
+  /// on at the sizes a trend window and a pane tile actually get, and it is
+  /// laid out the same way (evenly, edges included) so the lines land on the
+  /// real ones rather than between them.
+  static const _gridDivisions = 4;
 
   @override
   void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = color
-      ..strokeWidth = 1;
-    for (var i = 1; i <= _lines; i++) {
-      final y = (size.height * i / (_lines + 1)).roundToDouble() + 0.5;
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
+    final plot = Rect.fromLTRB(
+      insets.left,
+      insets.top,
+      size.width - insets.right,
+      size.height - insets.bottom,
+    );
+    if (plot.width <= 0 || plot.height <= 0) return;
+
+    if (theme.plotBackgroundColor.a > 0) {
+      canvas.drawRect(plot, Paint()..color = theme.plotBackgroundColor);
     }
+
+    final grid = Paint()
+      ..color = theme.gridColor
+      ..strokeWidth = theme.gridWidth;
+    for (var i = 0; i <= _gridDivisions; i++) {
+      final y = plot.top + plot.height * i / _gridDivisions;
+      canvas.drawLine(Offset(plot.left, y), Offset(plot.right, y), grid);
+      final x = plot.left + plot.width * i / _gridDivisions;
+      canvas.drawLine(Offset(x, plot.top), Offset(x, plot.bottom), grid);
+    }
+
+    final axis = Paint()
+      ..color = theme.axisColor
+      ..strokeWidth = theme.axisWidth;
+    canvas.drawLine(plot.bottomLeft, plot.bottomRight, axis);
+    canvas.drawLine(plot.topLeft, plot.bottomLeft, axis);
   }
 
   @override
-  bool shouldRepaint(_GridSkeletonPainter oldDelegate) =>
-      oldDelegate.color != color;
+  bool shouldRepaint(_PlotFrameSkeletonPainter oldDelegate) =>
+      oldDelegate.theme != theme || oldDelegate.insets != insets;
+}
+
+/// Fades the chart in over the loading frame, then takes itself out of the
+/// tree.
+///
+/// Not an [AnimatedSwitcher]: that keeps its Stack forever, and a chart that
+/// HAS data has to be laid out exactly as it was before this file grew a
+/// transition. Wrapping the plot in an extra box moved the conveyor trend
+/// popup's axis labels on macOS once already (they wrapped to two lines in the
+/// golden and to one in CI, shifting the whole plot by 15 506 px), and the
+/// cheapest guarantee against a repeat is to build the bare child whenever
+/// nothing is animating.
+///
+/// Only the step OUT of the loading frame is animated. That is the one the
+/// dissolve is for: the frame guesses the gutters from a representative tick,
+/// so the plot's edges land within a couple of pixels of it rather than exactly
+/// on it, and a fade is what stops those pixels reading as a jump. Everything
+/// else the chart swaps between -- plot to error panel, panel back to plot
+/// after a retry -- is an answer arriving, not a reveal, and cuts: a paragraph
+/// of error text dissolving through a live plot is just mush, and it would keep
+/// the panel on screen for a fifth of a second after the thing was fixed.
+class _GraphReveal extends StatefulWidget {
+  const _GraphReveal({required this.loading, required this.child});
+
+  /// Whether [child] is the loading frame.
+  final bool loading;
+  final Widget child;
+
+  @override
+  State<_GraphReveal> createState() => _GraphRevealState();
+}
+
+class _GraphRevealState extends State<_GraphReveal>
+    with SingleTickerProviderStateMixin {
+  static const _duration = Duration(milliseconds: 220);
+
+  late final AnimationController _controller;
+
+  /// The loading frame, held on to while it fades out.
+  Widget? _outgoing;
+
+  @override
+  void initState() {
+    super.initState();
+    // Built here rather than as a lazy `late final`: a chart that never
+    // transitions -- one constructed with its data, which every golden fixture
+    // is -- would otherwise touch the field for the first time in `dispose`,
+    // and creating a ticker while the element is being unmounted throws
+    // "Looking up a deactivated widget's ancestor is unsafe".
+    _controller = AnimationController(vsync: this, duration: _duration)
+      ..addStatusListener((status) {
+        if (status == AnimationStatus.completed && mounted) {
+          setState(() => _outgoing = null);
+        }
+      });
+  }
+
+  @override
+  void didUpdateWidget(_GraphReveal oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!oldWidget.loading || widget.loading) return;
+    _outgoing = oldWidget.child;
+    _controller.forward(from: 0);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final outgoing = _outgoing;
+    if (outgoing == null) return widget.child;
+    // passthrough, so both children get exactly the constraints the child
+    // would have had on its own.
+    return Stack(
+      fit: StackFit.passthrough,
+      children: [
+        FadeTransition(
+          opacity: Tween<double>(begin: 1, end: 0).animate(_controller),
+          child: outgoing,
+        ),
+        FadeTransition(opacity: _controller, child: widget.child),
+      ],
+    );
+  }
 }
 
 /// -------------------- Graph  --------------------
@@ -234,6 +458,17 @@ class Graph {
   final void Function() redraw;
   final cs.TooltipBuilder? tooltipBuilder;
 
+  /// Series names on the primary y-axis, in the order the config lists them.
+  ///
+  /// Only the loading frame uses these, and only to draw the legend before
+  /// there is data to derive one from -- cristalyse builds the real legend from
+  /// the rows. Leave them out and the frame simply draws no legend, which costs
+  /// the width of the legend column when the chart lands.
+  final List<String> seriesLabels;
+
+  /// Series names on the secondary y-axis. See [seriesLabels].
+  final List<String> secondarySeriesLabels;
+
   Graph(
       {required this.config,
       required this.data,
@@ -246,9 +481,12 @@ class Graph {
       required this.redraw,
       cs.ChartTheme? chartTheme,
       this.tooltipBuilder,
+      this.seriesLabels = const [],
+      this.secondarySeriesLabels = const [],
       this.categoryColors = const {}})
       : _data = data,
-        _chartWidget = const _GraphSkeleton() {
+        _theme = chartTheme,
+        _chartWidget = null {
     _chart = _createChart();
     if (chartTheme != null) {
       _chart.theme(chartTheme);
@@ -284,7 +522,16 @@ class Graph {
 
   late final List<Map<String, dynamic>> _data;
   late cs.CristalyseChart _chart;
-  Widget _chartWidget;
+
+  /// The plot, or the panel [showError] puts in its place. Null while the
+  /// history is still in flight, which is what [build] draws the loading frame
+  /// for.
+  Widget? _chartWidget;
+
+  /// The theme the chart is drawn with, kept so the loading frame can be drawn
+  /// with it too. `theme()` only ever handed it to cristalyse, which has no
+  /// getter for it back.
+  cs.ChartTheme? _theme;
 
   /// Replace the loading skeleton with a message. A fetch that throws -- a key whose
   /// table was never created because it is not collected, a database that
@@ -376,6 +623,7 @@ class Graph {
   bool _nowDisabled = false;
 
   void theme(cs.ChartTheme theme) {
+    _theme = theme;
     _chart.theme(theme);
   }
 
@@ -553,6 +801,123 @@ class Graph {
     _sliceAndRedraw(_lastPanInfo);
   }
 
+  /// The plot, or the frame standing in for it while the history loads.
+  ///
+  /// Wrapped in a cross-fade so the step from the frame to the chart is a
+  /// dissolve rather than a cut. The gutters the frame reserves are computed
+  /// from a representative tick rather than the real one, so the plot's edges
+  /// land within a few pixels of where the chart puts them and not exactly on
+  /// them; a cut makes those few pixels read as a jump, and a dissolve does
+  /// not. [_GraphReveal] leaves the tree alone once it has settled.
+  ///
+  /// The progress hairline has to be INSIDE the fade, not around it. Wrapped
+  /// the other way the loading state is a `Stack` and the plot is not, so the
+  /// reveal sits at a position whose widget type changes -- its element is
+  /// thrown away and rebuilt at exactly the moment it was supposed to animate,
+  /// and the dissolve never runs.
+  Widget _plot(BuildContext context) => _GraphReveal(
+        loading: _chartWidget == null,
+        child: _chartWidget ??
+            Stack(
+              fit: StackFit.passthrough,
+              children: [
+                _loadingFrame(context),
+                // Still fetching: a hairline across the top of the plot rather
+                // than a spinner in the middle of it. Dropped once the fetch
+                // has answered, even if the answer was a notice and no rows.
+                if (_isLoading)
+                  const Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    child: LinearProgressIndicator(minHeight: 2),
+                  ),
+              ],
+            ),
+      );
+
+  /// The chart theme, falling back to the app's brightness for a [Graph] built
+  /// without one (golden fixtures, mostly).
+  cs.ChartTheme _themeOf(BuildContext context) =>
+      _theme ??
+      (Theme.of(context).brightness == Brightness.dark
+          ? darkChartTheme()
+          : lightChartTheme());
+
+  /// A tick label of the shape this axis will print, for measuring the gutter
+  /// it needs. The axis font is monospaced, so shape is width.
+  static String _sampleLabel(GraphAxisConfig axis) =>
+      _numLabel(88.8, axis.unit, axis.boolean, axis.decimals);
+
+  String get _sampleXLabel =>
+      config.type == GraphType.timeseries ||
+              config.type == GraphType.barTimeseries
+          ? _formatTime(DateTime.fromMillisecondsSinceEpoch(0),
+              showDate: _showDate)
+          : _numLabel(88.8, config.xAxis.unit, config.xAxis.boolean,
+              config.xAxis.decimals);
+
+  Widget _loadingFrame(BuildContext context) {
+    final theme = _themeOf(context);
+    return _GraphSkeleton(
+      theme: theme,
+      insets: chartPlotInsets(
+        theme: theme,
+        sampleYLabel: _sampleLabel(config.yAxis),
+        sampleY2Label:
+            config.yAxis2 != null ? _sampleLabel(config.yAxis2!) : null,
+        sampleXLabel: _sampleXLabel,
+        yTitle: config.yAxis.title,
+        y2Title: config.yAxis2?.title,
+        xTitle: config.xAxis.title,
+      ),
+      legend: _loadingLegend(theme),
+    );
+  }
+
+  /// cristalyse's own legend widget, built from the series the config names
+  /// rather than from rows that have not arrived.
+  ///
+  /// The colours are resolved the way cristalyse resolves them -- a series'
+  /// configured colour, else the palette by position -- so a dot does not
+  /// change colour when the real legend takes over.
+  ///
+  /// It is a prediction, not the article: the real legend is generated from the
+  /// rows, so a series whose history came back empty is listed here and dropped
+  /// there, and a key holding an array charts as one trace per element under
+  /// names this cannot know. Either way the column changes height, or width by
+  /// a name -- both of which are a smaller move than the column arriving out of
+  /// nothing and taking 160px off the plot with it.
+  Widget? _loadingLegend(cs.ChartTheme theme) {
+    if (!config.legend) return null;
+    final labels = [...seriesLabels, ...secondarySeriesLabels];
+    if (labels.isEmpty) return null;
+    final palette = theme.colorPalette;
+    final symbol = config.type == GraphType.bar ||
+            config.type == GraphType.barTimeseries
+        ? cs.LegendSymbol.square
+        : cs.LegendSymbol.line;
+    cs.LegendItem item(String label) => cs.LegendItem(
+          label: label,
+          color: categoryColors[label] ??
+              (palette.isEmpty
+                  ? Colors.transparent
+                  : palette[labels.indexOf(label) % palette.length]),
+          symbol: symbol,
+        );
+    return cs.LegendWidget(
+      yTitle: config.yAxis.title,
+      itemsY: seriesLabels.map(item).toList(),
+      y2Title: config.yAxis2?.title,
+      itemsY2: secondarySeriesLabels.map(item).toList(),
+      config: const cs.LegendConfig(
+        position: cs.LegendPosition.right,
+        showTitles: true,
+      ),
+      theme: theme,
+    );
+  }
+
   Widget build(BuildContext context) {
     DateTimeRange? currentDateRange;
     if (_lastPanInfo.visibleMinX != null && _lastPanInfo.visibleMaxX != null) {
@@ -598,37 +963,19 @@ class Graph {
 
     return Column(
       children: [
-        Expanded(
-          // The Stack exists only while the hairline does.
-          //
-          // Still fetching: a hairline across the top of the plot rather than
-          // a spinner in the middle of it, so the plot area, the legend and
-          // the button row are already where they will stay and the data
-          // fills the frame in instead of replacing it.
-          //
-          // A chart that HAS data is laid out exactly as it was before this
-          // file grew a bar -- no Stack, no extra box in the tree. Wrapping
-          // it unconditionally moved the conveyor trend popup's axis labels
-          // on macOS (they wrapped to two lines in the golden and to one in
-          // CI, shifting the whole plot: 15 506 px). The same render was
-          // byte-identical on Windows, so the trigger is a sub-pixel width
-          // difference at a wrap boundary that only macOS's text metrics
-          // reach. A widget that is not in the tree cannot cause it.
-          child: _isLoading && !_errored
-              ? Stack(
-                  fit: StackFit.passthrough,
-                  children: [
-                    _chartWidget,
-                    const Positioned(
-                      top: 0,
-                      left: 0,
-                      right: 0,
-                      child: LinearProgressIndicator(minHeight: 2),
-                    ),
-                  ],
-                )
-              : _chartWidget,
-        ),
+        // The loading frame, the plot, or the error panel -- see [_plot], which
+        // also owns the Stack the progress hairline needs.
+        //
+        // A chart that HAS data is laid out exactly as it was before this file
+        // grew a hairline and a dissolve: no Stack, no extra box in the tree.
+        // Wrapping it unconditionally moved the conveyor trend popup's axis
+        // labels on macOS (they wrapped to two lines in the golden and to one
+        // in CI, shifting the whole plot: 15 506 px). The same render was
+        // byte-identical on Windows, so the trigger is a sub-pixel width
+        // difference at a wrap boundary that only macOS's text metrics reach.
+        // A widget that is not in the tree cannot cause it, which is why both
+        // the Stack and the reveal build themselves away once settled.
+        Expanded(child: _plot(context)),
         if (noData != null) noData,
         if (noData != null)
           SizedBox(

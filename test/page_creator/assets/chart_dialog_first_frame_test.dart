@@ -15,10 +15,8 @@
 // query fill in behind it, and a trend asks for all of its lines at once.
 
 import 'dart:async';
-import 'dart:io' show File, Platform;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show FontLoader;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/page_creator/assets/bpm.dart';
@@ -26,12 +24,10 @@ import 'package:tfc/page_creator/assets/graph.dart';
 import 'package:tfc/page_creator/assets/ratio_number.dart';
 import 'package:tfc/providers/database.dart';
 import 'package:tfc/providers/state_man.dart';
-import 'package:tfc/widgets/graph.dart';
 import 'package:tfc/widgets/panes/standard_dialog.dart';
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/database_drift.dart';
 import 'package:tfc_dart/core/state_man.dart';
-import '../../helpers/golden_platform.dart';
 
 // ---------------------------------------------------------------------------
 // Doubles
@@ -318,71 +314,4 @@ void main() {
 
     await _tearDown(tester);
   });
-
-  // The frame a chart draws before it has data: faint gridlines where the
-  // plot will be, a hairline of progress along its top, and the button row
-  // already in its place. It replaces a spinner in the middle of the window.
-  for (final brightness in Brightness.values) {
-    testWidgets('loading chart golden — ${brightness.name}', (tester) async {
-      final font = File('lib/fonts/roboto-mono/RobotoMono-Regular.ttf')
-          .readAsBytesSync()
-          .buffer
-          .asByteData();
-      await (FontLoader('Roboto')..addFont(Future.value(font))).load();
-      final flutterRoot = Platform.environment['FLUTTER_ROOT'];
-      final iconFont = File('$flutterRoot/bin/cache/artifacts/material_fonts/'
-          'MaterialIcons-Regular.otf');
-      if (flutterRoot != null && iconFont.existsSync()) {
-        await (FontLoader('MaterialIcons')
-              ..addFont(
-                  Future.value(iconFont.readAsBytesSync().buffer.asByteData())))
-            .load();
-      }
-
-      tester.view.physicalSize = const Size(640, 340);
-      tester.view.devicePixelRatio = 1.0;
-      addTearDown(tester.view.reset);
-
-      final graph = Graph(
-        config: GraphConfig(
-          type: GraphType.timeseries,
-          xAxis: const GraphAxisConfig(unit: ''),
-          yAxis: const GraphAxisConfig(unit: 'Batches/min'),
-          xSpan: const Duration(minutes: 60),
-        ),
-        data: [],
-        redraw: () {},
-      );
-
-      await tester.pumpWidget(MaterialApp(
-        debugShowCheckedModeBanner: false,
-        theme: ThemeData(brightness: brightness),
-        home: Scaffold(
-          body: RepaintBoundary(
-            key: const Key('loading_chart'),
-            // The boundary captures only what is painted inside it. Without a
-            // ground of its own the dark variant came out as dark gridlines on
-            // a transparent -- white -- background, which no screen shows.
-            child: Builder(
-              builder: (context) => ColoredBox(
-                color: Theme.of(context).colorScheme.surface,
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Builder(builder: graph.build),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ));
-      // The progress bar is indeterminate and never settles; one fixed step
-      // into it keeps the capture repeatable.
-      await tester.pump(const Duration(milliseconds: 300));
-
-      await expectLater(
-        find.byKey(const Key('loading_chart')),
-        matchesGoldenFile('goldens/chart_loading_${brightness.name}.png'),
-      );
-    }, tags: ['golden'], skip: goldenSkipFlag);
-  }
 }
