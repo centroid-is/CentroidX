@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:logger/logger.dart';
+import 'package:meta/meta.dart' show visibleForTesting;
 
 import '../core/pending_proposals_store.dart';
 import 'preferences.dart' show localPreferencesProvider;
@@ -96,6 +97,16 @@ class ProposalStateNotifier extends StateNotifier<ProposalState> {
   /// order: the later state must be the one that survives.
   Future<void> _writes = Future<void>.value();
 
+  /// The queue as the next write must leave it, or null when none is owed.
+  ///
+  /// Set by [_persist] on every change and taken by the one write [_persist]
+  /// schedules; a further change arriving before that write starts simply
+  /// replaces it. See [_persist] for why the write is deferred at all.
+  List<PersistedProposal>? _owed;
+
+  /// Whether a write is scheduled and has not yet taken [_owed].
+  bool _writeScheduled = false;
+
   /// Proposals already reported as viewed, so re-opening an editor does not
   /// spam the AI with repeat notes.
   final _viewedIds = <int>{};
@@ -109,10 +120,37 @@ class ProposalStateNotifier extends StateNotifier<ProposalState> {
     _persist();
   }
 
+  /// Records that the mirror is out of date, and schedules the one write that
+  /// brings it up to date.
+  ///
+  /// **One operator action must cost one write, whatever it decided.** This
+  /// used to hand every state change straight to [PendingProposalStore.save],
+  /// which is correct but priced per proposal rather than per decision: the
+  /// banner's Reject all takes the queue down one proposal at a time in a
+  /// single synchronous loop, so a queue of fifteen wrote the mirror fifteen
+  /// times — fourteen of them states nobody will ever read back.
+  ///
+  /// That is not merely wasteful. The device-local store is a whole-file
+  /// writer, and the file is about a megabyte on a configured station: the key
+  /// mappings, the page data and the alarm tree all live in it, every write of
+  /// any key re-encodes and rewrites all of it, and that work runs on the UI
+  /// isolate — which on Windows is the platform thread, the thread that pumps
+  /// the window's message loop and services the compositor's dispatcher queue.
+  /// A restored fifteen-proposal queue rejected in one press held that thread
+  /// for 945 ms, against 1 ms for every other measurement in the same process,
+  /// and the process did not survive it. A decision the operator makes once
+  /// must not be charged to the renderer once per proposal.
+  ///
+  /// So the snapshot is still taken synchronously — it has to be, the state
+  /// moves on — but the write is deferred by one microtask, and only the last
+  /// snapshot of that turn is written. Deferring cannot lose a decision: the
+  /// write is still chained onto [_writes], still ordered, and still issued
+  /// before anything can await the event loop. The only way to observe a stale
+  /// file is to read it from inside the very turn that changed the queue.
   void _persist() {
     final store = _store;
     if (store == null) return;
-    final snapshot = [
+    _owed = [
       for (final p in state.proposals)
         PersistedProposal(
           proposalType: p.proposalType,
@@ -123,8 +161,27 @@ class ProposalStateNotifier extends StateNotifier<ProposalState> {
           viewed: _viewedIds.contains(p.id),
         ),
     ];
-    _writes = _writes.then((_) => store.save(snapshot));
+    if (_writeScheduled) return;
+    _writeScheduled = true;
+    _writes = _writes.then((_) {
+      // Cleared before the write rather than after: a change made while this
+      // one is in flight owes a further write and must be free to schedule it.
+      _writeScheduled = false;
+      final snapshot = _owed;
+      _owed = null;
+      if (snapshot == null) return null;
+      return store.save(snapshot);
+    });
   }
+
+  /// Completes when everything the queue owes the mirror has been written.
+  ///
+  /// Only tests need it — production never waits on the mirror, which is the
+  /// point of it being a mirror. Awaiting it twice in a row is the only way to
+  /// be sure: the first await lets a scheduled write start, the second lets
+  /// anything it chained behind it finish.
+  @visibleForTesting
+  Future<void> get pendingWrites => _writes;
 
   /// Brings back whatever the previous isolate left undecided.
   ///

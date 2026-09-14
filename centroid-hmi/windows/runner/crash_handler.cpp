@@ -383,6 +383,18 @@ void InstallCrashHandlers(const std::string& dump_dir,
   _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
   _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
 #endif
+
+  // Name the blind spot while the log is still being written, because the one
+  // time it mattered this file just stopped and the absence looked like a
+  // mystery rather than a signpost. See the header for the two occurrences.
+  WriteRecord(
+      "[startup] crash handlers installed: structured exceptions, "
+      "std::terminate, SIGABRT, CRT invalid parameter, pure virtual call. A "
+      "FAIL-FAST (0xC0000409, or the 0xE0464645 DirectComposition raises) "
+      "bypasses every one of them: no [crash] record, no minidump, this log "
+      "simply ends mid-run. For that, read the Application event log "
+      "(\"Application Error\", id 1000 - it names the faulting module and "
+      "exception code) and %ProgramData%\\Microsoft\\Windows\\WER.");
 }
 
 }  // namespace tfc
