@@ -15,10 +15,22 @@ import 'package:tfc_dart/core/state_man.dart'
 /// Dictionary disabled, refused reservation, pairing-key drift). When
 /// only [status] is provided, the chip falls back to pure TCP behavior
 /// — keeping classic-Modbus / OPC UA / JBTM cards untouched.
+///
+/// `opcuaUnmonitored` renders amber "Unmonitored". It is deliberately NOT
+/// "No data": that state means the client could not be given a health clock,
+/// while its existing data subscriptions may be delivering sub-second values
+/// throughout. A chip reading "No data" beside a server whose data was
+/// demonstrably fine cost two people half an hour, so the two facts get two
+/// labels — and [statusDetail] carries the server's own reason string into
+/// the tooltip, where it used to exist only in the log.
 class ConnectionStatusChip extends StatelessWidget {
   final ConnectionStatus? status;
   final EffectiveDeviceStatus? effectiveStatus;
   final bool stateManLoading;
+
+  /// One line from the client saying what is actually wrong — e.g.
+  /// `ClientWrapper.healthDetail`. Appended to the tooltip.
+  final String? statusDetail;
 
   /// The operator switched this server off in the server config.
   ///
@@ -31,6 +43,7 @@ class ConnectionStatusChip extends StatelessWidget {
     super.key,
     required this.status,
     this.effectiveStatus,
+    this.statusDetail,
     this.stateManLoading = false,
     this.disabled = false,
   });
@@ -52,6 +65,11 @@ class ConnectionStatusChip extends StatelessWidget {
         // socket's point of view; this chip state is the only place an
         // operator can tell the difference.
         EffectiveDeviceStatus.opcuaUnhealthy => Colors.deepOrange,
+        // Amber — "link up, values may be fine, but nothing is watching".
+        // A degraded diagnostic, not a dead data plane; paler than the
+        // deep orange above because it is a less severe claim, and never
+        // green because an unwatched client is not a healthy one.
+        EffectiveDeviceStatus.opcuaUnmonitored => Colors.amber.shade700,
       };
     }
     if (status == null) {
@@ -73,6 +91,7 @@ class ConnectionStatusChip extends StatelessWidget {
         EffectiveDeviceStatus.disconnected => 'Disconnected',
         EffectiveDeviceStatus.umasUnhealthy => 'UMAS error',
         EffectiveDeviceStatus.opcuaUnhealthy => 'No data',
+        EffectiveDeviceStatus.opcuaUnmonitored => 'Unmonitored',
       };
     }
     if (status == null) {
@@ -90,20 +109,32 @@ class ConnectionStatusChip extends StatelessWidget {
       return 'Server is disabled — it is not connected to and its keys\n'
           'are not read, written or collected.';
     }
-    if (effectiveStatus == EffectiveDeviceStatus.umasUnhealthy) {
-      return 'TCP is up but the UMAS session is not paired.\n'
-          'Likely causes:\n'
-          '  • Data Dictionary disabled in EcoStruxure project\n'
-          '  • Another client holds the PLC reservation\n'
-          '  • Pairing key drift (try a session reset)';
-    }
-    if (effectiveStatus == EffectiveDeviceStatus.opcuaUnhealthy) {
-      return 'The connection looks up but no values are arriving —\n'
-          'the heartbeat has gone silent (dead session, stalled\n'
-          'subscription, or a stopped client loop). Values shown for\n'
-          'this server are frozen at their last received state.';
-    }
-    return null;
+    final base = switch (effectiveStatus) {
+      EffectiveDeviceStatus.umasUnhealthy =>
+        'TCP is up but the UMAS session is not paired.\n'
+            'Likely causes:\n'
+            '  • Data Dictionary disabled in EcoStruxure project\n'
+            '  • Another client holds the PLC reservation\n'
+            '  • Pairing key drift (try a session reset)',
+      EffectiveDeviceStatus.opcuaUnhealthy =>
+        'The connection looks up but no values are arriving —\n'
+            'the heartbeat has gone silent (dead session, stalled\n'
+            'subscription, or a stopped client loop). Values shown for\n'
+            'this server are frozen at their last received state.',
+      // Says the opposite of "No data" on purpose. This state is about the
+      // health clock, not the values: the client is running blind, but the
+      // figures on screen may be perfectly current.
+      EffectiveDeviceStatus.opcuaUnmonitored =>
+        'This server has no health clock: the client could not create\n'
+            'the subscription it watches itself with. Values already\n'
+            'subscribed may still be arriving normally — but if this\n'
+            'server freezes, nothing will notice. The client backs off and\n'
+            'rebuilds its subscriptions if the data also stops.',
+      _ => null,
+    };
+    final detail = statusDetail?.trim();
+    if (detail == null || detail.isEmpty) return base;
+    return base == null ? detail : '$base\n\n$detail';
   }
 
   @override

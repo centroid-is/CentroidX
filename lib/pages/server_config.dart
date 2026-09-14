@@ -816,6 +816,11 @@ class _OpcUAServersSectionState extends ConsumerState<_OpcUAServersSection> {
           // which the event-driven connectionStream can never report.
           effectiveStatus: wrapper?.effectiveStatus,
           effectiveStatusStream: wrapper?.effectiveStatusStream,
+          // Read through a callback, not captured as a value: the reason a
+          // client is unhealthy changes without the card rebuilding, and
+          // the string is the only place the server's own refusal message
+          // reaches an operator.
+          healthDetail: wrapper == null ? null : () => wrapper!.healthDetail,
           stateManLoading: stateManAsync.isLoading,
           reorderIndex: reorderable ? index : null,
         );
@@ -2314,6 +2319,10 @@ class _ServerConfigCard extends StatefulWidget {
   /// case the pure [connectionStream] chip used to render green forever.
   final EffectiveDeviceStatus? effectiveStatus;
   final Stream<EffectiveDeviceStatus>? effectiveStatusStream;
+
+  /// Reads `ClientWrapper.healthDetail` on demand — the one line saying what
+  /// is actually wrong, surfaced in the chip tooltip.
+  final String? Function()? healthDetail;
   final bool stateManLoading;
 
   /// Index of this card in the enclosing [ReorderableListView], or null when
@@ -2330,6 +2339,7 @@ class _ServerConfigCard extends StatefulWidget {
     this.connectionStream,
     this.effectiveStatus,
     this.effectiveStatusStream,
+    this.healthDetail,
     this.stateManLoading = false,
     this.reorderIndex,
   });
@@ -2351,6 +2361,7 @@ class _ServerConfigCardState extends State<_ServerConfigCard> {
   StreamSubscription<ConnectionStatus>? _stateSubscription;
   EffectiveDeviceStatus? _effectiveStatus;
   StreamSubscription<EffectiveDeviceStatus>? _effectiveStatusSub;
+  String? _healthDetail;
 
   /// False until the user touches the password field. While false the stored
   /// password is passed through untouched on save, so the field can stay
@@ -2371,6 +2382,7 @@ class _ServerConfigCardState extends State<_ServerConfigCard> {
     _secureChannelLifetime = widget.server.secureChannelLifetime;
     _connectionStatus = widget.connectionStatus;
     _effectiveStatus = widget.effectiveStatus;
+    _healthDetail = widget.healthDetail?.call();
     _listenToState();
   }
 
@@ -2383,6 +2395,7 @@ class _ServerConfigCardState extends State<_ServerConfigCard> {
       _effectiveStatusSub?.cancel();
       _connectionStatus = widget.connectionStatus;
       _effectiveStatus = widget.effectiveStatus;
+      _healthDetail = widget.healthDetail?.call();
       _listenToState();
     }
   }
@@ -2392,7 +2405,14 @@ class _ServerConfigCardState extends State<_ServerConfigCard> {
       if (mounted) setState(() => _connectionStatus = status);
     });
     _effectiveStatusSub = widget.effectiveStatusStream?.listen((status) {
-      if (mounted) setState(() => _effectiveStatus = status);
+      if (mounted) {
+        setState(() {
+          _effectiveStatus = status;
+          // Re-read alongside the status it explains, so the tooltip never
+          // describes the previous state.
+          _healthDetail = widget.healthDetail?.call();
+        });
+      }
     });
   }
 
@@ -2681,6 +2701,7 @@ class _ServerConfigCardState extends State<_ServerConfigCard> {
             ConnectionStatusChip(
               status: _connectionStatus,
               effectiveStatus: _effectiveStatus,
+              statusDetail: _healthDetail,
               stateManLoading: widget.stateManLoading,
               disabled: !widget.server.enabled,
             ),

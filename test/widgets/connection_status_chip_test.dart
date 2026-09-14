@@ -6,6 +6,7 @@
 ///   - `disconnected`     → red "Disconnected"
 ///   - `umasUnhealthy`    → amber "UMAS error"  (TD-004 NEW)
 ///   - `opcuaUnhealthy`   → deep-orange "No data" (frozen-session fix)
+///   - `opcuaUnmonitored` → amber "Unmonitored"
 ///
 /// And when only the legacy TCP [ConnectionStatus] is supplied, the
 /// chip falls back to its pre-TD-004 behavior (no regression for
@@ -61,6 +62,59 @@ void main() {
       final tooltip = t.widget<Tooltip>(find.byType(Tooltip));
       expect(tooltip.message, contains('frozen'));
       expect(tooltip.message, contains('heartbeat'));
+    });
+
+    testWidgets('opcuaUnmonitored does NOT claim the data is missing',
+        (t) async {
+      // The incident this split exists for: a station delivering sub-second
+      // values, with a chip reading "No data" beside it, because the client
+      // could not create the subscription it watches itself with. Two
+      // different facts; the second one was false.
+      await _pump(
+        t,
+        const ConnectionStatusChip(
+          status: ConnectionStatus.connected,
+          effectiveStatus: EffectiveDeviceStatus.opcuaUnmonitored,
+        ),
+      );
+      expect(find.text('Unmonitored'), findsOneWidget);
+      expect(find.text('No data'), findsNothing);
+      // Not green either — an unwatched client is not a healthy one.
+      expect(find.text('Connected'), findsNothing);
+      final tooltip = t.widget<Tooltip>(find.byType(Tooltip));
+      expect(tooltip.message, contains('no health clock'));
+      expect(tooltip.message, contains('may still be arriving'));
+    });
+
+    testWidgets('statusDetail carries the server\'s own reason into the '
+        'tooltip', (t) async {
+      // heartbeatUnavailable holds the refusal the server gave. It used to
+      // live only in the log, which is not somewhere an operator looking at
+      // a chip can reach.
+      await _pump(
+        t,
+        const ConnectionStatusChip(
+          status: ConnectionStatus.connected,
+          effectiveStatus: EffectiveDeviceStatus.opcuaUnmonitored,
+          statusDetail: 'No health clock: could not create a subscription '
+              '(BadTooManySubscriptions).',
+        ),
+      );
+      final tooltip = t.widget<Tooltip>(find.byType(Tooltip));
+      expect(tooltip.message, contains('BadTooManySubscriptions'));
+    });
+
+    testWidgets('a statusDetail alone is enough to earn a tooltip', (t) async {
+      await _pump(
+        t,
+        const ConnectionStatusChip(
+          status: ConnectionStatus.connected,
+          effectiveStatus: EffectiveDeviceStatus.connected,
+          statusDetail: 'something worth saying',
+        ),
+      );
+      final tooltip = t.widget<Tooltip>(find.byType(Tooltip));
+      expect(tooltip.message, 'something worth saying');
     });
 
     testWidgets('connected EffectiveDeviceStatus renders "Connected"',
