@@ -19,6 +19,7 @@ import 'package:flutter/material.dart';
 import '../core/system_clock.dart';
 import 'panes/pane_chrome.dart';
 import 'panes/standard_dialog.dart';
+import 'plant_time_picker.dart';
 
 /// How often the status is re-read. The clock display ticks locally between
 /// polls, so this only paces the D-Bus traffic, not the seconds hand.
@@ -234,7 +235,7 @@ class _SystemClockSectionState extends State<SystemClockSection> {
       lastDate: DateTime(2100),
     );
     if (date == null || !mounted) return;
-    final time = await showTimePicker(
+    final time = await showPlantTimePicker(
       context: context,
       initialTime: TimeOfDay.fromDateTime(now),
     );

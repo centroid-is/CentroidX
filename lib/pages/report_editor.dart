@@ -12,6 +12,7 @@ import '../providers/proposal_state.dart';
 import '../providers/report.dart';
 import '../providers/state_man.dart';
 import '../widgets/base_scaffold.dart';
+import '../widgets/plant_time_picker.dart';
 
 /// Configures the shift calendar and the report definitions.
 ///
@@ -290,8 +291,15 @@ class _ReportEditorPageState extends ConsumerState<ReportEditorPage> {
         hour: shift.startMinutes ~/ 60, minute: shift.startMinutes % 60);
     final end = shift.startMinutes + shift.durationMinutes;
 
+    // Identity, not position: a shift row must keep its elements while the
+    // operator types, and must be rebuilt from scratch when this slot comes
+    // to hold a *different* shift — which both a delete and a staged
+    // proposal (which replaces the whole list) do. Keying by position kept
+    // stale text after a delete; keying by the name's hash rebuilt the row
+    // on every keystroke, which is how the Name field kept losing focus
+    // after a single character.
     return Padding(
-      key: ValueKey('shift-$index'),
+      key: ObjectKey(shift),
       padding: const EdgeInsets.symmetric(vertical: 8),
       child: Wrap(
         crossAxisAlignment: WrapCrossAlignment.center,
@@ -301,7 +309,7 @@ class _ReportEditorPageState extends ConsumerState<ReportEditorPage> {
           SizedBox(
             width: 180,
             child: TextFormField(
-              key: ValueKey('shift-name-$index-${shift.name.hashCode}'),
+              key: ValueKey('shift-name-$index'),
               initialValue: shift.name,
               decoration: const InputDecoration(
                   labelText: 'Name', isDense: true),
@@ -312,8 +320,10 @@ class _ReportEditorPageState extends ConsumerState<ReportEditorPage> {
             icon: const Icon(Icons.schedule, size: 18),
             label: Text('Starts ${two(start.hour)}:${two(start.minute)}'),
             onPressed: () async {
-              final picked =
-                  await showTimePicker(context: context, initialTime: start);
+              final picked = await showPlantTimePicker(
+                  context: context,
+                  initialTime: start,
+                  helpText: 'Shift starts');
               if (picked != null) {
                 setState(() =>
                     shift.startMinutes = picked.hour * 60 + picked.minute);

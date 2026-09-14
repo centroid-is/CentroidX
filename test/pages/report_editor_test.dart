@@ -139,7 +139,7 @@ void main() {
 
     await tester.tap(find.text('Add shift'));
     await tester.pumpAndSettle();
-    expect(find.byKey(const ValueKey('shift-0')), findsOneWidget);
+    expect(find.byKey(const ValueKey('shift-name-0')), findsOneWidget);
 
     await tester.tap(find.text('Add report'));
     await tester.pumpAndSettle();
@@ -215,7 +215,7 @@ void main() {
     // …and the operator's work is still in the buffer for somebody who may
     // save it, rather than being thrown away with the refusal.
     expect(find.text('Unsaved changes'), findsOneWidget);
-    expect(find.byKey(const ValueKey('shift-0')), findsOneWidget);
+    expect(find.byKey(const ValueKey('shift-name-0')), findsOneWidget);
   });
 
   testWidgets('the production window is off until it is switched on',
@@ -262,6 +262,76 @@ void main() {
 
     final report = (await store.loadReports()).reports.single;
     expect(report.window?.signals.single.running.key, 'line.throughput');
+  });
+
+  testWidgets('typing a shift name keeps the field, and its focus',
+      (tester) async {
+    await pump(tester);
+    await tester.tap(find.text('Add shift'));
+    await tester.pumpAndSettle();
+
+    const nameField = ValueKey('shift-name-0');
+    final editable = find.descendant(
+        of: find.byKey(nameField), matching: find.byType(EditableText));
+
+    await tester.tap(find.byKey(nameField));
+    await tester.pumpAndSettle();
+    final before = tester.element(editable);
+    expect(tester.widget<EditableText>(editable).focusNode.hasFocus, isTrue);
+
+    // One character is all it used to take: the field's key carried the
+    // name's hash, so the first keystroke replaced the element and the
+    // caret landed nowhere.
+    await tester.enterText(find.byKey(nameField), 'N');
+    await tester.pump();
+
+    expect(identical(tester.element(editable), before), isTrue,
+        reason: 'the Name field was rebuilt mid-edit, which drops focus');
+    expect(tester.widget<EditableText>(editable).focusNode.hasFocus, isTrue);
+
+    await tester.enterText(find.byKey(nameField), 'Night');
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+    expect((await store.loadShifts()).shifts.single.name, 'Night');
+  });
+
+  testWidgets('deleting a shift leaves the survivors showing their own names',
+      (tester) async {
+    await store.saveShifts(ShiftManConfig(shifts: [
+      ShiftDef(name: 'Morning', startMinutes: 7 * 60, durationMinutes: 8 * 60),
+      ShiftDef(name: 'Night', startMinutes: 23 * 60, durationMinutes: 8 * 60),
+    ]));
+    await pump(tester);
+    expect(find.text('Morning'), findsOneWidget);
+
+    // Drop the first row. Keyed by position, the remaining field kept the
+    // deleted shift's text while the buffer held the other one's.
+    await tester.tap(find.byTooltip('Remove shift').first);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Morning'), findsNothing);
+    expect(find.text('Night'), findsOneWidget);
+  });
+
+  testWidgets('the shift start picker is edited on a 24-hour clock',
+      (tester) async {
+    await store.saveShifts(ShiftManConfig(shifts: [
+      ShiftDef(name: 'Night', startMinutes: 19 * 60, durationMinutes: 8 * 60),
+    ]));
+    await pump(tester);
+    expect(find.text('Starts 19:00'), findsOneWidget);
+
+    await tester.tap(find.text('Starts 19:00'));
+    await tester.pumpAndSettle();
+
+    // The dial the operator actually gets: 19, not 7 with PM lit.
+    expect(find.text('19'), findsOneWidget);
+    expect(find.text('PM'), findsNothing);
+    expect(find.text('AM'), findsNothing);
+
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
   });
 
   testWidgets(
