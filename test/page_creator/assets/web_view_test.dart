@@ -64,6 +64,31 @@ class _FakeAbsentableSurface
   }
 }
 
+/// A surface whose picture goes stale when nothing is drawing it, i.e. the
+/// CEF shape.
+///
+/// Separate from [_FakeSurface] for the same reason [_FakeAbsentableSurface]
+/// is: the plain fake must keep *not* implementing [WebViewSurfaceRepaint],
+/// so a test can prove the view asks only the surfaces that opt in.
+class _FakeRepaintingSurface implements WebViewSurface, WebViewSurfaceRepaint {
+  final navigations = <Uri>[];
+  bool disposed = false;
+  int repaints = 0;
+
+  @override
+  Widget build(BuildContext context) =>
+      const SizedBox.expand(key: ValueKey('fake-web'));
+
+  @override
+  Future<void> navigate(Uri uri) async => navigations.add(uri);
+
+  @override
+  Future<void> dispose() async => disposed = true;
+
+  @override
+  void repaint() => repaints++;
+}
+
 WebViewAssetConfig _configured({
   String url = 'https://grafana.plant/d/abc/line-1',
   int reloadSeconds = 0,
@@ -907,6 +932,67 @@ void main() {
       expect(WebViewSurfacePool.instance.size, 0,
           reason: 'a browser on screen is not also parked');
       expect(surface.disposed, isFalse);
+    });
+
+    // An off-screen engine paints on damage, and a browser is only parked
+    // because its page is up -- which is the same thing as saying it has
+    // stopped painting. The take-back deliberately does not navigate it, so
+    // nothing damages it, so the texture keeps the frame it had when the tile
+    // left the screen. That was the eLinux "shows a snapshot then is dead"
+    // freeze; a browser handed over must be asked for a frame.
+
+    testWidgets('a browser taken back is asked to paint a frame',
+        (tester) async {
+      final surface = _FakeRepaintingSurface();
+      WebViewAssetView.debugSurfaceFactory = (_) => surface;
+
+      await tester.pumpWidget(_host(_configured()));
+      await tester.pump();
+      expect(surface.repaints, 0,
+          reason: 'a browser it just navigated is painting already');
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(WebViewSurfacePool.instance.size, 1);
+
+      await tester.pumpWidget(_host(_configured()));
+      await tester.pump();
+
+      expect(surface.navigations, hasLength(1),
+          reason: 'still no reload -- that is the whole point of the pool');
+      expect(surface.repaints, 1,
+          reason: 'the parked browser was quiet and had to be woken');
+    });
+
+    testWidgets('every later take-back is asked too', (tester) async {
+      final surface = _FakeRepaintingSurface();
+      WebViewAssetView.debugSurfaceFactory = (_) => surface;
+
+      await tester.pumpWidget(_host(_configured()));
+      await tester.pump();
+      for (var i = 0; i < 3; i++) {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pumpWidget(_host(_configured()));
+        await tester.pump();
+      }
+
+      expect(surface.repaints, 3,
+          reason: 'the second visit freezing is no better than the first');
+    });
+
+    testWidgets('a surface that does not opt in is simply not asked',
+        (tester) async {
+      final surface = _FakeSurface();
+      WebViewAssetView.debugSurfaceFactory = (_) => surface;
+
+      await tester.pumpWidget(_host(_configured()));
+      await tester.pump();
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpWidget(_host(_configured()));
+      await tester.pump();
+
+      // WKWebView and WebView2 are real platform views that redraw
+      // themselves; only CEF's texture needs waking.
+      expect(find.byKey(const ValueKey('fake-web')), findsOneWidget);
     });
 
     testWidgets('a different address starts its own browser', (tester) async {

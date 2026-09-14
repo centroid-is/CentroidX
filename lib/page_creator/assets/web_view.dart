@@ -108,10 +108,15 @@
 ///
 /// Each engine survives its widget leaving the tree differently. WKWebView
 /// lives in its controller and is re-wrapped by a new platform view. CEF's
-/// browser is closed only by an explicit `dispose`, and its texture is just
-/// re-shown. WebView2's Flutter widget disposes the native view with itself
-/// unless it was created with a keep-alive handle, so the Windows surface
-/// holds one; see [_WebView2Surface].
+/// browser is closed only by an explicit `dispose`, and its texture is
+/// re-shown — but re-showing it is not enough on its own, because off-screen
+/// rendering is damage-driven and a browser is parked precisely because its
+/// page has settled. It paints nothing while parked and nothing on return, so
+/// the tile would show the frame it had when it left the screen, for ever.
+/// A browser taken back is therefore asked for one; see
+/// [WebViewSurfaceRepaint]. WebView2's Flutter widget disposes the native view
+/// with itself unless it was created with a keep-alive handle, so the Windows
+/// surface holds one; see [_WebView2Surface].
 library;
 
 import 'dart:async';
@@ -524,6 +529,30 @@ abstract class WebViewSurfacePresizing {
   void presize(Size size, double devicePixelRatio);
 }
 
+/// Implemented *in addition to* [WebViewSurface] by a surface whose picture
+/// can go stale while no widget is drawing it. Same opt-in shape as
+/// [WebViewSurfaceAvailability], for the same reason.
+///
+/// Off-screen engines paint on *damage*: CEF calls `OnPaint` when the page has
+/// something new to show, and the Flutter texture behind the tile is only
+/// repopulated when such a frame arrives — the engine caches the last resolved
+/// image until it is told a new one exists. A browser created and navigated by
+/// the tile that shows it is never a problem, because a loading page damages
+/// constantly. A browser handed over by [WebViewSurfacePool] is: its page has
+/// long since settled, it produces no frames, and the tile therefore shows the
+/// frame it was painting when it last left the screen — for ever, since every
+/// later take-back is just as quiet. That is the freeze this exists to break.
+///
+/// WKWebView and WebView2 are real platform views that redraw themselves, so
+/// neither implements this; it is CEF's texture that needs asking.
+abstract class WebViewSurfaceRepaint {
+  /// Asks the engine for a frame now, whether or not the page changed.
+  ///
+  /// Cheap, and safe to call when the browser is already painting — a
+  /// redundant frame costs one texture upload.
+  void repaint();
+}
+
 /// How long a page may stay covered while it is still loading.
 ///
 /// Heavy dashboards — Grafana is the one on the plant — paint long before the
@@ -873,6 +902,7 @@ class _WebViewAssetViewState extends State<WebViewAssetView> {
       pool.claim(_loadedUrl!);
       _watchLoad(parked);
       _armTimer();
+      _repaintOnShow(parked);
       return;
     }
     final factory = WebViewAssetView.debugSurfaceFactory ?? _defaultFactory;
@@ -912,6 +942,33 @@ class _WebViewAssetViewState extends State<WebViewAssetView> {
       // on that blank tile.
     }));
     _armTimer();
+  }
+
+  /// Asks a browser taken back from the pool for a frame, once the tile it is
+  /// now in has been laid out.
+  ///
+  /// A browser is only handed over because its page is already up, which is
+  /// the same thing as saying it has stopped painting: an off-screen engine
+  /// paints on damage, and a settled page makes none. Nothing else in the
+  /// take-back path damages it either — that is the point, the page is meant
+  /// to be on screen the frame the tile is — so without this the tile shows
+  /// whatever the browser was painting when it last left the screen and never
+  /// moves again. See [WebViewSurfaceRepaint].
+  ///
+  /// Deferred to after the frame because this runs from
+  /// [didChangeDependencies], before the surface's widget has built: the ask
+  /// is a channel call and wants the browser actually on screen. It does not
+  /// need to be ordered against the tile's own size report, which lands from
+  /// another post-frame callback — a size that really changed damages the
+  /// page and paints anyway, and a size that did not is exactly the case this
+  /// call exists for.
+  void _repaintOnShow(WebViewSurface surface) {
+    if (surface is! WebViewSurfaceRepaint) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      // A restart between the frames would have moved on to another browser.
+      if (!mounted || _surface != surface) return;
+      (surface as WebViewSurfaceRepaint).repaint();
+    });
   }
 
   /// Follows a surface that reports its loading, to cover the tile until its
@@ -1406,7 +1463,8 @@ class _CefSurface
         WebViewSurface,
         WebViewSurfaceAvailability,
         WebViewSurfaceLoading,
-        WebViewSurfacePresizing {
+        WebViewSurfacePresizing,
+        WebViewSurfaceRepaint {
   _CefSurface(WebViewAssetConfig config) {
     // Nobody may be listening when a failed `create` lands (a tile that
     // already gave up via [_browserFailed]); that must not surface as an
@@ -1422,8 +1480,30 @@ class _CefSurface
       onLoadEnd: (_, __) {
         if (!_disposed) _load.value = const WebViewLoad.shown();
       },
+      // The render process died. CEF keeps the browser object and reports no
+      // load event, but nothing will paint again until it is navigated, so
+      // the browser is worthless until then — and worse than worthless in
+      // the pool, where it would be handed on as a warm one. Re-navigating
+      // makes CEF start a fresh render process.
+      onRenderProcessGone: (_) {
+        if (_disposed) return;
+        _rendererGone = true;
+        final uri = _lastUri;
+        if (uri != null) unawaited(navigate(uri).catchError((Object _) {}));
+      },
     ));
   }
+
+  /// Whether this browser's render process has died without a navigation
+  /// since. Suppresses [repaint] — asking a dead renderer for a frame
+  /// achieves nothing — and is cleared by [navigate], which is what brings a
+  /// fresh render process up. Cleared there rather than on the load finishing
+  /// so that a lost load event cannot leave the flag stuck on.
+  bool _rendererGone = false;
+
+  /// The address this browser was last asked for, so a renderer that died can
+  /// be sent back to it.
+  Uri? _lastUri;
 
   final ValueNotifier<WebViewLoad> _load =
       ValueNotifier(const WebViewLoad.loading());
@@ -1493,6 +1573,9 @@ class _CefSurface
 
   @override
   Future<void> navigate(Uri uri) async {
+    _lastUri = uri;
+    // Whatever state the old render process was in, this starts a new one.
+    _rendererGone = false;
     if (!await _startManager()) {
       throw StateError('CEF is not available on this machine');
     }
@@ -1524,6 +1607,15 @@ class _CefSurface
   @override
   void presize(Size size, double devicePixelRatio) {
     _presized = (size, devicePixelRatio);
+  }
+
+  @override
+  void repaint() {
+    // Before the browser exists there is nothing to ask, and after its
+    // renderer died there is nothing to answer — the re-navigation started in
+    // `onRenderProcessGone` is what brings that one back.
+    if (_disposed || !_started || _rendererGone) return;
+    unawaited(_controller.invalidate().catchError((Object _) {}));
   }
 
   @override

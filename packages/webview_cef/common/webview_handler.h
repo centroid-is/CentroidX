@@ -41,6 +41,7 @@ public CefDisplayHandler,
 public CefLifeSpanHandler,
 public CefFocusHandler,
 public CefLoadHandler,
+public CefRequestHandler,
 public CefRenderHandler{
 public:
     //Paint callback (software off-screen rendering)
@@ -57,6 +58,9 @@ public:
     std::function<void(int browserId, int level, std::string message, std::string source, int line)>onConsoleMessageEvent;
     std::function<void(int browserId, bool editable)> onFocusedNodeChangeMessage;
     std::function<void(int browserId, int32_t x, int32_t y, int32_t height)> onImeCompositionRangeChangedMessage;
+    //The render process behind this browser died. Nothing paints afterwards
+    //until the browser is navigated again; see OnRenderProcessTerminated.
+    std::function<void(int browserId, int status)> onRenderProcessGone;
     //webpage message
     std::function<void(std::string, std::string, std::string, int browserId, std::string)> onJavaScriptChannelMessage;
     std::function<void(int browserId, std::string url)> onLoadStart;
@@ -76,6 +80,7 @@ public:
         return this;
     }
     virtual CefRefPtr<CefLoadHandler> GetLoadHandler() override { return this; }
+    virtual CefRefPtr<CefRequestHandler> GetRequestHandler() override { return this; }
     virtual CefRefPtr<CefRenderHandler> GetRenderHandler() override { return this; }
 
 	bool OnProcessMessageReceived(
@@ -137,6 +142,18 @@ public:
                              CefRefPtr<CefFrame> frame,
                              CefLoadHandler::TransitionType transition_type) override;
     
+    // CefRequestHandler methods:
+    //
+    // The render process dying is the one way a windowless browser stops
+    // painting that looks like nothing at all: CEF keeps the browser object,
+    // no load event fires, and OnPaint simply never comes again. Without this
+    // the tile keeps the last frame it was given, for ever, with nothing in
+    // the log to say why.
+    virtual void OnRenderProcessTerminated(CefRefPtr<CefBrowser> browser,
+                                           TerminationStatus status,
+                                           int error_code,
+                                           const CefString& error_string) override;
+
     // CefRenderHandler methods:
     virtual void GetViewRect(CefRefPtr<CefBrowser> browser, CefRect& rect) override;
     virtual void OnPaint(CefRefPtr<CefBrowser> browser, PaintElementType type, const RectList& dirtyRects, const void* buffer, int width, int height) override;
@@ -166,6 +183,22 @@ public:
 
     void sendScrollEvent(int browserId, int x, int y, int deltaX, int deltaY);
     void changeSize(int browserId, float a_dpi, int width, int height);
+
+    // Asks CEF for a full frame now, whether or not the page changed.
+    //
+    // Windowless rendering is damage-driven: OnPaint fires when Chromium has
+    // something new to show, and a browser whose page has settled produces no
+    // frames at all. That is fine while a browser is being created and
+    // navigated — a loading page damages constantly — but not for one handed
+    // back from the warm pool with its page already up. The Flutter texture
+    // it paints into is only repopulated when a frame arrives (the engine
+    // caches the last resolved image until MarkNewFrameAvailable), so a tile
+    // shown an idle browser displays the frame it had when it last left the
+    // screen and never updates. This is the one call that breaks that.
+    //
+    // Marshals to the CEF UI thread; safe to call from any thread.
+    void invalidate(int browserId);
+
     void cursorClick(int browserId, int x, int y, bool up);
     void cursorMove(int browserId, int x, int y, bool dragging);
     void sendKeyEvent(CefKeyEvent& ev);
