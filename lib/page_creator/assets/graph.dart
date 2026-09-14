@@ -741,6 +741,13 @@ class _GraphAssetState extends ConsumerState<GraphAsset> {
           }
         },
         tooltipBuilder: _buildTooltip,
+        // Named up front so the loading frame can draw the legend column the
+        // chart is about to need; without them the plot loses that width the
+        // moment the history lands.
+        seriesLabels:
+            widget.config.primarySeries.map((s) => s.legend).toList(),
+        secondarySeriesLabels:
+            widget.config.secondarySeries.map((s) => s.legend).toList(),
         categoryColors: widget.config.colorPalette);
     _graph.theme(_themeFor(_chartTheme));
     // The database is regularly not up yet when the first page renders — on a
@@ -783,6 +790,13 @@ class _GraphAssetState extends ConsumerState<GraphAsset> {
           }
         },
         tooltipBuilder: _buildTooltip,
+        // Named up front so the loading frame can draw the legend column the
+        // chart is about to need; without them the plot loses that width the
+        // moment the history lands.
+        seriesLabels:
+            widget.config.primarySeries.map((s) => s.legend).toList(),
+        secondarySeriesLabels:
+            widget.config.secondarySeries.map((s) => s.legend).toList(),
         categoryColors: widget.config.colorPalette);
     _graph.theme(_themeFor(ref.read(chartThemeNotifierProvider)));
     final trendName =
