@@ -39,6 +39,8 @@ import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/database_drift.dart';
 import 'package:tfc_dart/core/preferences.dart' show PreferencesApi;
 
+import '../helpers/test_helpers.dart';
+
 // ---------------------------------------------------------------------------
 // Doubles
 // ---------------------------------------------------------------------------
@@ -210,9 +212,9 @@ void main() {
 
     await tester.pumpWidget(UncontrolledProviderScope(
       container: container,
-      child: const MaterialApp(
+      child: const PromptedApp(
         home: Scaffold(
-          body: AccessDeniedPrompt(child: AccessAdminProposalsSection()),
+          body: AccessAdminProposalsSection(),
         ),
       ),
     ));

@@ -26,7 +26,6 @@ import 'package:tfc/providers/access_templates.dart';
 import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/providers/proposal_state.dart';
 import 'package:tfc/providers/state_man.dart';
-import 'package:tfc/widgets/access_denied_prompt.dart';
 import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/database_drift.dart';
 import 'package:tfc_dart/core/state_man.dart';
@@ -168,9 +167,9 @@ void main() {
 
     await tester.pumpWidget(UncontrolledProviderScope(
       container: container,
-      child: const MaterialApp(
+      child: const PromptedApp(
         home: Scaffold(
-          body: AccessDeniedPrompt(child: AccessTemplatesSection()),
+          body: AccessTemplatesSection(),
         ),
       ),
     ));
