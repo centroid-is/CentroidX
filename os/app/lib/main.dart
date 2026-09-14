@@ -554,7 +554,12 @@ class _ProgressStepState extends State<ProgressStep> {
       title: r == null
           ? 'Installing…'
           : (r.ok ? 'Installed' : 'Installation failed'),
-      subtitle: r == null ? 'Do not remove the USB key or power off.' : null,
+      // The instruction is a sentence, not part of the button label: the key
+      // has to be out BEFORE the button is pressed, or the firmware boots the
+      // installer again, and a label reads as "the button does both".
+      subtitle: r == null
+          ? 'Do not remove the USB key or power off.'
+          : (r.ok ? 'Remove the USB key, then press Reboot.' : null),
       body: [
         if (r != null && !r.ok) ...[
           Container(
@@ -637,9 +642,24 @@ class _ProgressStepState extends State<ProgressStep> {
               child: Center(child: CircularProgressIndicator()),
             )
           : FilledButton(
-              onPressed: reboot,
-              child: Text(r.ok ? 'Remove USB and reboot' : 'Reboot'),
+              onPressed: _rebooting ? null : _reboot,
+              child: const Text('Reboot'),
             ),
     );
+  }
+
+  bool _rebooting = false;
+
+  /// systemd tears this process down on success, so the only outcome that
+  /// comes back here is a refusal -- and a button that silently does nothing
+  /// leaves the power switch as the only way off the screen.
+  Future<void> _reboot() async {
+    setState(() => _rebooting = true);
+    final err = await reboot();
+    if (!mounted || err == null) return;
+    setState(() {
+      _rebooting = false;
+      _lines.add('reboot failed: $err');
+    });
   }
 }

@@ -101,7 +101,20 @@ Future<InstallResult> runInstaller(
   return InstallResult(code, pub);
 }
 
-Future<void> reboot() => Process.run('systemctl', ['reboot']);
+/// Null once systemd has accepted the reboot; otherwise what went wrong, for the
+/// screen. The app runs as root under centroidx-gui.service, so no polkit rule
+/// is involved -- a refusal here is systemd's own (a blocking inhibitor, a
+/// shutdown already in progress), and worth showing rather than swallowing.
+Future<String?> reboot() async {
+  try {
+    final r = await Process.run('systemctl', ['reboot']);
+    if (r.exitCode == 0) return null;
+    final msg = '${r.stderr}'.trim();
+    return msg.isEmpty ? 'systemctl reboot exited ${r.exitCode}' : msg;
+  } on ProcessException catch (e) {
+    return e.message;
+  }
+}
 
 /// Offered beside Reboot when an install has failed. Rebooting a machine whose
 /// disk was just wiped drops it at the firmware; powering it off is usually
