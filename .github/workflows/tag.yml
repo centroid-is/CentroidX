@@ -217,6 +217,41 @@ jobs:
           done
           ls -l usb-installer.* 2>/dev/null || echo "no station installer in this run"
 
+      # GitHub refuses any release asset of 2 GiB or more -- "HTTP 422:
+      # Validation Failed ... size must be less than 2147483648". Since #526
+      # turned `preload` on, the installer carries ~1.9GB of container images
+      # and lands at ~2.7GB, so it is published in parts and rejoined with
+      # `cat`. Kept in step with main-prerelease.yml, which hit this first.
+      #
+      # Conditional, not unconditional: a non-preloaded image is ~1.0GB and is
+      # better published as the one file people expect.
+      - name: Split the installer past GitHub's asset limit
+        id: station_installer
+        run: |
+          set -euo pipefail
+          cd release-artifacts
+          note=''
+          if [ -f usb-installer.img.gz ]; then
+            limit=2147483648
+            size=$(stat -c %s usb-installer.img.gz)
+            if [ "$size" -ge "$limit" ]; then
+              echo "installer is $size bytes, past the ${limit}-byte limit - splitting"
+              # 1.8e9 per part: inside the limit, two parts up to 3.6GB, and
+              # -d -a 2 names them .part00/.part01 so they sort in `cat`'s
+              # glob order -- the note below depends on that.
+              split -b 1800000000 -d -a 2 usb-installer.img.gz usb-installer.img.gz.part
+              rm -f usb-installer.img.gz
+              ls -l usb-installer.img.gz.part*
+              note='> **Station USB installer:** GitHub caps one release asset at 2 GiB, so `usb-installer.img.gz` is published in parts. Download every `usb-installer.img.gz.part*` and rejoin them before writing the stick: `cat usb-installer.img.gz.part* > usb-installer.img.gz`.'
+            else
+              echo "installer is $size bytes, inside the ${limit}-byte limit - publishing whole"
+            fi
+          fi
+          # Prepended to the generated release notes by action-gh-release;
+          # empty when there is nothing to say, which leaves the notes as they
+          # were before this step existed.
+          echo "note=$note" >> "$GITHUB_OUTPUT"
+
       - name: Generate SHA256SUMS.txt
         working-directory: release-artifacts
         run: |
@@ -256,11 +291,27 @@ jobs:
           # The one asset allowed to be absent, so it is tested for rather than
           # named. Both halves or neither: bmaptool needs the .bmap to flash the
           # sparse image.
-          if [ -f usb-installer.img.gz ] && [ -f usb-installer.img.bmap ]; then
-            sums+=( usb-installer.img.gz usb-installer.img.bmap )
+          #
+          # Globbed over both shapes because the step above may have replaced
+          # the single file with .part00/.part01. The checksums name whichever
+          # files are actually published, so what a downloader verifies is what
+          # they downloaded, before any reassembly.
+          #
+          # Collected by existence rather than by the step's `nullglob`, which
+          # does not help here: it only drops a pattern that HAS glob
+          # metacharacters and matches nothing, so the literal
+          # `usb-installer.img.gz` would survive in the array after the split
+          # step deleted it.
+          station=()
+          for f in usb-installer.img.gz usb-installer.img.gz.part*; do
+            [ -f "$f" ] || continue
+            station+=( "$f" )
+          done
+          if [ "${#station[@]}" -gt 0 ] && [ -f usb-installer.img.bmap ]; then
+            sums+=( "${station[@]}" usb-installer.img.bmap )
           else
             echo "::warning::no station USB installer in this run - releasing without it"
-            rm -f usb-installer.img.gz usb-installer.img.bmap
+            rm -f usb-installer.img.gz usb-installer.img.gz.part* usb-installer.img.bmap
           fi
 
           sha256sum "${sums[@]}" > SHA256SUMS.txt
@@ -273,6 +324,9 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           generate_release_notes: true
+          # Prepended to the generated notes; empty unless the installer had to
+          # be split, and then it is the only place the `cat` step is stated.
+          body: ${{ steps.station_installer.outputs.note }}
           files: |
             release-artifacts/centroidx-manager_*
             release-artifacts/centroidx_darwin_arm64.dmg
@@ -280,5 +334,5 @@ jobs:
             release-artifacts/SHA256SUMS.txt
             release-artifacts/centroidx_windows_amd64.msix
             release-artifacts/centroidx-sideload.cer
-            release-artifacts/usb-installer.img.gz
+            release-artifacts/usb-installer.img.gz*
             release-artifacts/usb-installer.img.bmap

@@ -153,6 +153,38 @@ jobs:
           done
           ls -l usb-installer.* 2>/dev/null || echo "no station installer in this run"
 
+      # GitHub refuses any release asset of 2 GiB or more -- the upload answers
+      # "HTTP 422: Validation Failed ... size must be less than 2147483648" and
+      # takes the whole `gh release create` down with it, so the release is left
+      # deleted and not recreated. Since #526 turned `preload` on, the installer
+      # carries ~1.9GB of container images and lands at ~2.7GB, which is how
+      # every prerelease since has failed.
+      #
+      # Conditional, not unconditional: a non-preloaded image is ~1.0GB and is
+      # better published as the one file people expect. Parts are only ever
+      # produced for an image that could not be published at all.
+      - name: Split the installer past GitHub's asset limit
+        run: |
+          set -euo pipefail
+          cd release
+          [ -f usb-installer.img.gz ] || exit 0
+
+          limit=2147483648
+          size=$(stat -c %s usb-installer.img.gz)
+          if [ "$size" -lt "$limit" ]; then
+            echo "installer is $size bytes, inside the ${limit}-byte limit - publishing whole"
+            exit 0
+          fi
+
+          # 1.8e9 per part: comfortably inside the limit, and two parts for
+          # anything up to 3.6GB. -d -a 2 names them .part00, .part01, which
+          # sort in `cat`'s glob order -- the reassembly instruction in the
+          # release notes depends on that.
+          echo "installer is $size bytes, past the ${limit}-byte limit - splitting"
+          split -b 1800000000 -d -a 2 usb-installer.img.gz usb-installer.img.gz.part
+          rm -f usb-installer.img.gz
+          ls -l usb-installer.img.gz.part*
+
       - name: Assemble release assets
         run: |
           set -euo pipefail
@@ -184,12 +216,28 @@ jobs:
           # is tested for instead. Both halves or neither: bmaptool needs the
           # .bmap to flash the sparse image, and a .bmap without its image is
           # just confusing.
-          if [ -f usb-installer.img.gz ] && [ -f usb-installer.img.bmap ]; then
-            sums+=( usb-installer.img.gz usb-installer.img.bmap )
-            echo "station installer present: $(du -h usb-installer.img.gz | cut -f1)"
+          #
+          # Globbed over both shapes because the step above may have replaced
+          # the single file with .part00/.part01. The checksums name whichever
+          # files are actually published, so what a downloader verifies is what
+          # they downloaded, before any reassembly.
+          #
+          # Collected by existence rather than by `nullglob`, which does not
+          # help here: it only drops a pattern that HAS glob metacharacters and
+          # matches nothing, so the literal `usb-installer.img.gz` survives in
+          # the array after the split step deleted it, and the release then
+          # fails on an asset that is not there.
+          station=()
+          for f in usb-installer.img.gz usb-installer.img.gz.part*; do
+            [ -f "$f" ] || continue
+            station+=( "$f" )
+          done
+          if [ "${#station[@]}" -gt 0 ] && [ -f usb-installer.img.bmap ]; then
+            sums+=( "${station[@]}" usb-installer.img.bmap )
+            echo "station installer present: ${station[*]}"
           else
             echo "::warning::no station USB installer in this run - publishing without it"
-            rm -f usb-installer.img.gz usb-installer.img.bmap
+            rm -f usb-installer.img.gz usb-installer.img.gz.part* usb-installer.img.bmap
           fi
 
           sha256sum "${sums[@]}" > SHA256SUMS.txt
@@ -219,9 +267,18 @@ jobs:
                    release/SHA256SUMS.txt )
 
           STATION_ROW=''
-          if [ -f release/usb-installer.img.gz ]; then
-            assets+=( release/usb-installer.img.gz release/usb-installer.img.bmap )
-            STATION_ROW='| Station OS (x64) | `usb-installer.img.gz` — write to a USB key and boot it to install Debian + the container stack on a station; `.bmap` is for `bmaptool` |'
+          station=()
+          for f in release/usb-installer.img.gz release/usb-installer.img.gz.part*; do
+            [ -f "$f" ] || continue
+            station+=( "$f" )
+          done
+          if [ "${#station[@]}" -gt 0 ]; then
+            assets+=( "${station[@]}" release/usb-installer.img.bmap )
+            if [ -f release/usb-installer.img.gz ]; then
+              STATION_ROW='| Station OS (x64) | `usb-installer.img.gz` — write to a USB key and boot it to install Debian + the container stack on a station; `.bmap` is for `bmaptool` |'
+            else
+              STATION_ROW='| Station OS (x64) | `usb-installer.img.gz.part00`, `.part01` — GitHub caps one asset at 2 GiB, so download **every** part and rejoin them first: `cat usb-installer.img.gz.part* > usb-installer.img.gz`. Then write that to a USB key and boot it to install Debian + the container stack on a station; `.bmap` is for `bmaptool` |'
+            fi
           fi
 
           gh release delete main-latest --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
