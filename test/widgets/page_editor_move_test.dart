@@ -28,7 +28,6 @@ import 'package:tfc/providers/page_manager.dart';
 import 'package:tfc/route_registry.dart';
 import '../helpers/test_helpers.dart'
     show useInMemoryDeviceLocalPreferences;
-import 'package:tfc/providers/web_view_prewarm.dart';
 
 /// Minimal in-memory [PreferencesApi] so the editor can load and save.
 class _FakePreferences implements PreferencesApi {
@@ -139,10 +138,6 @@ Widget _buildEditor(PageManager manager) {
   return ProviderScope(
     overrides: [
       pageManagerProvider.overrideWith((ref) async => manager),
-      // Browsers are not warmed under a test: the prewarm waits on the page
-      // manager and then on a two-second timer, which every page-editor test
-      // would otherwise leave pending at teardown (#520).
-      webViewPrewarmProvider.overrideWithValue(0),
       databaseProvider.overrideWith((ref) async => null),
       alarmManProvider
           .overrideWith((ref) => throw StateError('No AlarmMan in tests')),

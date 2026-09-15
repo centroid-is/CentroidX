@@ -31,14 +31,6 @@ ours, not upstream files.
 
 ## What was changed
 
-**`lib/src/webview.dart` — `WebViewController.resize`.** A public wrapper
-over the private `_setSize`, so a browser started ahead of its widget (the
-HMI pre-starts dashboards at boot, see "Warm browsers" in
-`lib/page_creator/assets/web_view.dart`) can be laid out for the window
-instead of the handler's 1 x 1 default. Upstream sizes only from the widget,
-so a pre-started page did all its layout, and a dashboard's lazy panel
-loading, on first show. Marked `// CentroidX:`.
-
 **`common/webview_app.cc` — the display backend.** Chromium's Linux display
 backend ("ozone") defaults to X11. An eLinux station is Wayland-only, so CEF
 logged "Missing X server or $DISPLAY" and its UI thread exited, and every Web

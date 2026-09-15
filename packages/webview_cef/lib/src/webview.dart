@@ -294,15 +294,6 @@ class WebViewController extends ValueNotifier<bool> {
         .invokeMethod('setSize', [_browserId, dpi, size.width, size.height]);
   }
 
-  /// CentroidX: sizes the browser before any widget shows it.
-  ///
-  /// A browser started ahead of its widget (the HMI pre-starts dashboards at
-  /// boot) otherwise lays its page out at the handler's default size until
-  /// the widget mounts and reports a real one, and a dashboard that lazy-loads
-  /// panels outside its viewport then does that work on first show. Upstream
-  /// only sizes from the widget.
-  Future<void> resize(double dpi, Size size) => _setSize(dpi, size);
-
   Set<String> _extractJavascriptChannelNames(Set<JavascriptChannel> channels) {
     final Set<String> channelNames =
         channels.map((JavascriptChannel channel) => channel.name).toSet();

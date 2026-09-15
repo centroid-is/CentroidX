@@ -29,7 +29,6 @@ import 'package:tfc/providers/page_manager.dart';
 import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/route_registry.dart';
 import 'package:tfc/widgets/panes/standard_dialog.dart';
-import 'package:tfc/providers/web_view_prewarm.dart';
 
 /// Minimal in-memory [PreferencesApi]. Used twice over: once for the pages
 /// themselves, and once as this station's device-local store, which is where
@@ -116,10 +115,6 @@ Widget _buildEditor(PageManager manager, PreferencesApi localPrefs) {
   return ProviderScope(
     overrides: [
       pageManagerProvider.overrideWith((ref) async => manager),
-      // Browsers are not warmed under a test: the prewarm waits on the page
-      // manager and then on a two-second timer, which every page-editor test
-      // would otherwise leave pending at teardown (#520).
-      webViewPrewarmProvider.overrideWithValue(0),
       // The startup page is device-local, not shared with the other stations
       // on the same database, so it has its own store to assert against.
       localPreferencesProvider.overrideWithValue(localPrefs),
