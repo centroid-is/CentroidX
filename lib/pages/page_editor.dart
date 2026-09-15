@@ -907,6 +907,20 @@ class _PageEditorState extends ConsumerState<PageEditor> {
   StateController<Future<void> Function()?>? _commitSlot;
   StateController<Future<void> Function()?>? _discardSlot;
 
+  /// What the banner fires for one row of a staged batch: save that proposal
+  /// alone, or un-stage and reject it alone. See [_commitOne].
+  late final ProposalItemActions _itemActions =
+      ProposalItemActions(commit: _commitOne, discard: _discardOne);
+  StateController<Map<int, ProposalItemActions>>? _itemSlot;
+
+  /// True while [_commitOne] has the canvas down to one proposal for its
+  /// save. The queue listener stages whatever is pending and not yet in
+  /// [_proposalIds] -- which, for that window, is every survivor of the
+  /// batch -- so it would fold them back onto the canvas mid-save and the
+  /// save would write them. Held off until the save is done; [_commitOne]
+  /// restages them itself afterwards.
+  bool _savingOne = false;
+
   /// The slot advertising this editor to the banner's View / "Review all",
   /// held for the same reason as the two above.
   StateController<ProposalReviewEntry?>? _reviewSlot;
@@ -1241,13 +1255,16 @@ class _PageEditorState extends ConsumerState<PageEditor> {
     final commitSlot = _commitSlot;
     final discardSlot = _discardSlot;
     final reviewSlot = _reviewSlot;
+    final itemSlot = _itemSlot;
     final commit = _saveToPrefs;
     final discard = _discardProposal;
     final review = _reviewProposal;
+    final items = _itemActions;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       // `mounted` on the controllers, not on us: a frame later the whole
       // ProviderScope may be gone too -- the app shutting down, or a test
       // ending -- and reading a disposed StateController throws.
+      if (itemSlot != null && itemSlot.mounted) itemSlot.withdraw(items);
       if (commitSlot != null &&
           commitSlot.mounted &&
           commitSlot.state == commit) {
@@ -1576,6 +1593,11 @@ class _PageEditorState extends ConsumerState<PageEditor> {
   void _publishProposalCallbacks() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
+      // The per-row actions go up first: the banner's armed Accept takes the
+      // first seam that can save exactly the row it was pressed on.
+      final itemSlot = ref.read(proposalItemActionsProvider.notifier);
+      itemSlot.offer(_proposalIds, _itemActions);
+      _itemSlot = itemSlot;
       final commitSlot = ref.read(proposalCommitProvider.notifier);
       commitSlot.state = _saveToPrefs;
       _commitSlot = commitSlot;
@@ -1888,6 +1910,86 @@ class _PageEditorState extends ConsumerState<PageEditor> {
     });
     _commitSlot?.state = null;
     _discardSlot?.state = null;
+    _retireItems();
+  }
+
+  /// Saves the one staged proposal with [id] and leaves the rest staged.
+  ///
+  /// The staged batch shares one pre-proposal snapshot, so one proposal
+  /// cannot be peeled out of the patched pages -- the same fact
+  /// [_onProposalFeedback] meets for a per-row reject, met the same way: put
+  /// the pages back to the snapshot, stage just this proposal, save that,
+  /// then restage whatever is still pending. Hand edits made over the staged
+  /// batch do not survive the round trip; "Accept all" saves the canvas as it
+  /// stands, and is the button for a batch the operator has been adjusting.
+  Future<void> _commitOne(int id) async {
+    if (!_proposalIds.contains(id)) return;
+    if (_proposalIds.length == 1) return _saveToPrefs();
+    if (!mounted) return;
+    final container = _container;
+    PendingProposal? target;
+    try {
+      final pending = container != null
+          ? container.read(proposalStateProvider).proposals
+          : ref.read(proposalStateProvider).proposals;
+      for (final p in pending) {
+        if (p.id == id) {
+          target = p;
+          break;
+        }
+      }
+    } catch (_) {
+      return;
+    }
+    if (target == null) return;
+    setState(_restoreSnapshot);
+    _retireItems();
+    if (target.proposalType == 'page') {
+      _applyProposalData(target.proposalJson);
+    } else {
+      _applyAssetBatch([target]);
+    }
+    if (!_isProposal) {
+      // It would not stage on its own; put the batch back as it was.
+      _stagePendingForCurrentPage();
+      return;
+    }
+    _updateCurrentJson();
+    _savedJson = '';
+    _savingOne = true;
+    try {
+      await _saveToPrefs();
+    } finally {
+      _savingOne = false;
+    }
+    _stagePendingForCurrentPage();
+  }
+
+  /// Un-stages the one staged proposal with [id], marks it rejected and
+  /// leaves the rest staged -- [_onProposalFeedback]'s job, done directly so
+  /// the banner's row does not depend on the feedback stream being wired.
+  Future<void> _discardOne(int id) async {
+    if (!_proposalIds.contains(id)) return;
+    final container = _container;
+    if (container == null) return;
+    // Recorded before reporting, as [_discardProposal] does: the feedback
+    // echo of this decision is then skipped, and the restage cannot bring
+    // the row back.
+    _consumedProposalIds.add(id);
+    try {
+      await container.read(proposalStateProvider.notifier).rejectProposal(id);
+    } catch (e) {
+      debugPrint('proposal $id could not be marked rejected: $e');
+    }
+    _restageSurvivors();
+  }
+
+  /// Withdraws this editor's per-row actions -- for [ids], or all of them.
+  /// Through the stored controller, because every caller can run after this
+  /// editor is gone.
+  void _retireItems([Iterable<int>? ids]) {
+    final slot = _itemSlot;
+    if (slot != null && slot.mounted) slot.withdraw(_itemActions, ids);
   }
 
   /// Un-stages staged proposals the operator rejected or dismissed on a
@@ -1925,27 +2027,42 @@ class _PageEditorState extends ConsumerState<PageEditor> {
     // keeps: the restage below walks pending state, and a decided id must
     // never come back through it.
     _consumedProposalIds.addAll(undone);
-    setState(() {
-      if (_preProposalPages != null) {
-        _temporaryPages = _preProposalPages!;
-        _preProposalPages = null;
-        if (_currentPage == null ||
-            !_temporaryPages.containsKey(_currentPage)) {
-          _currentPage = _temporaryPages.keys.firstOrNull;
-        }
+    _restageSurvivors();
+  }
+
+  /// Puts the pages back to the pre-proposal snapshot and forgets the batch.
+  ///
+  /// Shared by every path that takes one proposal out of a staged batch: the
+  /// snapshot is the only way back an `asset_update` leaves, so what is
+  /// still wanted is rebuilt onto it afterwards rather than peeled out.
+  void _restoreSnapshot() {
+    if (_preProposalPages != null) {
+      _temporaryPages = _preProposalPages!;
+      _preProposalPages = null;
+      if (_currentPage == null ||
+          !_temporaryPages.containsKey(_currentPage)) {
+        _currentPage = _temporaryPages.keys.firstOrNull;
       }
-      _isProposal = false;
-      _proposalTitle = null;
-      _proposalIds.clear();
-      _proposedAssets = {};
-      _updateCurrentJson();
-      _savedJson = _currentJson;
-    });
+    }
+    _isProposal = false;
+    _proposalTitle = null;
+    _proposalIds.clear();
+    _proposedAssets = {};
+    _updateCurrentJson();
+    _savedJson = _currentJson;
+  }
+
+  /// Reverts to the snapshot and restages what is still pending on this
+  /// page. By the time this runs the decided rows are already out of state
+  /// (or in [_consumedProposalIds]), so pending is exactly what must stay
+  /// staged.
+  void _restageSurvivors() {
+    if (!mounted) return;
+    setState(_restoreSnapshot);
     _commitSlot?.state = null;
     _discardSlot?.state = null;
-    // Survivors of a partial decision go back onto the canvas. By the time a
-    // feedback event is delivered the decided rows are already out of state,
-    // so pending is exactly what must stay staged.
+    _retireItems();
+    // Survivors of a partial decision go back onto the canvas.
     List<PendingProposal> pending = const [];
     try {
       pending = ref.read(proposalStateProvider).proposals.toList();
@@ -2175,6 +2292,7 @@ class _PageEditorState extends ConsumerState<PageEditor> {
     // on this path.
     _commitSlot?.state = null;
     _discardSlot?.state = null;
+    _retireItems();
     if (mounted) setState(() {});
   }
 
@@ -3288,6 +3406,8 @@ class _PageEditorState extends ConsumerState<PageEditor> {
     _refreshBulkPane();
     // Reactively watch for new page/asset proposals arriving via MCP.
     ref.listen<ProposalState>(proposalStateProvider, (prev, next) {
+      // Not while a single row is being saved: see [_savingOne].
+      if (_savingOne) return;
       final pageProposals = next.proposals.where((p) =>
           p.proposalType == 'page' ||
           p.proposalType == 'asset' ||

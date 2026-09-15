@@ -509,8 +509,20 @@ class _AddressBarState extends State<AddressBar> {
 
 /// Streams the shell installer's output. Everything destructive lives there.
 class ProgressStep extends StatefulWidget {
-  const ProgressStep({super.key, required this.answers});
+  const ProgressStep({
+    super.key,
+    required this.answers,
+    this.install = runInstaller,
+  });
+
   final Answers answers;
+
+  /// The install itself, injectable for the same reason [AddressBar.probe] is:
+  /// the real one wipes a disk, so nothing that runs in a test may reach it.
+  final Future<InstallResult> Function(
+    Answers answers, {
+    required void Function(String line) onLine,
+  }) install;
 
   @override
   State<ProgressStep> createState() => _ProgressStepState();
@@ -534,16 +546,25 @@ class _ProgressStepState extends State<ProgressStep> {
   }
 
   Future<void> _run() async {
-    final r = await runInstaller(widget.answers, onLine: (l) {
-      if (!mounted) return;
-      setState(() => _lines.add(l));
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (_scroll.hasClients) {
-          _scroll.jumpTo(_scroll.position.maxScrollExtent);
-        }
-      });
-    });
+    final r = await widget.install(widget.answers, onLine: _append);
     if (mounted) setState(() => _result = r);
+  }
+
+  /// Appends a line to the log AND scrolls to it.
+  ///
+  /// The scroll is not decoration. The log is a 300px window onto a run that is
+  /// hundreds of lines long and already scrolled to the bottom, so a line
+  /// appended without it lands just below the fold -- which is precisely how a
+  /// refused reboot used to report itself to nobody. Every writer goes through
+  /// here so there is no second way to append.
+  void _append(String line) {
+    if (!mounted) return;
+    setState(() => _lines.add(line));
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scroll.hasClients) {
+        _scroll.jumpTo(_scroll.position.maxScrollExtent);
+      }
+    });
   }
 
   @override
@@ -554,7 +575,12 @@ class _ProgressStepState extends State<ProgressStep> {
       title: r == null
           ? 'Installing…'
           : (r.ok ? 'Installed' : 'Installation failed'),
-      subtitle: r == null ? 'Do not remove the USB key or power off.' : null,
+      // The instruction is a sentence, not part of the button label: the key
+      // has to be out BEFORE the button is pressed, or the firmware boots the
+      // installer again, and a label reads as "the button does both".
+      subtitle: r == null
+          ? 'Do not remove the USB key or power off.'
+          : (r.ok ? 'Remove the USB key, then press Reboot.' : null),
       body: [
         if (r != null && !r.ok) ...[
           Container(
@@ -608,6 +634,38 @@ class _ProgressStepState extends State<ProgressStep> {
           ),
           const SizedBox(height: 20),
         ],
+        // Above the log, not in it: this is the one message on this screen that
+        // the operator cannot act around, and the log is where it went
+        // unnoticed before.
+        if (_shutdownError != null) ...[
+          Container(
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: SolarizedColors.base02,
+              border: Border.all(color: t.colorScheme.error, width: 2),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('This machine refused to shut down.',
+                    style: t.textTheme.titleMedium
+                        ?.copyWith(color: t.colorScheme.error)),
+                const SizedBox(height: 12),
+                Text(
+                  'The install itself is finished and the disk is written -- '
+                  'power the machine off at the switch, remove the USB key, '
+                  'and turn it back on.',
+                  style: t.textTheme.bodyLarge,
+                ),
+                const SizedBox(height: 12),
+                SelectableText(_shutdownError!,
+                    style: const TextStyle(
+                        fontFamily: 'monospace', fontSize: 14, height: 1.4)),
+              ],
+            ),
+          ),
+          const SizedBox(height: 20),
+        ],
         Container(
           height: 300,
           color: SolarizedColors.base02,
@@ -629,7 +687,10 @@ class _ProgressStepState extends State<ProgressStep> {
       // offer the thing you actually do next.
       secondary: r == null || r.ok
           ? null
-          : OutlinedButton(onPressed: powerOff, child: const Text('Power off')),
+          : OutlinedButton(
+              onPressed: _busy ? null : () => _shutdown(powerOff, 'Power off'),
+              child: const Text('Power off'),
+            ),
       primary: r == null
           ? const SizedBox(
               width: 200,
@@ -637,9 +698,36 @@ class _ProgressStepState extends State<ProgressStep> {
               child: Center(child: CircularProgressIndicator()),
             )
           : FilledButton(
-              onPressed: reboot,
-              child: Text(r.ok ? 'Remove USB and reboot' : 'Reboot'),
+              onPressed: _busy ? null : () => _shutdown(reboot, 'Reboot'),
+              child: const Text('Reboot'),
             ),
     );
+  }
+
+  bool _busy = false;
+
+  /// What every rung of [reboot]/[powerOff] said when none of them worked.
+  String? _shutdownError;
+
+  /// systemd tears this process down on success, so the only outcome that can
+  /// come back here is a refusal by all three rungs -- which, on the last screen
+  /// of an install, leaves the power switch as the only way forward. It is
+  /// stated on the screen, put in the log, and the button is handed back.
+  Future<void> _shutdown(
+      Future<String> Function() request, String what) async {
+    setState(() {
+      _busy = true;
+      _shutdownError = null;
+    });
+    final err = await request();
+    if (!mounted) return;
+    _append('$what failed:');
+    for (final line in err.split('\n')) {
+      _append('  $line');
+    }
+    setState(() {
+      _busy = false;
+      _shutdownError = err;
+    });
   }
 }

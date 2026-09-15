@@ -148,23 +148,50 @@ void main() {
       expect(kServerConfigRoute, '/advanced/server-config');
     });
 
+    test('kIpSettingsRoute is itself a raised route', () {
+      expect(kRaisedRoutes, contains(kIpSettingsRoute));
+      expect(kIpSettingsRoute, '/advanced/ip-settings');
+    });
+
     test('answers true for the server config route', () {
       expect(routeAllowedWhenNobodyCanSignIn(kServerConfigRoute), isTrue);
     });
 
+    test('answers true for the IP settings route', () {
+      // A freshly commissioned station reaches its database over the network,
+      // so the page that gives the machine an address cannot be gated behind a
+      // group only a working database can grant. Exempting Server Config
+      // without this one leaves a loop with no entry: the page naming the
+      // server opens, the page that lets the machine reach it does not.
+      expect(routeAllowedWhenRepositoryUnavailable(kIpSettingsRoute), isTrue);
+    });
+
     test('answers false for every other raised route', () {
       for (final path in kRaisedRoutes.keys) {
-        if (path == kServerConfigRoute) continue;
+        if (path == kServerConfigRoute || path == kIpSettingsRoute) continue;
         expect(routeAllowedWhenNobodyCanSignIn(path), isFalse,
             reason: '$path must stay denied while the repository is down');
       }
     });
 
-    test('is true for exactly one raised route', () {
+    test('is true for exactly the two bootstrap routes', () {
+      // Pinned as a set, not a count: the exemption list is the blast radius
+      // of "reachable with no access control at all", and it should only ever
+      // grow by someone editing this line on purpose.
       final exempt =
           kRaisedRoutes.keys.where(routeAllowedWhenNobodyCanSignIn);
 
-      expect(exempt, [kServerConfigRoute]);
+      expect(exempt, unorderedEquals([kServerConfigRoute, kIpSettingsRoute]));
+    });
+
+    test('the exempt pages are the two that work without a database', () {
+      // Why these two and not others: IP Settings edits NetworkManager over
+      // D-Bus and Server Config edits a local connection setting. Neither reads
+      // the repository, so with the database down both still do exactly what
+      // they claim. The admin page would edit nothing while looking like it
+      // worked, and the audit trail *is* the database.
+      expect(routeAllowedWhenRepositoryUnavailable(kAccessAdminRoute), isFalse);
+      expect(routeAllowedWhenRepositoryUnavailable(kAuditTrailRoute), isFalse);
     });
 
     test('answers false for the admin screen', () {

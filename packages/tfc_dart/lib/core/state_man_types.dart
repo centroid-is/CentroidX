@@ -848,12 +848,23 @@ enum ConnectionStatus { connected, connecting, disconnected }
 ///     shape from docs/opcua-frozen-session-repro.md — TCP Established,
 ///     channel formally open, no state event ever emitted again — which
 ///     a purely event-driven status can never catch.
+///   - [opcuaUnmonitored]: the client could not be given a heartbeat
+///     ([ClientWrapper.heartbeatUnavailable] is set), so nothing is
+///     watching it. That is a *diagnostic* failure, not a data failure:
+///     the session is open and its existing data subscriptions may be —
+///     and on the plant, were — delivering sub-second values throughout.
+///     Kept distinct from [opcuaUnhealthy] because collapsing the two
+///     put "No data" on a server whose data was demonstrably fine, and
+///     two people spent half an hour chasing the wrong thing. "Nobody is
+///     watching this client" and "this client's values have stopped" are
+///     different facts and they need different words.
 enum EffectiveDeviceStatus {
   disconnected,
   connecting,
   connected,
   umasUnhealthy,
   opcuaUnhealthy,
+  opcuaUnmonitored,
 }
 
 /// Protocol-agnostic device client interface.

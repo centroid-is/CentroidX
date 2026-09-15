@@ -56,16 +56,23 @@ services:
     networks:
       - data-net
 
+  # alpine/openssl, not alpine: the openssl binary is not in the alpine base
+  # image, so this used to `apk add` it and therefore needed a package mirror.
+  # Kept in step with the station's copy in ../../docker-compose.yml, where
+  # that fetch is what left a freshly installed panel black.
   pg-certs:
-    image: alpine:latest
+    image: alpine/openssl:latest
     container_name: pg-certs
     restart: "no"
     volumes:
       - ./certs:/out
-    command: |
-      sh -euxc '
-        apk add --no-cache openssl
-        [ -f /out/server.key ] && [ -f /out/server.crt ] && { echo "TLS certs exist, skipping"; exit 0; }
+    entrypoint: ["/bin/sh", "-euxc"]
+    command:
+      - |
+        if [ -f /out/server.key ] && [ -f /out/server.crt ]; then
+          echo "TLS certs exist, skipping"
+          exit 0
+        fi
         openssl req -x509 -newkey rsa:2048 -nodes -days 365000 \
           -subj "/C=IS/ST=Hofudborgarsvaedid/L=Hafnarfjordur/O=Centroid/CN=timescaledb" \
           -keyout /out/server.key \
@@ -74,7 +81,6 @@ services:
         chmod 600 /out/server.key
         chmod 644 /out/server.crt
         echo "Certs written to /out"
-      '
 
 volumes:
   timescale_data:

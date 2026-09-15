@@ -168,32 +168,56 @@ const Key kAccessDeniedSignInKey = Key('access-denied-sign-in');
 /// The dismissal.
 const Key kAccessDeniedDismissKey = Key('access-denied-dismiss');
 
-/// Marks that a prompt is already listening somewhere above.
-///
-/// `BaseScaffold` nests — a gated route builds one of its own around a page
-/// that brings another — and two listeners on one broadcast stream would open
-/// two dialogs for one refused write. The inner prompt sees this and stands
-/// down.
-class _AccessDeniedPromptScope extends InheritedWidget {
-  const _AccessDeniedPromptScope({required super.child});
-
-  @override
-  bool updateShouldNotify(_AccessDeniedPromptScope oldWidget) => false;
-}
-
 /// Turns every refusal on [accessDenialsProvider] into a locked prompt.
+///
+/// **Mounted exactly once, above the router.** It used to be mounted in
+/// `BaseScaffold`, which put one on every page — and that was the defect. The
+/// router stacks a page for *every* route that matches the location
+/// (`RoutesLocationBuilder`; see `lib/providers/menu.dart`), and a route below
+/// the top stays mounted. `/` matches every path, so on any station whose `/`
+/// is an ordinary page there were permanently **two** live `BaseScaffold`s,
+/// two subscriptions to one broadcast stream, and two dialogs for one refused
+/// write: Close pressed twice, and the barrier visibly lightening in between
+/// as the first of two stacked `black54` scrims came off. The second dialog
+/// also outlived "Sign in", which popped only the top one and put the sign-in
+/// form over the one still standing.
+///
+/// Two guards used to stand here and neither could see that case: an
+/// inherited scope, which only found prompts nested *inside* another, and a
+/// widget-local latch, which is a different field in a different `State`. Both
+/// are gone. A sibling cannot be a sibling of itself, so mounting once is not
+/// a third guard — it is the reason no guard is needed.
+///
+/// The mount is `centroid-hmi/lib/main.dart`, in the `MaterialApp.builder`
+/// Stack beside `AccessSessionEndedNotice`. That Stack is **above** the
+/// router's `Navigator`, so this widget's own context cannot push a route —
+/// which is why [navigatorKey] is required rather than optional. `MyApp` owns
+/// the `BeamerDelegate` and hands over its `navigatorKey` directly and
+/// synchronously; `navigatorKeyProvider` holds the same key but is published
+/// in a `Future.microtask` and is null for the first build, so it is the wrong
+/// source for this.
 ///
 /// **Costs nothing until it fires.** With no [child] it renders
 /// `SizedBox.shrink()`; with one it renders the child itself and contributes
-/// **no render object at all**, which is how it can be mounted in
-/// `BaseScaffold` — a widget every page and four Phase 2 goldens pass through
-/// — without moving a single pixel.
+/// **no render object at all** — which is what let it live in `BaseScaffold`
+/// without moving a pixel, and is still what the section tests rely on when
+/// they wrap a page fragment in one.
 class AccessDeniedPrompt extends ConsumerStatefulWidget {
   const AccessDeniedPrompt({
     super.key,
+    required this.navigatorKey,
     this.openSignIn = showAccessSignInDialog,
     this.child,
   });
+
+  /// The router's own `Navigator`, to push the prompt onto.
+  ///
+  /// Required, and required for a reason: the only place this widget belongs
+  /// is above that `Navigator`, where `showDialog(context: context)` would
+  /// throw for want of one. A caller that has to supply the key is a caller
+  /// that has had to think about where its one prompt is mounted, which is
+  /// exactly the question that mounting it per-page answered wrongly.
+  final GlobalKey<NavigatorState> navigatorKey;
 
   /// How the sign-in prompt is opened. Injectable so a widget test can count
   /// the taps without standing up a dialog route — the `AccessStatusAction`
@@ -227,19 +251,13 @@ class _AccessDeniedPromptState extends ConsumerState<AccessDeniedPrompt> {
   void didChangeDependencies() {
     super.didChangeDependencies();
 
-    // A prompt above us is already listening; a second subscription would open
-    // a second dialog for the same refusal.
-    if (context
-            .dependOnInheritedWidgetOfExactType<_AccessDeniedPromptScope>() !=
-        null) {
-      _subscription?.cancel();
-      _subscription = null;
-      return;
-    }
-
     // `ref.read`, not `watch`: the provider holds a broadcast stream that
-    // never changes value, and a watch here would rebuild the page's whole
-    // subtree on any container churn.
+    // never changes value, and a watch here would rebuild the child on any
+    // container churn.
+    //
+    // No stand-down check any more. There is nothing to stand down from:
+    // this widget is mounted once, above the router, and the mount site is
+    // asserted in `centroid-hmi/test/access_denied_prompt_mount_test.dart`.
     _subscription ??= ref.read(accessDenialsProvider).listen(_onDenied);
   }
 
@@ -251,10 +269,24 @@ class _AccessDeniedPromptState extends ConsumerState<AccessDeniedPrompt> {
 
   Future<void> _onDenied(AccessDenied denial) async {
     if (_showing || !mounted) return;
+
+    // The router's Navigator, never `context`: this widget sits above it.
+    //
+    // Null means no first frame has been built yet. Dropping the denial is
+    // the same thing that happened before this widget moved — with no page
+    // mounted there was no listener and the broadcast stream discarded the
+    // event — and there is nobody standing at the panel to be told.
+    final navigator = widget.navigatorKey.currentContext;
+    if (navigator == null) {
+      debugPrint('AccessDeniedPrompt: no navigator yet, dropped a refusal of '
+          '"${denial.itemKey}"');
+      return;
+    }
+
     _showing = true;
     try {
       await showDialog<void>(
-        context: context,
+        context: navigator,
         builder: (_) => _AccessDeniedDialog(
           denial: denial,
           onSignIn: _signIn,
@@ -274,8 +306,13 @@ class _AccessDeniedPromptState extends ConsumerState<AccessDeniedPrompt> {
   Future<void> _signIn(BuildContext dialogContext) async {
     Navigator.of(dialogContext).pop();
     if (!mounted) return;
+
+    // The navigator again, for the same reason: `showAccessSignInDialog`
+    // pushes a route too, and this widget's own context has none to push on.
+    final navigator = widget.navigatorKey.currentContext;
+    if (navigator == null) return;
     try {
-      await widget.openSignIn(context, ref);
+      await widget.openSignIn(navigator, ref);
     } on Object catch (error) {
       // A sign-in form that fails to open must not take the page with it.
       debugPrint('AccessDeniedPrompt: could not open the sign-in form: $error');
@@ -283,11 +320,7 @@ class _AccessDeniedPromptState extends ConsumerState<AccessDeniedPrompt> {
   }
 
   @override
-  Widget build(BuildContext context) {
-    final child = widget.child;
-    if (child == null) return const SizedBox.shrink();
-    return _AccessDeniedPromptScope(child: child);
-  }
+  Widget build(BuildContext context) => widget.child ?? const SizedBox.shrink();
 }
 
 /// The prompt itself: what was refused, what it needed, and that it did not

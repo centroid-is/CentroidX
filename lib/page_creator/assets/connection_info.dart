@@ -113,7 +113,14 @@ class ConnectionStateVisual {
   final String label;
   const ConnectionStateVisual(this.color, this.label);
 
-  /// Priority: connected → green, connecting → amber, error → red, else grey.
+  /// Priority: derived [health] (when the source supplies one) → connected →
+  /// connecting → error → grey.
+  ///
+  /// [health] is `EffectiveDeviceStatus.name` and wins over [connected],
+  /// because [connected] is the raw TCP/session answer and reads "connected"
+  /// for every failure the heartbeat exists to catch. Without this the card
+  /// showed a green "Connected" chip beside a server the server-config page
+  /// was simultaneously flagging as unhealthy.
   ///
   /// An error is inferred from a non-empty [lastError]; a plain disconnected
   /// connection with no error string stays grey.
@@ -121,7 +128,20 @@ class ConnectionStateVisual {
     required bool connected,
     required String state,
     required String lastError,
+    String health = '',
   }) {
+    switch (health) {
+      case 'opcuaUnhealthy':
+        return const ConnectionStateVisual(Colors.deepOrange, 'No data');
+      // Not "No data": nothing is watching this client, which is not the
+      // same claim as its values having stopped.
+      case 'opcuaUnmonitored':
+        return ConnectionStateVisual(Colors.amber.shade700, 'Unmonitored');
+      case 'umasUnhealthy':
+        return ConnectionStateVisual(Colors.amber.shade700, 'UMAS error');
+      case 'connecting':
+        return const ConnectionStateVisual(Colors.amber, 'Connecting');
+    }
     if (connected)
       return const ConnectionStateVisual(Colors.green, 'Connected');
     if (state.toLowerCase() == 'connecting') {
@@ -150,8 +170,12 @@ String formatUptime(double seconds) {
   return '$h:${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
 }
 
-/// `1.5` → `"1.5 s"`.
-String formatAgeSec(double v) => '${v.toStringAsFixed(1)} s';
+/// `1.5` → `"1.5 s"`. Negative means "has never happened" (the sentinel
+/// `ClientWrapper.heartbeatAgeSec` uses) and renders as `"never"` — an age of
+/// `-1.0 s` reads as a bug, which is the wrong thing for a diagnostics card
+/// to say when the honest answer is that the event has not occurred.
+String formatAgeSec(double v) =>
+    v < 0 ? 'never' : '${v.toStringAsFixed(1)} s';
 
 // ---------------------------------------------------------------------------
 // Widget — runtime entry point.
@@ -269,6 +293,7 @@ class _ConnectionInfoCardState extends ConsumerState<ConnectionInfoCard> {
       connected: _b(m, 'connected'),
       state: _s(m, 'state'),
       lastError: _s(m, 'lastError'),
+      health: _s(m, 'health'),
     );
     return Container(
       key: const ValueKey('connection-info-state-chip'),
@@ -293,6 +318,10 @@ class _ConnectionInfoCardState extends ConsumerState<ConnectionInfoCard> {
     // mis-set dropdown must not break a resolvable connection.
     final isModbus = m.containsKey('unitId');
     final lastError = _s(m, 'lastError');
+    // The client's own explanation of why it is unhealthy. It used to exist
+    // only in the log, which is not somewhere an operator looking at a chip
+    // can reach.
+    final healthDetail = _s(m, 'healthDetail');
 
     final rows = <Widget>[
       _Row(
@@ -313,7 +342,15 @@ class _ConnectionInfoCardState extends ConsumerState<ConnectionInfoCard> {
         _Row(label: 'Session', value: _s(m, 'sessionState')),
         _Row(label: 'Subscribed', value: '${_i(m, 'subscribedKeys')}'),
         _Row(label: 'Data age', value: formatAgeSec(_d(m, 'lastDataAgeSec'))),
+        _Row(
+            label: 'Heartbeat',
+            value: formatAgeSec(_d(m, 'heartbeatAgeSec'))),
       ],
+      if (healthDetail.trim().isNotEmpty)
+        _Row(
+            label: 'Health',
+            value: healthDetail,
+            valueColor: Colors.amber.shade700),
       if (lastError.trim().isNotEmpty)
         _Row(label: 'Error', value: lastError, valueColor: Colors.red),
     ];

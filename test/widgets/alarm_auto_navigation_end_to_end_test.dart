@@ -28,7 +28,6 @@ import 'package:tfc_dart/core/alarm.dart';
 import 'package:tfc_dart/core/boolean_expression.dart';
 
 import '../helpers/page_editor_harness.dart' show FakeEditorPreferences;
-import 'package:tfc/providers/web_view_prewarm.dart';
 
 AlarmActive _active(String uid, {AlarmLevel level = AlarmLevel.error}) {
   final rule = AlarmRule(
@@ -135,10 +134,6 @@ Future<void> _pumpApp(
     ProviderScope(
       overrides: [
         pageManagerProvider.overrideWith((ref) async => manager),
-        // Browsers are not warmed under a test: the prewarm waits on the page
-        // manager and then on a two-second timer, which would be left pending
-        // at teardown (#520).
-        webViewPrewarmProvider.overrideWithValue(0),
         alarmManProvider.overrideWith((ref) async => alarmMan),
         // The plant has been running a while.
         alarmAutoNavigateSettleProvider.overrideWithValue(Duration.zero),

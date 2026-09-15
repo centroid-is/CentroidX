@@ -189,7 +189,8 @@ void main() {
       expect(wrapper.lastError, contains('refused'));
       // Not "connected", and not merely "connecting until the grace expires":
       // we know no clock is coming, so the grace has nothing to wait for.
-      expect(wrapper.effectiveStatus, EffectiveDeviceStatus.opcuaUnhealthy);
+      // Unmonitored, not unhealthy -- see the opcuaUnmonitored group below.
+      expect(wrapper.effectiveStatus, EffectiveDeviceStatus.opcuaUnmonitored);
       expect(wrapper.heartbeatSettled, isTrue,
           reason: 'the question has been answered, even though the answer is '
               'no -- startup must not block on it forever');
@@ -204,7 +205,7 @@ void main() {
 
       await wrapper.ensureHeartbeat();
       expect(wrapper.heartbeatUnavailable, isNotNull);
-      expect(wrapper.effectiveStatus, EffectiveDeviceStatus.opcuaUnhealthy);
+      expect(wrapper.effectiveStatus, EffectiveDeviceStatus.opcuaUnmonitored);
 
       // The server comes good on the next attempt.
       final healthy = ScriptedClientApi();

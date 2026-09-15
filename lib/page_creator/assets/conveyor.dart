@@ -867,6 +867,40 @@ enum ConveyorStyle {
   roller,
 }
 
+/// What an occupied batch slot is drawn as — the thing riding the belt, as
+/// opposed to [ConveyorStyle], which is how the belt under it is drawn.
+///
+/// A belt carries one kind of load, so this is a per-conveyor setting rather
+/// than something each batch carries: the PLC reports where a slot is
+/// occupied, not what is standing in it.
+enum ConveyorLoad {
+  /// The classic plain box: a rounded rectangle in the batch's own colour.
+  box,
+
+  /// A EUR/EPAL pallet seen from above — the belt's own view — drawn in
+  /// wood: five deck boards over the three cross boards that show through
+  /// the gaps between them. Which way round it lies is
+  /// [PalletOrientation].
+  euroPallet,
+}
+
+/// Which way a pallet lies on the belt.
+///
+/// A EUR pallet is 1200 × 800, so it is handled one way round or the other
+/// and the two do not look alike from above: the deck boards run the 1200
+/// direction, so turning the pallet turns the boards with it. Which one a
+/// line runs is a property of the line, not of the moment — the infeed
+/// decides it — so it is set once per conveyor alongside [ConveyorLoad].
+enum PalletOrientation {
+  /// The 1200 mm length runs along the belt, so the deck boards point the
+  /// way the pallet travels.
+  alongBelt,
+
+  /// The pallet is turned a quarter turn: its 800 mm side runs along the
+  /// belt and the deck boards lie across it.
+  acrossBelt,
+}
+
 /// How a conveyor's drive reads.
 ///
 /// [running] is the boolean-driven equivalent of [auto]: the belt is moving,
@@ -1062,6 +1096,26 @@ class ConveyorConfig extends BaseAsset {
   String? runningKey;
 
   bool? simulateBatches;
+
+  /// What an occupied batch slot is drawn as. Null is [ConveyorLoad.box] —
+  /// the only thing a conveyor drew before there was a choice, so every page
+  /// already on disk keeps the picture it was drawn with.
+  ConveyorLoad? load;
+
+  /// The load actually painted; see [load].
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  ConveyorLoad get effectiveLoad => load ?? ConveyorLoad.box;
+
+  /// Which way a pallet lies on this belt. Null is
+  /// [PalletOrientation.alongBelt]; only read when [effectiveLoad] is a
+  /// pallet.
+  PalletOrientation? palletOrientation;
+
+  /// The orientation actually painted; see [palletOrientation].
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  PalletOrientation get effectivePalletOrientation =>
+      palletOrientation ?? PalletOrientation.alongBelt;
+
   bool? bidirectional;
   bool? reverseDirection;
   bool? showFrequency;
@@ -1190,6 +1244,8 @@ class ConveyorConfig extends BaseAsset {
       this.tripKey,
       this.runningKey,
       this.simulateBatches,
+      this.load,
+      this.palletOrientation,
       this.bidirectional,
       this.reverseDirection,
       this.showFrequency,
@@ -1261,6 +1317,8 @@ class RollerConveyorConfig extends ConveyorConfig {
       super.tripKey,
       super.runningKey,
       super.simulateBatches,
+      super.load,
+      super.palletOrientation,
       super.bidirectional,
       super.reverseDirection,
       super.showFrequency,
@@ -1368,6 +1426,46 @@ class _ConveyorConfigContentState extends State<_ConveyorConfigContent> {
           label: 'Running key (plain true/false)',
         ),
         const SizedBox(height: 16),
+        Row(
+          children: [
+            const Text('Show on belt:'),
+            const SizedBox(width: 8),
+            DropdownButton<ConveyorLoad>(
+              value: widget.config.effectiveLoad,
+              onChanged: (val) => setState(() => widget.config.load = val),
+              items: const [
+                DropdownMenuItem(
+                    value: ConveyorLoad.box, child: Text('Box')),
+                DropdownMenuItem(
+                    value: ConveyorLoad.euroPallet,
+                    child: Text('Euro pallet')),
+              ],
+            ),
+          ],
+        ),
+        if (widget.config.effectiveLoad == ConveyorLoad.euroPallet) ...[
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              const Text('Pallet lies:'),
+              const SizedBox(width: 8),
+              DropdownButton<PalletOrientation>(
+                value: widget.config.effectivePalletOrientation,
+                onChanged: (val) =>
+                    setState(() => widget.config.palletOrientation = val),
+                items: const [
+                  DropdownMenuItem(
+                      value: PalletOrientation.alongBelt,
+                      child: Text('Along the belt')),
+                  DropdownMenuItem(
+                      value: PalletOrientation.acrossBelt,
+                      child: Text('Across the belt')),
+                ],
+              ),
+            ],
+          ),
+        ],
+        const SizedBox(height: 8),
         Row(
           children: [
             const Text('Simulate batches:'),
@@ -2567,6 +2665,8 @@ class _ConveyorState extends ConsumerState<Conveyor>
       straightBeltWidth: beltWidth,
       paintSize: paintSize,
       style: widget.config.style,
+      load: widget.config.effectiveLoad,
+      palletOrientation: widget.config.effectivePalletOrientation,
       onRails: widget.config.railsActive,
       railInk: Theme.of(context).colorScheme.onSurface,
       wagonPosition: wagonPosition,
@@ -3458,6 +3558,12 @@ class ConveyorPainter extends CustomPainter {
   /// Which band renderer to use — see [ConveyorStyle].
   final ConveyorStyle style;
 
+  /// What an occupied batch is drawn as — see [ConveyorLoad].
+  final ConveyorLoad load;
+
+  /// Which way a pallet load lies on the belt — see [PalletOrientation].
+  final PalletOrientation palletOrientation;
+
   /// Draws a wagon undercarriage (wheels on a rail) under the belt, which
   /// then occupies only the box above it. Straight belts only; the caller
   /// gates this on [ConveyorConfig.railsActive].
@@ -3511,6 +3617,8 @@ class ConveyorPainter extends CustomPainter {
       this.straightBeltWidth,
       this.paintSize,
       this.style = ConveyorStyle.box,
+      this.load = ConveyorLoad.box,
+      this.palletOrientation = PalletOrientation.alongBelt,
       this.onRails = false,
       this.railInk = Colors.black,
       this.wagonPosition,
@@ -3801,39 +3909,238 @@ class ConveyorPainter extends CustomPainter {
       _drawExclamation(canvas, size);
       return;
     }
-    // 2) draw each batch segment as a plain box
-    final paintBorder = Paint()
-      ..color = Colors.black
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1;
+    // 2) draw each batch segment as whatever load this belt carries
     final batchHeight = size.height * 0.8;
-    final batchRadius =
-        Radius.circular(batchHeight * 0.2); // 20% of batch height
+    final batchTop = (size.height - batchHeight) / 2;
 
-    for (final batch in batches.values) {
-      final paintBatch = Paint()..color = batch.color;
-      // clamp into [0..1] then to pixels
-      final x0 = (batch.start.clamp(0.0, 1.0)) * size.width;
-      final x1 = (batch.end.clamp(0.0, 1.0)) * size.width;
-      final w = x1 - x0;
-      if (w <= 0) continue; // not yet visible / already off
+    if (load == ConveyorLoad.euroPallet) {
+      // A pallet is a rigid 1200 × 800 object, so the slot the PLC reports
+      // says *where* it is, not what shape it is: the pallet is sized off
+      // the belt it stands on, stood at the middle of its slot, and cut off
+      // by the belt's own edge as it slides on and off. Stretching it to
+      // the slot instead would make a pallet as long as the slot happened
+      // to be — and turned a quarter turn, five barrels.
+      canvas.save();
+      canvas.clipRRect(rrect);
+      final along = _palletAlongExtent(batchHeight);
+      for (final batch in batches.values) {
+        if (batch.end <= batch.start) continue;
+        final centre = (batch.start + batch.end) / 2 * size.width;
+        // Unclamped, so it slides on and off rather than parking at the end.
+        if (centre + along / 2 <= 0 || centre - along / 2 >= size.width) {
+          continue; // not on the belt at all
+        }
+        _paintEuroPallet(
+          canvas,
+          Rect.fromCenter(
+              center: Offset(centre, batchTop + batchHeight / 2),
+              width: along,
+              height: batchHeight),
+        );
+      }
+      canvas.restore();
+    } else {
+      final paintBorder = Paint()
+        ..color = Colors.black
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1;
+      final batchRadius =
+          Radius.circular(batchHeight * 0.2); // 20% of batch height
 
-      final rect = Rect.fromLTWH(
-        x0,
-        (size.height - batchHeight) / 2,
-        w,
-        batchHeight,
-      );
-      final rrect = RRect.fromRectAndRadius(rect, batchRadius);
+      for (final batch in batches.values) {
+        final paintBatch = Paint()..color = batch.color;
+        // clamp into [0..1] then to pixels
+        final x0 = (batch.start.clamp(0.0, 1.0)) * size.width;
+        final x1 = (batch.end.clamp(0.0, 1.0)) * size.width;
+        final w = x1 - x0;
+        if (w <= 0) continue; // not yet visible / already off
 
-      // fill
-      canvas.drawRRect(rrect, paintBatch);
-      // border (optional)
-      canvas.drawRRect(rrect, paintBorder);
+        final batchRect = Rect.fromLTWH(x0, batchTop, w, batchHeight);
+        final batchRRect = RRect.fromRectAndRadius(batchRect, batchRadius);
+
+        // fill
+        canvas.drawRRect(batchRRect, paintBatch);
+        // border (optional)
+        canvas.drawRRect(batchRRect, paintBorder);
+      }
     }
 
     _drawDirectionArrow(canvas, size);
     _drawFrequency(canvas, size);
+  }
+
+  // ── Euro pallet ────────────────────────────────────────────────────────
+  //
+  // Wood, not theme colours. The equipment-state palette answers for
+  // machinery — a belt, a gate, a drive, a sensor — and a pallet is none of
+  // those: it is the thing being carried, and it is the same brown on a
+  // dark page as on a light one. Giving it a state colour would put a
+  // fifth meaning on a vocabulary that already carries four.
+
+  /// The shadowed floor under the deck, seen through every gap.
+  static const _palletVoid = Color(0xFF3B2A1B);
+
+  /// The cross boards below the deck, lit through those gaps.
+  static const _palletUnderCrest = Color(0xFF7E5935);
+  static const _palletUnderShade = Color(0xFF5C3F24);
+
+  /// A deck board, from its planed edge to its lit crown.
+  static const _palletShade = Color(0xFF9A6C3C);
+  static const _palletFace = Color(0xFFBE8B51);
+  static const _palletCrest = Color(0xFFD7AC76);
+
+  /// Outline ink — the dark line between board and shadow.
+  static const _palletInk = Color(0xFF2E2011);
+
+  /// A EUR pallet is 1200 mm by 800 mm, and stays so: which way round it
+  /// lies changes which of the two travels, never the pallet.
+  static const _palletLongSide = 1200.0;
+  static const _palletShortSide = 800.0;
+
+  /// How much belt a pallet takes up, given the [across] it spans of the
+  /// belt's width. Lying along the belt it is the long side that travels
+  /// and the short side that sits across; turned, the other way about.
+  double _palletAlongExtent(double across) =>
+      palletOrientation == PalletOrientation.alongBelt
+          ? across * _palletLongSide / _palletShortSide
+          : across * _palletShortSide / _palletLongSide;
+
+  /// EUR/EPAL top deck, as fractions of the 800 mm width: five boards of
+  /// 145/100/145/100/145 mm, the rest split evenly between them as gaps.
+  static const _palletBoardWidths = <double>[
+    0.18125,
+    0.125,
+    0.18125,
+    0.125,
+    0.18125,
+  ];
+
+  /// A cross board is 145 mm of the pallet's 1200 mm length.
+  static const _palletCrossWidth = 145 / 1200;
+
+  /// Draws a EUR pallet seen from above, standing in [rect] — its length
+  /// along the belt, its width across.
+  ///
+  /// The footprint is [rect] either way round: the batch slot is what the
+  /// PLC reports, and the pallet stands in it. What [palletOrientation]
+  /// turns is the pallet — a quarter turn takes the 1200 mm length, and the
+  /// deck boards that run it, from along the belt to across it.
+  ///
+  /// Every dimension is a fraction of [rect], so the same pallet is drawn
+  /// whatever size the belt happens to be laid out at; nothing here is in
+  /// absolute pixels. Fine detail simply fades below a pixel on a small
+  /// belt instead of switching the drawing to a different one.
+  void _paintEuroPallet(Canvas canvas, Rect rect) {
+    if (rect.width <= 0 || rect.height <= 0) return;
+
+    // The shadow is cast in the belt's frame, not the pallet's. Turning the
+    // pallet must not turn the light with it, or two pallets lying
+    // differently on one page are lit from two different directions.
+    final lift = rect.shortestSide * 0.07;
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(rect, Radius.circular(rect.shortestSide * 0.05))
+          .shift(Offset(lift, lift)),
+      Paint()
+        ..color = const Color(0xFF000000).withValues(alpha: 0.28)
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, lift),
+    );
+
+    if (palletOrientation == PalletOrientation.acrossBelt) {
+      // A quarter turn about the footprint's centre maps the transposed
+      // rectangle exactly onto [rect], so the pallet turns inside the slot
+      // it stands in rather than growing out of it.
+      canvas.save();
+      canvas.translate(rect.center.dx, rect.center.dy);
+      canvas.rotate(pi / 2);
+      _paintPalletDeck(
+        canvas,
+        Rect.fromCenter(
+            center: Offset.zero, width: rect.height, height: rect.width),
+      );
+      canvas.restore();
+      return;
+    }
+    _paintPalletDeck(canvas, rect);
+  }
+
+  /// The deck itself, always drawn with its boards running the width of
+  /// [rect] — [_paintEuroPallet] turns the canvas when they should run the
+  /// other way.
+  void _paintPalletDeck(Canvas canvas, Rect rect) {
+    final deck = RRect.fromRectAndRadius(
+        rect, Radius.circular(rect.shortestSide * 0.05));
+
+    canvas.drawRRect(deck, Paint()..color = _palletVoid);
+
+    // The three cross boards — the two ends and the middle — showing
+    // through the gaps between the deck boards.
+    final crossWidth = rect.width * _palletCrossWidth;
+    final crossPaint = Paint()
+      ..shader = const LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [_palletUnderShade, _palletUnderCrest, _palletUnderShade],
+      ).createShader(rect);
+    for (final at in const [0.0, 0.5, 1.0]) {
+      canvas.drawRect(
+        Rect.fromLTWH(rect.left + (rect.width - crossWidth) * at, rect.top,
+            crossWidth, rect.height),
+        crossPaint,
+      );
+    }
+
+    // The five deck boards, each planed: lit along its crown and falling
+    // off to a darker edge either side, which is what makes a rectangle
+    // read as sawn timber rather than as a coloured bar.
+    final boards = _palletBoardWidths;
+    final gap =
+        (1 - boards.reduce((a, b) => a + b)) / (boards.length - 1);
+    var top = rect.top;
+    for (var i = 0; i < boards.length; i++) {
+      final height = rect.height * boards[i];
+      final board = Rect.fromLTWH(rect.left, top, rect.width, height);
+      // Neighbouring boards are cut from different planks. A little tone
+      // between them is what stops five identical rectangles reading as a
+      // printed stripe pattern — fixed by position, never random, because
+      // a golden has to be the same picture every run.
+      final tone = i.isOdd ? 0.10 : 0.0;
+      final radius = Radius.circular(height * 0.18);
+      final rounded = RRect.fromRectAndRadius(board, radius);
+      canvas.drawRRect(
+        rounded,
+        Paint()
+          ..shader = LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              Color.lerp(_palletShade, _palletInk, tone)!,
+              Color.lerp(_palletFace, _palletShade, tone)!,
+              Color.lerp(_palletCrest, _palletFace, tone)!,
+              Color.lerp(_palletFace, _palletShade, tone)!,
+              Color.lerp(_palletShade, _palletInk, tone)!,
+            ],
+            stops: const [0.0, 0.24, 0.5, 0.76, 1.0],
+          ).createShader(board),
+      );
+      canvas.drawRRect(
+        rounded,
+        Paint()
+          ..color = _palletInk
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = height * 0.08,
+      );
+      top += height + rect.height * gap;
+    }
+
+    // One outline around the whole deck, so five boards read as one pallet
+    // rather than five planks that happen to lie side by side.
+    canvas.drawRRect(
+      deck,
+      Paint()
+        ..color = _palletInk
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = rect.shortestSide * 0.035,
+    );
   }
 
   /// One roller: a capsule shaded like a lit cylinder — light crest along
@@ -4078,21 +4385,51 @@ class ConveyorPainter extends CustomPainter {
     }
 
     final batchWidth = g.beltWidth * 0.8;
-    final batchRadius = batchWidth * _endRadiusFactor;
-    final batchBorder = Paint()
-      ..color = Colors.black
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1;
 
-    for (final batch in batches.values) {
-      final start = batch.start.clamp(0.0, 1.0);
-      final end = batch.end.clamp(0.0, 1.0);
-      if (end <= start) continue; // not yet visible / already off
-      _paintBand(canvas, g, start, end,
-          width: batchWidth,
-          radius: batchRadius,
-          fill: batch.color,
-          border: batchBorder);
+    if (load == ConveyorLoad.euroPallet) {
+      // A pallet does not bend around the corner the belt bends around, so
+      // it is not a band along the centerline the way a batch box is: it is
+      // a rigid rectangle standing on the belt, laid along the travel
+      // direction at the point it has reached and trimmed by the belt edge.
+      canvas.save();
+      if (outline != null) canvas.clipPath(outline);
+      final along = _palletAlongExtent(batchWidth);
+      for (final batch in batches.values) {
+        if (batch.end <= batch.start) continue;
+        final at = (batch.start + batch.end) / 2;
+        // A bend has no centerline off its own ends to stand a pallet on —
+        // `tangentAt` clamps — so a pallet appears when its middle reaches
+        // the belt rather than sliding on the way a straight one does.
+        if (at <= 0 || at >= 1) continue;
+        final tangent = g.tangentAt(at);
+        canvas.save();
+        canvas.translate(tangent.position.dx, tangent.position.dy);
+        canvas.rotate(atan2(tangent.vector.dy, tangent.vector.dx));
+        _paintEuroPallet(
+          canvas,
+          Rect.fromCenter(
+              center: Offset.zero, width: along, height: batchWidth),
+        );
+        canvas.restore();
+      }
+      canvas.restore();
+    } else {
+      final batchRadius = batchWidth * _endRadiusFactor;
+      final batchBorder = Paint()
+        ..color = Colors.black
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1;
+
+      for (final batch in batches.values) {
+        final start = batch.start.clamp(0.0, 1.0);
+        final end = batch.end.clamp(0.0, 1.0);
+        if (end <= start) continue; // not yet visible / already off
+        _paintBand(canvas, g, start, end,
+            width: batchWidth,
+            radius: batchRadius,
+            fill: batch.color,
+            border: batchBorder);
+      }
     }
 
     _drawDirectionArrow(canvas, size);
@@ -4223,6 +4560,8 @@ class ConveyorPainter extends CustomPainter {
       oldDelegate.mirrorY != mirrorY ||
       oldDelegate.straightBeltWidth != straightBeltWidth ||
       oldDelegate.style != style ||
+      oldDelegate.load != load ||
+      oldDelegate.palletOrientation != palletOrientation ||
       oldDelegate.onRails != onRails ||
       oldDelegate.railInk != railInk ||
       oldDelegate.wagonPosition != wagonPosition ||

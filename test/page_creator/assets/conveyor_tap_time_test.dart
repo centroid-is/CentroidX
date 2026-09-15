@@ -181,10 +181,12 @@ void _registerAppMenu() {
       label: 'Alarm View', path: '/alarm-view', icon: Icons.alarm));
 }
 
-/// A one-route Beamer shell around a real `BaseScaffold`, which is where
-/// `AccessDeniedPrompt` is mounted (`base_scaffold.dart`). The side pane opens
-/// into this tree's overlay, so the prompt and the pane are on screen together
-/// exactly as they are on a panel.
+/// A one-route Beamer shell around a real `BaseScaffold`, with
+/// `AccessDeniedPrompt` mounted over the router as
+/// `centroid-hmi/lib/main.dart` mounts it -- once, above the `Navigator`,
+/// never inside the scaffold. The side pane opens into this tree's overlay, so
+/// the prompt and the pane are on screen together exactly as they are on a
+/// panel.
 Widget _shell({required Widget body, required List<Override> overrides}) {
   final delegate = BeamerDelegate(
     locationBuilder: RoutesLocationBuilder(routes: {
@@ -203,6 +205,12 @@ Widget _shell({required Widget body, required List<Override> overrides}) {
       child: MaterialApp.router(
         routerDelegate: delegate,
         routeInformationParser: BeamerParser(),
+        builder: (context, navigatorChild) => Stack(
+          children: [
+            navigatorChild!,
+            AccessDeniedPrompt(navigatorKey: delegate.navigatorKey),
+          ],
+        ),
       ),
     ),
   );

@@ -4,6 +4,7 @@
 #include <flutter_windows.h>
 
 #include "resource.h"
+#include "window_placement.h"
 
 namespace {
 
@@ -134,10 +135,25 @@ bool Win32Window::Create(const std::wstring& title,
   UINT dpi = FlutterDesktopGetDpiForMonitor(monitor);
   double scale_factor = dpi / 96.0;
 
+  // |origin| only picks the monitor. The restored rectangle is fitted to that
+  // monitor's work area, so un-maximizing never puts an edge off screen.
+  MONITORINFO monitor_info = {sizeof(monitor_info)};
+  tfc::PixelRect work_area;
+  if (GetMonitorInfo(monitor, &monitor_info)) {
+    work_area.left = monitor_info.rcWork.left;
+    work_area.top = monitor_info.rcWork.top;
+    work_area.right = monitor_info.rcWork.right;
+    work_area.bottom = monitor_info.rcWork.bottom;
+  } else {
+    work_area.right = Scale(size.width, scale_factor);
+    work_area.bottom = Scale(size.height, scale_factor);
+  }
+  const tfc::PixelRect bounds = tfc::RestoredWindowBounds(
+      work_area, size.width, size.height, scale_factor);
+
   HWND window = CreateWindow(
       window_class, title.c_str(), WS_OVERLAPPEDWINDOW,
-      Scale(origin.x, scale_factor), Scale(origin.y, scale_factor),
-      Scale(size.width, scale_factor), Scale(size.height, scale_factor),
+      bounds.left, bounds.top, bounds.width(), bounds.height(),
       nullptr, nullptr, GetModuleHandle(nullptr), this);
 
   if (!window) {
@@ -150,7 +166,9 @@ bool Win32Window::Create(const std::wstring& title,
 }
 
 bool Win32Window::Show() {
-  return ShowWindow(window_handle_, SW_SHOWNORMAL);
+  // An HMI wants the whole display. Maximized rather than borderless
+  // fullscreen: the taskbar and the title bar's close button stay reachable.
+  return ShowWindow(window_handle_, SW_SHOWMAXIMIZED);
 }
 
 // static

@@ -73,9 +73,18 @@ actions:
       # installer-setup.sh extracts just the web root instead.
       - websockify
       - openssl
-      # all-hardware: the stick has to boot machines nobody profiled first
+      # all-hardware: the stick has to boot machines nobody profiled first.
+      # On trixie the GPU blobs are no longer in firmware-misc-nonfree, and the
+      # installer's own weston renders on the same panels the station does.
       - firmware-misc-nonfree
       - firmware-linux-free
+      - firmware-intel-graphics
+      - firmware-amd-graphics
+
+  - action: run
+    chroot: true
+    label: check-gpu-firmware
+    script: scripts/check-gpu-firmware.sh intel amd
 
   - action: overlay
     source: overlays/installer

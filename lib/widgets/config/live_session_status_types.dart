@@ -18,6 +18,7 @@ class LiveSessionStatus {
     this.connectionStream,
     this.effectiveStatus,
     this.effectiveStatusStream,
+    this.healthDetail,
   });
 
   final ConnectionStatus? connectionStatus;
@@ -27,4 +28,9 @@ class LiveSessionStatus {
   /// stays formally open but no value ever arrives again.
   final EffectiveDeviceStatus? effectiveStatus;
   final Stream<EffectiveDeviceStatus>? effectiveStatusStream;
+
+  /// Reads `ClientWrapper.healthDetail` on demand — the one line saying what
+  /// is actually wrong, surfaced in the chip tooltip. A callback rather than a
+  /// value: the reason changes without the card rebuilding.
+  final String? Function()? healthDetail;
 }

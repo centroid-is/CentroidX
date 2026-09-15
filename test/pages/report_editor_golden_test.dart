@@ -219,9 +219,12 @@ void main() {
     await db.close();
   });
 
-  Future<void> pump(WidgetTester tester, {required bool dark}) async {
+  Future<void> pump(WidgetTester tester,
+      {required bool dark,
+      Size size = const Size(1400, 2760),
+      bool expandReport = true}) async {
     await _loadFonts();
-    tester.view.physicalSize = const Size(1400, 2760);
+    tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
 
@@ -252,6 +255,8 @@ void main() {
       ),
     ));
     await tester.pumpAndSettle();
+
+    if (!expandReport) return;
 
     // Expand the report so the section editors are in the picture.
     await tester.tap(find.text('Packing hall shift report'));
@@ -289,5 +294,32 @@ void main() {
               await expectLater(find.byType(ReportEditorPage),
                   matchesGoldenFile('goldens/report_editor_dark.png'));
             }));
+
+    // The dial the operator gets for "Starts 23:00". The plant reads 24-hour
+    // everywhere, including the label right behind this dialog, so the dial
+    // runs 00–23 with no AM/PM pair beside the hour field — which is what a
+    // locale-default picker offers, and what made 23:00 ask for 11 PM.
+    for (final dark in [false, true]) {
+      testWidgets('shift start picker is a 24-hour dial — '
+          '${dark ? 'dark' : 'light'}',
+          (tester) => withClock(goldenClock, () async {
+                // A surface barely larger than the dialog: every picker
+                // widget paints inside a box that fills the whole route, so
+                // the only way to spend the golden's pixels on the dial
+                // rather than on scrim is to shrink what is behind it.
+                await pump(tester,
+                    dark: dark,
+                    size: const Size(720, 860),
+                    expandReport: false);
+                await tester.ensureVisible(find.text('Starts 23:00'));
+                await tester.pumpAndSettle();
+                await tester.tap(find.text('Starts 23:00'));
+                await tester.pumpAndSettle();
+                await expectLater(
+                    find.byType(TimePickerDialog),
+                    matchesGoldenFile('goldens/shift_time_picker_'
+                        '${dark ? 'dark' : 'light'}.png'));
+              }));
+    }
   });
 }

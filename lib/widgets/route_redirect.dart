@@ -44,14 +44,22 @@
 ///    sees and is the difference between "the panel is busy" and "the panel is
 ///    dead" for the person standing in front of it.
 ///
-/// **No `BaseScaffold`, deliberately.** The chrome would be the nicer answer
-/// and it is what every other route in the app renders — but this stub is
-/// mounted *beneath every page on the station*, and `BaseScaffold` mounts an
-/// `AccessDeniedPrompt`, which subscribes to `accessDenialsProvider`. A second
-/// subscription in a sibling route is a second dialog for one refused write,
-/// on every page, forever. The trade is taken the other way round: this page
-/// says what it is in plain words and keeps its own single control, and the
-/// navigation bar comes back with the page it is taking the operator to.
+/// **No `BaseScaffold`.** This used to be load-bearing and is now only a
+/// preference. `BaseScaffold` mounted an `AccessDeniedPrompt`, which
+/// subscribes to `accessDenialsProvider`; because this stub is mounted
+/// *beneath every page on the station*, giving it the chrome would have put a
+/// second subscription in a sibling route — a second dialog for one refused
+/// write, on every page, forever.
+///
+/// That hazard is gone: the prompt is mounted once above the router
+/// (`centroid-hmi/lib/main.dart`), not per scaffold. It was never only this
+/// stub's problem, which is the thing the old note here got wrong — a station
+/// whose `/` is an *ordinary* page hit it too, and did, and that is the bug
+/// this comment was written beside without either of us noticing.
+///
+/// The chrome is still not added, for the smaller reason: this page exists for
+/// one frame, and the navigation bar comes back with the page it is taking the
+/// operator to.
 library;
 
 import 'package:beamer/beamer.dart';

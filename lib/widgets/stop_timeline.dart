@@ -378,6 +378,11 @@ class _StopTimelineViewState extends State<StopTimelineView> {
   /// contribution to the group above it, to the overview strip, to the header
   /// counts and to the Pareto. Session-local, like the severity filter beside
   /// it — it is a way of reading this chart, not a fact about the plant.
+  ///
+  /// Two controls write it: the per-row switch in the lane labels, and the
+  /// top-level checklist over the table ([_groupFilter]) — which the table
+  /// needs because it has no label column to put switches in. One set, so a
+  /// line switched off in either view stays off in the other.
   final Set<String> _hidden = {};
 
   /// The selection, held as *coordinates* — which lane, which start — rather
@@ -615,6 +620,36 @@ class _StopTimelineViewState extends State<StopTimelineView> {
           _clearCallout();
         }
       }
+    });
+  }
+
+  /// The outermost rows of the tree: what an operator means by "line 1".
+  ///
+  /// These are the rows [_visibleLanes] always shows, whatever is collapsed,
+  /// and the ones the table's filter offers. Ungrouped alarms sit at this
+  /// level too, and are offered with the rest — a filter that could not
+  /// switch them off would leave rows in the table with no control over them.
+  List<AlarmTreeRow> _topRows() => widget.tree
+      .rows(groups: widget.config.groups)
+      .where((row) => row.depth == 0)
+      .toList();
+
+  /// Switches every top-level row on or off at once.
+  ///
+  /// Only the top level: a row switched off deeper in the tree stays off.
+  /// This control is about which lines the view is about, and wiping out
+  /// someone's per-alarm work from here would be a surprise.
+  void _setTopRowsHidden(bool hidden) {
+    setState(() {
+      for (final row in _topRows()) {
+        final key = _keyOf(row);
+        if (hidden) {
+          _hidden.add(key);
+        } else {
+          _hidden.remove(key);
+        }
+      }
+      if (hidden) _clearCallout();
     });
   }
 
@@ -1088,49 +1123,179 @@ class _StopTimelineViewState extends State<StopTimelineView> {
       decoration: BoxDecoration(
         border: Border(bottom: BorderSide(color: theme.dividerColor)),
       ),
-      child: Row(children: [
-        Text('GROUP BY',
-            style: theme.textTheme.labelSmall
-                ?.copyWith(fontSize: 9, letterSpacing: 1.1)),
-        const SizedBox(width: 8),
-        chip('Alarm', _grouping == ParetoGrouping.alarm,
-            () => setState(() => _grouping = ParetoGrouping.alarm),
-            'stop-timeline-pareto-alarm'),
-        chip('Group', _grouping == ParetoGrouping.group,
-            () => setState(() => _grouping = ParetoGrouping.group),
-            'stop-timeline-pareto-group'),
-        chip('Severity', _grouping == ParetoGrouping.severity,
-            () => setState(() => _grouping = ParetoGrouping.severity),
-            'stop-timeline-pareto-severity'),
-        const Spacer(),
-        // The table ranks the *window*, not the whole period, and with no
-        // lanes and no axis on screen there is nothing else here to say so —
-        // which also leaves the strip along the bottom looking like a chart
-        // that wandered in. Named here, it reads as what it is: where that
-        // window is picked.
-        Flexible(
-          child: Text('ranked over ${_windowLabel(_window.value)}',
-              key: const ValueKey('stop-timeline-pareto-window'),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              textAlign: TextAlign.right,
-              style: theme.textTheme.labelSmall?.copyWith(
-                  color: theme.colorScheme.onSurface.withValues(alpha: 0.7),
-                  fontFeatures: const [FontFeature.tabularFigures()])),
+      // Wide enough, this is one flat row with the ranking controls pushed
+      // to the right edge. Too narrow — the embedding picks the width, and
+      // the bar now carries a filter as well — it scrolls instead of
+      // overflowing, because a control that has run off the end of the bar is
+      // a control nobody can reach.
+      child: LayoutBuilder(builder: (context, constraints) {
+        return SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minWidth: constraints.maxWidth),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(mainAxisSize: MainAxisSize.min, children: [
+                  Text('GROUP BY',
+                      style: theme.textTheme.labelSmall
+                          ?.copyWith(fontSize: 9, letterSpacing: 1.1)),
+                  const SizedBox(width: 8),
+                  chip('Alarm', _grouping == ParetoGrouping.alarm,
+                      () => setState(() => _grouping = ParetoGrouping.alarm),
+                      'stop-timeline-pareto-alarm'),
+                  chip('Group', _grouping == ParetoGrouping.group,
+                      () => setState(() => _grouping = ParetoGrouping.group),
+                      'stop-timeline-pareto-group'),
+                  chip('Severity', _grouping == ParetoGrouping.severity,
+                      () =>
+                          setState(() => _grouping = ParetoGrouping.severity),
+                      'stop-timeline-pareto-severity'),
+                  const SizedBox(width: 6),
+                  Container(width: 1, height: 14, color: theme.dividerColor),
+                  const SizedBox(width: 10),
+                  Text('SHOW',
+                      style: theme.textTheme.labelSmall
+                          ?.copyWith(fontSize: 9, letterSpacing: 1.1)),
+                  const SizedBox(width: 8),
+                  _groupFilter(context),
+                ]),
+                const SizedBox(width: 24),
+                Row(mainAxisSize: MainAxisSize.min, children: [
+                  // The table ranks the *window*, not the whole period, and
+                  // with no lanes and no axis on screen there is nothing else
+                  // here to say so — which also leaves the strip along the
+                  // bottom looking like a chart that wandered in. Named here,
+                  // it reads as what it is: where that window is picked.
+                  Text('ranked over ${_windowLabel(_window.value)}',
+                      key: const ValueKey('stop-timeline-pareto-window'),
+                      maxLines: 1,
+                      softWrap: false,
+                      style: theme.textTheme.labelSmall?.copyWith(
+                          color: theme.colorScheme.onSurface
+                              .withValues(alpha: 0.7),
+                          fontFeatures: const [FontFeature.tabularFigures()])),
+                  const SizedBox(width: 12),
+                  Text('RANK BY',
+                      style: theme.textTheme.labelSmall
+                          ?.copyWith(fontSize: 9, letterSpacing: 1.1)),
+                  const SizedBox(width: 8),
+                  // Two different questions: what is expensive, and what is
+                  // chronic.
+                  chip('Lost time', !_rankByCount,
+                      () => setState(() => _rankByCount = false),
+                      'stop-timeline-rank-time'),
+                  chip('Count', _rankByCount,
+                      () => setState(() => _rankByCount = true),
+                      'stop-timeline-rank-count'),
+                ]),
+              ],
+            ),
+          ),
+        );
+      }),
+    );
+  }
+
+  /// Which top-level lines the table is about.
+  ///
+  /// The lanes carry a switch per row; the table has no label column to put
+  /// one in, so the question an operator actually arrives with — "what
+  /// stopped line 1" — could not be asked here at all. This is the answer
+  /// everything else with a filterable table gives: a checklist of the
+  /// outermost rows behind a button that reads out what survives it, with a
+  /// tri-state "All" on top so that picking exactly one line is two clicks
+  /// rather than unticking everything else.
+  ///
+  /// The menu stays open across ticks ([CheckboxMenuButton.closeOnActivate]
+  /// false): narrowing to three lines out of eight is one interaction, not
+  /// three.
+  Widget _groupFilter(BuildContext context) {
+    final theme = Theme.of(context);
+    final rows = _topRows();
+    final shown = rows.where((row) => !_rowHidden(row)).toList();
+    final all = shown.length == rows.length;
+    final none = shown.isEmpty;
+
+    // The button has to say what the filter is doing without being opened:
+    // an unremarked-on filter is how a table ends up quietly lying about the
+    // shift. One line left is named outright, because that is the state an
+    // operator sits in for minutes at a time.
+    final String summary;
+    if (rows.isEmpty) {
+      summary = 'No groups';
+    } else if (all) {
+      summary = 'All groups';
+    } else if (none) {
+      summary = 'Nothing shown';
+    } else if (shown.length == 1) {
+      summary = shown.single.label;
+    } else {
+      summary = '${shown.length} of ${rows.length} groups';
+    }
+
+    final itemStyle = MenuItemButton.styleFrom(
+      minimumSize: const Size(0, 30),
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      textStyle: theme.textTheme.labelMedium,
+    );
+
+    return MenuAnchor(
+      alignmentOffset: const Offset(0, 4),
+      menuChildren: [
+        CheckboxMenuButton(
+          key: const ValueKey('stop-timeline-group-filter-all'),
+          value: all ? true : (none ? false : null),
+          tristate: true,
+          closeOnActivate: false,
+          style: itemStyle,
+          // Deliberately not the value the checkbox proposes: its tri-state
+          // cycle runs false → true → null, and "half the lines" is not a
+          // state anything could switch *to*. All on, or all off.
+          onChanged: (_) => _setTopRowsHidden(all),
+          child: const Text('All'),
         ),
-        const SizedBox(width: 12),
-        Text('RANK BY',
-            style: theme.textTheme.labelSmall
-                ?.copyWith(fontSize: 9, letterSpacing: 1.1)),
-        const SizedBox(width: 8),
-        // Two different questions: what is expensive, and what is chronic.
-        chip('Lost time', !_rankByCount,
-            () => setState(() => _rankByCount = false),
-            'stop-timeline-rank-time'),
-        chip('Count', _rankByCount,
-            () => setState(() => _rankByCount = true),
-            'stop-timeline-rank-count'),
-      ]),
+        const Divider(height: 1),
+        for (final row in rows)
+          CheckboxMenuButton(
+            key: ValueKey('stop-timeline-group-filter-${_keyOf(row)}'),
+            value: !_rowHidden(row),
+            closeOnActivate: false,
+            style: itemStyle,
+            onChanged: (_) => _toggleHidden(row),
+            child: Text(row.label),
+          ),
+      ],
+      builder: (context, controller, _) => InkWell(
+        key: const ValueKey('stop-timeline-group-filter'),
+        onTap: () =>
+            controller.isOpen ? controller.close() : controller.open(),
+        child: Container(
+          padding: const EdgeInsets.only(left: 6, right: 2, top: 2, bottom: 2),
+          decoration: BoxDecoration(
+            border: Border.all(
+                color: all ? theme.dividerColor : theme.colorScheme.primary),
+            borderRadius: BorderRadius.circular(2),
+          ),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Icon(all ? Icons.filter_alt_outlined : Icons.filter_alt,
+                size: 12,
+                color: all
+                    ? theme.colorScheme.onSurface.withValues(alpha: 0.7)
+                    : theme.colorScheme.primary),
+            const SizedBox(width: 4),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 140),
+              child: Text(summary,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.labelSmall),
+            ),
+            Icon(Icons.arrow_drop_down,
+                size: 14, color: theme.colorScheme.onSurface),
+          ]),
+        ),
+      ),
     );
   }
 
@@ -1230,8 +1395,15 @@ class _StopTimelineViewState extends State<StopTimelineView> {
     final theme = Theme.of(context);
     final rows = _paretoRows();
     if (rows.isEmpty) {
+      // An empty table because the operator filtered everything out is not
+      // the plant having a quiet shift, and must not read as one.
+      final top = _topRows();
+      final filteredOut = top.isNotEmpty && top.every(_rowHidden);
       return Center(
-        child: Text('Nothing stopped in this window.',
+        child: Text(
+            filteredOut
+                ? 'Every group is filtered out.'
+                : 'Nothing stopped in this window.',
             style: theme.textTheme.bodySmall),
       );
     }

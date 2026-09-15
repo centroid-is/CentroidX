@@ -86,6 +86,10 @@ ProviderContainer _container({
   AccessSession? session,
   PageManager? manager,
   MenuComposer? composer,
+
+  /// Leaves the session unresolved — the boot window, which no amount of
+  /// `_settle` can be made to represent.
+  bool sessionLoading = false,
 }) {
   RouteRegistry().menuItems
     ..clear()
@@ -94,8 +98,9 @@ ProviderContainer _container({
   installRaisedRoutes();
 
   final container = ProviderContainer(overrides: [
-    accessSessionProvider.overrideWith(
-        () => _FixedSession(AsyncValue.data(session ?? _sessionWith()))),
+    accessSessionProvider.overrideWith(() => _FixedSession(sessionLoading
+        ? const AsyncValue<AccessSession>.loading()
+        : AsyncValue.data(session ?? _sessionWith()))),
     accessRepositoryProvider.overrideWith((ref) async => _StubRepository()),
     bootstrapPageManagerProvider.overrideWithValue(manager),
     if (composer != null) menuComposerProvider.overrideWithValue(composer),
@@ -123,8 +128,7 @@ Future<void> _settle(ProviderContainer container) async {
 
 void main() {
   const home = MenuItem(label: 'Home', path: '/', icon: Icons.home);
-  const fillet =
-      MenuItem(label: 'Filleting', path: '/fillet', icon: Icons.cut);
+  const fillet = MenuItem(label: 'Filleting', path: '/fillet', icon: Icons.cut);
   const packing =
       MenuItem(label: 'Packing', path: '/packing', icon: Icons.inventory);
 
@@ -142,11 +146,16 @@ void main() {
   group('menuTree with a composer', () {
     test('composes from the page manager and owns the registry', () async {
       final manager = PageManager(
-        pages: {'/': _page('Home', '/'), '/fillet': _page('Filleting', '/fillet')},
+        pages: {
+          '/': _page('Home', '/'),
+          '/fillet': _page('Filleting', '/fillet')
+        },
         prefs: _NullPrefs(),
       );
       final container = _container(
-        registry: const [MenuItem(label: 'Stale', path: '/stale', icon: Icons.abc)],
+        registry: const [
+          MenuItem(label: 'Stale', path: '/stale', icon: Icons.abc)
+        ],
         manager: manager,
         composer: (m) => m.getRootMenuItems(),
       );
@@ -189,7 +198,10 @@ void main() {
 
       // The group is taken off the page and the tree recomposed.
       final unraised = PageManager(
-        pages: {'/': _page('Home', '/'), '/fillet': _page('Filleting', '/fillet')},
+        pages: {
+          '/': _page('Home', '/'),
+          '/fillet': _page('Filleting', '/fillet')
+        },
         prefs: _NullPrefs(),
       );
       RouteRegistry().replaceMenu(
@@ -222,6 +234,26 @@ void main() {
       await _settle(container);
       expect(container.read(visibleMenuProvider).topLevel.map((i) => i.path),
           ['/', '/packing']);
+    });
+
+    test(
+        'the boot window offers nothing, rather than destinations it is '
+        'about to take away', () async {
+      // The second half of the startup glitch. While the session resolves the
+      // gate answers `waiting`, and a filter built on "anything but denied"
+      // put every destination on the station into the navigation bar for the
+      // second or two the database took — then collapsed it to the handful
+      // this panel actually shows, or to no bar at all. An operator reaching
+      // for a destination that is being withdrawn as they reach is the same
+      // fault as the page that appeared and was taken back.
+      //
+      // Empty is a state the bar already has: `showsBar` drops it when
+      // nothing survives the filter, and the window ends the moment the
+      // session answers.
+      final container =
+          _container(registry: [home, fillet, packing], sessionLoading: true);
+      expect(container.read(visibleMenuProvider).topLevel, isEmpty);
+      expect(container.read(visibleMenuProvider).showsBar, isFalse);
     });
 
     test('filtering never reorders what survives', () async {
@@ -271,6 +303,64 @@ void main() {
       expect(visible.last.children.map((i) => i.path), ['/fillet']);
     });
 
+    test('a whitelist of nothing but section pages still shows the section',
+        () async {
+      // The reported fault, at the provider. An account whitelisted to two
+      // pages that both live *inside* one section saw an entirely empty
+      // navigation bar — no section heading, no entries — and so could not
+      // reach either of the pages it had been granted. The filter here was
+      // never wrong; `showsBar` was, and this pins both halves together.
+      const section = MenuItem(
+        label: 'Processing',
+        path: '/processing',
+        icon: Icons.factory,
+        isSection: true,
+        children: [fillet, packing],
+      );
+      final container = _container(
+        registry: [home, section],
+        session: _sessionWith(pages: const {'/fillet', '/packing'}),
+      );
+      await _settle(container);
+
+      final visible = container.read(visibleMenuProvider);
+      expect(visible.topLevel.map((i) => i.label), ['Processing'],
+          reason: 'the section survives on its children, as it always did');
+      expect(visible.topLevel.single.children.map((i) => i.path),
+          ['/fillet', '/packing']);
+      expect(visible.showsBar, isTrue,
+          reason: 'one destination is a bar — this is the line that stranded '
+              'the operator');
+      expect(
+          visible.reachablePages.map((i) => i.path), ['/fillet', '/packing']);
+    });
+
+    test(
+        'a top-level page beside section pages shows both — the state that '
+        'accidentally worked', () async {
+      // Adding one unrelated top-level page to the same whitelist made the
+      // bar appear with *both* entries, which is how the fault was found and
+      // why it read as a section-filtering bug. It must keep working.
+      const section = MenuItem(
+        label: 'Processing',
+        path: '/processing',
+        icon: Icons.factory,
+        isSection: true,
+        children: [fillet, packing],
+      );
+      final container = _container(
+        registry: [home, section],
+        session: _sessionWith(pages: const {'/', '/fillet', '/packing'}),
+      );
+      await _settle(container);
+
+      final visible = container.read(visibleMenuProvider);
+      expect(visible.topLevel.map((i) => i.label), ['Home', 'Processing']);
+      expect(visible.topLevel.last.children.map((i) => i.path),
+          ['/fillet', '/packing']);
+      expect(visible.showsBar, isTrue);
+    });
+
     test('a whitelist can grant a built-in, and hides the ones it omits',
         () async {
       // The picker offers the built-ins now, so the filter has to honour them
@@ -282,8 +372,7 @@ void main() {
         icon: Icons.settings,
         isSection: true,
         children: [
-          MenuItem(
-              label: 'Alarm View', path: '/alarm-view', icon: Icons.alarm),
+          MenuItem(label: 'Alarm View', path: '/alarm-view', icon: Icons.alarm),
           MenuItem(
               label: 'History View',
               path: '/advanced/history-view',
@@ -378,19 +467,51 @@ void main() {
       expect(visible.indexOfPath(null), isNull);
     });
 
-    test('showsBar is false below two destinations', () async {
-      // Material's NavigationBar asserts it, and a session whitelisted down to
-      // one page is a real state now.
+    test('showsBar is true for one destination, false only for none', () async {
+      // The reported fault lived on this line. `length >= 2` was borrowed from
+      // Material's `NavigationBar` assert, which is one widget's constraint
+      // and not a rule about what an operator may reach: a session filtered
+      // down to a single top-level entry got no bar, no way to that entry, and
+      // no way off the refusal screen it had landed on. `BaseScaffold` renders
+      // a lone destination without `NavigationBar`.
       final one = _container(
         registry: [home, fillet],
         session: _sessionWith(pages: const {'/'}),
       );
       await _settle(one);
-      expect(one.read(visibleMenuProvider).showsBar, isFalse);
+      expect(one.read(visibleMenuProvider).topLevel, hasLength(1));
+      expect(one.read(visibleMenuProvider).showsBar, isTrue);
 
       final two = _container(registry: [home, fillet]);
       await _settle(two);
       expect(two.read(visibleMenuProvider).showsBar, isTrue);
+
+      // Nothing to put in a bar is still no bar.
+      final none = _container(
+        registry: [home, fillet],
+        session: _sessionWith(pages: const <String>{}),
+      );
+      await _settle(none);
+      expect(none.read(visibleMenuProvider).showsBar, isFalse);
+    });
+
+    test('reachablePages flattens the sections away, in tree order', () async {
+      const section = MenuItem(
+        label: 'Processing',
+        path: '/processing',
+        icon: Icons.factory,
+        isSection: true,
+        children: [fillet, packing],
+      );
+      final container = _container(registry: [home, section]);
+      await _settle(container);
+
+      // The section itself carries a path (legacy data does) and must still
+      // not be offered as a destination: it is a heading.
+      expect(
+        container.read(visibleMenuProvider).reachablePages.map((i) => i.path),
+        ['/', '/fillet', '/packing'],
+      );
     });
 
     test('equality is recursive, so a filtered child counts as a change', () {
@@ -429,10 +550,9 @@ void main() {
       installRaisedRoutes();
 
       final container = ProviderContainer(overrides: [
-        accessSessionProvider.overrideWith(
-            () => _FixedSession(AsyncValue.data(_sessionWith()))),
-        accessRepositoryProvider
-            .overrideWith((ref) async => _StubRepository()),
+        accessSessionProvider
+            .overrideWith(() => _FixedSession(AsyncValue.data(_sessionWith()))),
+        accessRepositoryProvider.overrideWith((ref) async => _StubRepository()),
         bootstrapPageManagerProvider.overrideWithValue(null),
         routablePathsProvider.overrideWithValue(const {'/', '/fillet'}),
       ]);
@@ -468,8 +588,7 @@ void main() {
       final controller = _SwappableSession(_sessionWith(pages: const {'/'}));
       final container = ProviderContainer(overrides: [
         accessSessionProvider.overrideWith(() => controller),
-        accessRepositoryProvider
-            .overrideWith((ref) async => _StubRepository()),
+        accessRepositoryProvider.overrideWith((ref) async => _StubRepository()),
         bootstrapPageManagerProvider.overrideWithValue(null),
       ]);
       addTearDown(container.dispose);
@@ -498,8 +617,7 @@ void main() {
       final controller = _SwappableSession(_sessionWith(pages: null));
       final container = ProviderContainer(overrides: [
         accessSessionProvider.overrideWith(() => controller),
-        accessRepositoryProvider
-            .overrideWith((ref) async => _StubRepository()),
+        accessRepositoryProvider.overrideWith((ref) async => _StubRepository()),
         bootstrapPageManagerProvider.overrideWithValue(null),
       ]);
       addTearDown(container.dispose);
@@ -548,7 +666,6 @@ void main() {
     });
   });
 }
-
 
 /// A session controller whose value can be replaced mid-test, which is what
 /// signing in and out look like from the menu's side.

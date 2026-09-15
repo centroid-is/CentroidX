@@ -76,8 +76,14 @@ Map<String, DynamicValue> _opcuaFields({
   bool connected = false,
   double requestsPerSec = 4.5,
   String lastError = 'BadTimeout',
+  String health = '',
+  String healthDetail = '',
+  double heartbeatAgeSec = -1,
 }) =>
     {
+      'health': DynamicValue(value: health),
+      'healthDetail': DynamicValue(value: healthDetail),
+      'heartbeatAgeSec': DynamicValue(value: heartbeatAgeSec),
       'state': DynamicValue(value: state),
       'connected': DynamicValue(value: connected),
       'destIp': DynamicValue(value: 'opc.example.com'),
@@ -215,6 +221,48 @@ void main() {
         Colors.grey,
       );
     });
+
+    test('derived health outranks the raw TCP answer', () {
+      // `connected` is the socket/session answer and reads true for every
+      // failure the heartbeat exists to catch, so a card driven by it alone
+      // showed a green "Connected" chip beside a server the server-config
+      // page was simultaneously flagging as unhealthy.
+      final frozen = ConnectionStateVisual.resolve(
+          connected: true,
+          state: 'connected',
+          lastError: '',
+          health: 'opcuaUnhealthy');
+      expect(frozen.label, 'No data');
+      expect(frozen.color, Colors.deepOrange);
+
+      // And the other half: unmonitored is not the same claim as no data.
+      final unmonitored = ConnectionStateVisual.resolve(
+          connected: true,
+          state: 'connected',
+          lastError: '',
+          health: 'opcuaUnmonitored');
+      expect(unmonitored.label, 'Unmonitored');
+      expect(unmonitored.label, isNot('No data'));
+      expect(unmonitored.color, isNot(Colors.green));
+    });
+
+    test('an absent health field keeps the old behaviour', () {
+      // Modbus sources supply no `health`, and neither does an older
+      // snapshot; neither may start rendering grey.
+      expect(
+        ConnectionStateVisual.resolve(
+                connected: true, state: 'connected', lastError: '')
+            .label,
+        'Connected',
+      );
+    });
+
+    test('an age that has never happened says so', () {
+      // ClientWrapper.heartbeatAgeSec returns -1 for "never ticked". A
+      // diagnostics card printing "-1.0 s" reads as a bug in the card.
+      expect(formatAgeSec(-1), 'never');
+      expect(formatAgeSec(1.5), '1.5 s');
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -262,6 +310,38 @@ void main() {
       expect(find.text('Endpoint'), findsOneWidget);
       expect(find.text('Subscribed'), findsOneWidget);
       expect(find.text('Unit ID'), findsNothing);
+    });
+
+    testWidgets('OPC-UA card surfaces the health reason instead of a green '
+        'chip', (tester) async {
+      // The diagnostics half of the incident: the client is connected and
+      // delivering, but it has no health clock. The card must say so, must
+      // not say "No data", and must carry the server's own refusal string —
+      // which used to exist only in the log.
+      final config = ConnectionInfoConfig(
+          serverAlias: 'opc1', protocol: ConnectionProtocol.opcua);
+      final stateMan = _FakeConnStateMan(
+        knownAlias: 'opc1',
+        fields: _opcuaFields(
+          state: 'connected',
+          connected: true,
+          lastError: '',
+          health: 'opcuaUnmonitored',
+          healthDetail: 'No health clock: could not create a subscription '
+              '(BadTooManySubscriptions). Data is still arriving.',
+        ),
+      );
+      await tester.pumpWidget(
+          _wrap(ConnectionInfoCard(config: config), stateMan: stateMan));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Unmonitored'), findsOneWidget);
+      expect(find.text('Connected'), findsNothing);
+      expect(find.text('No data'), findsNothing);
+      expect(_chipColor(tester), isNot(Colors.green));
+      expect(find.textContaining('BadTooManySubscriptions'), findsOneWidget);
+      // Never ticked, and the card says that rather than "-1.0 s".
+      expect(find.text('never'), findsOneWidget);
     });
 
     testWidgets('blank alias renders the unconfigured placeholder',

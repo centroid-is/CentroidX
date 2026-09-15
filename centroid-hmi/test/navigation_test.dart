@@ -28,7 +28,7 @@ import 'package:tfc/route_registry.dart';
 import 'package:tfc/routes.dart';
 import 'package:tfc/widgets/access_gate.dart';
 import 'package:tfc/widgets/page_access_gate.dart';
-import 'package:tfc_access/tfc_access.dart' show AccessSession;
+import 'package:tfc_access/tfc_access.dart' show AccessGroup, AccessSession;
 import 'package:tfc/core/access_authority.dart' show AccessAuthority;
 import 'package:tfc/widgets/dbus_gate.dart';
 import 'package:tfc/widgets/route_redirect.dart';
@@ -417,6 +417,15 @@ void main() {
         final gate = await buildGate(tester, lb, '/advanced/ip-settings');
         expect(gate.group.name, 'administer');
         expect(gate.child, isA<DbusGate>());
+        // ...but it opens during an outage, which is the one thing that makes
+        // a freshly commissioned station recoverable: the database is reached
+        // over the network, so the page that gives the machine an address
+        // cannot be gated behind a group only a working database can grant.
+        // Asserted on the BUILT gate, not on the declaration, because that is
+        // what the router actually honours.
+        expect(gate.allowWhenRepositoryUnavailable, isTrue,
+            reason: 'a new station reaches its database over the network; '
+                'gating this page behind the database is a loop with no entry');
       });
 
       testWidgets('preferences needs administer', (tester) async {
@@ -481,16 +490,23 @@ void main() {
         expect(gate.child, isA<AccessAdminPage>());
       });
 
-      testWidgets('server config is the only route open while the repository is unavailable', (tester) async {
+      testWidgets('exactly two routes stay open while the repository is unavailable', (tester) async {
         // Catches the helper being changed to a per-call-site boolean: the flag
         // is read off every built gate, not off the declaration it came from.
+        //
+        // The pair is what makes a new station recoverable -- IP Settings gives
+        // the machine an address, Server Config points it at a database, and
+        // only then can the repository grant anybody a group. Pinned as a set,
+        // because this list is the blast radius of "reachable with no access
+        // control at all" and should only grow by someone editing this line.
         final lb = createLocationBuilder([_page('Home', '/')]);
         final exempt = <String>[];
         for (final path in kRaisedRoutes.keys) {
           final gate = await buildGate(tester, lb, path);
           if (gate.allowWhenNobodyCanSignIn) exempt.add(path);
         }
-        expect(exempt, ['/advanced/server-config']);
+        expect(exempt,
+            unorderedEquals(['/advanced/server-config', '/advanced/ip-settings']));
       });
 
       testWidgets('every declared path is a real route', (tester) async {
@@ -534,15 +550,119 @@ void main() {
         expect(accessGroupForRoute('/chiller').name, 'operate');
       });
 
-      testWidgets('about-linux, alarm view, history view and the first-user page are not gates', (tester) async {
-        // Reading and commissioning. About Linux changes nothing; the two views
-        // read rather than configure, and read permissions are out of scope;
-        // gating the first account on a station with no users is an unopenable
-        // door.
+      testWidgets('the first-user page is not a gate of either kind', (tester) async {
+        // Commissioning. Gating the first account on a station that has no
+        // users yet is the deadlock the first-user design exists to avoid, and
+        // `pageVisible` fails closed, so a whitelist gate here would be a door
+        // that locks itself. It is the only route left carrying neither gate.
         final lb = createLocationBuilder([_page('Home', '/')]);
-        for (final path in ['/advanced/about-linux', AppRoutes.alarmView, AppRoutes.historyView, AppRoutes.firstUser]) {
+        final page = await buildRoute(tester, lb, AppRoutes.firstUser);
+        expect(page.child, isNot(isA<AccessGate>()));
+        expect(page.child, isNot(isA<PageAccessGate>()));
+      });
+
+      testWidgets('the four whitelist-gated addresses wear the gate, and all stay operate', (tester) async {
+        // The hole this closes: the page whitelist could drop any of these from
+        // the menu and the address still opened it, because none of these
+        // routes carried a gate at all — hiding was the whole of the
+        // enforcement, which is the failure mode `docs/access-control-spec.md`
+        // §6 names. The top bar made Alarm View a one-tap version of it rather
+        // than a typed-URL one, which is how it was found.
+        //
+        // Both halves are asserted for each, because the fix is only correct if
+        // the second one holds: these gates are the *whitelist*, never a
+        // permission. Raising any of these groups would take a read surface
+        // away from every anonymous panel on the floor, which is not what this
+        // does.
+        final lb = createLocationBuilder([_page('Home', '/')]);
+        for (final path in [
+          AppRoutes.alarmView,
+          AppRoutes.historyView,
+          AppRoutes.reports,
+          '/advanced/about-linux',
+        ]) {
           final page = await buildRoute(tester, lb, path);
-          expect(page.child, isNot(isA<AccessGate>()), reason: '$path must stay open');
+          expect(page.child, isA<PageAccessGate>(), reason: '$path must ask the whitelist');
+          expect(page.child, isNot(isA<AccessGate>()), reason: '$path must not need a group');
+          expect((page.child as PageAccessGate).path, path);
+          expect(accessGroupForRoute(path).name, 'operate', reason: '$path must stay operate');
+        }
+      });
+
+      testWidgets('the history-view alias is gated on the canonical path', (tester) async {
+        // `/advanced/history-view` is a bookmark-compatible alias, not a menu
+        // destination, so it can never appear in a whitelist. A gate keyed on
+        // its own spelling would ask about a page nobody can tick, and
+        // `pageVisible` matches stored paths exactly and fails closed — so it
+        // would refuse every bookmark on any station that configured a
+        // whitelist at all. Keying it on the canonical path is also what stops
+        // the alias being the way around a whitelist that hides History View.
+        final lb = createLocationBuilder([_page('Home', '/')]);
+        final page = await buildRoute(tester, lb, '/advanced/history-view');
+        expect(page.child, isA<PageAccessGate>());
+        expect((page.child as PageAccessGate).path, AppRoutes.historyView,
+            reason: 'the alias must ask about the page the whitelist can name');
+      });
+
+      testWidgets('a commissioning station is not locked out by any of them', (tester) async {
+        // The objection this answers: gating more routes must not be a way to
+        // strand somebody pointing a fresh station at its network and database.
+        //
+        // It cannot be, and the reason is structural rather than lucky — a
+        // whitelist only exists where a database exists. With no repository the
+        // anonymous session carries no `allowedPages`, so every one of these
+        // asks the whitelist and is admitted. Asserted against a resolved
+        // no-database session, which is what a station being commissioned
+        // actually has.
+        //
+        // **This is half of a chain and is worth little alone.** It proves that
+        // *given* that session the routes open. That a commissioning station
+        // actually *gets* that session — that `_anonymousSession(null)` returns
+        // `allowedPages: null` rather than the empty set — is the other half,
+        // and it is pinned where it is produced, in
+        // `test/providers/access_session_test.dart`, "with no database at all
+        // yields anonymous with the seeded groups and no whitelist". Change one
+        // without the other and this test's name starts overclaiming: a
+        // fail-closed edit to `_anonymousSession` would hide every page on
+        // every un-commissioned panel while this stayed green.
+        final commissioning = AsyncValue<AccessSession>.data(
+            AccessSession.anonymous(const {AccessGroup.operate}));
+        const noAuthority = AsyncValue<AccessAuthority>.data(AccessAuthority.none);
+
+        for (final path in [
+          AppRoutes.alarmView,
+          AppRoutes.historyView,
+          AppRoutes.reports,
+          '/advanced/about-linux',
+        ]) {
+          expect(
+            resolvePageAccess(
+              group: accessGroupForRoute(path),
+              path: path,
+              authority: noAuthority,
+              session: commissioning,
+            ),
+            AccessGateState.allowed,
+            reason: '$path must open on a station with no database',
+          );
+        }
+
+        // And the two that must survive the *group* half as well, because they
+        // are `administer` and are how the station gets a database at all.
+        // Different mechanism — `routeAllowedWhenNobodyCanSignIn`, not
+        // the whitelist — and untouched by this change, asserted here so that
+        // widening the whitelist gating can never quietly cost it.
+        for (final path in [kServerConfigRoute, kIpSettingsRoute]) {
+          expect(
+            resolvePageAccess(
+              group: accessGroupForRoute(path),
+              path: path,
+              authority: noAuthority,
+              session: commissioning,
+            ),
+            AccessGateState.allowed,
+            reason: '$path must open on a station with no database',
+          );
         }
       });
 
@@ -570,6 +690,17 @@ void main() {
         // every path, so the gate returns its child with nothing added around
         // it. That — not the absence of a wrapper — is what "nothing on the
         // floor changes" actually meant.
+        //
+        // Asserted against a **resolved** session, which is the change from
+        // how this read before. It used to hand the gate two `AsyncLoading`s
+        // and expect `allowed`, on the reasoning that an ordinary page must
+        // open before anything has resolved. That reasoning turned out to
+        // describe the startup glitch rather than the boundary: on a station
+        // that restricts what anonymous may see, it rendered the plant page
+        // for the length of the Postgres connect and then took it away. The
+        // boot window waits now — see `resolvePageAccess` — and what this test
+        // is actually for is that an unrestricted station is unaffected once
+        // that window closes.
         expect(accessGroupForRoute('/chiller').name, 'operate');
         expect(
           resolvePageAccess(
@@ -579,11 +710,12 @@ void main() {
             // credential, not whether a repository exists — the two coincide
             // on a direct station and part company on a gateway panel.
             authority: const AsyncValue<AccessAuthority>.loading(),
-            session: const AsyncValue<AccessSession>.loading(),
+            session: AsyncValue<AccessSession>.data(
+                AccessSession.anonymous(const {AccessGroup.operate})),
           ),
           AccessGateState.allowed,
-          reason: 'an ordinary page opens before anything has resolved, which '
-              'is what keeps a booting panel from blanking its pages',
+          reason: 'an ordinary page on a station with no whitelist opens with '
+              'nothing added around it',
         );
       });
     });

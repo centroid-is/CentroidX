@@ -53,6 +53,8 @@ class ClientWrapper {
   DateTime? _lastHeartbeatTick;
   Timer? _heartbeatRetryTimer;
   bool _startingHeartbeat = false;
+  bool _disposed = false;
+  DateTime? _lastDataTick;
   bool _inactive = false;
   bool sessionLost = false;
   bool resendOnRecovery;
@@ -120,6 +122,47 @@ class ClientWrapper {
   /// Record one OPC-UA value emission for the requests-per-second rate.
   void recordRequest() => _requestRate.increment();
 
+  /// Record one value arriving on a *data* monitored item, as opposed to the
+  /// heartbeat's own item.
+  ///
+  /// The two are counted apart because they answer different questions and
+  /// can disagree: a client can fail to get a heartbeat subscription while
+  /// its existing data subscriptions keep delivering. Without this split the
+  /// only clock in the wrapper was the heartbeat's, so "the heartbeat is
+  /// missing" and "no values are arriving" were indistinguishable — which is
+  /// how a station delivering sub-second values came to be labelled
+  /// "No data".
+  void recordDataTick() {
+    _lastDataTick = DateTime.now();
+    recordRequest();
+  }
+
+  /// How long a data monitored item may stay silent before it stops counting
+  /// as evidence that the data plane is alive.
+  ///
+  /// Note the asymmetry this is used with: monitored items report on change,
+  /// so silence across one server's keys is NOT proof the data plane is dead
+  /// (a stopped line legitimately emits nothing). [dataPlaneLive] is
+  /// therefore only ever trusted in the positive direction — [healthDetail]
+  /// says "still arriving" when it is true and only "may be frozen", never
+  /// "has stopped", when it is false.
+  static const dataPlaneQuietAfter = Duration(seconds: 15);
+
+  /// Whether values are demonstrably still arriving on this client's data
+  /// subscriptions, independently of the heartbeat.
+  bool get dataPlaneLive {
+    final tick = _lastDataTick;
+    if (tick == null) return false;
+    return DateTime.now().difference(tick) <= dataPlaneQuietAfter;
+  }
+
+  /// Seconds since the last data-plane value, or -1 if none has ever arrived.
+  double get dataPlaneAgeSec {
+    final tick = _lastDataTick;
+    if (tick == null) return -1;
+    return DateTime.now().difference(tick).inMilliseconds / 1000.0;
+  }
+
   /// Capture the last error string surfaced at a heartbeat/channel failure.
   void recordError(String error) => _lastError = error;
 
@@ -147,10 +190,31 @@ class ClientWrapper {
   /// Last-seen recovery status code.
   int get recoveryStatus => _lastClientState?.recoveryStatus ?? 0;
 
-  /// Seconds since the last heartbeat/data tick, or 0 if none yet.
+  /// Seconds since the newest value of any kind arrived from this server —
+  /// heartbeat tick or data monitored item, whichever is more recent — or -1
+  /// if nothing has ever arrived (rendered "never", same sentinel as
+  /// [heartbeatAgeSec]; 0 would claim perfectly fresh data on a client that
+  /// has never received any).
+  ///
+  /// Rendered as "Data age" on the connection-info asset, so it has to mean
+  /// data. It used to read the heartbeat clock alone, which reported a
+  /// server with no heartbeat and a busy data plane as having ancient data.
   double get lastDataAgeSec {
+    final hb = _lastHeartbeatTick;
+    final data = _lastDataTick;
+    final DateTime? newest = hb == null
+        ? data
+        : (data == null ? hb : (data.isAfter(hb) ? data : hb));
+    if (newest == null) return -1;
+    return DateTime.now().difference(newest).inMilliseconds / 1000.0;
+  }
+
+  /// Seconds since the last heartbeat tick specifically, or -1 if the
+  /// heartbeat has never ticked. This is the staleness clock — see
+  /// [heartbeatStaleAfter].
+  double get heartbeatAgeSec {
     final tick = _lastHeartbeatTick;
-    if (tick == null) return 0;
+    if (tick == null) return -1;
     return DateTime.now().difference(tick).inMilliseconds / 1000.0;
   }
 
@@ -229,11 +293,15 @@ class ClientWrapper {
     // agrees before rendering green.
     if (sessionLost || _inactive) return EffectiveDeviceStatus.opcuaUnhealthy;
     // No clock is watching this client, so "connected" is an assertion
-    // nothing can ever contradict. Unhealthy immediately rather than after
-    // [heartbeatStartGrace]: the grace exists for a heartbeat that is still
-    // warming up, and this one is not coming.
+    // nothing can ever contradict. Not green — but not [opcuaUnhealthy]
+    // either. The failure here is that we could not CREATE the heartbeat's
+    // own subscription; it says nothing about the data subscriptions that
+    // already exist, which may be delivering sub-second values the whole
+    // time. Reported immediately rather than after [heartbeatStartGrace]:
+    // the grace exists for a heartbeat that is still warming up, and this
+    // one is not coming.
     if (heartbeatUnavailable != null) {
-      return EffectiveDeviceStatus.opcuaUnhealthy;
+      return EffectiveDeviceStatus.opcuaUnmonitored;
     }
     final tick = _lastHeartbeatTick;
     if (tick == null) {
@@ -315,13 +383,92 @@ class ClientWrapper {
   /// silent and invisible; now it is neither.
   String? heartbeatUnavailable;
 
-  /// How long to wait before trying again after a failed [ensureHeartbeat].
+  /// How long to wait before the FIRST retry after a failed
+  /// [ensureHeartbeat]. Subsequent retries back off — see
+  /// [heartbeatRetryMaxDelay] and [heartbeatRetryDelayFor].
   ///
   /// A server that cannot give out a subscription is usually not going to
   /// manage it a second later either, and a per-client retry storm across
   /// seven endpoints is its own incident. Long enough to be cheap, short
   /// enough that a server which comes good is watched again within a minute.
   static const heartbeatRetryDelay = Duration(seconds: 30);
+
+  /// Ceiling on the retry backoff.
+  ///
+  /// A flat 30 s retry is not free. `subscriptionCreate` is called under a
+  /// `.timeout(10s)`, and a Dart timeout does not cancel the underlying
+  /// request: a server that answers late still creates the subscription,
+  /// and the binding has no DeleteSubscriptions to hand the id back with.
+  /// So every failed attempt can strand one subscription on the server, and
+  /// an endpoint that fails forever at 30 s intervals strands 120 an hour —
+  /// the retry loop feeding the exhaustion that makes it fail. Backing off
+  /// to 5 minutes takes that to 12 an hour while still noticing a server
+  /// that comes good within a few minutes.
+  static const heartbeatRetryMaxDelay = Duration(minutes: 5);
+
+  /// Consecutive failed [ensureHeartbeat] attempts. Reset by a heartbeat
+  /// actually starting.
+  int _heartbeatFailures = 0;
+
+  /// Failed attempts so far, for diagnostics and tests.
+  int get heartbeatFailures => _heartbeatFailures;
+
+  /// Delay before retry number [failures] (1-based). Exponential from
+  /// [heartbeatRetryDelay], capped at [heartbeatRetryMaxDelay]: 30 s, 60 s,
+  /// 120 s, 240 s, 300 s, 300 s…
+  static Duration heartbeatRetryDelayFor(int failures) {
+    if (failures <= 1) return heartbeatRetryDelay;
+    // Clamped before the shift so a long-running failure cannot overflow it.
+    final shift = (failures - 1).clamp(0, 16);
+    final ms = heartbeatRetryDelay.inMilliseconds << shift;
+    return ms >= heartbeatRetryMaxDelay.inMilliseconds
+        ? heartbeatRetryMaxDelay
+        : Duration(milliseconds: ms);
+  }
+
+  /// A single line an operator can read that says what is actually wrong,
+  /// or null when nothing is.
+  ///
+  /// [heartbeatUnavailable] holds the real reason and used to live only in
+  /// the log. This is the path by which it reaches the chip tooltip and the
+  /// `@conn/<alias>/healthDetail` meta-key.
+  String? get healthDetail {
+    final reason = heartbeatUnavailable;
+    if (reason != null) {
+      final data = dataPlaneLive
+          ? 'Data is still arriving on the existing subscriptions '
+              '(${dataPlaneAgeSec.toStringAsFixed(1)}s ago), so values on this '
+              'server are current — but nothing is watching for them to stop.'
+          : 'No data-plane value has arrived recently either, so the values '
+              'shown for this server may be frozen.';
+      return 'No health clock: could not create a subscription to watch this '
+          'client with ($reason). $data';
+    }
+    if (sessionLost) return 'The OPC UA session was lost.';
+    if (_inactive) {
+      return 'The subscription has gone inactive — the server has not '
+          'published within the keep-alive window.';
+    }
+    final tick = _lastHeartbeatTick;
+    if (tick == null) {
+      // Subscription created, monitored item created, and nothing has ever
+      // come back. Past the start grace this is a finding, not warm-up.
+      final since = _connectedSince;
+      if (hasHeartbeat &&
+          (since == null ||
+              DateTime.now().difference(since) > heartbeatStartGrace)) {
+        return 'The heartbeat was started but has never ticked. Values shown '
+            'for this server may never have been current.';
+      }
+      return null;
+    }
+    if (DateTime.now().difference(tick) > heartbeatStaleAfter) {
+      return 'The heartbeat has not ticked for '
+          '${heartbeatAgeSec.toStringAsFixed(0)}s. Values shown for this '
+          'server are frozen at their last received state.';
+    }
+    return null;
+  }
 
   /// Give this client a heartbeat, creating a subscription for it if nothing
   /// else has.
@@ -359,10 +506,23 @@ class ClientWrapper {
     _startingHeartbeat = true;
     try {
       if (!await worker.doTheWork()) {
-        // Subscription creation is already in flight elsewhere; that path
-        // starts the heartbeat itself. If it fails, the next connect — or
-        // the retry below, armed by whichever caller does fail — comes back
-        // here.
+        // Subscription creation is in flight elsewhere (the key path). That
+        // path calls startHeartbeat() only when it is the caller that
+        // actually creates the subscription — if it loses the worker too, or
+        // times out, or finds a subscription already there, nobody comes
+        // back here.
+        //
+        // This used to `return` bare, having already cancelled the retry
+        // timer a few lines up. That ended the retry chain for good:
+        // heartbeatUnavailable stayed set from the previous failure, no
+        // timer was armed, and the only thing left that calls
+        // ensureHeartbeat() is a fresh SESSIONSTATE_ACTIVATED event — which
+        // a healthy long-lived session never emits again, and a frozen one
+        // emits nothing at all. A client could sit "connected, unmonitored"
+        // indefinitely with its data plane perfectly healthy. Re-arm
+        // instead; ensureHeartbeat is idempotent and costs nothing when the
+        // question has already been answered.
+        _armHeartbeatRetry();
         return;
       }
       try {
@@ -379,17 +539,7 @@ class ClientWrapper {
         heartbeatUnavailable = null;
         startHeartbeat(created);
       } catch (e) {
-        // Loud, because the consequence is invisible: this client will read
-        // "connected" forever if its data plane dies, and nothing will
-        // contradict it.
-        heartbeatUnavailable = '$e';
-        recordError('$e');
-        _logger.e('[${config.endpoint}] NO HEARTBEAT: could not create a '
-            'subscription to watch this client with ($e). Its session is now '
-            'unmonitored — a frozen session on this server will not be '
-            'detected. Retrying in ${heartbeatRetryDelay.inSeconds}s.');
-        _recomputeEffectiveStatus();
-        _armHeartbeatRetry();
+        _noteHeartbeatFailure(e);
       } finally {
         worker.complete();
       }
@@ -398,13 +548,59 @@ class ClientWrapper {
     }
   }
 
+  /// Record one failed heartbeat-subscription attempt and arm the next
+  /// retry.
+  void _noteHeartbeatFailure(Object e) {
+    _heartbeatFailures++;
+    // Loud, because the consequence is invisible: nothing is watching this
+    // client, so a frozen session on it will not be detected.
+    heartbeatUnavailable = '$e';
+    recordError('$e');
+    final next = heartbeatRetryDelayFor(_heartbeatFailures);
+    _logger.e('[${config.endpoint}] NO HEARTBEAT: could not create a '
+        'subscription to watch this client with ($e). Its session is now '
+        'unmonitored — a frozen session on this server will not be '
+        'detected. Failure $_heartbeatFailures; '
+        'retrying in ${next.inSeconds}s.');
+    _recomputeEffectiveStatus();
+    _armHeartbeatRetry();
+  }
+
   void _armHeartbeatRetry() {
+    if (_disposed) return;
     _heartbeatRetryTimer?.cancel();
-    _heartbeatRetryTimer = Timer(heartbeatRetryDelay, () {
-      _heartbeatRetryTimer = null;
-      if (_connectionStatus == ConnectionStatus.disconnected) return;
-      unawaited(ensureHeartbeat());
-    });
+    _heartbeatRetryTimer =
+        Timer(heartbeatRetryDelayFor(_heartbeatFailures), _heartbeatRetryTick);
+  }
+
+  void _heartbeatRetryTick() {
+    _heartbeatRetryTimer = null;
+    // Answered while we waited.
+    if (_heartbeatSub != null || _disposed) return;
+    if (_connectionStatus == ConnectionStatus.disconnected) {
+      // Not a reason to stop asking, only a reason not to ask now. This used
+      // to `return`, which quietly ended the retry chain: recovery then
+      // depended entirely on a SESSIONSTATE_ACTIVATED event arriving, and a
+      // client whose state stream has stopped emitting is precisely the
+      // failure the heartbeat exists to catch.
+      _armHeartbeatRetry();
+      return;
+    }
+    unawaited(ensureHeartbeat());
+  }
+
+  /// Whether a retry is pending. A heartbeat that has failed and has nothing
+  /// armed is a client that will stay unmonitored until something else
+  /// happens to call [ensureHeartbeat] — which, on a healthy long-lived
+  /// session, nothing does.
+  @visibleForTesting
+  bool get heartbeatRetryArmed => _heartbeatRetryTimer != null;
+
+  /// Run the pending retry now instead of waiting out the backoff.
+  @visibleForTesting
+  void debugHeartbeatRetryTick() {
+    _heartbeatRetryTimer?.cancel();
+    _heartbeatRetryTick();
   }
 
   void startHeartbeat(int subId) {
@@ -419,6 +615,8 @@ class ClientWrapper {
     // until the next 2 s health tick.
     final wasUnavailable = heartbeatUnavailable != null;
     heartbeatUnavailable = null;
+    // The backoff ladder is per run of failures.
+    _heartbeatFailures = 0;
     _heartbeatRetryTimer?.cancel();
     _heartbeatRetryTimer = null;
     if (wasUnavailable) _recomputeEffectiveStatus();
@@ -499,6 +697,14 @@ class ClientWrapper {
     _recomputeEffectiveStatus();
   }
 
+  /// Set the last data-plane tick without a live monitored item, so tests
+  /// can pin the healthy-data-plane half of the failure.
+  @visibleForTesting
+  void debugSetLastDataTick(DateTime? tick) {
+    _lastDataTick = tick;
+    _recomputeEffectiveStatus();
+  }
+
   /// Re-derive [effectiveStatus] now instead of waiting for the 2 s timer.
   @visibleForTesting
   void debugRecomputeEffectiveStatus() => _recomputeEffectiveStatus();
@@ -519,6 +725,9 @@ class ClientWrapper {
   }
 
   void dispose() {
+    // Set before the timer is cancelled: the retry chain re-arms itself, so
+    // the flag is what stops it, not the cancel.
+    _disposed = true;
     stopHeartbeat();
     _heartbeatRetryTimer?.cancel();
     _heartbeatRetryTimer = null;
@@ -779,46 +988,7 @@ class OpcUaStateMan implements StateMan {
             logger.e(
                 '[$alias ${wrapper.config.endpoint}] Session lost, resubscribing (old sub=${wrapper.subscriptionId})');
             wrapper.sessionLost = false;
-            wrapper.subscriptionId = null;
-            wrapper.stopHeartbeat();
-            // Only resubscribe keys belonging to this wrapper
-            final lostAlias = wrapper.config.serverAlias;
-            final keysToResub = _subscriptions.values
-                .where((e) => keyMappings.lookupServerAlias(e.key) == lostAlias)
-                .map((e) => e.key)
-                .toList();
-            logger.i(
-                '[$alias ${wrapper.config.endpoint}] Resubscribing ${keysToResub.length} keys');
-
-            // Phase 1: Cancel ALL old raw subscriptions before creating
-            // any new ones. This queues all DeleteMonitoredItemsRequests
-            // in the native layer synchronously. By doing all cancels
-            // first, we prevent cross-key monId collision: after session
-            // loss the server assigns fresh monIds (1, 2, 3…) that may
-            // collide with OLD monIds captured in other keys' cancel
-            // closures, so a stale delete for key A could destroy key B's
-            // newly created item if creates and deletes are interleaved.
-            for (final key in keysToResub) {
-              final ads = _subscriptions[key];
-              logger.d('[$alias] resub $key: exists=${ads != null}, '
-                  'hasRawSub=${ads?.rawSub != null}');
-              if (ads != null && ads.rawSub != null) {
-                final oldSub = ads.rawSub;
-                ads.rawSub = null;
-                oldSub!.cancel(); // fire-and-forget; queues delete via FFI
-              }
-            }
-
-            // Phase 2: Now create new monitored items. All deletes are
-            // already queued and will be sent before any creates because
-            // runIterate hasn't had a chance to run yet (no await above).
-            for (final key in keysToResub) {
-              _monitor(key, resub: true).catchError((e, s) {
-                logger.e('[$alias] Failed to resubscribe key "$key": $e\n$s');
-                return Stream<DynamicValue>.error(
-                    e is Object ? e : StateManException('resubscribe failed'));
-              });
-            }
+            _rebuildClientSubscriptions(wrapper, why: 'session lost');
           }
 
           // Every connected client gets a clock, not only the ones some page
@@ -986,6 +1156,55 @@ class OpcUaStateMan implements StateMan {
           metaAlias: alias, pollIntervalMs: minInterval));
     }
     return ConnMetaRouter(sources);
+  }
+
+  /// Drop [wrapper]'s subscription id and rebuild every monitored item
+  /// routed to it, for the session-loss branch of the state-stream listener.
+  ///
+  /// Synchronous up to the `_monitor` calls on purpose: see the phase
+  /// comments.
+  void _rebuildClientSubscriptions(ClientWrapper wrapper,
+      {required String why}) {
+    wrapper.subscriptionId = null;
+    wrapper.stopHeartbeat();
+    // Only keys belonging to this wrapper.
+    final serverAlias = wrapper.config.serverAlias;
+    final keysToResub = _subscriptions.values
+        .where((e) => keyMappings.lookupServerAlias(e.key) == serverAlias)
+        .map((e) => e.key)
+        .toList();
+    logger.i('[$alias ${wrapper.config.endpoint}] $why: resubscribing '
+        '${keysToResub.length} keys');
+
+    // Phase 1: Cancel ALL old raw subscriptions before creating
+    // any new ones. This queues all DeleteMonitoredItemsRequests
+    // in the native layer synchronously. By doing all cancels
+    // first, we prevent cross-key monId collision: after session
+    // loss the server assigns fresh monIds (1, 2, 3…) that may
+    // collide with OLD monIds captured in other keys' cancel
+    // closures, so a stale delete for key A could destroy key B's
+    // newly created item if creates and deletes are interleaved.
+    for (final key in keysToResub) {
+      final ads = _subscriptions[key];
+      logger.d('[$alias] resub $key: exists=${ads != null}, '
+          'hasRawSub=${ads?.rawSub != null}');
+      if (ads != null && ads.rawSub != null) {
+        final oldSub = ads.rawSub;
+        ads.rawSub = null;
+        oldSub!.cancel(); // fire-and-forget; queues delete via FFI
+      }
+    }
+
+    // Phase 2: Now create new monitored items. All deletes are
+    // already queued and will be sent before any creates because
+    // runIterate hasn't had a chance to run yet (no await above).
+    for (final key in keysToResub) {
+      _monitor(key, resub: true).catchError((e, s) {
+        logger.e('[$alias] Failed to resubscribe key "$key": $e\n$s');
+        return Stream<DynamicValue>.error(
+            e is Object ? e : StateManException('resubscribe failed'));
+      });
+    }
   }
 
   bool _isAliasDisabled(String? alias) =>
@@ -1967,9 +2186,12 @@ class OpcUaStateMan implements StateMan {
         var stream = client.monitor(id, wrapper.subscriptionId!,
             samplingInterval: wrapper.config.publishingInterval);
         // Count each monitored-item emission toward this server's
-        // requests-per-second load figure (see [ClientWrapper.requestsPerSec]).
+        // requests-per-second load figure (see [ClientWrapper.requestsPerSec])
+        // and toward its data-plane clock, which is what lets the wrapper
+        // tell "nothing is watching this client" apart from "this client's
+        // values have stopped".
         stream = stream.map((value) {
-          wrapper.recordRequest();
+          wrapper.recordDataTick();
           return value;
         });
         if (idx != null) {

@@ -24,6 +24,7 @@ import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/providers/database.dart';
 import 'package:tfc/providers/config_store.dart';
 import 'package:tfc/providers/state_man.dart';
+import 'package:tfc/widgets/access_denied_prompt.dart';
 import 'package:tfc/pages/key_repository.dart';
 import 'package:tfc/pages/server_config.dart';
 
@@ -540,4 +541,42 @@ Widget buildTestableServerConfig({
       ),
     ),
   );
+}
+
+/// A `MaterialApp` with the denial prompt wired to its navigator, the way the
+/// app shell wires it to the router's.
+///
+/// [AccessDeniedPrompt] takes a `navigatorKey` rather than using its own
+/// context, because in production it is mounted *above* the router's
+/// `Navigator` and has none to push onto — one prompt for the whole app, not
+/// one per page, which is what stopped a single refused write raising two
+/// stacked dialogs. A test that wants the prompt's behaviour without standing
+/// up the shell wants that same wiring in miniature, and gets it here rather
+/// than repeating the key in six files.
+///
+/// The prompt wraps [home] rather than sitting inside it: it contributes no
+/// render object, so the two are identical in layout and this way the key and
+/// the prompt stay on adjacent lines.
+class PromptedApp extends StatefulWidget {
+  const PromptedApp({super.key, required this.home, this.theme});
+
+  final Widget home;
+  final ThemeData? theme;
+
+  @override
+  State<PromptedApp> createState() => _PromptedAppState();
+}
+
+class _PromptedAppState extends State<PromptedApp> {
+  final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
+
+  @override
+  Widget build(BuildContext context) => MaterialApp(
+        navigatorKey: _navigatorKey,
+        theme: widget.theme,
+        home: AccessDeniedPrompt(
+          navigatorKey: _navigatorKey,
+          child: widget.home,
+        ),
+      );
 }

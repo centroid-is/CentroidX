@@ -12,7 +12,6 @@ import 'package:beamer/beamer.dart';
 import 'package:logger/logger.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'nav_dropdown.dart';
-import 'access_denied_prompt.dart';
 import 'access_status_action.dart';
 import '../core/startup_url.dart';
 import '../models/menu_item.dart';
@@ -20,17 +19,24 @@ import '../providers/preferences.dart';
 import '../route_registry.dart';
 import '../providers/access.dart';
 import '../providers/local_gateway_alarm.dart';
+import '../providers/gateway_link.dart' show relayCanAuthenticateProvider;
 import '../providers/theme.dart';
 import '../providers/alarm.dart';
 import '../providers/nav_alarm.dart';
 import '../providers/menu.dart';
 import '../providers/alarm_auto_navigation.dart';
-import '../providers/web_view_prewarm.dart';
 import '../access_routes.dart';
 import 'package:tfc_access/tfc_access.dart' show AccessGroup, AccessSession;
 import 'package:tfc_dart/core/alarm.dart';
 import 'alarm.dart';
 import 'nav_alarm_badge.dart';
+// The alarm banner asks the alarm view's own access question rather than a
+// second copy of it. These two are new edges but no new *cycle*: the loop
+// base_scaffold -> providers/menu -> page_access_gate -> base_scaffold already
+// existed, because the menu filter asks `resolvePageAccess` too and both
+// refusal bodies come wrapped in a `BaseScaffold`.
+import 'access_gate.dart' show AccessGateState;
+import 'page_access_gate.dart' show resolvePageAccess;
 import '../routes.dart';
 // ===================
 // Provider Abstraction
@@ -43,6 +49,14 @@ abstract class GlobalAppBarLeftWidgetProvider with ChangeNotifier {
 
 final globalAppBarLeftWidgetProvider =
     Provider<GlobalAppBarLeftWidgetProvider?>((ref) => null);
+
+/// The bar `BaseScaffold` builds when the session can see exactly one
+/// top-level destination, so a test can tell it from the Material one.
+///
+/// Both are navigation bars and both are how the operator leaves the page;
+/// they are two widgets only because `NavigationBar` refuses to hold a single
+/// destination.
+const Key kSingleDestinationBarKey = Key('single-destination-nav-bar');
 
 /// The path Beamer is currently showing, or null when the location state isn't
 /// a [BeamState] (e.g. before the first route resolves). This is the same
@@ -146,12 +160,7 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
     // scaffold drains it instead. After the first frame, because this reads
     // the route the scaffold is being built for.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      _takeAlarmNavigation();
-      // Starts the web tiles' browsers ahead of their first visit. Kept alive
-      // and idempotent, so the first scaffold to mount is the one that pays
-      // and every later one reads a number.
-      ref.read(webViewPrewarmProvider);
+      if (mounted) _takeAlarmNavigation();
     });
   }
 
@@ -173,8 +182,7 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
     // half-drawn mimic costs more than the jump is worth. Read off the route
     // declaration rather than a list of paths, so a page published for
     // `configure` in the page editor is covered the day it is created.
-    final suppressed =
-        accessGroupForRoute(currentPath) != AccessGroup.operate;
+    final suppressed = accessGroupForRoute(currentPath) != AccessGroup.operate;
 
     // The operator's own view of the menu, asked of the provider that builds
     // it rather than of the group gate alone.
@@ -290,6 +298,63 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
     );
   }
 
+  /// Whether this session may open the alarm view.
+  ///
+  /// Asked of [resolvePageAccess] — the one function the route gate and the
+  /// menu filter both ask — rather than of `visibleMenuProvider`, which is
+  /// what `_takeAlarmNavigation` above uses. The two surfaces ask different
+  /// questions and that is why they ask them differently: auto-navigation
+  /// moves the operator to an *arbitrary* alarm-configured page, where menu
+  /// presence is the right conservative test, while this banner offers one
+  /// *fixed* route and its tap goes there.
+  ///
+  /// Asking the route gate's own function is what buys the invariant that
+  /// matters here: banner shown if and only if the tap lands allowed, by
+  /// construction, because it is the same function on the same inputs the
+  /// route will ask a moment later. `visibleMenu` is a subset of what
+  /// `resolvePageAccess` admits, so the menu spelling could only ever err by
+  /// hiding alarms while the page is genuinely open — the worse of the two
+  /// directions. It is reachable, too: a harness or an embedder that composes
+  /// its own menu need not carry an Alarm View entry at all, even though the
+  /// route is open to it.
+  ///
+  /// `waiting` counts as closed. During the boot window the whitelist is
+  /// simply not known yet, and the fail-closed direction is the only one that
+  /// does not put alarm text on a panel that may turn out not to be allowed
+  /// it. It costs a restricted-looking bar for the length of the database
+  /// connect — the same window `PageAccessGate` already spends on
+  /// `AccessCheckingBody`, and one where there are no alarms to show yet
+  /// because the alarm stream is resolving through the same connection.
+  bool _alarmViewOpen(WidgetRef ref) =>
+      resolvePageAccess(
+        group: accessGroupForRoute(AppRoutes.alarmView),
+        path: AppRoutes.alarmView,
+        authority: ref.watch(accessAuthorityProvider),
+        session: ref.watch(accessSessionProvider),
+        relayCanAuthenticate: ref.watch(relayCanAuthenticateProvider),
+      ) ==
+      AccessGateState.allowed;
+
+  /// The two highest-priority active alarms, centred in the bar.
+  ///
+  /// **Shown only to a session that may open the alarm view.** The banner is
+  /// that page's ticker: it renders the alarm title and description, and a tap
+  /// beams straight to the full list. Leaving it unconditional meant a panel
+  /// whitelisted down to nothing still read out the plant's alarms in its top
+  /// bar and still had a one-tap route into the page the whitelist had
+  /// removed, which made the whitelist advisory for alarms. Every other
+  /// alarm surface already asks: the navigation badges are built from
+  /// `visibleMenu`, and `_takeAlarmNavigation` above refuses to jump to a page
+  /// the session cannot see.
+  ///
+  /// The gate is inside the builder rather than in front of the
+  /// `StreamBuilder`, and that placement is load-bearing. `_alarmStream` is
+  /// single-subscription; a gate that removed the `StreamBuilder` from the
+  /// tree would have it listen a second time the moment somebody signed in,
+  /// which throws. Keeping one `StreamBuilder` mounted for the life of the
+  /// scaffold keeps that to the one subscription the field's own comment
+  /// promises. Nothing reaches the screen while refused — the branch returns
+  /// before a single alarm is read out of the snapshot.
   Widget _buildAlarmBanner(BuildContext context, WidgetRef ref) {
     // The panel's OWN alarm — the gateway link is gone, or the transport
     // could not even be built — merged into the one banner rather than given
@@ -304,10 +369,15 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
     // fleet nothing. Why it is local-only and never in TimescaleDB:
     // lib/core/local_gateway_alarm.dart.
     final localAlarm = ref.watch(localGatewayAlarmProvider);
+    // The whitelist gates the plant's alarms only. The panel's own link alarm
+    // is shown regardless: it says every value on this screen may be stale,
+    // and a page whitelist must not be able to hide that.
+    final alarmViewOpen = _alarmViewOpen(ref);
     return StreamBuilder<(AlarmSource, List<AlarmActive>)>(
         stream: _alarmStream,
         builder: (context, snapshot) {
-          final hasPlant = !snapshot.hasError && snapshot.hasData;
+          final hasPlant =
+              alarmViewOpen && !snapshot.hasError && snapshot.hasData;
           final plantAlarms = hasPlant
               ? snapshot.data!.$1.filterAlarms(snapshot.data!.$2, '')
               : const <AlarmActive>[];
@@ -323,7 +393,9 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
                 filteredAlarms.sublist(0, math.min(2, filteredAlarms.length));
 
             return GestureDetector(
-              onTap: () => context.beamToNamed(AppRoutes.alarmView),
+              onTap: alarmViewOpen
+                  ? () => context.beamToNamed(AppRoutes.alarmView)
+                  : null,
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: highestPriorAlarms.map((e) {
@@ -666,15 +738,14 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
       // unauthenticated panel and a cold start both pay nothing.
       body: Listener(
         behavior: HitTestBehavior.translucent,
-        onPointerDown: (_) =>
-            ref.read(accessSessionProvider.notifier).poke(),
-        // The denial prompt, mounted in the one place every page passes
-        // through. It passes the body straight back and contributes NO render
-        // object of its own -- not a Stack child, which would re-constrain the
-        // body that Scaffold hands `_BodyBoxConstraints`, and not a zero-size
-        // sibling either. The pixel budget here is zero: this file is in four
-        // Phase 2 goldens and several Phase 1 ones.
-        child: AccessDeniedPrompt(child: widget.body),
+        onPointerDown: (_) => ref.read(accessSessionProvider.notifier).poke(),
+        // No denial prompt here. "The one place every page passes through"
+        // was wrong in the one way that mattered: the router keeps more than
+        // one page mounted at a time -- `/` sits under every path -- so a
+        // prompt per scaffold was two prompts per station, and two dialogs for
+        // one refused write. It is mounted once above the router instead, in
+        // `centroid-hmi/lib/main.dart`; see `AccessDeniedPrompt`.
+        child: widget.body,
       ),
       floatingActionButton: _isFullscreen
           ? FloatingActionButton(
@@ -695,63 +766,144 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
       // `VisibleMenu` owns the mapping so there is nowhere for the two to
       // disagree.
       //
-      // No bar below two destinations: Material's NavigationBar asserts it,
-      // and a session whitelisted down to one page is a real state now. The
-      // app bar — with its sign-in control — is still there, so this is not a
-      // dead end; fullscreen mode has always rendered a bar-less scaffold.
+      // A bar for one destination too, and it is not `NavigationBar`: that
+      // widget asserts `destinations.length >= 2`, and taking its assert as
+      // the app's rule is what left an operator with no navigation at all.
+      // See `VisibleMenu.showsBar`. `_singleDestinationBar` renders the same
+      // destination in the same bar-shaped surface without going through it.
+      //
+      // Only a genuinely empty menu still has no bar, and fullscreen mode
+      // still suppresses it — that one has its own exit button.
       bottomNavigationBar: _isFullscreen || !visibleMenu.showsBar
           ? null
-          : NavigationBar(
-              // Same null-safe path source as the back-arrow gate: an
-              // unguarded `as BeamState` here would defeat currentBeamPath's
-              // guard — both run in the same build pass, so the scaffold
-              // would fail to build anyway if this threw.
-              //
-              // Null — the current page is not one this session can see, which
-              // happens on sign-out — selects nothing rather than the wrong
-              // thing. Index 0 would highlight whatever happens to be first.
-              selectedIndex:
-                  visibleMenu.indexOfPath(currentBeamPath(context) ?? '/') ?? 0,
-              labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
-              destinations: [
-                ...visibleMenu.topLevel.map<Widget>((item) {
-                  if (item.children.isEmpty) {
-                    return NavigationDestination(
-                        icon: NavAlarmBadge(
-                          level: navigationAlarmLevelFor(item, navAlarmLevels,
-                              currentPath: navCurrentPath),
-                          child: Icon(item.icon),
-                        ),
-                        label: item.label);
-                  }
-                  return NavDropdown(
+          : visibleMenu.topLevel.length == 1
+              ? _singleDestinationBar(
+                  context,
+                  visibleMenu.topLevel.single,
+                  navAlarmLevels,
+                  navCurrentPath,
+                )
+              : NavigationBar(
+                  // Same null-safe path source as the back-arrow gate: an
+                  // unguarded `as BeamState` here would defeat currentBeamPath's
+                  // guard — both run in the same build pass, so the scaffold
+                  // would fail to build anyway if this threw.
+                  //
+                  // Null — the current page is not one this session can see, which
+                  // happens on sign-out — selects nothing rather than the wrong
+                  // thing. Index 0 would highlight whatever happens to be first.
+                  selectedIndex: visibleMenu
+                          .indexOfPath(currentBeamPath(context) ?? '/') ??
+                      0,
+                  labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+                  destinations: [
+                    ...visibleMenu.topLevel.map<Widget>((item) {
+                      if (item.children.isEmpty) {
+                        return NavigationDestination(
+                            icon: NavAlarmBadge(
+                              level: navigationAlarmLevelFor(
+                                  item, navAlarmLevels,
+                                  currentPath: navCurrentPath),
+                              child: Icon(item.icon),
+                            ),
+                            label: item.label);
+                      }
+                      return NavDropdown(
+                        menuItem: item,
+                        alarmLevels: navAlarmLevels,
+                        currentPath: navCurrentPath,
+                      );
+                    }),
+                  ],
+                  onDestinationSelected: (int index) {
+                    _logger.d('Item tapped: $index');
+                    // The same filtered list the destinations were built from.
+                    if (index < 0 || index >= visibleMenu.topLevel.length) {
+                      return;
+                    }
+                    _openDestination(context, visibleMenu.topLevel[index]);
+                  },
+                ),
+    );
+  }
+
+  /// A tap on a top-level destination, whichever bar it came from.
+  ///
+  /// Shared so the one-destination bar cannot drift from the Material one: the
+  /// leave guard, the pane and the dialogs are all part of "the operator asked
+  /// to go somewhere else", not part of `NavigationBar`.
+  void _openDestination(BuildContext context, MenuItem item) {
+    LeaveGuard.then(() {
+      // The page may object (the editor with unsaved edits); the guard is
+      // asked once, here, synchronously when none is set. beamSafelyKids is
+      // told not to ask again.
+      if (!context.mounted) return;
+      // Closed on the tap, not left to the router listener in MyApp. That
+      // listener is the guarantee -- it catches the back button, beamBack,
+      // deep links and the route guards -- but it fires once the new location
+      // has been resolved, so the pane lingers for those frames. Closing here
+      // as well takes it away the moment the operator asks to leave. close()
+      // is a no-op when nothing is open, so the two never fight.
+      closeSidePane(immediate: true);
+      closeAllFloatingDialogs();
+      beamSafelyKids(context, item, askGuard: false);
+    });
+  }
+
+  /// The navigation bar for a session that can see exactly one destination.
+  ///
+  /// **Why this exists rather than a `NavigationBar` with one destination:**
+  /// Material asserts `destinations.length >= 2`. That assert used to be
+  /// enforced by hiding the bar altogether, which turned "you may see one
+  /// section" into "you may see nothing and cannot leave this screen" — the
+  /// live-station fault this file's `showsBar` note describes.
+  ///
+  /// A section is already a self-contained widget ([NavDropdown] draws its own
+  /// indicator and opens its own popup), so it drops straight in. A lone leaf
+  /// cannot use `NavigationDestination` — that reads inherited state only a
+  /// `NavigationBar` provides — so it is drawn with the same
+  /// [TopLevelNavIndicator] the sections use, which keeps one destination
+  /// looking like the bar it would sit in rather than like a stray button.
+  Widget _singleDestinationBar(
+    BuildContext context,
+    MenuItem item,
+    Map<String, AlarmLevel> navAlarmLevels,
+    String? navCurrentPath,
+  ) {
+    final barTheme = NavigationBarTheme.of(context);
+    final level = navigationAlarmLevelFor(item, navAlarmLevels,
+        currentPath: navCurrentPath);
+
+    return Material(
+      key: kSingleDestinationBarKey,
+      color: barTheme.backgroundColor ??
+          Theme.of(context).colorScheme.surfaceContainer,
+      elevation: barTheme.elevation ?? 3,
+      child: SafeArea(
+        top: false,
+        child: SizedBox(
+          height: barTheme.height ?? 80,
+          width: double.infinity,
+          child: Center(
+            child: item.isNavigationSection
+                ? NavDropdown(
                     menuItem: item,
                     alarmLevels: navAlarmLevels,
                     currentPath: navCurrentPath,
-                  );
-                }),
-              ],
-              onDestinationSelected: (int index) => LeaveGuard.then(() {
-                _logger.d('Item tapped: $index');
-                // The page may object (the editor with unsaved edits); the
-                // guard is asked once, here, synchronously when none is set.
-                // beamSafelyKids is told not to ask again.
-                if (!context.mounted) return;
-                // Closed on the tap, not left to the router listener in
-                // MyApp. That listener is the guarantee -- it catches the back
-                // button, beamBack, deep links and the route guards -- but it
-                // fires once the new location has been resolved, so the pane
-                // lingers for those frames. Closing here as well takes it away
-                // the moment the operator asks to leave. close() is a no-op
-                // when nothing is open, so the two never fight.
-                closeSidePane(immediate: true);
-                closeAllFloatingDialogs();
-                // The same filtered list the destinations were built from.
-                if (index < 0 || index >= visibleMenu.topLevel.length) return;
-                final item = visibleMenu.topLevel[index];
-                beamSafelyKids(context, item, askGuard: false);
-              }),
-            ),
+                  )
+                : InkWell(
+                    key: ValueKey<String>('nav-${item.label.toLowerCase()}'),
+                    onTap: () => _openDestination(context, item),
+                    child: TopLevelNavIndicator(
+                      item.icon,
+                      item.label,
+                      navCurrentPath == item.path,
+                      alarmLevel: level,
+                    ),
+                  ),
+          ),
+        ),
+      ),
     );
   }
 }

@@ -1,7 +1,6 @@
 import 'package:json_annotation/json_annotation.dart';
 import 'package:flutter/material.dart';
-import 'package:tfc/widgets/panes/pane_chrome.dart';
-import 'package:tfc/widgets/panes/standard_dialog.dart';
+import 'package:tfc/widgets/icon_picker.dart';
 import 'package:tfc/widgets/panes/color_picker_dialog.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:rxdart/rxdart.dart';
@@ -234,46 +233,10 @@ class _ConfigContent extends StatefulWidget {
 
 class _ConfigContentState extends State<_ConfigContent> {
   void _showIconPicker() {
-    showStandardDialog<void>(
+    showIconPicker(
       context: context,
-      title: 'Select icon',
-      icon: Icons.emoji_symbols,
-      width: 640,
-      builder: (context) => SizedBox(
-        width: 600,
-        height: 600,
-        child: GridView.builder(
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 6,
-            childAspectRatio: 1,
-          ),
-          itemCount: iconList.length,
-          itemBuilder: (context, index) {
-            final icon = iconList[index];
-            return InkWell(
-              onTap: () {
-                setState(() {
-                  widget.config.iconData = icon;
-                });
-                Navigator.pop(context);
-              },
-              child: Container(
-                margin: const EdgeInsets.all(2),
-                decoration: BoxDecoration(
-                  border: Border.all(
-                    color: widget.config.iconData == icon
-                        ? Theme.of(context).primaryColor
-                        : Colors.transparent,
-                    width: 2,
-                  ),
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: Icon(icon),
-              ),
-            );
-          },
-        ),
-      ),
+      selected: widget.config.iconData,
+      onSelected: (icon) => setState(() => widget.config.iconData = icon),
     );
   }
 
@@ -494,61 +457,14 @@ class _ConfigContentState extends State<_ConfigContent> {
   }
 
   void _showConditionalIconPicker(int stateIndex) {
-    showStandardDialog<void>(
+    showIconPicker(
       context: context,
       title: 'Select icon for condition',
-      icon: Icons.emoji_symbols,
-      width: 640,
-      actionsBuilder: (dialogContext) => [
-        PaneAction(
-          label: 'Clear icon',
-          icon: Icons.format_clear,
-          onPressed: () {
-            setState(() {
-              widget.config.conditionalStates![stateIndex].iconData = null;
-            });
-            Navigator.pop(dialogContext);
-          },
-        ),
-      ],
-      builder: (context) => SizedBox(
-        width: 600,
-        height: 600,
-        child: GridView.builder(
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 6,
-            childAspectRatio: 1,
-          ),
-          itemCount: iconList.length,
-          itemBuilder: (context, index) {
-            final icon = iconList[index];
-            return InkWell(
-              onTap: () {
-                setState(() {
-                  widget.config.conditionalStates![stateIndex].iconData = icon;
-                });
-                Navigator.pop(context);
-              },
-              child: Container(
-                margin: const EdgeInsets.all(2),
-                decoration: BoxDecoration(
-                  border: Border.all(
-                    color:
-                        widget.config.conditionalStates![stateIndex].iconData ==
-                                icon
-                            ? Theme.of(context).primaryColor
-                            : Colors.transparent,
-                    width: 2,
-                  ),
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: Icon(icon),
-              ),
-            );
-          },
-        ),
-      ),
+      selected: widget.config.conditionalStates![stateIndex].iconData,
+      onSelected: (icon) => setState(
+          () => widget.config.conditionalStates![stateIndex].iconData = icon),
+      onCleared: () => setState(
+          () => widget.config.conditionalStates![stateIndex].iconData = null),
     );
   }
-
 }

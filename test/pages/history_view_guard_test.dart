@@ -217,6 +217,12 @@ Widget _shell({
       child: MaterialApp.router(
         routerDelegate: delegate,
         routeInformationParser: BeamerParser(),
+        builder: (context, navigatorChild) => Stack(
+          children: [
+            navigatorChild!,
+            AccessDeniedPrompt(navigatorKey: delegate.navigatorKey),
+          ],
+        ),
       ),
     ),
   );

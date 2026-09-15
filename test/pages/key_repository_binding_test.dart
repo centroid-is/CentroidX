@@ -310,9 +310,9 @@ void main() {
         // loader is what fills the resolver, so a write followed by an
         // invalidate has to actually become visible.
       ],
-      child: MaterialApp(
+      child: PromptedApp(
         home: Scaffold(
-          body: AccessDeniedPrompt(child: KeyRepositoryContent()),
+          body: KeyRepositoryContent(),
         ),
       ),
     );

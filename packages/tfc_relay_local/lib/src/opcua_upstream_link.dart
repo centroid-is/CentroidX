@@ -81,6 +81,10 @@ UpstreamLinkState mapEffectiveStatus(EffectiveDeviceStatus status) {
     case EffectiveDeviceStatus.connecting:
       return UpstreamLinkState.connecting;
     case EffectiveDeviceStatus.connected:
+    // Data is arriving; only the server's heartbeat item could not be created
+    // (#539). Calling that unhealthy is the "No data" mislabel #539 removed,
+    // and per-value freshness still withholds any value that does go stale.
+    case EffectiveDeviceStatus.opcuaUnmonitored:
       return UpstreamLinkState.connected;
     case EffectiveDeviceStatus.opcuaUnhealthy:
     case EffectiveDeviceStatus.umasUnhealthy:

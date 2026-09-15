@@ -494,9 +494,17 @@ void main() {
             reason: '${entry.key}: a resolved-null repository and an errored '
                 'one are the same fact and must render the same badge');
       }
-      expect(sizes[kServerConfigRoute]!.first, Size.zero);
-      for (final path
-          in kRaisedRoutes.keys.where((p) => p != kServerConfigRoute)) {
+      // The two bootstrap routes wear no lock during an outage: IP Settings
+      // gives the machine an address and Server Config points it at a
+      // database, and on a freshly commissioned station neither can be gated
+      // behind a group that only a working database can grant.
+      const exempt = [kServerConfigRoute, kIpSettingsRoute];
+      for (final path in exempt) {
+        expect(sizes[path]!.first, Size.zero,
+            reason: '$path must be reachable while the repository is '
+                'unavailable, or a new station cannot be commissioned');
+      }
+      for (final path in kRaisedRoutes.keys.where((p) => !exempt.contains(p))) {
         expect(sizes[path]!.first.width, greaterThan(0),
             reason: '$path stays locked while the repository is unavailable');
       }

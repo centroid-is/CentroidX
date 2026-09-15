@@ -1,5 +1,7 @@
 #include "webview_plugin.h"
 
+#include "cef_cache_paths_host.h"
+
 #ifdef OS_MAC
 #include <include/wrapper/cef_library_loader.h>
 #endif
@@ -699,6 +701,26 @@ namespace webview_cef {
 		CefSettings cefs;
 		cefs.windowless_rendering_enabled = true;
 		cefs.no_sandbox = true;
+
+		// CentroidX: give CEF a cache root of our own.
+		//
+		// Left empty, CEF warns on every start ("Please customize
+		// CefSettings.root_cache_path ... may lead to unintended process
+		// singleton behavior") and falls back to a directory shared by every
+		// CEF application on the machine. That directory holds Chromium's
+		// process singleton, and a container restart leaves its SingletonLock,
+		// SingletonCookie and SingletonSocket behind pointing at a hostname
+		// and a pid the restart hands straight back out — after which whether
+		// the browser comes up is a race. PrepareCefCachePaths picks a
+		// writable root for this application alone and clears what a killed
+		// run left in it. See common/cef_cache_paths.h.
+		const CachePaths cachePaths = PrepareCefCachePaths();
+		if (!cachePaths.empty()) {
+			CefString(&cefs.root_cache_path) = cachePaths.root;
+			// CEF requires cache_path to be root_cache_path or a child of it.
+			CefString(&cefs.cache_path) = cachePaths.cache;
+		}
+
 		if(!userAgent.empty()){
 			CefString(&cefs.user_agent_product) = userAgent;
 		}
@@ -723,6 +745,12 @@ namespace webview_cef {
 		cefs.multi_threaded_message_loop = true;
 #endif
 		CefInitialize(mainArgs, cefs, app.get(), nullptr);
+		// CentroidX: a Flutter hot restart resets the Dart side and sends
+		// "init" again while this process — and the CEF inside it — lives on.
+		// Without this, the second init would run the singleton sweep against
+		// our own live state and call CefInitialize a second time, which is
+		// once more than a process is allowed.
+		isCefInitialized = true;
 	}
 
 	void doMessageLoopWork(){

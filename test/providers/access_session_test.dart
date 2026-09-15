@@ -324,13 +324,33 @@ void main() {
       expect(session.can(AccessGroup.device), isTrue);
     });
 
-    test('with no database at all yields anonymous with the seeded groups',
-        () async {
+    test('with no database at all yields anonymous with the seeded groups '
+        'and no whitelist', () async {
       final h = await _harness(withDatabase: false);
       final session = await h.settle();
 
       expect(session.isElevated, isFalse);
       expect(session.groups, {AccessGroup.operate});
+
+      // **The commissioning guarantee, asserted where it is actually
+      // produced.** Every route gate that asks only the page whitelist —
+      // Alarm View, About Linux, History View and its alias, Reports — is
+      // inert on a station with no database precisely because this is null:
+      // `pageVisible` short-circuits to true for every path, so a fresh
+      // station cannot whitelist itself down to nothing before anybody has
+      // configured a whitelist.
+      //
+      // `centroid-hmi/test/navigation_test.dart` asserts the other half —
+      // that *given* such a session those routes open — by handing
+      // `resolvePageAccess` a session built by hand. Neither test is worth
+      // much without this one: together they are the chain, and this is the
+      // end of it that a plausible "consistency" edit would break. Returning
+      // the empty set here instead of null reads like tightening and would
+      // hide every page on every un-commissioned panel, with both halves
+      // still green.
+      expect(session.allowedPages, isNull,
+          reason: 'a station with no database must have no whitelist at all — '
+              'the empty set would hide every page on a fresh panel');
     });
   });
 

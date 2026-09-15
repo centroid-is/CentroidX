@@ -1212,3 +1212,67 @@ this amendment. Making `AccessGate` resolve a path would give it a lookup to
 fail open through, which its doc comment rules out. A built-in withheld by a
 whitelist is therefore hidden, not refused, and its group gate is what
 actually shuts it.
+
+### §13a — the paragraph above is reversed (2026-09-15)
+
+**"Hidden, not refused" no longer holds, and it should not have.** The
+reasoning above is sound about `AccessGate` and wrong about the conclusion it
+draws. It reads "`AccessGate` cannot ask about paths" and concludes "so the
+whitelist stays menu-level for built-ins" — but the alternative it never
+considers is the one that was already shipping for every page-manager page:
+do not extend `AccessGate`, put `PageAccessGate` in front of the route
+instead. That widget takes a path, asks the group half and the whitelist half
+in that order, and has no lookup to fail open through.
+
+What the paragraph above actually described was a hole. Five built-ins — Alarm
+View, About Linux, History View and its `/advanced/history-view` alias, and
+Reports — sit at `operate`, so they had no group gate to "actually shut" them.
+For those five, "hidden, not refused" meant the whitelist could remove them
+from the menu while every one of their addresses kept working. That is the
+enforcement-by-hiding `docs/access-control-spec.md` §6 names as a failure
+mode, and §13's own rule — *"A page must not be reachable by a route the menu
+refuses to show"* — already forbade it.
+
+It surfaced through the top bar rather than through a typed URL: the alarm
+banner renders alarm titles and descriptions unconditionally and beams to
+`/alarm-view` on a tap, so a panel whitelisted down to nothing still read out
+the plant's alarms and still had a one-tap route into the page the whitelist
+had taken away.
+
+**The ruling (user, 2026-09-14, applied 2026-09-15).** Every route asks
+`resolvePageAccess`. The five above now carry `PageAccessGate` through the
+`openPage` helper in `centroid-hmi/lib/main.dart`, and the alarm banner asks
+the same function about `/alarm-view` before rendering anything.
+
+**None of their groups move**, and that is the part this amendment is most
+careful about. All five stay `operate`, so `resolvePageAccess` short-circuits
+the group half before touching the repository or the session, and read
+permissions stay out of scope exactly as §Scope and §11 have it. The
+whitelist half is the only thing added. Raising any of these to a permission
+would take a read surface away from every anonymous panel on the floor, which
+is not what was asked for and is not what was done.
+
+**It cannot strand a commissioning station, and the reason is structural
+rather than lucky: a whitelist only exists where a database exists.** With no
+repository, `_anonymousSession` builds the seeded Operator groups and
+deliberately no `allowedPages`, so `pageVisible` is true for every path and
+all five gates are inert. The `administer` escape hatch that keeps IP Settings
+and Server Config reachable while a station is being pointed at its database
+is a different mechanism — `routeAllowedWhenRepositoryUnavailable`, through
+the group half — and this amendment does not touch it. Layer 1 of §4 is also
+untouched: `/advanced/access` remains exempt from the whitelist entirely, so a
+bad whitelist stays repairable. `centroid-hmi/test/navigation_test.dart`
+asserts the commissioning case and the escape hatch together, so widening the
+whitelist gating cannot quietly cost either.
+
+The alias, `/advanced/history-view`, is gated on the **canonical**
+`AppRoutes.historyView`. It is not a menu destination, so it can never appear
+in a whitelist, and `pageVisible` matches stored paths exactly and fails
+closed — a gate keyed on the alias's own spelling would refuse every bookmark
+on any station that configured a whitelist at all. Keying both addresses on
+the canonical path is also what stops the alias being the way around a
+whitelist that hides History View.
+
+`AppRoutes.firstUser` remains ungated by either gate, for the reason §4 gives:
+`pageVisible` fails closed, and gating commissioning on a station with no
+users is the deadlock the first-user design exists to avoid.

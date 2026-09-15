@@ -211,9 +211,9 @@ void main() {
 
     await tester.pumpWidget(UncontrolledProviderScope(
       container: container,
-      child: const MaterialApp(
+      child: const PromptedApp(
         home: Scaffold(
-          body: AccessDeniedPrompt(child: AccessTemplatesSection()),
+          body: AccessTemplatesSection(),
         ),
       ),
     ));

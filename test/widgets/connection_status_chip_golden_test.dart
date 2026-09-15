@@ -1,11 +1,15 @@
 /// Golden image of every [ConnectionStatusChip] state, for design review.
 ///
-/// What is under review is the new deep-orange "No data" pill
-/// (`EffectiveDeviceStatus.opcuaUnhealthy`, the frozen-session fix): it has
-/// to read as its own failure — "link claims up, values frozen" — next to
-/// green Connected, orange Connecting..., red Disconnected and amber
-/// UMAS error, in both themes. Rendered with the app's real Solarized theme
-/// so the goldens carry the colours the plant actually shows.
+/// What is under review is the pair of OPC UA failure pills, which say
+/// different things and must not be mistaken for one another: deep-orange
+/// "No data" (`opcuaUnhealthy` — link claims up, values frozen) and amber
+/// "Unmonitored" (`opcuaUnmonitored` — nothing is watching this client, but
+/// its values may be perfectly current). A chip reading "No data" beside a
+/// station delivering sub-second values is what made this split necessary.
+/// Both are shown next to green Connected, orange Connecting..., red
+/// Disconnected and amber UMAS error, in both themes. Rendered with the
+/// app's real Solarized theme so the goldens carry the colours the plant
+/// actually shows.
 ///
 /// To update: flutter test test/widgets/connection_status_chip_golden_test.dart --update-goldens --run-skipped
 @Tags(['golden'])
@@ -89,6 +93,13 @@ Widget buildStrip({bool dark = false}) {
                   const ConnectionStatusChip(
                     status: ConnectionStatus.connected,
                     effectiveStatus: EffectiveDeviceStatus.opcuaUnhealthy,
+                  ),
+                ),
+                row(
+                  'effective: opcuaUnmonitored',
+                  const ConnectionStatusChip(
+                    status: ConnectionStatus.connected,
+                    effectiveStatus: EffectiveDeviceStatus.opcuaUnmonitored,
                   ),
                 ),
                 const Divider(height: 24),

@@ -50,7 +50,8 @@ import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/access/access_repository.dart';
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/database_drift.dart';
-import '../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
+import '../helpers/test_helpers.dart'
+    show PromptedApp, useInMemoryDeviceLocalPreferences;
 
 // ---------------------------------------------------------------------------
 // Doubles
@@ -311,14 +312,12 @@ void main() {
     addTearDown(c.dispose);
     return UncontrolledProviderScope(
       container: c,
-      child: MaterialApp(
+      child: PromptedApp(
         home: Scaffold(
-          body: AccessDeniedPrompt(
-            child: SingleChildScrollView(
-              child: gated
-                  ? const _UsersGate(child: AccessRolesSection())
-                  : const AccessRolesSection(),
-            ),
+          body: SingleChildScrollView(
+            child: gated
+                ? const _UsersGate(child: AccessRolesSection())
+                : const AccessRolesSection(),
           ),
         ),
       ),

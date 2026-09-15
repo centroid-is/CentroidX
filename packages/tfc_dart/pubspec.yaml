@@ -136,3 +136,7 @@ dev_dependencies:
   shelf_web_socket: ^3.0.0
   stream_channel: ^2.1.4
   web_socket_channel: ^3.0.3
+  # Virtual clock for timer-driven tests. Lets the poll-loop cadence tests
+  # assert exact tick counts instead of sleeping and hoping (see
+  # test/umas_monitor_poll_loop_test.dart).
+  fake_async: ^1.3.1

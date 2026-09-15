@@ -448,8 +448,23 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
   Color? _errorColourHandle;
 
   final List<Map<String, dynamic>> _proposedMappings = [];
-  final List<int> _proposalIds = [];
+
+  /// The proposal id behind each entry of [_proposedMappings], index for
+  /// index. Null for an entry staged off the route: the chat batch card
+  /// accepts a proposal before it beams here, so that one has no id left to
+  /// mark and no row in the queue -- see [_stageRoutedProposal].
+  final List<int?> _proposalIds = [];
   bool get _isProposal => _proposedMappings.isNotEmpty;
+
+  /// What the banner fires for one row of the batch: apply and accept that
+  /// mapping alone, or un-stage and reject it alone. One instance for the
+  /// life of this State, so the slot can tell our entries from the access
+  /// templates section's on the same page.
+  late final ProposalItemActions _itemActions = ProposalItemActions(
+    commit: (id) => _commitProposals(only: {id}),
+    discard: (id) => _discardProposals(only: {id}),
+  );
+  StateController<Map<int, ProposalItemActions>>? _itemSlot;
 
   /// Where to report from. The handle whenever there is one -- every banner
   /// path has one, and looking an ancestor up off a dead element throws.
@@ -510,6 +525,7 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
       if (decoded['_proposal_type'] != 'key_mapping') return;
       if (decoded['key'] is! String) return;
       _proposedMappings.add(decoded);
+      _proposalIds.add(null);
       _publishProposalCallbacks();
     } catch (_) {
       // Malformed JSON: nothing to stage.
@@ -531,17 +547,29 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
     }
   }
 
-  /// Marks the route payload resolved once this batch is accepted or
-  /// rejected, so a later mount does not stage it again.
+  /// Marks the route payload resolved once the proposal it carries has been
+  /// decided, so a later mount does not stage it again.
   ///
   /// Recorded on the notifier because the record has to outlive this State --
   /// resurrecting the strip takes nothing more than rebuilding the section.
-  /// Called before the `mounted` check on both paths: a batch that resolved
-  /// after the operator navigated away is still resolved.
-  void _markRoutePayloadResolved(ProposalStateNotifier notifier) {
+  /// Called before the `mounted` check on every deciding path: a proposal
+  /// that resolved after the operator navigated away is still resolved.
+  ///
+  /// Decided means: not still staged here off the route (an id-less entry),
+  /// and not still pending in the queue. A batch is now decided one row at a
+  /// time, so this is asked after every decision rather than once at the
+  /// end; while the routed proposal is still up it says nothing.
+  void _settleRoutePayload() {
     final json = widget.proposalData;
     if (json == null) return;
-    notifier.markRoutePayloadResolved(json);
+    final container = _container;
+    if (container == null) return;
+    if (_proposalIds.contains(null)) return;
+    final pending = container.read(proposalStateProvider).proposals;
+    if (pending.any((p) => p.proposalJson == json)) return;
+    container
+        .read(proposalStateProvider.notifier)
+        .markRoutePayloadResolved(json);
   }
 
   @override
@@ -557,8 +585,10 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
     // banner's buttons away from a live batch.
     final commitSlot = _commitSlot;
     final discardSlot = _discardSlot;
+    final itemSlot = _itemSlot;
     final commit = _commitProposals;
     final discard = _discardProposals;
+    final items = _itemActions;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       // `mounted` on the controllers, not on us: a frame later the whole
       // ProviderScope may be gone too -- the app shutting down, or a test
@@ -573,6 +603,7 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
           discardSlot.state == discard) {
         discardSlot.state = null;
       }
+      if (itemSlot != null && itemSlot.mounted) itemSlot.withdraw(items);
     });
     _statusFlushTimer?.cancel();
     _listController.dispose();
@@ -651,14 +682,74 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
     return added;
   }
 
+  /// Drops staged entries the operator decided on a surface that never asks
+  /// this section: the banner's Reject on a row it had not yet been offered,
+  /// the chat batch card's Reject all, a dismiss. Left staged, a rejected
+  /// mapping was written by the next Accept all as if it had been accepted.
+  ///
+  /// Only entries with an id can be decided elsewhere; a routed entry lives
+  /// here alone. Returns how many were dropped.
+  int _dropDecidedElsewhere(ProposalState state) {
+    final live = {for (final p in state.proposals) p.id};
+    final gone = <Map<String, dynamic>>[];
+    for (var i = 0; i < _proposalIds.length; i++) {
+      final id = _proposalIds[i];
+      if (id != null && !live.contains(id)) gone.add(_proposedMappings[i]);
+    }
+    if (gone.isNotEmpty) _unstage(gone);
+    return gone.length;
+  }
+
+  /// The staged entries a commit or discard is about: every one, or the ones
+  /// whose proposal id is in [only]. As pairs, because the lists can shift
+  /// under an await -- the listener drops an accepted entry the moment its
+  /// id leaves the queue -- so an index taken before is worthless after.
+  List<(Map<String, dynamic>, int?)> _pick(Set<int>? only) => [
+        for (var i = 0; i < _proposedMappings.length; i++)
+          if (only == null ||
+              (_proposalIds[i] != null && only.contains(_proposalIds[i])))
+            (_proposedMappings[i], _proposalIds[i]),
+      ];
+
+  /// Takes [entries] out of the batch, by identity, keeping the ids in step,
+  /// and retires whatever banner controls they were behind: their rows, and
+  /// the batch's Accept/Reject once nothing is left. Tolerant of an entry
+  /// the listener already dropped. Through the stored controllers, because
+  /// this runs from the banner's callbacks after this section may be gone.
+  void _unstage(Iterable<Map<String, dynamic>> entries) {
+    final gone = <int>[];
+    for (final entry in entries) {
+      final i = _proposedMappings.indexWhere((m) => identical(m, entry));
+      if (i < 0) continue;
+      final id = _proposalIds[i];
+      if (id != null) gone.add(id);
+      _proposedMappings.removeAt(i);
+      _proposalIds.removeAt(i);
+    }
+    final itemSlot = _itemSlot;
+    if (gone.isNotEmpty && itemSlot != null && itemSlot.mounted) {
+      itemSlot.withdraw(_itemActions, gone);
+    }
+    if (_proposedMappings.isEmpty) {
+      _commitSlot?.state = null;
+      _discardSlot?.state = null;
+    }
+  }
+
   /// Hands the black banner the commit/discard actions for this batch.
   ///
   /// The inline amber bar that used to carry Accept/Reject here is gone: one
   /// place to act on a proposal, not two. What stays inline is the highlighted
   /// row showing the proposed mapping, which is the point of navigating here.
+  ///
+  /// The per-row actions go up first: the banner's armed Accept takes the
+  /// first seam that can save exactly the row it was pressed on.
   void _publishProposalCallbacks() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
+      final itemSlot = ref.read(proposalItemActionsProvider.notifier);
+      itemSlot.offer(_proposalIds.whereType<int>(), _itemActions);
+      _itemSlot = itemSlot;
       final commitSlot = ref.read(proposalCommitProvider.notifier);
       commitSlot.state = _commitProposals;
       _commitSlot = commitSlot;
@@ -675,15 +766,19 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
     });
   }
 
-  /// Applies every staged mapping, saves once, then marks them accepted.
-  Future<void> _commitProposals() async {
+  /// Applies the staged mappings -- every one, or [only] those proposal ids
+  /// -- saves once, then marks them accepted. The rest of the batch stays
+  /// staged, still the banner's to accept or reject.
+  Future<void> _commitProposals({Set<int>? only}) async {
     if (_keyMappings == null || _proposedMappings.isEmpty) return;
+    final picked = _pick(only);
+    if (picked.isEmpty) return;
     // Fresh keys go to the *top* of the repository, like _addKey's: that is
     // where _revealKey can land in O(1). A proposal for an existing key
     // updates it in place, keeping its position.
     final fresh = <String, KeyMappingEntry>{};
     String? firstKey;
-    for (final m in _proposedMappings) {
+    for (final (m, _) in picked) {
       final key = m['key'] as String?;
       if (key == null) continue;
 
@@ -756,68 +851,74 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
     final notifier = _container?.read(proposalStateProvider.notifier);
     if (notifier == null) return;
     var failed = 0;
-    for (final id in _proposalIds) {
+    // Routed entries have no id to mark; the save was their whole accept.
+    final done = <Map<String, dynamic>>[
+      for (final (m, id) in picked)
+        if (id == null) m,
+    ];
+    for (final (m, id) in picked) {
+      if (id == null) continue;
       try {
         await notifier.acceptProposal(id);
+        done.add(m);
       } catch (_) {
         failed++;
       }
     }
-    // A swallowed failure is the quiet form of the bug this method already
-    // guards against: the mappings are in preferences, the rows are still
-    // pending in the database, and clearing the batch would tell the operator
-    // it is done while the next load brings it all back. Keep the batch up
-    // instead, so Accept can be pressed again -- both halves are idempotent.
+    // What was marked leaves the batch. A swallowed failure is the quiet form
+    // of the bug this method already guards against: the mappings are in
+    // preferences, the rows are still pending in the database, and clearing
+    // them would tell the operator it is done while the next load brings
+    // them back. Those stay up instead, so Accept can be pressed again --
+    // both halves are idempotent.
+    _unstage(done);
+    _settleRoutePayload();
     if (failed > 0) {
       _report(
-        '$failed of ${_proposalIds.length} proposals could not be marked '
+        '$failed of ${picked.length} proposals could not be marked '
         'accepted. The mappings are saved; press Accept again.',
         error: true,
       );
-      return;
     }
-    _markRoutePayloadResolved(notifier);
     if (!mounted) return;
-    setState(() {
-      _proposedMappings.clear();
-      _proposalIds.clear();
-    });
-    _commitSlot?.state = null;
-    _discardSlot?.state = null;
+    setState(() {});
     if (firstKey != null) _revealKey(firstKey);
   }
 
-  /// Drops the whole batch without touching the mappings.
-  Future<void> _discardProposals() async {
+  /// Drops the batch -- every entry, or [only] those proposal ids -- without
+  /// touching the mappings.
+  Future<void> _discardProposals({Set<int>? only}) async {
     final notifier = _container?.read(proposalStateProvider.notifier);
     if (notifier == null) return;
+    final picked = _pick(only);
     var failed = 0;
-    for (final id in _proposalIds) {
+    final done = <Map<String, dynamic>>[
+      for (final (m, id) in picked)
+        if (id == null) m,
+    ];
+    for (final (m, id) in picked) {
+      if (id == null) continue;
       try {
         await notifier.rejectProposal(id);
+        done.add(m);
       } catch (_) {
         failed++;
       }
     }
     // As in [_commitProposals]: a rejection that did not reach the database
-    // comes back on the next load, so the batch stays up rather than
+    // comes back on the next load, so that entry stays up rather than
     // pretending it is gone.
+    _unstage(done);
+    _settleRoutePayload();
     if (failed > 0) {
       _report(
-        '$failed of ${_proposalIds.length} proposals could not be marked '
+        '$failed of ${picked.length} proposals could not be marked '
         'rejected. Press Reject again.',
         error: true,
       );
-      return;
     }
-    _markRoutePayloadResolved(notifier);
     if (!mounted) return;
-    setState(() {
-      _proposedMappings.clear();
-      _proposalIds.clear();
-    });
-    _commitSlot?.state = null;
-    _discardSlot?.state = null;
+    setState(() {});
   }
 
   Future<void> _loadKeyMappings() async {
@@ -1317,7 +1418,11 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
     // Reactively watch for new key mapping proposals arriving via MCP.
     ref.listen<ProposalState>(proposalStateProvider, (prev, next) {
       // No "already showing one" guard: a later proposal joins the batch.
-      if (_stageKeyMappingProposals() > 0) setState(() {});
+      // And one decided elsewhere leaves it, so the batch is always exactly
+      // what is still pending of this type.
+      final changed =
+          _stageKeyMappingProposals() + _dropDecidedElsewhere(next);
+      if (changed > 0) setState(() {});
     });
 
     // Bindings, watched **once** for the whole list rather than per card, and

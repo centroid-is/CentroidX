@@ -22,6 +22,7 @@ add_executable(${BINARY_NAME} WIN32
   "output_target.cpp"
   "path_utils.cpp"
   "runner_log.cpp"
+  "window_placement.cpp"
   "engine_rebuild_gate.cpp"
   "session_rebuild_policy.cpp"
   "shutdown_policy.cpp"

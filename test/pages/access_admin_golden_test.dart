@@ -64,6 +64,7 @@
 @Tags(['golden'])
 library;
 
+import 'dart:convert' show jsonEncode;
 import 'dart:io' show File, Platform;
 
 import 'package:beamer/beamer.dart';
@@ -76,7 +77,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/core/access_admin_store.dart';
 import 'package:tfc/models/menu_item.dart';
 import 'package:tfc/pages/access_admin.dart';
+import 'package:tfc/pages/access_admin_proposals.dart';
 import 'package:tfc/providers/preferences.dart';
+import 'package:tfc/providers/proposal_state.dart';
 import 'package:tfc_dart/core/preferences.dart' show PreferencesApi;
 import 'package:tfc/pages/access_roles_section.dart';
 import 'package:tfc/pages/access_session_section.dart';
@@ -318,6 +321,7 @@ class _MemoryPrefs extends Fake implements PreferencesApi {
 List<Override> _overrides({
   required AccessSession session,
   AccessAdminStore? store,
+  List<PendingProposal> proposals = const [],
 }) =>
     [
       accessRepositoryProvider.overrideWith((ref) async => _PresentRepository()),
@@ -328,6 +332,66 @@ List<Override> _overrides({
       // test and the card's field renders empty — a baseline of a state no
       // settled station shows.
       localPreferencesProvider.overrideWithValue(_MemoryPrefs()),
+      // The agent's batch, already in the queue when the page opens. Empty on
+      // every image but the proposals one, so the others stay the page a
+      // station shows with nothing proposed.
+      proposalStateProvider.overrideWith((ref) {
+        final notifier = ProposalStateNotifier();
+        for (final p in proposals) {
+          notifier.addProposal(p);
+        }
+        return notifier;
+      }),
+    ];
+
+/// A proposal as the MCP server wraps one — an agent's, with the
+/// `operator_id` no row ever reads.
+PendingProposal _mcpProposal(int id, String type, String op,
+        Map<String, dynamic> body) =>
+    PendingProposal(
+      id: id,
+      proposalType: type,
+      title: body['title'] as String? ?? 'proposal',
+      proposalJson: jsonEncode({
+        ...body,
+        'operator_id': 'sweeper-agent',
+        '_proposal_type': type,
+        '_op': op,
+      }),
+      operatorId: 'sweeper-agent',
+      createdAt: _frozen,
+    );
+
+/// A batch of three an agent might send: a create that will ask for a
+/// password, a floor change, and a delete the store will refuse — so the
+/// image shows the note, the words and a warning at once.
+List<PendingProposal> _proposedBatch() => [
+      _mcpProposal(-1, 'access_account', 'create', {
+        'title': 'Account "bjarni"',
+        'username': 'bjarni',
+        'roles': ['Shift Leader', 'Maintenance'],
+        'station_account': false,
+      }),
+      _mcpProposal(-2, 'access_account', 'update', {
+        'title': 'Account "anonymous"',
+        'username': kAnonymousUsername,
+        'field': 'roles',
+        'roles': ['Shift Leader'],
+        'warnings': [
+          'This is the "anonymous" account: every panel with nobody signed '
+              'in will be able to: operate, setpoints.',
+        ],
+      }),
+      _mcpProposal(-3, 'access_role', 'delete', {
+        'title': 'Role "Maintenance"',
+        'name': 'Maintenance',
+        'groups': ['operate', 'device', 'force'],
+        'holders': ['linar'],
+        'warnings': [
+          'BLOCKED at the accept while linar still holds it. Move them with '
+              'set_account_roles first.',
+        ],
+      }),
     ];
 
 /// The three body images' host.
@@ -341,9 +405,10 @@ Widget _pageHost({
   required ThemeData theme,
   required AccessAdminStore store,
   required AccessSession session,
+  List<PendingProposal> proposals = const [],
 }) {
   return ProviderScope(
-    overrides: _overrides(session: session, store: store),
+    overrides: _overrides(session: session, store: store, proposals: proposals),
     child: MaterialApp(
       debugShowCheckedModeBanner: false,
       theme: theme,
@@ -614,6 +679,47 @@ void main() {
         await expectLater(
           find.byKey(_boundary),
           matchesGoldenFile('goldens/access_admin_elevated.png'),
+        );
+      });
+    });
+
+    testWidgets('the batch an agent proposed, listed above the sections it '
+        'changes', (tester) async {
+      await withClock(Clock.fixed(_frozen), () async {
+        const size = Size(900, 1500);
+        _sizeView(tester, size);
+
+        await tester.pumpWidget(_pageHost(
+          theme: light,
+          store: _AnsweringStore(roleRows: _roles(), userRows: _users()),
+          session: _withUsers(),
+          proposals: _proposedBatch(),
+        ));
+        await tester.pumpAndSettle();
+
+        // Staged, and above both sections rather than beside either.
+        expect(find.byKey(kAccessAdminProposalsKey), findsOneWidget);
+        expect(
+          tester.getTopLeft(find.byKey(kAccessAdminProposalsKey)).dy,
+          lessThan(tester.getTopLeft(find.byKey(kAccessRolesSectionKey)).dy),
+        );
+        // The three, in words, with the password note and both warnings.
+        expect(find.textContaining('Create account "bjarni"'), findsOneWidget);
+        expect(find.textContaining('this is every logged-out panel'),
+            findsOneWidget);
+        expect(find.text('Delete role "Maintenance".'), findsOneWidget);
+        expect(find.text(kAccessAdminProposalsPasswordNote), findsOneWidget);
+        expect(find.textContaining('BLOCKED at the accept'), findsOneWidget);
+        // Nothing is applied by staging: the Fake store has no write to
+        // call, and reaching one would have thrown.
+        expect(tester.takeException(), isNull);
+
+        _expectNothingClipped(
+            tester, find.byKey(kAccessSessionSectionKey), size.height);
+
+        await expectLater(
+          find.byKey(_boundary),
+          matchesGoldenFile('goldens/access_admin_proposals.png'),
         );
       });
     });

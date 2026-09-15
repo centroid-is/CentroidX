@@ -31,11 +31,26 @@ gh release download --repo centroid-is/CentroidX --pattern 'usb-installer.img.*'
 # or the tip of main
 gh release download main-latest --repo centroid-is/CentroidX --pattern 'usb-installer.img.*'
 
+# A preloaded installer arrives in parts -- see below -- and has to be joined.
+# Guarded, not run unconditionally: the redirect truncates its target BEFORE
+# cat runs, so an unguarded join empties a whole-file installer when there are
+# no parts beside it.
+[ -e usb-installer.img.gz.part00 ] && cat usb-installer.img.gz.part* > usb-installer.img.gz
+
 sudo bmaptool copy --bmap usb-installer.img.bmap usb-installer.img.gz /dev/sdX
 ```
 
 Both are also on the releases page for anyone without `gh`. Checksums are in
-that release's `SHA256SUMS.txt`.
+that release's `SHA256SUMS.txt`, and they are of the files as published — so
+verify the parts, then join them.
+
+**Why the parts.** `PRELOAD=true`, which every release build uses, bakes the
+~1.9GB of container images into the key so a station commissions with no
+uplink. That puts the compressed installer at ~2.7GB, and GitHub refuses any
+single release asset of 2 GiB or more. So the publish step splits anything over
+that limit into `usb-installer.img.gz.part00`, `.part01`, ... and `cat` in glob
+order puts it back byte-for-byte. An installer under the limit — a
+non-preloaded one is ~1.0GB — is published whole and there is nothing to join.
 
 Only the installer is published, not the station image inside it — the key
 already carries it. For flashing an SSD directly, build below or take one from a

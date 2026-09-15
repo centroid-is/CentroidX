@@ -303,7 +303,8 @@ void main() {
           _extractListenerBody(alarmEditorSource, 'ref.listen<ProposalState>');
       expect(listenerBody, isNotNull);
       expect(listenerBody,
-          contains('if (_stageAlarmProposals() > 0) setState(() {});'),
+          contains('_stageAlarmProposals() + _dropDecidedElsewhere(next)'));
+      expect(listenerBody, contains('if (changed > 0) setState(() {});'),
           reason: 'an unconditional setState rebuilds on every unrelated '
               'proposal state change');
     });
@@ -321,7 +322,8 @@ void main() {
           _extractListenerBody(keyRepoSource, 'ref.listen<ProposalState>');
       expect(listenerBody, isNotNull);
       expect(listenerBody,
-          contains('if (_stageKeyMappingProposals() > 0) setState(() {});'));
+          contains('_stageKeyMappingProposals() + _dropDecidedElsewhere(next)'));
+      expect(listenerBody, contains('if (changed > 0) setState(() {});'));
     });
   });
 
@@ -653,8 +655,13 @@ void main() {
       }.entries) {
         expect(entry.value, contains('_proposalIds'),
             reason: '${entry.key} must track the whole batch');
-        expect(entry.value, contains('_proposalIds.clear()'),
-            reason: '${entry.key} must empty the batch once it is resolved');
+        // Emptied whole, or one entry at a time now that a batch can be
+        // decided one row at a time.
+        expect(
+            entry.value,
+            anyOf(contains('_proposalIds.clear()'),
+                contains('_proposalIds.removeAt(i)')),
+            reason: '${entry.key} must drop resolved proposals from the batch');
       }
     });
 

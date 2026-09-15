@@ -34,6 +34,7 @@ import '../providers/access.dart';
 // a credential. The gate, the lock badge and the menu filter all read this one
 // provider so they cannot disagree about a dead link.
 import '../providers/gateway_link.dart';
+import '../providers/menu.dart' show visibleMenuProvider;
 // `kSessionWhileLoading` only — the single definition of the session a guard
 // resolves on while `accessSessionProvider` is still loading. Imported rather
 // than re-declared so the boot window has one answer across the write guards
@@ -43,6 +44,7 @@ import '../providers/access_policy.dart' show kSessionWhileLoading;
 import 'access_gate.dart';
 import 'access_sign_in_dialog.dart';
 import 'base_scaffold.dart';
+import 'nav_dropdown.dart' show beamSafelyKids;
 
 /// Whether this session may open the page at [path].
 ///
@@ -74,14 +76,48 @@ import 'base_scaffold.dart';
 /// knows which path it is, and asking it here is what keeps the menu, the
 /// badge and the gate agreeing in every authority state.
 ///
-/// **The boot and outage window resolves unfiltered**, via
+/// **An unresolved session waits; it does not guess.** Until
+/// `accessSessionProvider` answers, which page-manager pages this panel may
+/// show is simply not known — the whitelist lives in the database and the
+/// session is what reads it. This used to resolve unfiltered, on
+/// [kSessionWhileLoading], so that a slow database never blanked a panel. It
+/// did not blank one; it did something worse. On a station that restricts what
+/// anonymous may see, the home page rendered in full — running its `initState`,
+/// its queries and its OPC UA subscriptions — for the one to two seconds the
+/// Postgres connection takes, and was then replaced by a refusal. The operator
+/// saw their plant page appear and be taken away, which reads as a fault in the
+/// panel, and the page behind the refusal had already been built and had
+/// already subscribed. Waiting is the honest answer to a question nobody has
+/// answered yet, and [AccessCheckingBody] is what waiting looks like: a screen
+/// that says what is happening and offers the sign-in, rather than a page that
+/// will be withdrawn.
+///
+/// The cost is stated plainly because it is real and it is paid by every
+/// station, including the ones that restrict nothing: a panel with no
+/// whitelist configured now shows that screen for the length of its database
+/// connect before its home page, where it used to show the page at once. That
+/// is the trade this file takes deliberately — one honest screen that resolves
+/// into the right thing, rather than a page that appears and is taken back —
+/// and it is bounded by exactly the same connect the rest of the app already
+/// waits on. It is **not** unbounded: `databaseProvider` resolves to null when
+/// the connection gives up (measured at 10 012 ms on a routable host that never
+/// answers — see `bootstrapPageManagerProvider`), the session then resolves on
+/// the seeded floor, and the paragraph below is what opens the panel up again.
+///
+/// A station with **no Postgres configured at all** pays nothing: `database`
+/// returns null without connecting, so the repository, the session and this
+/// question all resolve inside the first frames. The cost is the connect, and
+/// only a station that has one pays it.
+///
+/// **An errored session still resolves unfiltered**, via
 /// [kSessionWhileLoading], whose `allowedPages` is null. The reasoning is the
-/// same one `AccessRepository.anonymousRole` makes for falling back to the
-/// seeded groups: a panel that blanks every page because the session has not
-/// resolved yet — which on a cut database link is tens of seconds — reads as
-/// broken, and the write guards still refuse whatever is on screen. Note this
-/// only ever applies to a page the group gate already let through, because a
-/// raised page resolves `waiting` above and never reaches this line.
+/// one `AccessRepository.anonymousRole` makes for falling back to the seeded
+/// groups: a session that has failed will not un-fail on its own, so waiting on
+/// it is waiting forever, and a panel permanently stuck on a sign-in screen is
+/// the failure this whole file is careful not to ship. The write guards still
+/// refuse whatever is on screen. Note both halves of this only ever apply to a
+/// page the group gate already let through, because a raised page resolves
+/// `waiting` above and never reaches this line.
 AccessGateState resolvePageAccess({
   required AccessGroup group,
   required String path,
@@ -103,6 +139,11 @@ AccessGateState resolvePageAccess({
   // answers about it — see `routeExemptFromPageWhitelist`, which is where the
   // reasoning lives.
   if (routeExemptFromPageWhitelist(path)) return AccessGateState.allowed;
+
+  // Neither a value nor an error: the session has not answered, so the
+  // whitelist question has no answer either. See the doc above for why this
+  // waits rather than resolving unfiltered.
+  if (!session.hasValue && !session.hasError) return AccessGateState.waiting;
 
   final resolved = session.valueOrNull ?? kSessionWhileLoading;
   return resolved.pageVisible(path)
@@ -141,14 +182,49 @@ const Key kPageNotAvailableBodyKey = Key('page-not-available-body');
 /// The Sign in action on the not-available body.
 const Key kPageNotAvailableSignInKey = Key('page-not-available-sign-in');
 
+/// The heading over the pages this session *can* open.
+///
+/// Phrased as an offer rather than an apology: the operator is standing on a
+/// refusal and the useful next sentence is where they may go instead.
+const String kPageNotAvailableElsewhereHeadline = 'Pages you can open';
+
+/// The offered destinations, so a test can find them as a group.
+const Key kPageNotAvailableDestinationsKey =
+    Key('page-not-available-destinations');
+
+/// How many destinations the refusal lists before it stops.
+///
+/// A bound rather than a scroll: this is a way out, not a second menu, and the
+/// navigation bar under it holds the whole of it. Six fits two rows on a panel
+/// without pushing the sign-in button off the bottom.
+const int kPageNotAvailableMaxDestinations = 6;
+
 /// The page a whitelist hides: what happened, and the one thing that might
 /// change it.
 ///
 /// Never a dead end and never an error — the same rules `AccessLockedBody`
-/// follows. It carries no "request access" and no "go back": the app bar and
-/// the navigation bar are both present (the gate brings its own scaffold), so
-/// leaving is already possible, and there is nobody in this build to request
-/// access from.
+/// follows. It carries no "request access" and no "go back": there is nobody
+/// in this build to request access from, and back is wherever the operator
+/// already was.
+///
+/// **It does carry the pages this session can open**, and that is a repair
+/// rather than a decoration. "Leaving is already possible because the gate
+/// brings its own scaffold" was true only while the navigation bar was on it,
+/// and a session whitelisted down to pages inside one section used to get no
+/// bar at all — a refusal screen with nothing on it but a sign-in button that
+/// the operator's own account will not change. The bar is fixed
+/// (`VisibleMenu.showsBar`), and the destinations are named here as well
+/// because this is where the operator is looking, because the bar is
+/// suppressed in fullscreen, and because a lone section in the bar is a
+/// dropdown nobody has a reason to suspect is a dropdown.
+///
+/// **It does not redirect.** Landing the session on the first page it can open
+/// was the other candidate and is the wrong one for the same reason
+/// `resolveStartupPath` refuses to ask the permission question: a panel that
+/// silently substitutes a different page for the one somebody asked for hides
+/// the misconfiguration that put them there, and a deep link or an alarm jump
+/// would quietly land somewhere else. The refusal is honest and the way out is
+/// one tap; that is the trade.
 class PageNotAvailableBody extends ConsumerWidget {
   const PageNotAvailableBody({
     super.key,
@@ -167,6 +243,15 @@ class PageNotAvailableBody extends ConsumerWidget {
     final secondary =
         theme.textTheme.bodyMedium?.copyWith(color: scheme.onSurfaceVariant);
     final session = ref.watch(accessSessionProvider).valueOrNull;
+
+    // The same list the navigation bar is built from, one level deeper. Asked
+    // of `visibleMenuProvider` rather than of the session's whitelist directly,
+    // so a page this station cannot route, or one the group gate still holds
+    // shut, is never offered here as a way out.
+    //
+    // The refused page cannot appear in it: it is refused by the very filter
+    // this list comes out of.
+    final elsewhere = ref.watch(visibleMenuProvider).reachablePages;
 
     return Center(
       key: kPageNotAvailableBodyKey,
@@ -210,6 +295,38 @@ class PageNotAvailableBody extends ConsumerWidget {
                   maxLines: null,
                   overflow: TextOverflow.visible,
                   style: secondary,
+                ),
+              ],
+              // Where this session may go, before the sign-in button rather
+              // than after it: the operator almost certainly has somewhere to
+              // be, and signing in is the fallback rather than the answer.
+              //
+              // Nothing at all when the list is empty — an account that can
+              // open no page is a configuration fault, and an empty heading
+              // promising destinations there are none of is worse than the
+              // refusal on its own.
+              if (elsewhere.isNotEmpty) ...[
+                const SizedBox(height: 24),
+                Text(
+                  kPageNotAvailableElsewhereHeadline,
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.titleSmall,
+                ),
+                const SizedBox(height: 12),
+                Wrap(
+                  key: kPageNotAvailableDestinationsKey,
+                  alignment: WrapAlignment.center,
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final item
+                        in elsewhere.take(kPageNotAvailableMaxDestinations))
+                      OutlinedButton.icon(
+                        onPressed: () => beamSafelyKids(context, item),
+                        icon: Icon(item.icon, size: 18),
+                        label: Text(item.label),
+                      ),
+                  ],
                 ),
               ],
               const SizedBox(height: 24),
@@ -313,11 +430,12 @@ class PageAccessGate extends ConsumerWidget {
               : PageNotAvailableBody(openSignIn: openSignIn),
         );
       case AccessGateState.waiting:
+        // The same body `AccessGate` shows, for the same reason: this is the
+        // screen a restricted panel now boots on, so it must be one an
+        // operator can act from rather than a spinner they can only stare at.
         return BaseScaffold(
           title: title,
-          body: const Center(
-            child: CircularProgressIndicator(key: kAccessGateWaitingKey),
-          ),
+          body: AccessCheckingBody(openSignIn: openSignIn),
         );
     }
   }

@@ -30,6 +30,7 @@ LiveSessionStatus? opcUaLiveStatus(StateMan? stateMan, OpcUAConfig server) {
     connectionStream: wrapper.connectionStream,
     effectiveStatus: wrapper.effectiveStatus,
     effectiveStatusStream: wrapper.effectiveStatusStream,
+    healthDetail: () => wrapper.healthDetail,
   );
 }
 

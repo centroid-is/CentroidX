@@ -193,6 +193,10 @@ void main() {
               'connected. That is F27\'s shape and Phase 9 wants it');
       expect(mapEffectiveStatus(EffectiveDeviceStatus.connected),
           UpstreamLinkState.connected);
+      expect(mapEffectiveStatus(EffectiveDeviceStatus.opcuaUnmonitored),
+          UpstreamLinkState.connected,
+          reason: 'data is arriving and only the heartbeat item is missing '
+              '(#539); per-value freshness still catches stale values');
       expect(mapEffectiveStatus(EffectiveDeviceStatus.connecting),
           UpstreamLinkState.connecting);
       expect(mapEffectiveStatus(EffectiveDeviceStatus.disconnected),

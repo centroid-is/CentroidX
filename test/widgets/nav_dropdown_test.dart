@@ -225,8 +225,8 @@ class _NavBarLocation extends BeamLocation<BeamState> {
   List<Pattern> get pathPatterns => ['/test', '/dashboard', '/advanced/*'];
 }
 
-/// A menu with a raised leaf, the exempt leaf, an unraised leaf and a section
-/// header — the four cases the badge has to tell apart in one popup.
+/// A menu with a raised leaf, both exempt leaves, an unraised leaf and a
+/// section header — the cases the badge has to tell apart in one popup.
 MenuItem _accessTestMenuItem() {
   return MenuItem(
     label: 'Advanced',
@@ -239,6 +239,14 @@ MenuItem _accessTestMenuItem() {
             path: '/advanced/page-editor'),
         MenuItem(
             label: 'Server Config', icon: Icons.dns, path: kServerConfigRoute),
+        // Both exemptions, not just one. The fixture carried only Server
+        // Config, so the test below asserted "alone" while never looking at
+        // the other route — it would have gone on passing whichever way IP
+        // Settings behaved.
+        MenuItem(
+            label: 'IP Settings',
+            icon: Icons.settings_ethernet,
+            path: kIpSettingsRoute),
       ]),
       MenuItem(label: 'Dashboard', icon: Icons.home, path: '/dashboard'),
     ],
@@ -620,15 +628,21 @@ void main() {
       });
 
       testWidgets(
-          'with the repository unavailable, Server Config alone stays visible',
+          'with the repository unavailable, the two bootstrap pages stay visible',
           (tester) async {
         await openMenu(tester, repository: _absentRepository);
 
         expect(find.widgetWithText(PopupMenuItem<void>, 'Server Config'),
             findsOneWidget,
             reason: 'the page that configures the database must not be '
-                'hidden by the database being unavailable — that is the one '
+                'hidden by the database being unavailable — that is the '
                 'route out of the outage');
+        expect(find.widgetWithText(PopupMenuItem<void>, 'IP Settings'),
+            findsOneWidget,
+            reason: 'and neither must the page that gives the machine an '
+                'address, since the database is reached over the network: '
+                'hiding it leaves a freshly commissioned station able to name '
+                'a server it can never reach');
         expect(find.widgetWithText(PopupMenuItem<void>, 'Page Editor'),
             findsNothing,
             reason: 'the others stay hidden through an outage');

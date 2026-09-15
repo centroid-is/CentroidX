@@ -28,6 +28,7 @@ import 'package:tfc/providers/access.dart';
 import 'package:tfc/models/menu_item.dart';
 import 'package:tfc/route_registry.dart';
 import 'package:tfc/widgets/access_gate.dart';
+import 'package:tfc/widgets/access_sign_in_dialog.dart';
 import 'package:tfc/widgets/page_access_gate.dart';
 import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/access/access_repository.dart';
@@ -71,16 +72,19 @@ void main() {
   });
 
   group('resolvePageAccess — the group half', () {
-    test('an unraised page opens before anything has resolved', () {
-      // The operate short-circuit. Without it every plant page would show a
-      // spinner for as long as the database takes to answer, which on a cut
-      // link is tens of seconds of a panel that reads as broken.
+    test('an unraised page clears the group half before anything has resolved',
+        () {
+      // The operate short-circuit, asked on its own terms: the group half says
+      // `allowed` with nothing resolved, which is what keeps a plant page off
+      // the lock. What the *whole* function answers in that state is the
+      // whitelist half's business — see 'the boot window waits' below.
       expect(
-        resolvePageAccess(
+        resolveAccessGate(
           group: AccessGroup.operate,
           path: '/fillet',
           authority: _loadingAuthority,
           session: _loadingSession,
+          allowWhenNobodyCanSignIn: false,
         ),
         AccessGateState.allowed,
       );
@@ -273,16 +277,53 @@ void main() {
       );
     });
 
-    test('the boot window is not filtered', () {
-      // `kSessionWhileLoading` carries no whitelist, so a page whose group is
-      // `operate` opens while the session resolves. A `denied` here would
-      // blank every page on every boot.
+    test('the boot window waits rather than showing a page it may take back',
+        () {
+      // The regression this group exists for. This used to answer `allowed`,
+      // resolving unfiltered on `kSessionWhileLoading` so that a slow database
+      // never blanked a panel — and on a station that restricts what anonymous
+      // may see, that rendered the home page in full for the second or two the
+      // Postgres connect took and then replaced it with a refusal. Which page
+      // this panel may show is not knowable until the session answers, and
+      // `waiting` is the only honest answer to a question nobody has answered.
       expect(
         resolvePageAccess(
           group: AccessGroup.operate,
           path: '/fillet',
           authority: _loadingAuthority,
           session: _loadingSession,
+        ),
+        AccessGateState.waiting,
+      );
+    });
+
+    test('a resolved repository does not end the wait on its own', () {
+      // The session is the authority for the whitelist, and it resolves after
+      // the repository does. Ending the wait here would reinstate the flash
+      // with a shorter fuse.
+      expect(
+        resolvePageAccess(
+          group: AccessGroup.operate,
+          path: '/fillet',
+          authority: _presentAuthority,
+          session: _loadingSession,
+        ),
+        AccessGateState.waiting,
+      );
+    });
+
+    test('an errored session resolves unfiltered, it does not wait forever',
+        () {
+      // A session that has failed will not un-fail on its own, so waiting on it
+      // is waiting for good — a panel stuck on the sign-in screen with no way
+      // off it. `kSessionWhileLoading` carries no whitelist, so the page opens
+      // and the write guards go on refusing whatever is on it.
+      expect(
+        resolvePageAccess(
+          group: AccessGroup.operate,
+          path: '/fillet',
+          authority: _presentAuthority,
+          session: AsyncValue<AccessSession>.error('no', StackTrace.empty),
         ),
         AccessGateState.allowed,
       );
@@ -299,6 +340,8 @@ void main() {
       required String path,
       required AsyncValue<AccessSession> session,
       AsyncValue<AccessRepository?>? repository,
+      AccessSessionController? controller,
+      AccessSignInOpener? openSignIn,
     }) {
       // Two destinations: fewer and `NavigationBar` asserts, which would fail
       // these tests for a reason that has nothing to do with the gate.
@@ -316,6 +359,7 @@ void main() {
                 child: PageAccessGate(
                   path: path,
                   title: 'Filleting',
+                  openSignIn: openSignIn ?? showAccessSignInDialog,
                   child: const Text('the page itself'),
                 ),
               ),
@@ -324,7 +368,8 @@ void main() {
 
       return ProviderScope(
         overrides: [
-          accessSessionProvider.overrideWith(() => _FixedSession(session)),
+          accessSessionProvider
+              .overrideWith(() => controller ?? _FixedSession(session)),
           accessRepositoryProvider.overrideWith(
               (ref) async => (repository ?? _presentRepo).valueOrNull),
         ],
@@ -409,6 +454,70 @@ void main() {
       expect(find.text('the page itself'), findsNothing);
     });
 
+    testWidgets(
+        'the boot window shows the sign-in body, and the page behind it is '
+        'never built', (tester) async {
+      // The reported fault, at the widget: on a station whose anonymous
+      // account may see no page, opening the app showed the home page for the
+      // one to two seconds the Postgres connect took and then took it away.
+      // The page must not be built at all in that window — it would run its
+      // `initState`, its queries and its OPC UA subscriptions for a page the
+      // panel is about to refuse.
+      await tester.pumpWidget(host(path: '/fillet', session: _loadingSession));
+      await tester.pump();
+
+      expect(find.byKey(kAccessCheckingBodyKey), findsOneWidget);
+      expect(find.text(kAccessCheckingHeadline), findsOneWidget);
+      expect(find.byKey(kAccessCheckingSignInKey), findsOneWidget);
+      expect(find.text('the page itself'), findsNothing,
+          reason: 'the flash was the page being built and then withdrawn');
+      // Neither refusal: nothing has been refused and naming a cause here
+      // would be a guess.
+      expect(find.byKey(kPageNotAvailableBodyKey), findsNothing);
+      expect(find.byKey(kAccessLockedBodyKey), findsNothing);
+    });
+
+    testWidgets('a restricted station never shows the page it is about to '
+        'refuse', (tester) async {
+      // The whole transition, in one test: loading -> resolved-with-an-empty
+      // whitelist. The page must not appear at any point between them.
+      final controller = _SwitchableSession(_loadingSession);
+      await tester.pumpWidget(host(
+        path: '/fillet',
+        session: _loadingSession,
+        controller: controller,
+      ));
+      await tester.pump();
+      expect(find.byKey(kAccessCheckingBodyKey), findsOneWidget);
+      expect(find.text('the page itself'), findsNothing);
+
+      controller.resolve(_session(pages: const <String>{}).requireValue);
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(kPageNotAvailableBodyKey), findsOneWidget);
+      expect(find.text('the page itself'), findsNothing);
+    });
+
+    testWidgets('the sign-in offered while checking calls the injected opener',
+        (tester) async {
+      // Offered, not decorative: this screen is what a restricted panel boots
+      // on, and the button on it is the one thing that changes the outcome.
+      var taps = 0;
+      await tester.pumpWidget(host(
+        path: '/fillet',
+        session: _loadingSession,
+        openSignIn: (context, ref) async {
+          taps++;
+        },
+      ));
+      await tester.pump();
+
+      await tester.tap(find.byKey(kAccessCheckingSignInKey));
+      await tester.pump();
+
+      expect(taps, 1);
+    });
+
     testWidgets('the not-available body names who is signed in', (tester) async {
       await tester.pumpWidget(host(
         path: '/fillet',
@@ -421,6 +530,35 @@ void main() {
           reason: '"sign in" is confusing advice to somebody who already did');
     });
   });
+}
+
+/// A session that starts loading and is resolved by the test, so the boot
+/// window and the frame after it can be asserted as one transition — which is
+/// the shape of the fault, and which neither state can show on its own.
+class _SwitchableSession extends AccessSessionController {
+  _SwitchableSession(this._initial);
+
+  final AsyncValue<AccessSession> _initial;
+  final Completer<AccessSession> _resolved = Completer<AccessSession>();
+
+  void resolve(AccessSession session) => _resolved.complete(session);
+
+  @override
+  Future<AccessSession> build() async {
+    final value = _initial;
+    if (value is AsyncData<AccessSession>) return value.value;
+    return _resolved.future;
+  }
+
+  @override
+  Future<AccessSignInResult> signIn(String username, String password) async =>
+      AccessSignInResult.ok;
+
+  @override
+  Future<void> signOut() async {}
+
+  @override
+  void poke() {}
 }
 
 /// A session that resolves to whatever the test needs, with none of the real
