@@ -653,6 +653,31 @@ RoutesLocationBuilder createLocationBuilder(
         child: child,
       );
 
+  // Wraps a route that needs **no permission** and is still whitelistable.
+  //
+  // A separate helper rather than a flag on `gated`, because the two say
+  // different things and the difference is the whole point: `gated` asserts a
+  // group out of `kRaisedRoutes` and refuses without it, while this one asks
+  // only the second question. A route reaching this helper is declaring, in
+  // one word, that it is `operate` work — `resolvePageAccess` short-circuits
+  // its group half on that and never touches the repository or the session for
+  // it — and that the audience it was published to still decides whether this
+  // panel shows it.
+  //
+  // **It cannot lock a commissioning station out.** A whitelist only exists
+  // where a database exists: with no repository `_anonymousSession` builds the
+  // seeded Operator groups and deliberately no `allowedPages`
+  // (`lib/providers/access.dart`), so `pageVisible` is true for every path and
+  // this gate is inert. The `administer` escape hatch for a station being
+  // pointed at its database is a different mechanism entirely —
+  // `routeAllowedWhenRepositoryUnavailable`, which keeps IP Settings and
+  // Server Config open through the *group* half — and nothing here touches it.
+  Widget openPage(String path, String title, Widget child) => PageAccessGate(
+        path: path,
+        title: title,
+        child: child,
+      );
+
   // Eleven routes are gated, and only eleven. Two of them sit at `users`, and
   // '/advanced/config-history' sits at `configure` — its own entry rather than
   // a widened audit-trail one, because the engineer who edits pages must be
@@ -666,9 +691,11 @@ RoutesLocationBuilder createLocationBuilder(
   // reads ungated on purpose, so this gate is the whole of the enforcement for
   // reading it. Left open on purpose:
   //
-  //  - '/advanced/about-linux', whose gate is on its controls rather than on
-  //    the route. That line used to read "reads system information and changes
-  //    nothing", which stopped being true when the Date & Time section landed:
+  //  - '/advanced/about-linux' holds no *group* gate; its permission gate is on
+  //    its controls. (Since 2026-09-15 the route does carry the whitelist half
+  //    through `openPage`, which is a different question — see below.) That
+  //    line used to read "reads system information and changes nothing", which
+  //    stopped being true when the Date & Time section landed:
   //    the page sets the clock, the timezone and the NTP servers over D-Bus,
   //    and Reboot / Power Off had only a confirm dialog in front of them. None
   //    of those is a tag or a preference, so neither `GuardedStateMan` nor
@@ -690,18 +717,24 @@ RoutesLocationBuilder createLocationBuilder(
   //    gate would have. `SystemClockSection.settingsAllowed` is required with
   //    no default for that reason — the compiler is what catches the next
   //    caller.
-  //  - '/advanced/history-view' and AppRoutes.historyView are read surfaces,
-  //    and read permissions are explicitly out of scope
-  //    (docs/access-control-spec.md §Scope, §11).
+  //  - '/advanced/history-view', AppRoutes.historyView, AppRoutes.alarmView and
+  //    AppRoutes.reports need no *permission*: they are read surfaces, they
+  //    stay `operate`, and read permissions are explicitly out of scope
+  //    (docs/access-control-spec.md §Scope, §11). That much is unchanged.
   //
-  //    AppRoutes.alarmView was on that line until 2026-09-15 and is no longer
-  //    open. It is still a read surface and still `operate` — nothing about
-  //    its *group* changed — but "no group needed" was being read as "no gate
-  //    needed", and those stopped being the same thing when the page whitelist
-  //    landed. The whitelist dropped Alarm View from the menu and the address
-  //    kept working, which is the menu-only enforcement §6 names. It now
-  //    carries `PageAccessGate` like every page-manager page; see the route
-  //    itself for what that does and does not cost.
+  //    What changed on 2026-09-15 is that all four — and About Linux above —
+  //    now carry the page-visibility whitelist through `openPage`. "No group
+  //    needed" had been read as "no gate needed", and those stopped being the
+  //    same thing when the whitelist landed: it could drop any of these five
+  //    from the menu and every one of their addresses kept working, which is
+  //    exactly the menu-only enforcement §6 names as a failure mode. The top
+  //    bar made Alarm View a one-tap version of it rather than a typed-URL one,
+  //    which is how this was found.
+  //
+  //    None of this narrows a station that configures no whitelist, and none
+  //    of it can strand a commissioning one: with no repository the anonymous
+  //    session carries no `allowedPages` at all, so the gate is inert. See
+  //    `openPage` for the full argument.
   //
   //    '/advanced/knowledge-base' was on that list until 2026-08-30 and is
   //    now gated at `configure`.
@@ -774,10 +807,24 @@ RoutesLocationBuilder createLocationBuilder(
     '/advanced/about-linux': (context, state, args) => BeamPage(
           key: const ValueKey('/advanced/about-linux'),
           title: 'About Linux',
-          child: DbusGate(
-            title: 'About Linux',
-            shared: dbusCompleter,
-            builder: (context, client, _) => AboutLinuxPage(dbusClient: client),
+          // Outside the DbusGate, the same nesting IP Settings uses: may this
+          // session open the page at all, and only then has the D-Bus login
+          // happened. Whitelist only — the page stays `operate`, because
+          // reading the hostname, the addresses and whether the clock is
+          // synchronised is operate-level work and a locked page is how a
+          // station whose historised samples are timestamped an hour out goes
+          // unnoticed. The four writing controls (clock, timezone, NTP,
+          // reboot/power off) keep their own `administer` guard through
+          // `guardGroupAction`; this adds nothing to them and takes nothing
+          // from them.
+          child: openPage(
+            '/advanced/about-linux',
+            'About Linux',
+            DbusGate(
+              title: 'About Linux',
+              shared: dbusCompleter,
+              builder: (context, client, _) => AboutLinuxPage(dbusClient: client),
+            ),
           ),
         ),
     '/advanced/page-editor': (context, state, args) => BeamPage(
@@ -794,12 +841,23 @@ RoutesLocationBuilder createLocationBuilder(
         title: 'Alarm Editor',
         child: gated(
             '/advanced/alarm-editor', 'Alarm Editor', AlarmEditorPage(proposalData: args is String ? args : null))),
-    AppRoutes.historyView: (context, state, args) =>
-        BeamPage(key: const ValueKey(AppRoutes.historyView), title: 'History View', child: HistoryViewPage()),
+    AppRoutes.historyView: (context, state, args) => BeamPage(
+        key: const ValueKey(AppRoutes.historyView),
+        title: 'History View',
+        child: openPage(AppRoutes.historyView, 'History View', HistoryViewPage())),
     // History View lives at the top level now; the old address keeps working
     // for bookmarks and pages that link to it.
-    '/advanced/history-view': (context, state, args) =>
-        BeamPage(key: const ValueKey('/advanced/history-view'), title: 'History View', child: HistoryViewPage()),
+    //
+    // Gated on the **canonical** path, not on this one. The alias is not a
+    // menu destination, so it can never appear in a whitelist, and a gate
+    // keyed on its own spelling would ask about a page nobody can tick — which
+    // fails closed and would refuse every bookmark. Keying both addresses on
+    // the canonical path is also what stops the alias being the way around a
+    // whitelist that hides History View.
+    '/advanced/history-view': (context, state, args) => BeamPage(
+        key: const ValueKey('/advanced/history-view'),
+        title: 'History View',
+        child: openPage(AppRoutes.historyView, 'History View', HistoryViewPage())),
     '/advanced/server-config': (context, state, args) => BeamPage(
         key: const ValueKey('/advanced/server-config'),
         title: 'Server Config',
@@ -827,7 +885,7 @@ RoutesLocationBuilder createLocationBuilder(
     AppRoutes.alarmView: (context, state, args) => BeamPage(
         key: const ValueKey('/alarm-view'),
         title: 'Alarm View',
-        child: PageAccessGate(path: AppRoutes.alarmView, title: 'Alarm View', child: AlarmViewPage())),
+        child: openPage(AppRoutes.alarmView, 'Alarm View', AlarmViewPage())),
     // Registered unconditionally. The page itself decides whether the window
     // is open (firstUserWindowOpenProvider); gating the *route* on a database
     // read would 404 the address while the connection was still coming up,
@@ -842,8 +900,10 @@ RoutesLocationBuilder createLocationBuilder(
         key: const ValueKey('/advanced/access'),
         title: 'Access',
         child: gated('/advanced/access', 'Access', const AccessAdminPage())),
-    AppRoutes.reports: (context, state, args) =>
-        BeamPage(key: const ValueKey(AppRoutes.reports), title: 'Reports', child: const ReportsPage()),
+    AppRoutes.reports: (context, state, args) => BeamPage(
+        key: const ValueKey(AppRoutes.reports),
+        title: 'Reports',
+        child: openPage(AppRoutes.reports, 'Reports', const ReportsPage())),
     AppRoutes.reportEditor: (context, state, args) => BeamPage(
         key: const ValueKey(AppRoutes.reportEditor),
         title: 'Report Editor',

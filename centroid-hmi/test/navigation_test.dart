@@ -546,45 +546,109 @@ void main() {
         expect(accessGroupForRoute('/chiller').name, 'operate');
       });
 
-      testWidgets('about-linux, history view and the first-user page are not gates', (tester) async {
-        // Reading and commissioning. About Linux changes nothing; the history
-        // view reads rather than configures, and read permissions are out of
-        // scope; gating the first account on a station with no users is an
-        // unopenable door.
-        //
-        // `AppRoutes.alarmView` was in this list until 2026-09-15. It is still
-        // `operate` and still a read surface — the group half of its answer did
-        // not move — but it now wears `PageAccessGate` for the whitelist half;
-        // see the test below.
+      testWidgets('the first-user page is not a gate of either kind', (tester) async {
+        // Commissioning. Gating the first account on a station that has no
+        // users yet is the deadlock the first-user design exists to avoid, and
+        // `pageVisible` fails closed, so a whitelist gate here would be a door
+        // that locks itself. It is the only route left carrying neither gate.
         final lb = createLocationBuilder([_page('Home', '/')]);
-        for (final path in ['/advanced/about-linux', AppRoutes.historyView, AppRoutes.firstUser]) {
+        final page = await buildRoute(tester, lb, AppRoutes.firstUser);
+        expect(page.child, isNot(isA<AccessGate>()));
+        expect(page.child, isNot(isA<PageAccessGate>()));
+      });
+
+      testWidgets('the five read surfaces wear the whitelist gate, and all stay operate', (tester) async {
+        // The hole this closes: the page whitelist could drop any of these from
+        // the menu and the address still opened it, because none of these
+        // routes carried a gate at all — hiding was the whole of the
+        // enforcement, which is the failure mode `docs/access-control-spec.md`
+        // §6 names. The top bar made Alarm View a one-tap version of it rather
+        // than a typed-URL one, which is how it was found.
+        //
+        // Both halves are asserted for each, because the fix is only correct if
+        // the second one holds: these gates are the *whitelist*, never a
+        // permission. Raising any of these groups would take a read surface
+        // away from every anonymous panel on the floor, which is not what this
+        // does.
+        final lb = createLocationBuilder([_page('Home', '/')]);
+        for (final path in [
+          AppRoutes.alarmView,
+          AppRoutes.historyView,
+          AppRoutes.reports,
+          '/advanced/about-linux',
+        ]) {
           final page = await buildRoute(tester, lb, path);
-          expect(page.child, isNot(isA<AccessGate>()), reason: '$path must stay open');
-          expect(page.child, isNot(isA<PageAccessGate>()), reason: '$path must stay open');
+          expect(page.child, isA<PageAccessGate>(), reason: '$path must ask the whitelist');
+          expect(page.child, isNot(isA<AccessGate>()), reason: '$path must not need a group');
+          expect((page.child as PageAccessGate).path, path);
+          expect(accessGroupForRoute(path).name, 'operate', reason: '$path must stay operate');
         }
       });
 
-      testWidgets('the alarm view wears the page gate, and stays operate', (tester) async {
-        // The hole this closes: the page whitelist could drop Alarm View from
-        // the menu and the address still opened it, because the route carried
-        // no gate at all. The top bar made that a one-tap path rather than a
-        // typed-URL one — the alarm banner beams here — so a panel whitelisted
-        // down to nothing still read out the plant's alarms and still had a way
-        // into the page.
-        //
-        // Both halves are asserted, because the fix is only correct if the
-        // second one holds: the gate is the *whitelist*, not a permission. The
-        // route declares no group, so `resolvePageAccess` short-circuits its
-        // group half on `operate` and a station that configures no whitelist is
-        // untouched. Raising the group would have taken the alarm list away
-        // from every anonymous panel on the floor, which is not what was asked
-        // for and not what this does.
+      testWidgets('the history-view alias is gated on the canonical path', (tester) async {
+        // `/advanced/history-view` is a bookmark-compatible alias, not a menu
+        // destination, so it can never appear in a whitelist. A gate keyed on
+        // its own spelling would ask about a page nobody can tick, and
+        // `pageVisible` matches stored paths exactly and fails closed — so it
+        // would refuse every bookmark on any station that configured a
+        // whitelist at all. Keying it on the canonical path is also what stops
+        // the alias being the way around a whitelist that hides History View.
         final lb = createLocationBuilder([_page('Home', '/')]);
-        final page = await buildRoute(tester, lb, AppRoutes.alarmView);
+        final page = await buildRoute(tester, lb, '/advanced/history-view');
         expect(page.child, isA<PageAccessGate>());
-        expect(page.child, isNot(isA<AccessGate>()));
-        expect((page.child as PageAccessGate).path, AppRoutes.alarmView);
-        expect(accessGroupForRoute(AppRoutes.alarmView).name, 'operate');
+        expect((page.child as PageAccessGate).path, AppRoutes.historyView,
+            reason: 'the alias must ask about the page the whitelist can name');
+      });
+
+      testWidgets('a commissioning station is not locked out by any of them', (tester) async {
+        // The objection this answers: gating more routes must not be a way to
+        // strand somebody pointing a fresh station at its network and database.
+        //
+        // It cannot be, and the reason is structural rather than lucky — a
+        // whitelist only exists where a database exists. With no repository the
+        // anonymous session carries no `allowedPages`, so every one of these
+        // asks the whitelist and is admitted. Asserted against a resolved
+        // no-database session, which is what a station being commissioned
+        // actually has.
+        final commissioning = AsyncValue<AccessSession>.data(
+            AccessSession.anonymous(const {AccessGroup.operate}));
+        const noRepository = AsyncValue<AccessRepository?>.data(null);
+
+        for (final path in [
+          AppRoutes.alarmView,
+          AppRoutes.historyView,
+          AppRoutes.reports,
+          '/advanced/about-linux',
+        ]) {
+          expect(
+            resolvePageAccess(
+              group: accessGroupForRoute(path),
+              path: path,
+              repository: noRepository,
+              session: commissioning,
+            ),
+            AccessGateState.allowed,
+            reason: '$path must open on a station with no database',
+          );
+        }
+
+        // And the two that must survive the *group* half as well, because they
+        // are `administer` and are how the station gets a database at all.
+        // Different mechanism — `routeAllowedWhenRepositoryUnavailable`, not
+        // the whitelist — and untouched by this change, asserted here so that
+        // widening the whitelist gating can never quietly cost it.
+        for (final path in [kServerConfigRoute, kIpSettingsRoute]) {
+          expect(
+            resolvePageAccess(
+              group: accessGroupForRoute(path),
+              path: path,
+              repository: noRepository,
+              session: commissioning,
+            ),
+            AccessGateState.allowed,
+            reason: '$path must open on a station with no database',
+          );
+        }
       });
 
       testWidgets('a page-manager page wears the page gate', (tester) async {
