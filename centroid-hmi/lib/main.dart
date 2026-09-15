@@ -690,9 +690,18 @@ RoutesLocationBuilder createLocationBuilder(
   //    gate would have. `SystemClockSection.settingsAllowed` is required with
   //    no default for that reason — the compiler is what catches the next
   //    caller.
-  //  - '/advanced/history-view', AppRoutes.historyView and
-  //    AppRoutes.alarmView are read surfaces, and read permissions are
-  //    explicitly out of scope (docs/access-control-spec.md §Scope, §11).
+  //  - '/advanced/history-view' and AppRoutes.historyView are read surfaces,
+  //    and read permissions are explicitly out of scope
+  //    (docs/access-control-spec.md §Scope, §11).
+  //
+  //    AppRoutes.alarmView was on that line until 2026-09-15 and is no longer
+  //    open. It is still a read surface and still `operate` — nothing about
+  //    its *group* changed — but "no group needed" was being read as "no gate
+  //    needed", and those stopped being the same thing when the page whitelist
+  //    landed. The whitelist dropped Alarm View from the menu and the address
+  //    kept working, which is the menu-only enforcement §6 names. It now
+  //    carries `PageAccessGate` like every page-manager page; see the route
+  //    itself for what that does and does not cost.
   //
   //    '/advanced/knowledge-base' was on that list until 2026-08-30 and is
   //    now gated at `configure`.
@@ -800,8 +809,25 @@ RoutesLocationBuilder createLocationBuilder(
         title: 'Key Repository',
         child: gated('/advanced/key-repository', 'Key Repository',
             KeyRepositoryPage(proposalData: args is String ? args : null))),
-    AppRoutes.alarmView: (context, state, args) =>
-        BeamPage(key: const ValueKey('/alarm-view'), title: 'Alarm View', child: AlarmViewPage()),
+    // Gated on the whitelist, not on a group. The alarm view stays `operate`
+    // — it is declared nowhere in `kRaisedRoutes`, so `resolvePageAccess`
+    // short-circuits its group half to `allowed` and only the second question
+    // is left. That is the whole of the change: a station that configures no
+    // whitelist gets `pageVisible` true without touching the database and
+    // renders exactly as before, and a station that publishes the alarm view
+    // to its anonymous audience is untouched too.
+    //
+    // What it closes: the page-visibility whitelist could drop Alarm View from
+    // the menu and the address still opened it, because this route carried no
+    // gate at all. Hiding was the whole of the enforcement, which is the
+    // failure mode `docs/access-control-spec.md` §6 names and the one
+    // `PageAccessGate` was written for. The top bar made it a one-tap path
+    // rather than a typed-URL one: the alarm banner beamed here unconditionally
+    // (`lib/widgets/base_scaffold.dart`), which is how this was found.
+    AppRoutes.alarmView: (context, state, args) => BeamPage(
+        key: const ValueKey('/alarm-view'),
+        title: 'Alarm View',
+        child: PageAccessGate(path: AppRoutes.alarmView, title: 'Alarm View', child: AlarmViewPage())),
     // Registered unconditionally. The page itself decides whether the window
     // is open (firstUserWindowOpenProvider); gating the *route* on a database
     // read would 404 the address while the connection was still coming up,

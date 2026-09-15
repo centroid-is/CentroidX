@@ -29,6 +29,12 @@ import 'package:tfc_access/tfc_access.dart' show AccessGroup, AccessSession;
 import 'package:tfc_dart/core/alarm.dart';
 import 'alarm.dart';
 import 'nav_alarm_badge.dart';
+// The alarm banner asks the alarm view's own access question rather than a
+// second copy of it. No new edge in the import graph: `providers/menu.dart`,
+// imported above, already reaches `page_access_gate.dart`, which reaches back
+// here for `BaseScaffold`.
+import 'access_gate.dart' show AccessGateState;
+import 'page_access_gate.dart' show resolvePageAccess;
 import '../routes.dart';
 // ===================
 // Provider Abstraction
@@ -295,11 +301,59 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
     );
   }
 
+  /// Whether this session may open the alarm view.
+  ///
+  /// Asked of [resolvePageAccess] — the one function the route gate and the
+  /// menu filter both ask — rather than of `visibleMenuProvider`. The menu
+  /// would have been the shorter spelling and is the wrong question: it
+  /// answers "is there an Alarm View entry in this operator's bar", which a
+  /// station that rearranged its menu can answer no to while the page is
+  /// perfectly open to them. This asks about the *route*, which is what the
+  /// banner navigates to.
+  ///
+  /// `waiting` counts as closed. During the boot window the whitelist is
+  /// simply not known yet, and the fail-closed direction is the only one that
+  /// does not put alarm text on a panel that may turn out not to be allowed
+  /// it. It costs a restricted-looking bar for the length of the database
+  /// connect — the same window `PageAccessGate` already spends on
+  /// `AccessCheckingBody`, and one where there are no alarms to show yet
+  /// because the alarm stream is resolving through the same connection.
+  bool _alarmViewOpen(WidgetRef ref) =>
+      resolvePageAccess(
+        group: accessGroupForRoute(AppRoutes.alarmView),
+        path: AppRoutes.alarmView,
+        repository: ref.watch(accessRepositoryProvider),
+        session: ref.watch(accessSessionProvider),
+      ) ==
+      AccessGateState.allowed;
+
+  /// The two highest-priority active alarms, centred in the bar.
+  ///
+  /// **Shown only to a session that may open the alarm view.** The banner is
+  /// that page's ticker: it renders the alarm title and description, and a tap
+  /// beams straight to the full list. Leaving it unconditional meant a panel
+  /// whitelisted down to nothing still read out the plant's alarms in its top
+  /// bar and still had a one-tap route into the page the whitelist had
+  /// removed, which made the whitelist advisory for alarms. Every other
+  /// alarm surface already asks: the navigation badges are built from
+  /// `visibleMenu`, and `_takeAlarmNavigation` above refuses to jump to a page
+  /// the session cannot see.
+  ///
+  /// The gate is inside the builder rather than in front of the
+  /// `StreamBuilder`, and that placement is load-bearing. `_alarmStream` is
+  /// single-subscription; a gate that removed the `StreamBuilder` from the
+  /// tree would have it listen a second time the moment somebody signed in,
+  /// which throws. Keeping one `StreamBuilder` mounted for the life of the
+  /// scaffold keeps that to the one subscription the field's own comment
+  /// promises. Nothing reaches the screen while refused — the branch returns
+  /// before a single alarm is read out of the snapshot.
   Widget _buildAlarmBanner(BuildContext context, WidgetRef ref) {
+    final alarmViewOpen = _alarmViewOpen(ref);
     return StreamBuilder<(AlarmMan, List<AlarmActive>)>(
         stream: _alarmStream,
         builder: (context, snapshot) {
-          if (!snapshot.hasError &&
+          if (alarmViewOpen &&
+              !snapshot.hasError &&
               snapshot.hasData &&
               snapshot.data!.$2.isNotEmpty) {
             final (alarmMan, activeAlarms) = snapshot.data!;
