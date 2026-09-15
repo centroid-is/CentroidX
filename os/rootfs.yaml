@@ -79,6 +79,11 @@ actions:
       - less
       - procps
       - bash-completion
+      # minbase installs Priority: required only, which is neither of these.
+      # Without them nobody commissioning a station can ask it for its own
+      # address or check the route to the PLC.
+      - iproute2
+      - iputils-ping
       - ca-certificates
       - curl
       - gnupg
