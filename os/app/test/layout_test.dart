@@ -1,6 +1,5 @@
 import 'package:centroidx_setup/answers.dart';
 import 'package:centroidx_setup/main.dart';
-import 'package:centroidx_setup/system.dart';
 import 'package:centroidx_setup/theme.dart';
 import 'package:centroidx_setup/widgets.dart';
 import 'package:flutter/material.dart';
@@ -129,8 +128,12 @@ void main() {
 
       await tester.pumpWidget(_step(
         body: const [SizedBox(height: 10)],
+        // Deliberately not the real `powerOff`: this test is about the shape
+        // of the action row, and a tap added to it later should not power off
+        // the machine running the suite. What that button actually does when
+        // pressed is progress_step_test.dart's job.
         secondary:
-            OutlinedButton(onPressed: powerOff, child: const Text('Power off')),
+            OutlinedButton(onPressed: () {}, child: const Text('Power off')),
       ));
       await tester.pumpAndSettle();
 

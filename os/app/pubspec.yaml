@@ -47,6 +47,12 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
 
+  # The shutdown ladder in system.dart is defined in seconds of waiting. Real
+  # seconds in a test suite are a flake waiting to happen, and asserting "this
+  # returned quickly" with a stopwatch is the same flake wearing a hat -- so
+  # the clock is faked and the assertions are on exact elapsed time.
+  fake_async: ^1.3.1
+
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is
   # activated in the `analysis_options.yaml` file located at the root of your
