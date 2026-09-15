@@ -2,6 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:json_annotation/json_annotation.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 
+import 'industrial_icons.dart';
+
+export 'industrial_icons.dart'
+    show industrialIcons, industrialIconGroups, industrialIconNames;
+
 const IconData baadericon =
     IconData(0xe800, fontFamily: "TfcIcons", fontPackage: "tfc");
 const IconData warehouse_open =
@@ -36,6 +41,10 @@ class IconDataConverter implements JsonConverter<IconData, String> {
 
   // Predefined map of constant icons
   static IconData _getIconByName(String name) {
+    // The industrial glyphs are generated, so they are looked up in their map
+    // rather than restated as another few dozen cases here.
+    final industrial = industrialIcons[name];
+    if (industrial != null) return industrial;
     switch (name) {
       // Navigation & Basic UI
       case 'home':
@@ -894,6 +903,8 @@ class IconDataConverter implements JsonConverter<IconData, String> {
   static String _getIconName(IconData iconData) {
     // This is a simplified mapping - you might need to expand this
     // based on your actual icon usage
+    final industrial = industrialIconNames[iconData];
+    if (industrial != null) return industrial;
     if (iconData == Icons.home) return 'home';
     if (iconData == Icons.settings) return 'settings';
     if (iconData == Icons.dashboard) return 'dashboard';
@@ -1770,6 +1781,10 @@ final List<IconData> iconList = <IconData>[
   FontAwesomeIcons.tablet.data,
   FontAwesomeIcons.desktop.data,
   FontAwesomeIcons.tv.data,
+
+  // Industrial glyphs -- sensors, motors, drives, pumps, I/O. Spliced in
+  // whole so a glyph added to the font shows up in the picker with it.
+  ...industrialIcons.values,
 
   // Custom Icon
   baadericon,

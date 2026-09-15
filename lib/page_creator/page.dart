@@ -2,11 +2,9 @@ import 'dart:convert';
 
 import 'package:json_annotation/json_annotation.dart';
 import 'package:flutter/material.dart';
-import 'package:tfc/widgets/panes/standard_dialog.dart';
 import 'assets/common.dart';
 import 'assets/registry.dart';
 import '../models/menu_item.dart';
-import 'package:tfc_dart/core/fuzzy_match.dart';
 import 'package:logger/logger.dart';
 import 'package:tfc_dart/core/config/config_item.dart';
 import 'package:tfc_dart/core/config/config_merge.dart'
@@ -16,7 +14,7 @@ import 'package:tfc_dart/core/config/config_store.dart';
 import 'package:tfc_dart/core/config/preference_payload.dart'
     show decodePreferencePayload;
 import 'package:tfc_dart/core/preferences.dart';
-import 'package:tfc/converter/icon.dart';
+import 'package:tfc/widgets/icon_picker.dart';
 import '../core/config/page_codec.dart';
 
 part 'page.g.dart';
@@ -1057,25 +1055,10 @@ class _CreatePageWidgetState extends State<CreatePageWidget> {
   }
 
   void _showIconPicker() {
-    // Pre-build icon name pairs for searching
-    final iconEntries = iconList.map((icon) {
-      final name = IconDataConverter.getIconName(icon);
-      return (icon: icon, name: name);
-    }).toList();
-
-    showDialog(
+    showIconPicker(
       context: context,
-      builder: (context) {
-        return _IconPickerDialog(
-          iconEntries: iconEntries,
-          onSelected: (icon) {
-            setState(() {
-              _selectedIcon = icon;
-            });
-            Navigator.pop(context);
-          },
-        );
-      },
+      selected: _selectedIcon,
+      onSelected: (icon) => setState(() => _selectedIcon = icon),
     );
   }
 
@@ -1273,114 +1256,3 @@ class _CreatePageWidgetState extends State<CreatePageWidget> {
   }
 }
 
-typedef _IconEntry = ({IconData icon, String name});
-
-class _IconPickerDialog extends StatefulWidget {
-  final List<_IconEntry> iconEntries;
-  final ValueChanged<IconData> onSelected;
-
-  const _IconPickerDialog({
-    required this.iconEntries,
-    required this.onSelected,
-  });
-
-  @override
-  State<_IconPickerDialog> createState() => _IconPickerDialogState();
-}
-
-class _IconPickerDialogState extends State<_IconPickerDialog> {
-  final _searchController = TextEditingController();
-  List<_IconEntry> _filtered = [];
-
-  @override
-  void initState() {
-    super.initState();
-    _filtered = widget.iconEntries;
-  }
-
-  @override
-  void dispose() {
-    _searchController.dispose();
-    super.dispose();
-  }
-
-  void _onSearchChanged(String query) {
-    setState(() {
-      _filtered = fuzzyFilter(widget.iconEntries, query,
-          [(entry) => entry.name.replaceAll('_', ' ')]);
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return StandardDialogFrame(
-      title: 'Select icon',
-      icon: Icons.emoji_symbols,
-      width: 400,
-      child: SizedBox(
-        width: 350,
-        height: 450,
-        child: Column(
-          children: [
-            TextField(
-              controller: _searchController,
-              decoration: InputDecoration(
-                hintText: 'Search icons...',
-                prefixIcon: const Icon(Icons.search),
-                suffixIcon: _searchController.text.isNotEmpty
-                    ? IconButton(
-                        icon: const Icon(Icons.clear),
-                        onPressed: () {
-                          _searchController.clear();
-                          _onSearchChanged('');
-                        },
-                      )
-                    : null,
-                isDense: true,
-              ),
-              onChanged: _onSearchChanged,
-              autofocus: true,
-            ),
-            const SizedBox(height: 8),
-            Expanded(
-              child: _filtered.isEmpty
-                  ? const Center(child: Text('No icons found'))
-                  : GridView.builder(
-                      gridDelegate:
-                          const SliverGridDelegateWithFixedCrossAxisCount(
-                        crossAxisCount: 5,
-                        childAspectRatio: 0.8,
-                      ),
-                      itemCount: _filtered.length,
-                      itemBuilder: (context, index) {
-                        final entry = _filtered[index];
-                        final displayName = entry.name.replaceAll('_', ' ');
-                        return Tooltip(
-                          message: displayName,
-                          child: InkWell(
-                            onTap: () => widget.onSelected(entry.icon),
-                            borderRadius: BorderRadius.circular(8),
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(entry.icon, size: 28),
-                                const SizedBox(height: 2),
-                                Text(
-                                  displayName,
-                                  style: const TextStyle(fontSize: 9),
-                                  overflow: TextOverflow.ellipsis,
-                                  textAlign: TextAlign.center,
-                                ),
-                              ],
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
