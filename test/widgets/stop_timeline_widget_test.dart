@@ -487,6 +487,156 @@ void main() {
   });
 
 
+  group('the table\'s group filter', () {
+    Future<void> openTable(WidgetTester tester) async {
+      await tester
+          .tap(find.byKey(const ValueKey('stop-timeline-view-table')));
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> openFilter(WidgetTester tester) async {
+      await tester
+          .tap(find.byKey(const ValueKey('stop-timeline-group-filter')));
+      await tester.pumpAndSettle();
+    }
+
+    /// One entry of the open filter menu. Matched on the widget rather than
+    /// on the key alone: CheckboxMenuButton passes its key down to the
+    /// MenuItemButton it builds, so a bare key finder matches both.
+    Finder item(String key) => find.byWidgetPredicate(
+        (widget) =>
+            widget is CheckboxMenuButton &&
+            widget.key == ValueKey('stop-timeline-group-filter-$key'),
+        description: 'filter entry $key');
+
+    /// Ticks one entry in the open filter menu.
+    Future<void> tick(WidgetTester tester, String key) async {
+      await tester.tap(item(key));
+      await tester.pumpAndSettle();
+    }
+
+    /// What the button itself says the filter is doing.
+    String summary(WidgetTester tester) => tester
+        .widget<Text>(find.descendant(
+            of: find.byKey(const ValueKey('stop-timeline-group-filter')),
+            matching: find.byType(Text)))
+        .data!;
+
+    testWidgets('offers the top-level groups, and nothing below them',
+        (tester) async {
+      await pumpTimeline(tester);
+      await openTable(tester);
+      await openFilter(tester);
+
+      expect(item('g:Line 3'), findsOneWidget);
+      expect(item('g:Infrastructure'), findsOneWidget);
+      // Machines inside a line are not the filter's business -- that is what
+      // grouping and the lanes are for.
+      expect(item('g:Line 3/Multivac'), findsNothing);
+    });
+
+    testWidgets('unticking a line takes it out of the ranking',
+        (tester) async {
+      await pumpTimeline(tester);
+      await openTable(tester);
+      expect(find.text('Link error'), findsOneWidget);
+
+      await openFilter(tester);
+      await tick(tester, 'g:Infrastructure');
+      expect(find.text('Link error'), findsNothing);
+      expect(find.text('Film reel empty'), findsOneWidget);
+    });
+
+    testWidgets('the button says which line is left', (tester) async {
+      await pumpTimeline(tester);
+      await openTable(tester);
+      expect(summary(tester), 'All groups');
+
+      await openFilter(tester);
+      await tick(tester, 'g:Infrastructure');
+      // One line left is named outright; it is the state an operator sits in.
+      expect(summary(tester), 'Line 3');
+    });
+
+    testWidgets('All clears the lot, and a tick brings one line back',
+        (tester) async {
+      // The "only line 1" path: two clicks, not one per line to untick.
+      await pumpTimeline(tester);
+      await openTable(tester);
+      await openFilter(tester);
+      await tick(tester, 'all');
+      expect(summary(tester), 'Nothing shown');
+      // An empty table because of the filter must not read as a quiet shift.
+      expect(find.text('Every group is filtered out.'), findsOneWidget);
+
+      await tick(tester, 'g:Infrastructure');
+      expect(summary(tester), 'Infrastructure');
+      expect(find.text('Link error'), findsOneWidget);
+      expect(find.text('Film reel empty'), findsNothing);
+    });
+
+    testWidgets('All puts every line back on', (tester) async {
+      await pumpTimeline(tester);
+      await openTable(tester);
+      await openFilter(tester);
+      await tick(tester, 'g:Infrastructure');
+      expect(summary(tester), 'Line 3');
+
+      // Half-filtered, the tri-state box switches everything on rather than
+      // cycling to a state nothing could be switched to.
+      await tick(tester, 'all');
+      expect(summary(tester), 'All groups');
+      expect(find.text('Link error'), findsOneWidget);
+    });
+
+    testWidgets('the menu stays open across ticks', (tester) async {
+      await pumpTimeline(tester);
+      await openTable(tester);
+      await openFilter(tester);
+      await tick(tester, 'g:Infrastructure');
+      // Narrowing to three lines out of eight is one interaction, not three.
+      expect(item('g:Line 3'), findsOneWidget);
+    });
+
+    testWidgets('a line filtered out here is still off on the timeline',
+        (tester) async {
+      await pumpTimeline(tester);
+      await openTable(tester);
+      await openFilter(tester);
+      await tick(tester, 'g:Infrastructure');
+      await tester
+          .tap(find.byKey(const ValueKey('stop-timeline-group-filter')));
+      await tester.pumpAndSettle();
+
+      await tester
+          .tap(find.byKey(const ValueKey('stop-timeline-view-timeline')));
+      await tester.pumpAndSettle();
+      // One filter, two ways of reaching it: the lane switch is unticked.
+      expect(
+          find.descendant(
+              of: find.byKey(
+                  const ValueKey('stop-timeline-show-g:Infrastructure')),
+              matching: find.byIcon(Icons.check)),
+          findsNothing);
+      expect(
+          find.descendant(
+              of: find.byKey(const ValueKey('stop-timeline-show-g:Line 3')),
+              matching: find.byIcon(Icons.check)),
+          findsOneWidget);
+    });
+
+    testWidgets('a row switched off on the timeline shows in the button',
+        (tester) async {
+      await pumpTimeline(tester);
+      await tester
+          .tap(find.byKey(const ValueKey('stop-timeline-show-g:Line 3')));
+      await tester.pumpAndSettle();
+      await openTable(tester);
+      expect(summary(tester), 'Infrastructure');
+    });
+  });
+
+
   group('the period picker', () {
     testWidgets('the live window reads out as bare times', (tester) async {
       await pumpTimeline(tester);

@@ -177,6 +177,13 @@ Widget harness(
   );
 }
 
+/// One entry of the open group-filter menu. Matched on the widget rather than
+/// on the key alone: CheckboxMenuButton passes its key down to the
+/// MenuItemButton it builds, so a bare key finder matches both.
+Finder filterEntry(String key) => find.byWidgetPredicate((widget) =>
+    widget is CheckboxMenuButton &&
+    widget.key == ValueKey('stop-timeline-group-filter-$key'));
+
 Future<void> pump(WidgetTester tester, Widget widget, Size view) async {
   await loadFonts();
   tester.view.physicalSize = view;
@@ -226,6 +233,44 @@ void main() {
             matchesGoldenFile('goldens/stop_timeline_table_$name.png'));
       }, skip: goldenSkipFlag);
     }
+
+    testWidgets('the table filtered down to one line', (tester) async {
+      // The question an operator arrives with -- "what stopped line 3" --
+      // and the button reading out that the table is no longer the whole
+      // plant.
+      await pump(tester, harness(StopTimelineSpec(), Brightness.light),
+          const Size(960, 480));
+      await tester
+          .tap(find.byKey(const ValueKey('stop-timeline-view-table')));
+      await tester.pumpAndSettle();
+      await tester
+          .tap(find.byKey(const ValueKey('stop-timeline-group-filter')));
+      await tester.pumpAndSettle();
+      await tester.tap(filterEntry('g:Infrastructure'));
+      await tester.pumpAndSettle();
+      // Put the menu down: this golden is about the table under it.
+      await tester
+          .tap(find.byKey(const ValueKey('stop-timeline-group-filter')));
+      await tester.pumpAndSettle();
+      await expectLater(find.byType(StopTimelineView),
+          matchesGoldenFile('goldens/stop_timeline_table_filtered.png'));
+    }, skip: goldenSkipFlag);
+
+    testWidgets('the group filter lists the top-level lines', (tester) async {
+      // Whole-app, not the view: the menu lives in the overlay above it.
+      await pump(tester, harness(StopTimelineSpec(), Brightness.dark),
+          const Size(960, 480));
+      await tester
+          .tap(find.byKey(const ValueKey('stop-timeline-view-table')));
+      await tester.pumpAndSettle();
+      await tester
+          .tap(find.byKey(const ValueKey('stop-timeline-group-filter')));
+      await tester.pumpAndSettle();
+      await tester.tap(filterEntry('g:Infrastructure'));
+      await tester.pumpAndSettle();
+      await expectLater(find.byType(MaterialApp),
+          matchesGoldenFile('goldens/stop_timeline_group_filter_menu.png'));
+    }, skip: goldenSkipFlag);
 
     testWidgets('pareto ranked by count instead of lost time', (tester) async {
       await pump(tester, harness(StopTimelineSpec(), Brightness.dark),
