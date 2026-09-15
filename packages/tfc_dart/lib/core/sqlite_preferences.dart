@@ -1,6 +1,8 @@
 /// The device-local preference store: one `config_item` row per preference.
 library;
 
+import 'dart:math' show max;
+
 import 'package:drift/drift.dart';
 import 'package:logger/logger.dart';
 import 'package:tfc_access/tfc_access.dart' show newActionId;
@@ -74,8 +76,11 @@ final Logger _logger = Logger();
 /// ## Scope, and what Phase 2 must undo
 ///
 /// Every row is written at this store's [scope], which in the app is
-/// `station:<hostname>` — no exceptions, no per-key routing. Some of those rows
-/// nevertheless hold *shared* data cached locally: `syncToLocalCache` copies
+/// [ConfigScope.local] — no exceptions, no per-key routing. (It was
+/// `station:<hostname>` until a container id turned out to be a hostname that
+/// changes on every image update; [adoptStationScopes] moves those rows.) Some
+/// of those rows nevertheless hold *shared* data cached locally:
+/// `syncToLocalCache` copies
 /// `key_mappings`, `page_editor_data` and `alarm_man_config` down from
 /// Postgres, and `PageManager.load()` reads `page_editor_data` back out before
 /// `runApp`. That is correct for Phase 1 and it is the literal reading of the
@@ -107,15 +112,22 @@ class SqlitePreferences implements PreferencesApi {
   ///
   /// Plain by design: the singleton lives in the app's factory, not here, so a
   /// test can construct as many of these over one database as it likes.
-  SqlitePreferences(this._db, {required this.scope});
+  ///
+  /// [station] is the name change rows are stamped with, and nothing else: it
+  /// plays no part in which rows are read or written. Omitted, it is the
+  /// scope's own station name.
+  SqlitePreferences(this._db, {required this.scope, String? station})
+      : _stationName = station;
 
   final AppDatabase _db;
 
   /// Which store owns every row this instance reads and writes. Rows at any
-  /// other scope are invisible to it and untouched by [clear] — which is what
-  /// makes a database restored from another machine's backup inert rather than
-  /// adopted.
+  /// other scope are invisible to it and untouched by [clear] until
+  /// [adoptStationScopes] moves them in.
   final ConfigScope scope;
+
+  /// The constructor's `station`, when one was given.
+  final String? _stationName;
 
   /// The wire strings for the five types [PreferencesApi] carries.
   ///
@@ -128,9 +140,10 @@ class SqlitePreferences implements PreferencesApi {
   static const String _stringType = kPrefStringType;
   static const String _stringListType = kPrefStringListType;
 
-  /// The hostname change rows are stamped with. A store at [ConfigScope.shared]
-  /// has no station to name; Phase 1 never constructs one.
-  String get _station => scope.station ?? '';
+  /// The name change rows are stamped with: the constructor's `station`, else
+  /// the scope's. A store at [ConfigScope.shared] has no station to name;
+  /// Phase 1 never constructs one.
+  String get _station => _stationName ?? scope.station ?? '';
 
   // ---------------------------------------------------------------------
   // Reads
@@ -332,6 +345,158 @@ class SqlitePreferences implements PreferencesApi {
         );
         return true;
       });
+
+  // ---------------------------------------------------------------------
+  // The one-shot adoption of hostname-scoped rows
+  // ---------------------------------------------------------------------
+
+  /// Moves every preference row at any *other* station scope into this
+  /// store's [scope], once, and records that it has done so. Returns what it
+  /// moved, or null when [markerId] says it already ran.
+  ///
+  /// ## Why this exists
+  ///
+  /// The device-local store used to be scoped `station:<hostname>`. In a
+  /// container with no `hostname:` in its compose file the hostname is the
+  /// container id, so every image update opened the same bind-mounted
+  /// `config.sqlite` under a new, empty scope: the station came up on
+  /// defaults, re-ran the legacy import, and its commissioned settings sat in
+  /// the file under the previous container's name. The file belongs to one
+  /// station whatever it is called, so every station-scoped row in it is this
+  /// station's.
+  ///
+  /// ## The rules
+  ///
+  /// * Only `kind='preference'` rows at a `station:*` scope. Shared rows are
+  ///   the Postgres mirror and have one scope already; no other kind is
+  ///   written at a station scope.
+  /// * **The newest `updated_at` wins** when one id exists at several scopes,
+  ///   this store's own included. Each container wrote the settings it was
+  ///   changed under, so the newest write is what the operator last chose —
+  ///   a setting commissioned under one container, a later route or session
+  ///   under the next. A tie goes to the row already at this scope, then to
+  ///   the higher `rev`, then to the scope name, so the result never depends
+  ///   on row order.
+  /// * The winner keeps its payload, position, `updated_at` and `updated_by`:
+  ///   a move is not an edit. Its `rev` is the highest any copy had, so the
+  ///   counter never goes backwards. Every other copy is deleted.
+  /// * **Bookkeeping rows follow the same rule.** The import marker moving is
+  ///   the point of running before the import. The key-mappings sync
+  ///   watermark is safe under it too: a watermark only lags the log it was
+  ///   written against, and the newest one was written against the database
+  ///   the mirror now reflects. A stale one costs a re-read of the log; a
+  ///   larger one from an older container, against a database since
+  ///   replaced, could skip changes, which is why the rule is not "largest".
+  /// * [markerId] itself is never moved, and is written last, at this scope,
+  ///   even when there was nothing to move — so a fresh database pays for this
+  ///   once, and a second boot reads one row.
+  ///
+  /// ## No change rows
+  ///
+  /// Moving a row between scopes is not an edit to the station's settings,
+  /// and `ConfigStore`'s re-home of the Phase-1 cache records nothing for the
+  /// same reason. The history of each setting stays where it was written, and
+  /// undo refuses station-scoped rows regardless.
+  ///
+  /// One transaction: a power cut mid-move leaves the rows where they were
+  /// and no marker, and the next boot tries again.
+  Future<StationScopeAdoption?> adoptStationScopes({
+    required String markerId,
+  }) =>
+      _db.transaction(() async {
+        if (await _row(markerId) != null) return null;
+
+        final byId = <String, List<ConfigItemRow>>{};
+        final rows = await (_db.select(_db.configItemTable)
+              ..where((t) =>
+                  t.kind.equals(ConfigKind.preference.wireName) &
+                  t.id.equals(markerId).not()))
+            .get();
+        for (final row in rows) {
+          final rowScope = ConfigScope.byWireName(row.scope);
+          if (rowScope == null || rowScope.isShared) continue;
+          byId.putIfAbsent(row.id, () => []).add(row);
+        }
+
+        final rowsFrom = <String, int>{};
+        var adopted = 0;
+        for (final copies in byId.values) {
+          final foreign = copies
+              .where((row) => row.scope != scope.wireName)
+              .toList(growable: false);
+          if (foreign.isEmpty) continue;
+          final winner = copies.reduce(_newerCopy);
+          final rev = copies.map((row) => row.rev).reduce(max);
+
+          for (final row in foreign) {
+            rowsFrom.update(row.scope, (n) => n + 1, ifAbsent: () => 1);
+            await (_db.delete(_db.configItemTable)
+                  ..where((t) =>
+                      t.kind.equals(ConfigKind.preference.wireName) &
+                      t.id.equals(row.id) &
+                      t.scope.equals(row.scope)))
+                .go();
+          }
+          if (winner.scope == scope.wireName) continue;
+
+          adopted++;
+          if (copies.length > foreign.length) {
+            await (_db.update(_db.configItemTable)
+                  ..where((t) => _identity(t, winner.id)))
+                .write(ConfigItemTableCompanion(
+              payload: Value(winner.payload),
+              parentId: Value(winner.parentId),
+              sortIndex: Value(winner.sortIndex),
+              rev: Value(rev),
+              updatedAt: Value(winner.updatedAt),
+              updatedBy: Value(winner.updatedBy),
+            ));
+          } else {
+            await _db.into(_db.configItemTable).insert(
+                  ConfigItemTableCompanion.insert(
+                    kind: ConfigKind.preference.wireName,
+                    id: winner.id,
+                    scope: scope.wireName,
+                    payload: winner.payload,
+                    parentId: Value(winner.parentId),
+                    sortIndex: Value(winner.sortIndex),
+                    rev: Value(rev),
+                    updatedAt: winner.updatedAt,
+                    updatedBy: winner.updatedBy,
+                  ),
+                );
+          }
+        }
+
+        final at = DateTime.now();
+        await _db.into(_db.configItemTable).insert(
+              ConfigItemTableCompanion.insert(
+                kind: ConfigKind.preference.wireName,
+                id: markerId,
+                scope: scope.wireName,
+                payload: ConfigItem.of(
+                  kind: ConfigKind.preference,
+                  id: markerId,
+                  value: {'type': _stringType, 'value': at.toIso8601String()},
+                  scope: scope,
+                ).payload,
+                rev: const Value(1),
+                updatedAt: at,
+                updatedBy: _anonymous,
+              ),
+            );
+        return StationScopeAdoption(adopted: adopted, rowsFrom: rowsFrom);
+      });
+
+  /// The copy [adoptStationScopes] keeps of two copies of one preference.
+  ConfigItemRow _newerCopy(ConfigItemRow a, ConfigItemRow b) {
+    final byTime = a.updatedAt.compareTo(b.updatedAt);
+    if (byTime != 0) return byTime > 0 ? a : b;
+    if (a.scope == scope.wireName) return a;
+    if (b.scope == scope.wireName) return b;
+    if (a.rev != b.rev) return a.rev > b.rev ? a : b;
+    return a.scope.compareTo(b.scope) >= 0 ? a : b;
+  }
 
   /// The type tag and the value to store for [value], or null when
   /// [PreferencesApi] cannot carry its type.
@@ -556,4 +721,34 @@ class SqlitePreferences implements PreferencesApi {
   /// to be able to ask whether it has run, and a caller that names the marker
   /// outright means it.
   static bool _isInternal(String id) => id.startsWith(_internalIdPrefix);
+}
+
+/// What one [SqlitePreferences.adoptStationScopes] moved.
+class StationScopeAdoption {
+  const StationScopeAdoption({required this.adopted, required this.rowsFrom});
+
+  /// Preferences whose value at the store's scope now comes from another
+  /// scope.
+  final int adopted;
+
+  /// Every row taken, by the wire name of the scope it was taken from —
+  /// the copies that won and the older duplicates that did not.
+  final Map<String, int> rowsFrom;
+
+  /// Every row taken from any other scope.
+  int get rowsTaken => rowsFrom.values.fold(0, (sum, n) => sum + n);
+
+  /// Rows taken that lost to a newer copy of the same preference, and are
+  /// gone.
+  int get superseded => rowsTaken - adopted;
+
+  @override
+  String toString() {
+    final from = rowsFrom.entries
+        .map((e) => '${e.key} (${e.value} row${e.value == 1 ? '' : 's'})')
+        .join(', ');
+    return '$adopted preference${adopted == 1 ? '' : 's'} adopted from '
+        '${from.isEmpty ? 'no other scope' : from}; '
+        '$superseded older duplicate${superseded == 1 ? '' : 's'} dropped';
+  }
 }

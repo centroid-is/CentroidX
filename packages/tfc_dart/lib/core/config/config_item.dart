@@ -159,10 +159,10 @@ enum ConfigKind {
 
 /// Who owns a row, and whether it is allowed to leave the machine.
 ///
-/// [station] carries the hostname in its wire form (`station:svn-nes-ot-cl02`)
-/// so several stations' rows coexist in one local database — which is what
-/// makes a local store restorable from a backup taken on another machine
-/// without silently adopting its identity.
+/// A station scope's wire form is `station:<name>`. The app writes exactly one
+/// of them, [local]; any other name in a local file was written by an older
+/// build that scoped rows by hostname, and is adopted into [local] once at
+/// boot (`SqlitePreferences.adoptStationScopes`).
 @immutable
 class ConfigScope {
   const ConfigScope._(this.wireName, this.station);
@@ -170,7 +170,26 @@ class ConfigScope {
   /// Owned by Postgres, mirrored into local SQLite, the same on every station.
   static const ConfigScope shared = ConfigScope._('shared', null);
 
+  /// The one scope every row owned by this machine's `config.sqlite` is
+  /// written at.
+  ///
+  /// **Fixed, never the hostname.** The file is this station's by definition —
+  /// nothing else ever writes it — so a name inside it adds no information and
+  /// takes away a great deal: in a container with no `hostname:` in its
+  /// compose file, `Platform.localHostname` is the container id, which changes
+  /// on every image update. A scope built from it made every update boot on
+  /// defaults with the station's own settings still in the file, under the
+  /// previous container's name.
+  ///
+  /// Spelled `station:local` rather than a new wire form so that every reader
+  /// that already parses [byWireName] — the change log, the snapshot, undo's
+  /// refusal of non-shared rows — treats it as the station scope it is.
+  static const ConfigScope local = ConfigScope._('station:local', 'local');
+
   /// Owned by this machine's SQLite, never written to Postgres.
+  ///
+  /// The app uses [local]; this remains for reading rows an older build wrote
+  /// under a hostname, and for tests that model several stations at once.
   factory ConfigScope.forStation(String hostname) =>
       ConfigScope._('station:$hostname', hostname);
 
