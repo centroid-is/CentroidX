@@ -309,17 +309,35 @@ void main() {
   });
 
   group('the banner answers to the page whitelist', () {
-    /// Whether any part of an alarm reached the screen.
+    /// Whether any part of an alarm reached the screen, **and whether it could
+    /// be tapped**.
     ///
-    /// Both halves are checked because the banner renders both, and a leak of
-    /// either is the leak: the title names the equipment, the description says
-    /// what is wrong with it.
+    /// Both text halves are checked because the banner renders both, and a leak
+    /// of either is the leak: the title names the equipment, the description
+    /// says what is wrong with it.
+    ///
+    /// The tap target is asserted as the `GestureDetector` **ancestor of the
+    /// alarm text**, never as `find.byType(GestureDetector)` on its own. The
+    /// bar holds another one — the Centroid logo's double-tap-to-exit, at
+    /// `base_scaffold.dart:643` — which renders at this window size whether or
+    /// not there is a banner, so a bare type query passes with the banner
+    /// entirely absent and proves nothing. Half the reported defect was that
+    /// the alarms were *clickable*, so that is the half worth pinning
+    /// precisely.
     void expectAlarmTextVisible({required bool visible}) {
       final matcher = visible ? findsOneWidget : findsNothing;
-      expect(find.textContaining('Blóðgunarker hitastig', findRichText: true),
-          matcher);
+      final title =
+          find.textContaining('Blóðgunarker hitastig', findRichText: true);
+      expect(title, matcher);
       expect(find.textContaining('Yfir efri mörkum', findRichText: true),
           matcher);
+      expect(
+        find.ancestor(of: title, matching: find.byType(GestureDetector)),
+        matcher,
+        reason: visible
+            ? 'the banner must still be tappable'
+            : 'there must be no tap target left to reach the alarm view with',
+      );
     }
 
     testWidgets('no whitelist: the banner is exactly what it was',
@@ -330,7 +348,6 @@ void main() {
       await withClock(_goldenClock, () async {
         await _pump(tester, noisy());
         expectAlarmTextVisible(visible: true);
-        expect(find.byType(GestureDetector), findsWidgets);
       });
     });
 

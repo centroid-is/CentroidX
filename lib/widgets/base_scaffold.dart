@@ -30,9 +30,10 @@ import 'package:tfc_dart/core/alarm.dart';
 import 'alarm.dart';
 import 'nav_alarm_badge.dart';
 // The alarm banner asks the alarm view's own access question rather than a
-// second copy of it. No new edge in the import graph: `providers/menu.dart`,
-// imported above, already reaches `page_access_gate.dart`, which reaches back
-// here for `BaseScaffold`.
+// second copy of it. These two are new edges but no new *cycle*: the loop
+// base_scaffold -> providers/menu -> page_access_gate -> base_scaffold already
+// existed, because the menu filter asks `resolvePageAccess` too and both
+// refusal bodies come wrapped in a `BaseScaffold`.
 import 'access_gate.dart' show AccessGateState;
 import 'page_access_gate.dart' show resolvePageAccess;
 import '../routes.dart';
@@ -304,12 +305,22 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
   /// Whether this session may open the alarm view.
   ///
   /// Asked of [resolvePageAccess] — the one function the route gate and the
-  /// menu filter both ask — rather than of `visibleMenuProvider`. The menu
-  /// would have been the shorter spelling and is the wrong question: it
-  /// answers "is there an Alarm View entry in this operator's bar", which a
-  /// station that rearranged its menu can answer no to while the page is
-  /// perfectly open to them. This asks about the *route*, which is what the
-  /// banner navigates to.
+  /// menu filter both ask — rather than of `visibleMenuProvider`, which is
+  /// what `_takeAlarmNavigation` above uses. The two surfaces ask different
+  /// questions and that is why they ask them differently: auto-navigation
+  /// moves the operator to an *arbitrary* alarm-configured page, where menu
+  /// presence is the right conservative test, while this banner offers one
+  /// *fixed* route and its tap goes there.
+  ///
+  /// Asking the route gate's own function is what buys the invariant that
+  /// matters here: banner shown if and only if the tap lands allowed, by
+  /// construction, because it is the same function on the same inputs the
+  /// route will ask a moment later. `visibleMenu` is a subset of what
+  /// `resolvePageAccess` admits, so the menu spelling could only ever err by
+  /// hiding alarms while the page is genuinely open — the worse of the two
+  /// directions. It is reachable, too: a harness or an embedder that composes
+  /// its own menu need not carry an Alarm View entry at all, even though the
+  /// route is open to it.
   ///
   /// `waiting` counts as closed. During the boot window the whitelist is
   /// simply not known yet, and the fail-closed direction is the only one that
