@@ -557,7 +557,7 @@ void main() {
         expect(page.child, isNot(isA<PageAccessGate>()));
       });
 
-      testWidgets('the five read surfaces wear the whitelist gate, and all stay operate', (tester) async {
+      testWidgets('the four whitelist-gated addresses wear the gate, and all stay operate', (tester) async {
         // The hole this closes: the page whitelist could drop any of these from
         // the menu and the address still opened it, because none of these
         // routes carried a gate at all — hiding was the whole of the
@@ -610,6 +610,17 @@ void main() {
         // asks the whitelist and is admitted. Asserted against a resolved
         // no-database session, which is what a station being commissioned
         // actually has.
+        //
+        // **This is half of a chain and is worth little alone.** It proves that
+        // *given* that session the routes open. That a commissioning station
+        // actually *gets* that session — that `_anonymousSession(null)` returns
+        // `allowedPages: null` rather than the empty set — is the other half,
+        // and it is pinned where it is produced, in
+        // `test/providers/access_session_test.dart`, "with no database at all
+        // yields anonymous with the seeded groups and no whitelist". Change one
+        // without the other and this test's name starts overclaiming: a
+        // fail-closed edit to `_anonymousSession` would hide every page on
+        // every un-commissioned panel while this stayed green.
         final commissioning = AsyncValue<AccessSession>.data(
             AccessSession.anonymous(const {AccessGroup.operate}));
         const noRepository = AsyncValue<AccessRepository?>.data(null);
