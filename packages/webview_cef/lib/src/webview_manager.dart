@@ -22,6 +22,13 @@ class WebviewManager extends ValueNotifier<bool> {
   final _tempWebViews = <int, WebViewController>{};
   final _tempInjectUserScripts = <int, InjectUserScripts?>{};
 
+  // CentroidX: renderProcessGone events whose browser id was not yet
+  // registered — the death can land before `create` returns and
+  // onBrowserCreated files the controller under its id — kept here so they
+  // are delivered then instead of dropped. A dropped one is a permanently
+  // blank browser nobody re-navigates.
+  final _pendingRenderProcessGone = <int, int>{};
+
   int nextIndex = 1;
 
   bool? _hasNativeKeySupport;
@@ -88,6 +95,12 @@ class WebviewManager extends ValueNotifier<bool> {
 
     _tempWebViews.remove(browserIndex);
     _tempInjectUserScripts.remove(browserIndex);
+
+    // CentroidX: deliver a render-process death that landed mid-create.
+    final status = _pendingRenderProcessGone.remove(browserId);
+    if (status != null) {
+      _webViews[browserId]?.listener?.onRenderProcessGone?.call(status);
+    }
   }
 
   Future<void> methodCallhandler(MethodCall call) async {
@@ -105,6 +118,18 @@ class WebviewManager extends ValueNotifier<bool> {
             ?.listener
             ?.onTitleChanged
             ?.call(call.arguments["title"] as String);
+        return;
+      // CentroidX: the render process behind a browser died; see
+      // WebviewEventsListener.onRenderProcessGone.
+      case "renderProcessGone":
+        int browserId = call.arguments["browserId"] as int;
+        int status = call.arguments["status"] as int;
+        final controller = _webViews[browserId];
+        if (controller == null) {
+          _pendingRenderProcessGone[browserId] = status;
+        } else {
+          controller.listener?.onRenderProcessGone?.call(status);
+        }
         return;
       case "onConsoleMessage":
         int browserId = call.arguments["browserId"] as int;

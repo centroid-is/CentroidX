@@ -26,7 +26,7 @@ So this copy keeps `linux` and `elinux` and drops the rest.
 * `macos:` and `windows:` from `pubspec.yaml`'s `flutter.plugin.platforms`.
 
 `common/`, `lib/`, `linux/`, `elinux/` and `third/` are byte-for-byte upstream
-except for the two eLinux CMake fixes below.
+except for the changes below.
 
 ## What was changed
 
@@ -37,6 +37,30 @@ HMI pre-starts dashboards at boot, see "Warm browsers" in
 instead of the handler's 1 x 1 default. Upstream sizes only from the widget,
 so a pre-started page did all its layout, and a dashboard's lazy panel
 loading, on first show. Marked `// CentroidX:`.
+
+**`lib/src/webview.dart`, `common/` — `WebViewController.invalidate`.**
+Off-screen rendering is damage-driven: CEF calls `OnPaint` when the page has
+something new to show, and the Flutter texture is only repopulated when such a
+frame arrives. Upstream never needs to force one, because a browser is only
+ever shown by the widget that just created and navigated it — and a loading
+page damages constantly. The HMI hands browsers between tiles, so it shows
+browsers whose page settled long ago, which paint nothing at all; the tile then
+displays the frame it had when it last left the screen, indefinitely. This adds
+a `CefBrowserHost::Invalidate(PET_VIEW)` behind an `invalidate` channel method.
+Marked `// CentroidX:`.
+
+**`common/`, `lib/src/webview_manager.dart`,
+`lib/src/webview_events_listener.dart` —
+`CefRequestHandler::OnRenderProcessTerminated`.** Upstream's handler
+implements every CEF handler interface but this one, so a render process
+dying is completely silent: the browser object survives, no load event fires,
+`OnPaint` simply never comes again, and the tile keeps its last frame with
+nothing in the log to say why. The handler now implements
+`CefRequestHandler`, logs the termination to stderr, and reports it to Dart as
+`renderProcessGone` — carried by a new `onRenderProcessGone` callback on
+`WebviewEventsListener`, and queued by `WebviewManager` when the death lands
+before `create` has returned and registered the browser id — so the host can
+navigate the browser and get a fresh render process. Marked `// CentroidX:`.
 
 **`common/webview_app.cc` — the display backend.** Chromium's Linux display
 backend ("ozone") defaults to X11. An eLinux station is Wayland-only, so CEF

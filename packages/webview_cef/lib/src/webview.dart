@@ -294,6 +294,23 @@ class WebViewController extends ValueNotifier<bool> {
         .invokeMethod('setSize', [_browserId, dpi, size.width, size.height]);
   }
 
+  /// CentroidX: asks the browser to paint a frame now.
+  ///
+  /// Off-screen rendering is damage-driven — CEF paints when the page has
+  /// something new to show — and the Flutter texture behind [webviewWidget]
+  /// only changes when a frame arrives. A browser whose page has settled
+  /// produces neither, so anything that shows such a browser after a gap (the
+  /// HMI hands browsers between tiles) must ask for a frame or it displays the
+  /// last one painted, indefinitely. Upstream never needs this because a
+  /// browser is only ever shown by the widget that just created it.
+  Future<void> invalidate() async {
+    if (_isDisposed) {
+      return;
+    }
+    assert(value);
+    return _pluginChannel.invokeMethod('invalidate', _browserId);
+  }
+
   /// CentroidX: sizes the browser before any widget shows it.
   ///
   /// A browser started ahead of its widget (the HMI pre-starts dashboards at
