@@ -340,42 +340,6 @@ void WebviewHandler::sendScrollEvent(int browserId, int x, int y, int deltaX, in
     }
 }
 
-// CentroidX: see the declaration.
-void WebviewHandler::invalidate(int browserId)
-{
-    if (!CefCurrentlyOn(TID_UI)) {
-        CefPostTask(TID_UI, base::BindOnce(&WebviewHandler::invalidate, this, browserId));
-        return;
-    }
-    auto it = browser_map_.find(browserId);
-    if (it != browser_map_.end() && it->second.browser) {
-        // PET_VIEW, not PET_POPUP: the whole view is what the texture holds.
-        it->second.browser->GetHost()->Invalidate(PET_VIEW);
-    }
-}
-
-// CentroidX: see the declaration.
-void WebviewHandler::OnRenderProcessTerminated(CefRefPtr<CefBrowser> browser,
-                                               TerminationStatus status,
-                                               int error_code,
-                                               const CefString& error_string)
-{
-    CEF_REQUIRE_UI_THREAD();
-    const int browserId = browser->GetIdentifier();
-    // Always on stderr: this is invisible from Dart otherwise, and a station's
-    // container log is the only place anyone will look.
-    fprintf(stderr,
-            "[webview_cef] render process for browser %d terminated "
-            "(status=%d, error_code=%d, error=%s). The view will not paint "
-            "again until it is navigated.\n",
-            browserId, static_cast<int>(status), error_code,
-            error_string.ToString().c_str());
-    fflush(stderr);
-    if (onRenderProcessGone != nullptr) {
-        onRenderProcessGone(browserId, static_cast<int>(status));
-    }
-}
-
 void WebviewHandler::changeSize(int browserId, float a_dpi, int w, int h)
 {
     auto it = browser_map_.find(browserId);

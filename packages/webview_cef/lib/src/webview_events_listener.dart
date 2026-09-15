@@ -17,18 +17,12 @@ typedef LoadStopCb = void Function(WebViewController controller, String url);
 typedef OnConsoleMessage = void Function(
     int level, String message, String source, int line);
 
-/// CentroidX: the render process behind a browser died. |status| is CEF's
-/// cef_termination_status_t. Nothing paints afterwards until the browser is
-/// navigated again, so a host that wants the view back must act on this.
-typedef OnRenderProcessGone = void Function(int status);
-
 class WebviewEventsListener {
   TitleChangeCb? onTitleChanged;
   UrlChangeCb? onUrlChanged;
   OnConsoleMessage? onConsoleMessage;
   LoadStartCb? onLoadStart;
   LoadStopCb? onLoadEnd;
-  OnRenderProcessGone? onRenderProcessGone;
 
   WebviewEventsListener({
     this.onTitleChanged,
@@ -36,6 +30,5 @@ class WebviewEventsListener {
     this.onConsoleMessage,
     this.onLoadStart,
     this.onLoadEnd,
-    this.onRenderProcessGone,
   });
 }

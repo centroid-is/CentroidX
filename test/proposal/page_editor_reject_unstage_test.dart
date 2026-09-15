@@ -49,7 +49,6 @@ import '../helpers/page_editor_harness.dart'
         imageStoreOf,
         setUpEditorEnvironment,
         testImageStore;
-import 'package:tfc/providers/web_view_prewarm.dart';
 
 /// The one asset the operator drew themselves, at x=0.2. Everything a
 /// proposal adds lands elsewhere, so persisted x-coordinates say exactly
@@ -109,10 +108,6 @@ Widget _appUnderTest(PageManager manager, ProposalStateNotifier proposals,
   return ProviderScope(
     overrides: [
       pageManagerProvider.overrideWith((ref) async => manager),
-      // Browsers are not warmed under a test: the prewarm waits on the page
-      // manager and then on a two-second timer, which would be left pending
-      // at teardown (#520).
-      webViewPrewarmProvider.overrideWithValue(0),
       pageImageStoreProvider.overrideWith((ref) async {
         final prefs = manager.prefs;
         return prefs is FakeEditorPreferences

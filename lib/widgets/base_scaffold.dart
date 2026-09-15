@@ -23,7 +23,6 @@ import '../providers/alarm.dart';
 import '../providers/nav_alarm.dart';
 import '../providers/menu.dart';
 import '../providers/alarm_auto_navigation.dart';
-import '../providers/web_view_prewarm.dart';
 import '../access_routes.dart';
 import 'package:tfc_access/tfc_access.dart' show AccessGroup, AccessSession;
 import 'package:tfc_dart/core/alarm.dart';
@@ -152,12 +151,7 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
     // scaffold drains it instead. After the first frame, because this reads
     // the route the scaffold is being built for.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      _takeAlarmNavigation();
-      // Starts the web tiles' browsers ahead of their first visit. Kept alive
-      // and idempotent, so the first scaffold to mount is the one that pays
-      // and every later one reads a number.
-      ref.read(webViewPrewarmProvider);
+      if (mounted) _takeAlarmNavigation();
     });
   }
 

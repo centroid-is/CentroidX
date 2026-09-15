@@ -29,7 +29,6 @@ import 'package:tfc/providers/database.dart';
 import 'package:tfc/providers/page_images.dart';
 import 'package:tfc/providers/page_manager.dart';
 import 'package:tfc/providers/proposal_state.dart';
-import 'package:tfc/providers/web_view_prewarm.dart';
 import 'package:tfc/widgets/proposal_banner.dart';
 import 'package:tfc/widgets/proposal_visual.dart';
 
@@ -89,7 +88,6 @@ Widget _appUnderTest(PageManager manager, ProposalStateNotifier proposals,
   return ProviderScope(
     overrides: [
       pageManagerProvider.overrideWith((ref) async => manager),
-      webViewPrewarmProvider.overrideWithValue(0),
       pageImageStoreProvider.overrideWith((ref) async {
         final prefs = manager.prefs;
         return prefs is FakeEditorPreferences
