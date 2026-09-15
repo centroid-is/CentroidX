@@ -126,6 +126,11 @@ jobs:
           sudo apt-get install -y wireguard-tools >/dev/null
           bash test/installer-test.sh
 
+      # The image build that runs the firmware guard does not run on pull
+      # requests, so the recipes' firmware lines are checked here as well.
+      - name: GPU firmware guard and recipes
+        run: bash test/gpu-firmware-test.sh
+
       - name: Archive keys unchanged
         run: make verify-keys
 

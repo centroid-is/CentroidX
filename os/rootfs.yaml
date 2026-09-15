@@ -120,10 +120,21 @@ actions:
       - firmware-linux-free
 {{ if eq $gpu "intel" }}
       - intel-media-va-driver
+      # The i915 GuC and DMC blobs. On trixie they moved out of
+      # firmware-misc-nonfree into their own package, so naming the old one
+      # alone left /lib/firmware/i915 empty and the panel rendering on llvmpipe.
+      - firmware-intel-graphics
 {{ else if eq $gpu "amd" }}
       - firmware-amd-graphics
       - libdrm-amdgpu1
 {{ end }}
+
+  # A missing GPU firmware does not fail anything at boot: the display comes up
+  # and the HMI renders on the CPU. So it fails the build instead.
+  - action: run
+    chroot: true
+    label: check-gpu-firmware
+    script: scripts/check-gpu-firmware.sh {{ $gpu }}
 
   # wg-obfuscator is not in Debian: upstream ships a statically linked x86-64
   # binary per release, pinned here by sha256 the same way the archive keys are.
