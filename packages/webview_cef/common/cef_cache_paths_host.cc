@@ -243,6 +243,12 @@ CachePaths PrepareCefCachePaths() {
     return paths;
   }
 
+  // One line saying which directory CEF was actually given. The failure this
+  // replaces looked, from the outside, like a tile stuck on "loading" with
+  // nothing in the log but a warning about a setting nobody had set.
+  std::fprintf(stderr, "[webview_cef] cache root: %s\n", paths.root.c_str());
+  std::fflush(stderr);
+
 #if !defined(_WIN32)
   const SingletonSweep sweep =
       ClearStaleSingletonState(paths.root, TempDirectory(HostEnv, platform));
