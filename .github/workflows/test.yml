@@ -600,6 +600,61 @@ jobs:
           exit 1
         fi
 
+  # The CEF webview plugin (packages/webview_cef) only builds against a ~600 MB
+  # CEF distribution downloaded at build time, so the parts worth testing are
+  # kept free of CEF headers: which directory CefSettings.root_cache_path gets,
+  # and what a restart may delete of the process-singleton state a killed run
+  # left behind. Same shape as elinux-video-plugin-cpp-test above. Only the
+  # Linux desktop and eLinux ports compile this module into the app; the macOS
+  # and Windows legs build the test binary alone, which is what keeps the
+  # kMacOS/kWindows path rules — and the MSVC build of the pure half — honest.
+  webview-cef-cpp-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v4
+      id: checkout
+      continue-on-error: true
+
+    - name: Checkout (retry)
+      if: steps.checkout.outcome == 'failure'
+      uses: actions/checkout@v4
+
+    - name: Configure
+      working-directory: packages/webview_cef
+      run: cmake -S common/test -B build/test -DCMAKE_BUILD_TYPE=Debug
+
+    - name: Build
+      working-directory: packages/webview_cef
+      run: cmake --build build/test --config Debug
+
+    - name: Test
+      working-directory: packages/webview_cef
+      shell: bash
+      run: |
+        ctest --test-dir build/test --build-config Debug --verbose --output-on-failure 2>&1 | tee test-output.txt
+
+    # A harness this small could stop registering cases and still exit 0; the
+    # floor is what makes "green" mean something. The POSIX half of the suite
+    # (real unix sockets, real symlinks) does not compile on Windows, so the
+    # floor there covers the platform-free half only.
+    - name: Verify the suite actually ran
+      if: always()
+      shell: bash
+      working-directory: packages/webview_cef
+      run: |
+        [ -f test-output.txt ] || { echo "::error::the test step produced no output"; exit 1; }
+        ran=$(grep -c 'RUN  ' test-output.txt || true)
+        echo "webview_cef tests reported: $ran"
+        if [ "${{ matrix.os }}" = "windows-latest" ]; then floor=28; else floor=40; fi
+        if [ "$ran" -lt "$floor" ]; then
+          echo "::error::ran only $ran cases, expected >=$floor — check the test registration"
+          exit 1
+        fi
+
   # tools/ is python and had no CI job, so tools/hmi_profiler.py — the thing we
   # point at a station when someone says the HMI feels sluggish — would rot the
   # first time nobody ran it. Stdlib only, so this needs no install step and

@@ -116,7 +116,11 @@ void WebviewApp::OnBeforeCommandLineProcessing(const CefString &process_type, Ce
 
 		command_line->AppendSwitch("disable-web-security");                                     //disable web security
 		command_line->AppendSwitch("allow-running-insecure-content");                           //allow running insecure content in secure pages
-		// Don't create a "GPUCache" directory when cache-path is unspecified.
+		// No "GPUCache" directory. Upstream's reason was that cache-path was
+		// unspecified; it is specified now (see PrepareCefCachePaths in
+		// webview_plugin.cc), so this is simply a directory we choose not to
+		// keep — the browser is windowless and the stations run it with the
+		// GPU disabled.
 		command_line->AppendSwitch("disable-gpu-shader-disk-cache");                            //disable gpu shader disk cache
         command_line->AppendSwitch("no-sandbox");
 

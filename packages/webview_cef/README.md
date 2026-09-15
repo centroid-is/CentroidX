@@ -26,7 +26,8 @@ So this copy keeps `linux` and `elinux` and drops the rest.
 * `macos:` and `windows:` from `pubspec.yaml`'s `flutter.plugin.platforms`.
 
 `common/`, `lib/`, `linux/`, `elinux/` and `third/` are byte-for-byte upstream
-except for the changes below.
+except for the changes below. `common/cef_cache_paths*` and `common/test/` are
+ours, not upstream files.
 
 ## What was changed
 
@@ -71,6 +72,32 @@ that becomes a Flutter texture), so it needs no display at all. Where no
 `CENTROIDX_CEF_OZONE_PLATFORM` overrides that from a station's environment,
 because the flutter-elinux runner rejects unknown command-line flags.
 
+**`common/cef_cache_paths.{h,cc}`, `common/cef_cache_paths_host.{h,cc}` and
+the `CefSettings` block in `common/webview_plugin.cc` — the cache root.**
+Upstream never sets `CefSettings.root_cache_path`, so CEF logged "Please
+customize CefSettings.root_cache_path for your application. Use of the default
+value may lead to unintended process singleton behavior" on every start and
+fell back to `~/.config/cef_user_data`, a directory shared with every other CEF
+application on the machine.
+
+That directory holds Chromium's process singleton. Restarting a container
+rather than recreating it keeps the filesystem, so `SingletonLock`,
+`SingletonCookie` and `SingletonSocket` survive — naming a hostname that is the
+container id and a pid the restart promptly hands back out. Whether the next
+start then decides the previous instance is dead is a race, and when it goes the
+wrong way the browser's render processes die on startup and every Web page tile
+stays on "loading". Nothing removes the socket directories under the temp
+directory either, so one `org.chromium.Chromium.*` accumulates per start.
+
+The plugin now picks a root of its own (`$XDG_CONFIG_HOME` or `~/.config`, then
+`centroidx/webview_cef`; `Application Support` on macOS, `AppData\Local` on
+Windows, with the temp directory as a last resort), puts `cache_path` beneath it
+as CEF requires, and on startup clears any singleton state whose owner does not
+answer on its socket — the same probe Chromium tries first, and the only one a
+recycled pid cannot fool. `CENTROIDX_CEF_ROOT_CACHE_PATH` overrides the root
+from a station's environment. The reasoning is in the header; the decisions are
+tested in `common/test`.
+
 **`elinux/CMakeLists.txt` — the C++ client wrapper.** Upstream hardcoded
 
     ../example/elinux/flutter/ephemeral/cpp_client_wrapper
@@ -98,7 +125,9 @@ after the wipe. `docker/frontend/Dockerfile` fails the build if
 ## Updating
 
 Re-download the published archive, copy `common/ lib/ linux/ elinux/ third/`
-over, and re-apply the two pubspec deletions and both eLinux CMake fixes above.
+over, and re-apply the two pubspec deletions and every change listed above —
+including the four `cef_cache_paths*` files, which upstream has no equivalent
+of, and the CMake entries that compile them.
 Check upstream first: if the `../example/...` paths are gone, the first fix is
 no longer needed.
 
