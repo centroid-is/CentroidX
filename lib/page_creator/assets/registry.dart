@@ -40,6 +40,7 @@ import 'ethercat_devices.dart';
 import 'drawing_viewer.dart';
 import 'third_party.dart';
 import 'alarm_visibility.dart';
+import 'lid_inspection.dart';
 import 'rtsp_camera.dart';
 import 'web_view.dart';
 
@@ -106,6 +107,7 @@ class AssetRegistry {
     DrawingViewerConfig: DrawingViewerConfig.fromJson,
     ThirdPartyEquipmentConfig: ThirdPartyEquipmentConfig.fromJson,
     AlarmVisibilityConfig: AlarmVisibilityConfig.fromJson,
+    LidInspectionConfig: LidInspectionConfig.fromJson,
     RtspCameraConfig: RtspCameraConfig.fromJson,
     WebViewAssetConfig: WebViewAssetConfig.fromJson,
   };
@@ -172,6 +174,7 @@ class AssetRegistry {
     if (kKnowledgeEnabled) DrawingViewerConfig: DrawingViewerConfig.preview,
     ThirdPartyEquipmentConfig: ThirdPartyEquipmentConfig.preview,
     AlarmVisibilityConfig: AlarmVisibilityConfig.preview,
+    LidInspectionConfig: LidInspectionConfig.preview,
     RtspCameraConfig: RtspCameraConfig.preview,
     if (kWebViewEnabled) WebViewAssetConfig: WebViewAssetConfig.preview,
   };
