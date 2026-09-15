@@ -61,6 +61,15 @@ const List<String> kConnMetaOpcuaOnlyFields = [
   'statusCode',
   'subscribedKeys',
   'lastDataAgeSec',
+  // The derived health, which is what the chip renders, as opposed to
+  // 'state' — the raw TCP/session status, which says "connected" for every
+  // failure mode the heartbeat exists to catch.
+  'health',
+  // The client's own reason string. Until this existed, a client that could
+  // not create its heartbeat subscription recorded exactly why and then kept
+  // it in the log, where an operator looking at a red chip never sees it.
+  'healthDetail',
+  'heartbeatAgeSec',
 ];
 
 /// The complete valid field set for a Modbus connection.
@@ -223,6 +232,15 @@ class ConnMeta {
   final int? subscribedKeys;
   final double? lastDataAgeSec;
 
+  /// Derived health (`EffectiveDeviceStatus.name`), OPC UA only.
+  final String? health;
+
+  /// One line saying what is wrong, OPC UA only. Empty when nothing is.
+  final String? healthDetail;
+
+  /// Seconds since the last heartbeat tick specifically, or -1 for never.
+  final double? heartbeatAgeSec;
+
   /// Which technology this snapshot describes — decides the valid field set.
   final bool isModbus;
 
@@ -245,6 +263,9 @@ class ConnMeta {
     this.statusCode,
     this.subscribedKeys,
     this.lastDataAgeSec,
+    this.health,
+    this.healthDetail,
+    this.heartbeatAgeSec,
   });
 
   /// The valid field names for this snapshot's technology.
@@ -284,6 +305,9 @@ class ConnMeta {
       map['statusCode'] = _int(statusCode);
       map['subscribedKeys'] = _int(subscribedKeys);
       map['lastDataAgeSec'] = _dbl(lastDataAgeSec);
+      map['health'] = _str(health);
+      map['healthDetail'] = _str(healthDetail ?? '');
+      map['heartbeatAgeSec'] = _dbl(heartbeatAgeSec);
     }
     return map;
   }
@@ -366,6 +390,9 @@ class OpcUaConnMetaSource implements ConnMetaSource {
       statusCode: wrapper.recoveryStatus,
       subscribedKeys: subscribedKeysFn(),
       lastDataAgeSec: age,
+      health: wrapper.effectiveStatus.name,
+      healthDetail: wrapper.healthDetail ?? '',
+      heartbeatAgeSec: wrapper.heartbeatAgeSec,
     );
   }
 }
