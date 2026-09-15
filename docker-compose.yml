@@ -350,19 +350,22 @@ services:
       hmi-update.watch: "false"
 
 
-  # Same one-shot pattern as pg-certs. docker-update runs as uid 65532 and
-  # cannot mint its own certificate, so one is generated here and chowned
-  # to it.
+  # Same one-shot pattern as pg-certs, including the image -- see there for why
+  # it is not plain alpine. docker-update runs as uid 65532 and cannot mint its
+  # own certificate, so one is generated here and chowned to it.
   docker-update-certs:
-    image: alpine:latest
+    image: alpine/openssl:latest
     container_name: docker-update-certs
     restart: "no"
     volumes:
       - ./docker_update_certs:/out
-    command: |
-      sh -euxc '
-        apk add --no-cache openssl
-        [ -f /out/docker-update.crt ] && [ -f /out/docker-update.key ] && { echo "TLS certs exist, skipping"; exit 0; }
+    entrypoint: ["/bin/sh", "-euxc"]
+    command:
+      - |
+        if [ -f /out/docker-update.crt ] && [ -f /out/docker-update.key ]; then
+          echo "TLS certs exist, skipping"
+          exit 0
+        fi
         openssl req -x509 -newkey rsa:2048 -nodes -days 365000 \
           -subj "/C=IS/ST=Hofudborgarsvaedid/L=Hafnarfjordur/O=Centroid/CN=${DOCKER_UPDATE_CERT_CN:-centroidx-hmi}" \
           -addext "subjectAltName=DNS:${DOCKER_UPDATE_CERT_CN:-centroidx-hmi},DNS:localhost,IP:127.0.0.1" \
@@ -372,7 +375,6 @@ services:
         chmod 600 /out/docker-update.key
         chmod 644 /out/docker-update.crt
         echo "Certs written to /out as uid 65532"
-      '
 
 
   # Same shape as create-local-share: a root one-shot that prepares a bind
@@ -450,16 +452,34 @@ services:
                -c ssl_key_file=/certs/server.key
                -c ssl_min_protocol_version=TLSv1.2
 
+  # alpine/openssl, not alpine. The openssl BINARY is not in the alpine base
+  # image -- only the library apk itself links against -- so this used to start
+  # with `apk add --no-cache openssl`, which needs a package mirror. A station
+  # is commissioned with no uplink (the whole point of `make PRELOAD=true`), so
+  # on the machine this matters most that fetch failed, this one-shot exited
+  # non-zero, timescaledb never reached service_completed_successfully, and
+  # `flutter` -- which depends_on timescaledb -- never started. A freshly
+  # installed panel came up black.
+  #
+  # Any image carrying the binary would do; this one is 23MB, says what it is,
+  # and `make preload` stages it automatically because it stages every `image:`
+  # named in this file. Its ENTRYPOINT is openssl itself, hence the override.
+  #
+  # The "already present" check comes FIRST so that a restart needs nothing at
+  # all -- no network, no openssl, no clock.
   pg-certs:
-    image: alpine:latest
+    image: alpine/openssl:latest
     container_name: pg-certs
     restart: "no"
     volumes:
       - ./timescale_certs:/out
-    command: |
-      sh -euxc '
-        apk add --no-cache openssl
-        [ -f /out/server.key ] && [ -f /out/server.crt ] && { echo "TLS certs exist, skipping"; exit 0; }
+    entrypoint: ["/bin/sh", "-euxc"]
+    command:
+      - |
+        if [ -f /out/server.key ] && [ -f /out/server.crt ]; then
+          echo "TLS certs exist, skipping"
+          exit 0
+        fi
         openssl req -x509 -newkey rsa:2048 -nodes -days 365000 \
           -subj "/C=IS/ST=Hofudborgarsvaedid/L=Hafnarfjordur/O=Centroid/CN=timescaledb" \
           -keyout /out/server.key \
@@ -468,7 +488,6 @@ services:
         chmod 600 /out/server.key
         chmod 644 /out/server.crt
         echo "Certs written to /out as uid:gid 70:70"
-      '
 
 volumes:
   # `docker compose cp profiler:/reports ./profiler-reports` to collect them.

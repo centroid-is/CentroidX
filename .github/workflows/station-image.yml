@@ -145,6 +145,44 @@ jobs:
           echo "compose interpolates with nothing but .env.example filled in"
           rm -f .env
 
+      # A station is commissioned with no uplink -- that is the whole point of
+      # `make PRELOAD=true`, which stages every image named in this file into
+      # the rootfs. An image being present is not enough if the container then
+      # goes shopping: the cert one-shots used to open with
+      # `apk add --no-cache openssl`, because the alpine base image carries the
+      # library but not the binary. Offline that fetch failed, pg-certs exited
+      # non-zero, timescaledb never reached service_completed_successfully, and
+      # `flutter` -- which depends_on timescaledb -- never started. A freshly
+      # installed panel came up black, and nothing in CI had an opinion.
+      - name: No service needs a package mirror to start
+        working-directory: .
+        run: |
+          python3 - <<'EOF'
+          import re, sys, pathlib
+
+          pattern = re.compile(
+              r'\b(apk +add|apt-get +install|apt +install|dnf +install|'
+              r'yum +install|pip3? +install|npm +install|gem +install)\b')
+          rc = 0
+          for name in ('docker-compose.yml', 'docker/backend/docker-compose.yml'):
+              path = pathlib.Path(name)
+              for n, line in enumerate(path.read_text().splitlines(), 1):
+                  # A comment is a comment in both languages in this file: YAML
+                  # outside a block scalar, shell inside one. Either way it runs
+                  # nothing -- and the note explaining why this rule exists
+                  # would otherwise trip the rule.
+                  if line.lstrip().startswith('#'):
+                      continue
+                  if pattern.search(line):
+                      rc = 1
+                      print(f'::error file={name},line={n}::installs a package at '
+                            f'container START, which an offline station cannot do. '
+                            f'Use an image that already carries it: {line.strip()}')
+          if rc == 0:
+              print('no service installs packages at start')
+          sys.exit(rc)
+          EOF
+
       # Every variable the compose file reads must be documented AND actually
       # written by firstboot, or a station gets provisioned without it and
       # nobody finds out until something is silently slow, insecure, or refuses
