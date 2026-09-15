@@ -31,6 +31,10 @@ set(PLUGIN_NAME "webview_cef_plugin")
 add_library(${PLUGIN_NAME} SHARED
   "webview_cef_plugin.cc"
   "webview_cef_texture.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../common/cef_cache_paths.cc"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../common/cef_cache_paths.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../common/cef_cache_paths_host.cc"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../common/cef_cache_paths_host.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/../common/webview_app.cc"
   "${CMAKE_CURRENT_SOURCE_DIR}/../common/webview_app.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/../common/webview_handler.cc"
