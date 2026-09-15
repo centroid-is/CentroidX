@@ -124,6 +124,8 @@ namespace webview_cef {
 				}
 			};
 
+			// CentroidX: forward render-process deaths to Dart; see
+			// WebviewHandler::OnRenderProcessTerminated.
 			m_handler->onRenderProcessGone = [=, this](int browserId, int status)
 			{
 				if (m_invokeFunc)
@@ -276,7 +278,7 @@ namespace webview_cef {
 		m_handler->onJavaScriptChannelMessage = nullptr;
 		m_handler->onFocusedNodeChangeMessage = nullptr;
 		m_handler->onImeCompositionRangeChangedMessage = nullptr;
-		m_handler->onRenderProcessGone = nullptr;
+		m_handler->onRenderProcessGone = nullptr; // CentroidX
 		m_init = false;
 	}
 
@@ -325,6 +327,7 @@ namespace webview_cef {
 				result(1, nullptr);
 			}
 		}
+		// CentroidX: see WebviewHandler::invalidate.
 		else if (name.compare("invalidate") == 0) {
 			int browserId = int(webview_value_get_int(values));
 			m_handler->invalidate(browserId);

@@ -58,8 +58,9 @@ public:
     std::function<void(int browserId, int level, std::string message, std::string source, int line)>onConsoleMessageEvent;
     std::function<void(int browserId, bool editable)> onFocusedNodeChangeMessage;
     std::function<void(int browserId, int32_t x, int32_t y, int32_t height)> onImeCompositionRangeChangedMessage;
-    //The render process behind this browser died. Nothing paints afterwards
-    //until the browser is navigated again; see OnRenderProcessTerminated.
+    // CentroidX: the render process behind this browser died. Nothing paints
+    // afterwards until the browser is navigated again; see
+    // OnRenderProcessTerminated.
     std::function<void(int browserId, int status)> onRenderProcessGone;
     //webpage message
     std::function<void(std::string, std::string, std::string, int browserId, std::string)> onJavaScriptChannelMessage;
@@ -80,6 +81,7 @@ public:
         return this;
     }
     virtual CefRefPtr<CefLoadHandler> GetLoadHandler() override { return this; }
+    // CentroidX: upstream implements every handler interface but this one.
     virtual CefRefPtr<CefRequestHandler> GetRequestHandler() override { return this; }
     virtual CefRefPtr<CefRenderHandler> GetRenderHandler() override { return this; }
 
@@ -144,7 +146,7 @@ public:
     
     // CefRequestHandler methods:
     //
-    // The render process dying is the one way a windowless browser stops
+    // CentroidX: the render process dying is the one way a windowless browser stops
     // painting that looks like nothing at all: CEF keeps the browser object,
     // no load event fires, and OnPaint simply never comes again. Without this
     // the tile keeps the last frame it was given, for ever, with nothing in
@@ -184,7 +186,7 @@ public:
     void sendScrollEvent(int browserId, int x, int y, int deltaX, int deltaY);
     void changeSize(int browserId, float a_dpi, int width, int height);
 
-    // Asks CEF for a full frame now, whether or not the page changed.
+    // CentroidX: asks CEF for a full frame now, whether or not the page changed.
     //
     // Windowless rendering is damage-driven: OnPaint fires when Chromium has
     // something new to show, and a browser whose page has settled produces no

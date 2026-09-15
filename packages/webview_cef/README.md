@@ -49,14 +49,18 @@ displays the frame it had when it last left the screen, indefinitely. This adds
 a `CefBrowserHost::Invalidate(PET_VIEW)` behind an `invalidate` channel method.
 Marked `// CentroidX:`.
 
-**`common/` — `CefRequestHandler::OnRenderProcessTerminated`.** Upstream's
-handler implements every CEF handler interface but this one, so a render
-process dying is completely silent: the browser object survives, no load event
-fires, `OnPaint` simply never comes again, and the tile keeps its last frame
-with nothing in the log to say why. The handler now implements
+**`common/`, `lib/src/webview_manager.dart`,
+`lib/src/webview_events_listener.dart` —
+`CefRequestHandler::OnRenderProcessTerminated`.** Upstream's handler
+implements every CEF handler interface but this one, so a render process
+dying is completely silent: the browser object survives, no load event fires,
+`OnPaint` simply never comes again, and the tile keeps its last frame with
+nothing in the log to say why. The handler now implements
 `CefRequestHandler`, logs the termination to stderr, and reports it to Dart as
-`renderProcessGone` so the host can navigate the browser and get a fresh render
-process.
+`renderProcessGone` — carried by a new `onRenderProcessGone` callback on
+`WebviewEventsListener`, and queued by `WebviewManager` when the death lands
+before `create` has returned and registered the browser id — so the host can
+navigate the browser and get a fresh render process. Marked `// CentroidX:`.
 
 **`common/webview_app.cc` — the display backend.** Chromium's Linux display
 backend ("ozone") defaults to X11. An eLinux station is Wayland-only, so CEF

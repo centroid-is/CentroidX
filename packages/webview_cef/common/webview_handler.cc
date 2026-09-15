@@ -340,6 +340,7 @@ void WebviewHandler::sendScrollEvent(int browserId, int x, int y, int deltaX, in
     }
 }
 
+// CentroidX: see the declaration.
 void WebviewHandler::invalidate(int browserId)
 {
     if (!CefCurrentlyOn(TID_UI)) {
@@ -353,6 +354,7 @@ void WebviewHandler::invalidate(int browserId)
     }
 }
 
+// CentroidX: see the declaration.
 void WebviewHandler::OnRenderProcessTerminated(CefRefPtr<CefBrowser> browser,
                                                TerminationStatus status,
                                                int error_code,

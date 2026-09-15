@@ -995,6 +995,41 @@ void main() {
       expect(find.byKey(const ValueKey('fake-web')), findsOneWidget);
     });
 
+    testWidgets('the pool itself wakes a browser it hands over',
+        (tester) async {
+      // The ask lives in [WebViewSurfacePool.take], not in the tile: any
+      // future consumer of a parked browser -- a page preview, an editor
+      // canvas -- gets one that paints, without having to know why it might
+      // not.
+      final surface = _FakeRepaintingSurface();
+      const url = 'https://grafana.plant/d/abc/line-1';
+      WebViewSurfacePool.instance.park(url, surface);
+
+      final taken = WebViewSurfacePool.instance.take(url);
+      expect(identical(taken, surface), isTrue);
+      expect(surface.repaints, 0,
+          reason: 'deferred to after the frame, when the taker is on screen');
+      // Any frame will do; the pool defers to the end of the one the taker
+      // mounts in.
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(surface.repaints, 1);
+    });
+
+    test('renderer recovery is immediate once, then backs off to a minute',
+        () {
+      // A one-off renderer crash costs one reload; a page that reliably
+      // kills its renderer (a dashboard OOM-killing on a memory-starved
+      // station) must not become a tight crash-reload loop -- also not from
+      // browsers parked invisibly in the pool.
+      expect(cefRendererRecoveryDelay(1), Duration.zero);
+      expect(cefRendererRecoveryDelay(2), const Duration(seconds: 4));
+      expect(cefRendererRecoveryDelay(3), const Duration(seconds: 8));
+      expect(cefRendererRecoveryDelay(5), const Duration(seconds: 32));
+      expect(cefRendererRecoveryDelay(6), const Duration(minutes: 1));
+      expect(cefRendererRecoveryDelay(1000), const Duration(minutes: 1),
+          reason: 'the ceiling holds however long the deaths keep coming');
+    });
+
     testWidgets('a different address starts its own browser', (tester) async {
       final surfaces = <_FakeSurface>[];
       WebViewAssetView.debugSurfaceFactory = (_) {
