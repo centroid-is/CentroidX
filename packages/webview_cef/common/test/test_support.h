@@ -1,9 +1,11 @@
 // Copyright (c) Centroid. Part of CentroidX.
 //
-// The same three-macro harness packages/media_kit_video_elinux/elinux/test
-// uses, for the same reason: these tests must build wherever the plugin does,
-// including the eLinux toolchain image, which carries cmake and a compiler and
-// nothing else. Twenty lines here beats a network fetch in CI.
+// A variant of the three-macro harness packages/media_kit_video_elinux/
+// elinux/test uses — this copy adds EXPECT_FALSE, and its EXPECT_EQ prints
+// got/want (so compared types need an operator<<). Kept local for the same
+// reason as there: these tests must build wherever the plugin does, including
+// the eLinux toolchain image, which carries cmake and a compiler and nothing
+// else. Twenty lines here beats a network fetch in CI.
 
 #ifndef WEBVIEW_CEF_TEST_SUPPORT_H_
 #define WEBVIEW_CEF_TEST_SUPPORT_H_

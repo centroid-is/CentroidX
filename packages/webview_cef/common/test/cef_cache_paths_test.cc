@@ -2,9 +2,11 @@
 //
 // The decisions behind CefSettings.root_cache_path and the startup sweep of
 // the process-singleton state a killed run leaves behind. No filesystem and no
-// CEF: every platform's answer is checked on every CI host, because the file
-// under test is compiled into the Linux desktop, eLinux, macOS and Windows
-// builds and a fix aimed at a station must not move the others' directories.
+// CEF: every platform's answer is checked on every CI host. Only the Linux
+// desktop and eLinux ports compile the file under test into the app; the
+// macOS and Windows answers are pinned here — by this test binary alone — so
+// a change to the table is a deliberate one, not a side effect of a fix aimed
+// at a station.
 
 #include "cef_cache_paths.h"
 
@@ -265,6 +267,9 @@ SingletonState KilledRunState() {
   state.socket_present = true;
   state.socket_target = "/tmp/org.chromium.Chromium.aB3xY9/SingletonSocket";
   state.socket_answers = false;
+  // The previous run started an hour ago: unambiguously not a concurrent
+  // start that has yet to bind its socket.
+  state.age_seconds = 60 * 60;
   return state;
 }
 
@@ -290,6 +295,26 @@ TEST(ARestartClearsWhatTheKilledRunLeftBehind) {
   EXPECT_EQ(sweep.directories.size(), size_t(1));
   EXPECT_EQ(sweep.directories[0],
             std::string("/tmp/org.chromium.Chromium.aB3xY9"));
+}
+
+TEST(FreshSingletonFilesAreLeftForTheirPossiblyLiveOwner) {
+  // Chromium creates SingletonLock before it binds SingletonSocket, so an
+  // instance seconds into its startup looks exactly like a killed run: files
+  // present, socket silent. Files that young are not judged at all.
+  SingletonState state = KilledRunState();
+  state.age_seconds = webview_cef::kFreshSingletonStateGraceSeconds - 1;
+  const SingletonSweep sweep =
+      webview_cef::PlanSingletonSweep("/root/cef", state, kTempDir, {});
+  EXPECT_FALSE(sweep.owner_alive);
+  EXPECT_TRUE(sweep.empty());
+}
+
+TEST(SingletonFilesOldEnoughToJudgeAreSwept) {
+  SingletonState state = KilledRunState();
+  state.age_seconds = webview_cef::kFreshSingletonStateGraceSeconds;
+  const SingletonSweep sweep =
+      webview_cef::PlanSingletonSweep("/root/cef", state, kTempDir, {});
+  EXPECT_EQ(sweep.files.size(), size_t(3));
 }
 
 TEST(ALiveOwnerKeepsItsSingletonState) {

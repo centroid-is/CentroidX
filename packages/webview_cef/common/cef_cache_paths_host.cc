@@ -18,6 +18,8 @@
 #include <io.h>
 #else
 #include <dirent.h>
+#include <fcntl.h>
+#include <poll.h>
 #include <pwd.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -104,22 +106,38 @@ int64_t SecondsSinceModified(const std::string& path) {
   return age > 0 ? age : 0;
 }
 
-// Depth-first unlink. Only ever called on a path IsChromiumSocketDir has
-// already vouched for.
-bool RemoveTree(const std::string& path) {
-  DIR* dir = opendir(path.c_str());
-  if (dir != nullptr) {
+// Depth-first unlink with std::filesystem::remove_all's no-follow semantics:
+// a symlink is unlinked, never followed. The temp directory is world-writable
+// on a shared machine, so anything under a swept directory — or the directory
+// entry itself — may be a link somebody planted to aim the deletion elsewhere.
+// O_NOFOLLOW classifies each entry and openat/unlinkat keep the walk anchored
+// to the directory actually opened, so a swap mid-walk cannot redirect it
+// either. Only ever called on a path IsChromiumSocketDir has already vouched
+// for.
+bool RemoveTreeAt(int parent_fd, const std::string& name) {
+  const int fd = openat(parent_fd, name.c_str(),
+                        O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  if (fd < 0) {
+    // A file, a socket, or a symlink (ELOOP): remove the entry itself, never
+    // what it might point at.
+    return unlinkat(parent_fd, name.c_str(), 0) == 0;
+  }
+  if (DIR* dir = fdopendir(fd)) {
     while (const struct dirent* entry = readdir(dir)) {
-      const std::string name(entry->d_name);
-      if (name == "." || name == "..") {
+      const std::string child(entry->d_name);
+      if (child == "." || child == "..") {
         continue;
       }
-      RemoveTree(path + "/" + name);
+      RemoveTreeAt(fd, child);
     }
-    closedir(dir);
+    closedir(dir);  // closes fd too
+  } else {
+    close(fd);
   }
-  return rmdir(path.c_str()) == 0 || unlink(path.c_str()) == 0;
+  return unlinkat(parent_fd, name.c_str(), AT_REMOVEDIR) == 0;
 }
+
+bool RemoveTree(const std::string& path) { return RemoveTreeAt(AT_FDCWD, path); }
 
 std::vector<AbandonedSocketDir> FindSocketDirs(const std::string& temp_dir) {
   std::vector<AbandonedSocketDir> found;
@@ -135,14 +153,20 @@ std::vector<AbandonedSocketDir> FindSocketDirs(const std::string& temp_dir) {
       continue;
     }
     const std::string path = temp_dir + "/" + name;
+    // lstat: Chromium's socket directories are real directories, so a symlink
+    // wearing the prefix is somebody's plant and is not even a candidate.
     struct stat info;
-    if (stat(path.c_str(), &info) != 0 || !S_ISDIR(info.st_mode)) {
+    if (lstat(path.c_str(), &info) != 0 || !S_ISDIR(info.st_mode)) {
       continue;
     }
     AbandonedSocketDir candidate;
     candidate.path = path;
     candidate.age_seconds = SecondsSinceModified(path);
+    // The planner never consults socket_answers for a directory younger than
+    // the grace period, so don't pay a connect() — possibly against another
+    // application's just-starting instance — to compute it.
     candidate.socket_answers =
+        candidate.age_seconds >= kAbandonedSocketDirGraceSeconds &&
         UnixSocketAnswers(path + "/" + kSingletonSocketName);
     found.push_back(candidate);
   }
@@ -190,9 +214,37 @@ bool UnixSocketAnswers(const std::string& path) {
   if (fd < 0) {
     return false;
   }
-  const bool connected =
-      connect(fd, reinterpret_cast<struct sockaddr*>(&address),
-              sizeof(address)) == 0;
+  // Non-blocking, because this runs on the platform thread at startup and a
+  // listener that exists but never accepts — a wedged instance whose backlog
+  // has filled — would park a blocking connect() forever, freezing the UI
+  // with no log line. Chromium's own probe is non-blocking with a deadline
+  // for the same reason. Every inconclusive outcome reads as "answers":
+  // the direction that sweeps nothing.
+  const int flags = fcntl(fd, F_GETFL, 0);
+  if (flags >= 0) {
+    fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+  }
+  bool connected = connect(fd, reinterpret_cast<struct sockaddr*>(&address),
+                           sizeof(address)) == 0;
+  if (!connected && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+    // A full backlog: something is bound and listening, just not accepting.
+    // Wedged, but alive.
+    connected = true;
+  } else if (!connected && errno == EINPROGRESS) {
+    struct pollfd waiter;
+    waiter.fd = fd;
+    waiter.events = POLLOUT;
+    waiter.revents = 0;
+    const int ready = poll(&waiter, 1, 500 /* ms */);
+    if (ready > 0) {
+      int error = 0;
+      socklen_t length = sizeof(error);
+      connected = getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &length) == 0 &&
+                  error == 0;
+    } else if (ready == 0) {
+      connected = true;  // deadline passed with no verdict: assume alive
+    }
+  }
   close(fd);
   return connected;
 }
@@ -200,15 +252,33 @@ bool UnixSocketAnswers(const std::string& path) {
 SingletonSweep ClearStaleSingletonState(const std::string& root,
                                         const std::string& temp_dir) {
   SingletonState state;
+  const std::string lock_path = root + "/" + kSingletonLockName;
+  const std::string cookie_path = root + "/" + kSingletonCookieName;
   const std::string socket_path = root + "/" + kSingletonSocketName;
-  state.lock_present = PathExists(root + "/" + kSingletonLockName);
-  state.cookie_present = PathExists(root + "/" + kSingletonCookieName);
+  state.lock_present = PathExists(lock_path);
+  state.cookie_present = PathExists(cookie_path);
   state.socket_present = PathExists(socket_path);
   if (state.socket_present) {
     state.socket_target = ReadLinkTarget(socket_path);
     state.socket_answers = UnixSocketAnswers(
         state.socket_target.empty() ? socket_path : state.socket_target);
   }
+  // The youngest file bounds how recently its creator started. lstat, not
+  // stat: these are symlinks whose targets are not paths, and a dangling link
+  // must not read as brand new.
+  int64_t youngest = -1;
+  for (const std::string* path : {&lock_path, &cookie_path, &socket_path}) {
+    struct stat info;
+    if (lstat(path->c_str(), &info) == 0) {
+      const int64_t age = static_cast<int64_t>(std::time(nullptr)) -
+                          static_cast<int64_t>(info.st_mtime);
+      const int64_t clamped = age > 0 ? age : 0;
+      if (youngest < 0 || clamped < youngest) {
+        youngest = clamped;
+      }
+    }
+  }
+  state.age_seconds = youngest >= 0 ? youngest : 0;
 
   const SingletonSweep sweep =
       PlanSingletonSweep(root, state, temp_dir, FindSocketDirs(temp_dir));
@@ -233,6 +303,26 @@ CachePaths PrepareCefCachePaths() {
   const HostPlatform platform = BuildHostPlatform();
   const CachePaths paths =
       ResolveCachePaths(HostEnv, EnsureWritableDirectory, platform);
+
+  // The override is the documented "point it at a writable volume" knob, so
+  // when it is set and not honoured, say which one and why — silently landing
+  // in the next candidate down looks exactly like the variable being ignored.
+  const std::string requested = HostEnv(kRootCachePathEnvVar);
+  if (!requested.empty()) {
+    if (!IsAbsolutePath(requested, platform)) {
+      std::fprintf(stderr,
+                   "[webview_cef] ignoring %s=\"%s\": not an absolute path\n",
+                   kRootCachePathEnvVar, requested.c_str());
+      std::fflush(stderr);
+    } else if (paths.root != CachePathsForRoot(requested, platform).root) {
+      std::fprintf(stderr,
+                   "[webview_cef] %s=\"%s\" could not be created or is not "
+                   "writable; falling back\n",
+                   kRootCachePathEnvVar, requested.c_str());
+      std::fflush(stderr);
+    }
+  }
+
   if (paths.empty()) {
     std::fprintf(stderr,
                  "[webview_cef] WARNING: no writable cache directory could be "

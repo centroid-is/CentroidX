@@ -20,6 +20,7 @@
 #endif
 
 #if !defined(_WIN32)
+#include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -83,6 +84,18 @@ void Backdate(const std::string& path, int seconds) {
   utimes(path.c_str(), times);
 }
 
+// utimes follows symlinks; the singleton files ARE symlinks (often dangling),
+// so aging them takes lutimes.
+void BackdateLink(const std::string& path, int seconds) {
+  struct timeval times[2];
+  const time_t when = time(nullptr) - seconds;
+  times[0].tv_sec = when;
+  times[0].tv_usec = 0;
+  times[1].tv_sec = when;
+  times[1].tv_usec = 0;
+  lutimes(path.c_str(), times);
+}
+
 // A bound, listening unix socket. Chromium's process singleton has one of
 // these for as long as the instance that owns the profile is alive.
 class ListeningSocket {
@@ -138,6 +151,12 @@ struct KilledRun {
     symlink("4242424242424242424", (root + "/SingletonCookie").c_str());
     symlink((socket_dir + "/SingletonSocket").c_str(),
             (root + "/SingletonSocket").c_str());
+    // The killed run started long ago — old enough that the sweep may judge
+    // its files rather than mistake them for a concurrent start's.
+    const int age = int(webview_cef::kFreshSingletonStateGraceSeconds) + 60;
+    BackdateLink(root + "/SingletonLock", age);
+    BackdateLink(root + "/SingletonCookie", age);
+    BackdateLink(root + "/SingletonSocket", age);
   }
 };
 
@@ -285,11 +304,143 @@ TEST(AHostileSingletonSocketLinkDeletesNothing) {
   unlink((run.root + "/SingletonSocket").c_str());
   symlink((keep + "/SingletonSocket").c_str(),
           (run.root + "/SingletonSocket").c_str());
+  BackdateLink(run.root + "/SingletonSocket",
+               int(webview_cef::kFreshSingletonStateGraceSeconds) + 60);
 
   webview_cef::ClearStaleSingletonState(run.root, run.temp_dir);
 
   EXPECT_TRUE(Exists(keep));
   EXPECT_TRUE(Exists(keep + "/data"));
+  // The hostile link itself was still ours to clear.
+  EXPECT_FALSE(Exists(run.root + "/SingletonSocket"));
+}
+
+TEST(AFreshlyCreatedSingletonStateIsLeftAlone) {
+  // What a concurrent start looks like from the outside: Chromium has made
+  // its lock but not yet bound its socket. Files this young are not judged.
+  Scratch scratch;
+  KilledRun run{scratch.at("root"), scratch.at("tmp"), ""};
+  run.Create();
+  for (const char* name :
+       {"SingletonLock", "SingletonCookie", "SingletonSocket"}) {
+    BackdateLink(run.root + "/" + name, 0);
+  }
+
+  const webview_cef::SingletonSweep sweep =
+      webview_cef::ClearStaleSingletonState(run.root, run.temp_dir);
+
+  EXPECT_TRUE(sweep.empty());
+  EXPECT_TRUE(Exists(run.root + "/SingletonLock"));
+  EXPECT_TRUE(Exists(run.root + "/SingletonSocket"));
+  EXPECT_TRUE(Exists(run.socket_dir));
+}
+
+TEST(TheSweepUnlinksASymlinkInsideASocketDirectoryWithoutFollowingIt) {
+  // /tmp is world-writable on a shared machine: anyone can drop a symlink
+  // into a directory that is about to be swept. The link must die, its
+  // target must not.
+  Scratch scratch;
+  KilledRun run{scratch.at("root"), scratch.at("tmp"), ""};
+  run.Create();
+  const std::string keep = scratch.at("precious");
+  MakeDir(keep);
+  MakeFile(keep + "/data");
+  symlink(keep.c_str(), (run.socket_dir + "/escape").c_str());
+
+  webview_cef::ClearStaleSingletonState(run.root, run.temp_dir);
+
+  EXPECT_FALSE(Exists(run.socket_dir));
+  EXPECT_TRUE(Exists(keep));
+  EXPECT_TRUE(Exists(keep + "/data"));
+}
+
+TEST(AnOrphanSocketDirectoryThatIsASymlinkIsUnlinkedNotEntered) {
+  // The planner's IsChromiumSocketDir check is lexical — it vouches for the
+  // path's spelling, not for what sits at it. If what sits there is a planted
+  // symlink, the executor removes the link and nothing through it.
+  Scratch scratch;
+  KilledRun run{scratch.at("root"), scratch.at("tmp"), ""};
+  run.Create();
+  const std::string keep = scratch.at("precious");
+  MakeDir(keep);
+  MakeFile(keep + "/data");
+  const std::string evil = run.temp_dir + "/org.chromium.Chromium.evil01";
+  symlink(keep.c_str(), evil.c_str());
+  // Re-point the root link so the planner names `evil` as the orphan.
+  unlink((run.root + "/SingletonSocket").c_str());
+  symlink((evil + "/SingletonSocket").c_str(),
+          (run.root + "/SingletonSocket").c_str());
+  BackdateLink(run.root + "/SingletonSocket",
+               int(webview_cef::kFreshSingletonStateGraceSeconds) + 60);
+
+  webview_cef::ClearStaleSingletonState(run.root, run.temp_dir);
+
+  EXPECT_FALSE(Exists(evil));  // the link is gone...
+  EXPECT_TRUE(Exists(keep));   // ...what it pointed at is not
+  EXPECT_TRUE(Exists(keep + "/data"));
+}
+
+TEST(ATempEntryThatIsASymlinkIsNeverTreatedAsASocketDirectory) {
+  // The other way in: a link wearing Chromium's directory prefix, aged past
+  // the grace period, waiting for the abandoned-directory sweep. A symlink is
+  // not a directory, so it is not even a candidate.
+  Scratch scratch;
+  KilledRun run{scratch.at("root"), scratch.at("tmp"), ""};
+  run.Create();
+  const std::string keep = scratch.at("precious");
+  MakeDir(keep);
+  MakeFile(keep + "/data");
+  const std::string evil = run.temp_dir + "/org.chromium.Chromium.evil02";
+  symlink(keep.c_str(), evil.c_str());
+  BackdateLink(evil, int(webview_cef::kAbandonedSocketDirGraceSeconds) + 60);
+
+  webview_cef::ClearStaleSingletonState(run.root, run.temp_dir);
+
+  EXPECT_TRUE(Exists(keep));
+  EXPECT_TRUE(Exists(keep + "/data"));
+  EXPECT_TRUE(Exists(evil));  // left entirely alone
+}
+
+TEST(TheSocketProbeComesBackFromAListenerWithAFullBacklog) {
+  // A wedged previous instance — stopped, or hung with its backlog full — has
+  // a socket that exists but never accepts. A blocking connect() would park
+  // the platform thread forever; the probe must come back, and the safe
+  // verdict for "there, but not answering properly" is alive: sweep nothing.
+  Scratch scratch;
+  const std::string path = scratch.at("SingletonSocket");
+  ListeningSocket listener(path);
+  EXPECT_TRUE(listener.ok());
+
+  struct sockaddr_un address;
+  std::memset(&address, 0, sizeof(address));
+  address.sun_family = AF_UNIX;
+  std::memcpy(address.sun_path, path.c_str(), path.size());
+  std::vector<int> clients;
+  bool backlog_full = false;
+  for (int i = 0; i < 64 && !backlog_full; ++i) {
+    const int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) {
+      break;
+    }
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+    if (connect(fd, reinterpret_cast<struct sockaddr*>(&address),
+                sizeof(address)) != 0) {
+      backlog_full =
+          errno == EAGAIN || errno == EWOULDBLOCK || errno == EINPROGRESS;
+    }
+    clients.push_back(fd);
+  }
+
+  if (backlog_full) {
+    const time_t before = time(nullptr);
+    EXPECT_TRUE(webview_cef::UnixSocketAnswers(path));
+    EXPECT_TRUE(time(nullptr) - before < 5);
+  } else {
+    std::fprintf(stderr, "  note: could not fill the backlog here\n");
+  }
+  for (const int fd : clients) {
+    close(fd);
+  }
 }
 
 #endif  // !_WIN32

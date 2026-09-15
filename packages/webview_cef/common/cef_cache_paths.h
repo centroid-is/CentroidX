@@ -61,10 +61,12 @@
 namespace webview_cef {
 
 // The three platforms this file shapes paths for. Passed explicitly rather
-// than resolved from #ifdefs so one test run covers all three: this code is
-// compiled into the Linux desktop, eLinux, macOS and Windows builds, and a
-// change that suits a station must not quietly move the desktop builds'
-// directories.
+// than resolved from #ifdefs so one test run covers all three. Only the Linux
+// desktop and eLinux ports compile this module into the app — on macOS and
+// Windows the HMI uses the OS webview, and this vendored plugin has no ports
+// there — but the macOS and Windows rules are kept and pinned by the test
+// binary, so the path table stays one checked whole instead of a Linux
+// special case with untested branches.
 enum class HostPlatform { kLinux, kMacOS, kWindows };
 
 // The platform this translation unit was compiled for.
@@ -143,6 +145,15 @@ inline constexpr char kSocketDirPrefix[] = "org.chromium.Chromium.";
 // where being wrong is expensive.
 inline constexpr int64_t kAbandonedSocketDirGraceSeconds = 300;
 
+// Chromium creates SingletonLock (and the cookie) BEFORE binding
+// SingletonSocket, so an instance in the middle of starting up has files on
+// disk and no socket answering — the same signature as a killed run. Files
+// younger than this are therefore not judged at all. The window between lock
+// and bind is milliseconds; a crashed run whose files really are this young
+// just gets swept on the following start instead, once they are old enough
+// to tell apart.
+inline constexpr int64_t kFreshSingletonStateGraceSeconds = 10;
+
 // What the root cache directory looks like at startup.
 struct SingletonState {
   bool lock_present = false;
@@ -154,6 +165,10 @@ struct SingletonState {
   // Something accepted a connection on `socket_target`. This is the only
   // liveness evidence used; a pid is never consulted.
   bool socket_answers = false;
+  // Age of the youngest of the three files, in seconds; 0 when none are
+  // present. This is what keeps a sweep off the fresh files of an instance
+  // that has created its lock but not yet bound its socket.
+  int64_t age_seconds = 0;
 };
 
 // One <temp>/org.chromium.Chromium.XXXXXX directory found at startup.
@@ -176,8 +191,9 @@ struct SingletonSweep {
 
 // True when `path` is a direct child of `temp_dir` named with the Chromium
 // socket-directory prefix. Every recursive delete this module plans is gated
-// on this, so a corrupt or hostile SingletonSocket symlink cannot aim the
-// sweep at an unrelated directory.
+// on this, and the deleter itself never follows a symlink (see RemoveTree in
+// the host half), so a corrupt or hostile SingletonSocket link cannot aim
+// the sweep at an unrelated directory.
 bool IsChromiumSocketDir(const std::string& path, const std::string& temp_dir);
 
 SingletonSweep PlanSingletonSweep(

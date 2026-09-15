@@ -604,9 +604,10 @@ jobs:
   # CEF distribution downloaded at build time, so the parts worth testing are
   # kept free of CEF headers: which directory CefSettings.root_cache_path gets,
   # and what a restart may delete of the process-singleton state a killed run
-  # left behind. Same shape as elinux-video-plugin-cpp-test above. Windows is in
-  # the matrix because common/ is compiled into every port and its path rules
-  # differ there.
+  # left behind. Same shape as elinux-video-plugin-cpp-test above. Only the
+  # Linux desktop and eLinux ports compile this module into the app; the macOS
+  # and Windows legs build the test binary alone, which is what keeps the
+  # kMacOS/kWindows path rules — and the MSVC build of the pure half — honest.
   webview-cef-cpp-test:
     strategy:
       fail-fast: false
@@ -648,7 +649,7 @@ jobs:
         [ -f test-output.txt ] || { echo "::error::the test step produced no output"; exit 1; }
         ran=$(grep -c 'RUN  ' test-output.txt || true)
         echo "webview_cef tests reported: $ran"
-        if [ "${{ matrix.os }}" = "windows-latest" ]; then floor=26; else floor=33; fi
+        if [ "${{ matrix.os }}" = "windows-latest" ]; then floor=28; else floor=40; fi
         if [ "$ran" -lt "$floor" ]; then
           echo "::error::ran only $ran cases, expected >=$floor — check the test registration"
           exit 1

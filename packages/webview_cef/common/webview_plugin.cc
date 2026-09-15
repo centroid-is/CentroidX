@@ -770,6 +770,12 @@ namespace webview_cef {
 		cefs.multi_threaded_message_loop = true;
 #endif
 		CefInitialize(mainArgs, cefs, app.get(), nullptr);
+		// CentroidX: a Flutter hot restart resets the Dart side and sends
+		// "init" again while this process — and the CEF inside it — lives on.
+		// Without this, the second init would run the singleton sweep against
+		// our own live state and call CefInitialize a second time, which is
+		// once more than a process is allowed.
+		isCefInitialized = true;
 	}
 
 	void doMessageLoopWork(){

@@ -51,6 +51,23 @@ void AppendIfAbsolute(std::vector<std::string>* out,
   }
 }
 
+// <base>/<vendor>/webview_cef, when `base` is a real absolute directory. An
+// empty or relative base yields nothing: JoinPath("", x) collapses to a
+// relative path, which AppendIfAbsolute would drop anyway — the check here
+// just says so up front.
+void AppendVendorAppDir(std::vector<std::string>* out,
+                        const std::string& base,
+                        HostPlatform platform) {
+  if (base.empty()) {
+    return;
+  }
+  AppendIfAbsolute(
+      out,
+      JoinPath(JoinPath(base, VendorDir(platform), platform), kAppDirName,
+               platform),
+      platform);
+}
+
 }  // namespace
 
 const char kRootCachePathEnvVar[] = "CENTROIDX_CEF_ROOT_CACHE_PATH";
@@ -140,58 +157,30 @@ std::vector<std::string> RootCacheCandidates(const EnvLookup& env,
   // A station's own choice wins over everything.
   AppendIfAbsolute(&candidates, env(kRootCachePathEnvVar), platform);
 
-  const std::string vendor = VendorDir(platform);
   switch (platform) {
-    case HostPlatform::kWindows: {
+    case HostPlatform::kWindows:
       // Where CEF's own default lives (AppData\Local\CEF\User Data), minus the
       // sharing.
-      const std::string local = env("LOCALAPPDATA");
-      if (!local.empty()) {
-        AppendIfAbsolute(
-            &candidates,
-            JoinPath(JoinPath(local, vendor, platform), kAppDirName, platform),
-            platform);
-      }
+      AppendVendorAppDir(&candidates, env("LOCALAPPDATA"), platform);
       break;
-    }
-    case HostPlatform::kMacOS: {
-      const std::string home = env("HOME");
-      if (!home.empty()) {
-        const std::string support = JoinPath(
-            JoinPath(home, "Library", platform), "Application Support",
-            platform);
-        AppendIfAbsolute(
-            &candidates,
-            JoinPath(JoinPath(support, vendor, platform), kAppDirName,
-                     platform),
-            platform);
-      }
+    case HostPlatform::kMacOS:
+      AppendVendorAppDir(
+          &candidates,
+          JoinPath(JoinPath(env("HOME"), "Library", platform),
+                   "Application Support", platform),
+          platform);
       break;
-    }
-    case HostPlatform::kLinux: {
+    case HostPlatform::kLinux:
       // ~/.config, for the same reason CEF defaults to ~/.config/cef_user_data
       // and Chromium to ~/.config/google-chrome: this holds the profile, not
       // just a cache. The disk cache underneath it is size-capped by Chromium.
       // On a station that is /home/<app user>/.config — owned by the non-root
       // user the container runs as, and writable without any volume of its
       // own.
-      const std::string xdg = env("XDG_CONFIG_HOME");
-      if (!xdg.empty()) {
-        AppendIfAbsolute(
-            &candidates,
-            JoinPath(JoinPath(xdg, vendor, platform), kAppDirName, platform),
-            platform);
-      }
-      const std::string home = env("HOME");
-      if (!home.empty()) {
-        const std::string config = JoinPath(home, ".config", platform);
-        AppendIfAbsolute(
-            &candidates,
-            JoinPath(JoinPath(config, vendor, platform), kAppDirName, platform),
-            platform);
-      }
+      AppendVendorAppDir(&candidates, env("XDG_CONFIG_HOME"), platform);
+      AppendVendorAppDir(&candidates,
+                         JoinPath(env("HOME"), ".config", platform), platform);
       break;
-    }
   }
 
   // Last resort. A read-only or absent home directory is the one case where
@@ -247,11 +236,20 @@ SingletonSweep PlanSingletonSweep(
   SingletonSweep sweep;
   sweep.owner_alive = state.socket_present && state.socket_answers;
 
-  if (!root.empty() && !sweep.owner_alive) {
+  // Chromium creates SingletonLock before it binds SingletonSocket, so "files
+  // on disk, socket silent" is also what an instance mid-startup looks like.
+  // Files young enough to be that instance's are not judged: skipping one
+  // sweep round costs nothing, because a genuinely dead run's files are still
+  // there — and old enough — on the next start.
+  const bool any_file_present =
+      state.lock_present || state.cookie_present || state.socket_present;
+  const bool possibly_mid_startup =
+      any_file_present && state.age_seconds < kFreshSingletonStateGraceSeconds;
+
+  if (!root.empty() && !sweep.owner_alive && !possibly_mid_startup) {
     // Chromium unlinks all three on a clean exit, so finding any of them means
-    // the previous run was killed — which is what a container restart does.
-    // The socket proved nobody is listening, and a live instance could not
-    // have got this far without binding one.
+    // the previous run was killed — which is what a container restart does —
+    // and the socket proved nobody is listening.
     if (state.lock_present) {
       sweep.files.push_back(
           JoinPath(root, kSingletonLockName, HostPlatform::kLinux));
