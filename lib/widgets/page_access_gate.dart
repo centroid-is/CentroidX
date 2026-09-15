@@ -26,10 +26,14 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:tfc_access/tfc_access.dart';
-import 'package:tfc_dart/core/access/access_repository.dart';
+import '../core/access_authority.dart';
 
 import '../access_routes.dart';
 import '../providers/access.dart';
+// `relayCanAuthenticateProvider` — whether the gateway link can actually carry
+// a credential. The gate, the lock badge and the menu filter all read this one
+// provider so they cannot disagree about a dead link.
+import '../providers/gateway_link.dart';
 import '../providers/menu.dart' show visibleMenuProvider;
 // `kSessionWhileLoading` only — the single definition of the session a guard
 // resolves on while `accessSessionProvider` is still loading. Imported rather
@@ -68,9 +72,9 @@ import 'nav_dropdown.dart' show beamSafelyKids;
 /// hardcoding false there hid Server Config the moment the database went
 /// away. That is the one page whose whole job is getting a station out of an
 /// outage, and losing it is worse than any other wrong answer this function
-/// could give. `routeAllowedWhenRepositoryUnavailable` is the single place
-/// that knows which path it is, and asking it here is what keeps the menu,
-/// the badge and the gate agreeing in every repository state.
+/// could give. [routeAllowedWhenNobodyCanSignIn] is the single place that
+/// knows which path it is, and asking it here is what keeps the menu, the
+/// badge and the gate agreeing in every authority state.
 ///
 /// **An unresolved session waits; it does not guess.** Until
 /// `accessSessionProvider` answers, which page-manager pages this panel may
@@ -117,14 +121,16 @@ import 'nav_dropdown.dart' show beamSafelyKids;
 AccessGateState resolvePageAccess({
   required AccessGroup group,
   required String path,
-  required AsyncValue<AccessRepository?> repository,
+  required AsyncValue<AccessAuthority> authority,
   required AsyncValue<AccessSession> session,
+  bool relayCanAuthenticate = true,
 }) {
   final byGroup = resolveAccessGate(
     group: group,
-    repository: repository,
+    authority: authority,
     session: session,
-    allowWhenRepositoryUnavailable: routeAllowedWhenRepositoryUnavailable(path),
+    allowWhenNobodyCanSignIn: routeAllowedWhenNobodyCanSignIn(path),
+    relayCanAuthenticate: relayCanAuthenticate,
   );
   if (byGroup != AccessGateState.allowed) return byGroup;
 
@@ -386,14 +392,19 @@ class PageAccessGate extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final group = accessGroupForRoute(path);
-    final repository = ref.watch(accessRepositoryProvider);
+    final authority = ref.watch(accessAuthorityProvider);
     final session = ref.watch(accessSessionProvider);
+    // The same provider `AccessGate` and the lock badge watch. A page gate
+    // that decided the gateway link's health for itself would refuse Server
+    // Config while the badge drew it open.
+    final relayCanAuthenticate = ref.watch(relayCanAuthenticateProvider);
 
     final state = resolvePageAccess(
       group: group,
       path: path,
-      repository: repository,
+      authority: authority,
       session: session,
+      relayCanAuthenticate: relayCanAuthenticate,
     );
 
     switch (state) {
@@ -407,10 +418,10 @@ class PageAccessGate extends ConsumerWidget {
         // permission that is not what is missing.
         final byGroup = resolveAccessGate(
           group: group,
-          repository: repository,
+          authority: authority,
           session: session,
-          allowWhenRepositoryUnavailable:
-              routeAllowedWhenRepositoryUnavailable(path),
+          allowWhenNobodyCanSignIn: routeAllowedWhenNobodyCanSignIn(path),
+          relayCanAuthenticate: relayCanAuthenticate,
         );
         return BaseScaffold(
           title: title,

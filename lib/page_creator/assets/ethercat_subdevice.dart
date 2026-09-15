@@ -13,7 +13,9 @@
 library;
 
 import 'package:json_annotation/json_annotation.dart';
-import 'package:open62541/open62541.dart' show DynamicValue;
+// The FFI-free barrel: every HMI asset is in the page editor's closure, and
+// `open62541.dart` is `dart:ffi`, which dart2js cannot compile.
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 
 part 'ethercat_subdevice.g.dart';
 

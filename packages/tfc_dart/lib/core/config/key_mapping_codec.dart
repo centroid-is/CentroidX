@@ -26,7 +26,11 @@ library;
 
 import 'dart:convert';
 
-import '../state_man.dart' show KeyMappingEntry, KeyMappings;
+// The pure barrel, not `state_man.dart`: that library holds `OpcUaStateMan`
+// and so `dart:ffi`, and the configuration store is in the closure of every
+// screen that edits configuration — including in a browser, which has no
+// OPC UA client at all. See `test/web/web_closure_guard_test.dart`.
+import '../state_man_types.dart' show KeyMappingEntry, KeyMappings;
 import 'config_item.dart';
 
 /// The preference key the blob lives under today, and the id of the

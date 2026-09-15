@@ -1,0 +1,78 @@
+# One suite at a time.
+#
+# package:test loads several suites at once by default, and on the VM they share
+# one process — so they share the file-descriptor table and the machine's idea
+# of how long a millisecond takes. tfc_relay_server says this already; here the
+# same argument is stronger in three ways.
+#
+# First, this package binds OPC UA listening sockets: every in-process `Server`
+# leg is a real port and a real accept loop, and two suites racing for ports on
+# one machine is a flake that reads as a bug in the code under test.
+#
+# Second, it drives `runIterate` — a BLOCKING FFI call — on a 10 ms timer. A
+# neighbour suite sharing that isolate's event loop does not get a slow test; it
+# gets a stalled one, and any deadline it was measuring is no longer a deadline.
+#
+# Third, this package's whole subject is freshness: staleness sweeps, link
+# deadlines and data-age assertions are measurements of a machine, and a machine
+# running four suites is a different machine.
+#
+# The cost is this package's own parallelism, and it is worth it.
+concurrency: 1
+
+# Declaring tags here is what makes `--tags` / `--exclude-tags` usable without
+# the "unknown tag" warning package:test prints for undeclared tags. Phase 2's
+# lesson: an undeclared tag does not select, it warns — so `--tags opcua` on a
+# misspelling runs everything and looks like it ran nothing.
+tags:
+  contract:
+    # The shared StateManApi contract suite from tfc_stateman_contract, run
+    # against LocalStateMan over real DeviceClients rather than in memory.
+  opcua:
+    # Legs that stand up an in-process open62541 `Server` and talk to it over a
+    # real socket. Wall-clock by design, and the only lane that needs a
+    # listening port.
+  faults:
+    # Upstream fault injection through the TcpProxy / FaultProxy kit. It works
+    # against opc.tcp unchanged, because the injection is at the TCP level and
+    # there is no TLS record layer in the way.
+  gate:
+    # The resilience gate B lane: the F22-F28 edge-case catalogue driven end to
+    # end from fake upstreams through a real gateway to real panels, plus the
+    # manifest that audits the directory. Declared here because an undeclared
+    # tag warns instead of selecting, and tfc_relay_client's own `gate`
+    # declaration does not reach this package — each dart_test.yaml declares
+    # for its own suite only.
+  meta:
+    # Cases that test the surface itself: freeze tests, structural sweeps, and
+    # the arms that prove a check bites a deliberately broken implementation.
+  soak:
+    # The chaos soak: one seeded fault storm driven against a composed pipe,
+    # with five invariants sampled continuously and a journal written to
+    # build/soak/. Its own lane because of its duration, not its subject —
+    # the full arm is 35 minutes behind RELAY_SOAK, and this package runs
+    # `concurrency: 1`, so a soak file discovered by a plain `dart test`
+    # serialises every other suite in the package behind it. The ordinary CI
+    # step therefore runs `--exclude-tags "db || soak"` and the 90-second arm
+    # runs as its own step with its own duration.
+    #
+    # No `timeout:` here on purpose. The soak's timeout is a library
+    # annotation on soak_test.dart, sized against the longest arm; two places
+    # to change one number is one place too many, and the place that loses
+    # the race is always the one further from the code.
+    #
+    # Declared for the same reason as every tag above it: an undeclared tag
+    # does not select, it warns — so `--tags soakk` would run all 790 cases
+    # of the ordinary lane and report a green soak.
+  db:
+    # Legs that need a REAL TimescaleDB: the sink adapter against a live
+    # server, the advisory lock, and the two-writer isolation proof.
+    # Provisioned by test/support/timescale_fixture.dart — Docker Compose on
+    # its own project name and an env-drawn host port locally and on the
+    # ubuntu CI leg; TIMESCALEDB_EXTERNAL=1 (the natively provisioned
+    # Postgres) on macOS and Windows. In CI these run inside the
+    # tfc-dart-test job — the one that already provisions TimescaleDB on all
+    # three platforms — while relay-packages-test runs with
+    # `--exclude-tags db` and stays databaseless. Declared here because an
+    # undeclared tag does not select, it warns
+    # (tfc_relay_server/dart_test.yaml:21-24's lesson).

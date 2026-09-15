@@ -20,9 +20,12 @@ import 'dart:convert' show jsonEncode;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:tfc/core/timeseries_source.dart';
 import 'package:tfc/page_creator/assets/graph.dart';
 import 'package:tfc/providers/database.dart';
+import 'package:tfc/providers/timeseries_source.dart';
 import 'package:tfc/providers/state_man.dart';
+import 'package:tfc/providers/timeseries.dart' show kTimeseriesPollInterval;
 import 'package:tfc/widgets/graph.dart' show GraphType;
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/database_drift.dart';
@@ -134,9 +137,75 @@ class _FakeStateMan extends Fake implements StateMan {
   Stream<Map<String, String>> get substitutionsChanged => _subs.stream;
 }
 
+/// Answers history normally and **never pushes**.
+///
+/// `liveInserts` answering null is not a failure — it is "this transport has
+/// no push channel, ask me instead", which is what a gateway panel looked like
+/// before the relay grew one and what any pull-only source looks like now. The
+/// chart's tail poll is the live trend on such a source, and it is the path
+/// nothing covered until this class existed: the merge from main added a
+/// throttle-timer guard that asked only about push subscriptions, which on a
+/// source like this one left the poll filling a buffer nothing drained.
+///
+/// Four members, all forwarded but [liveInserts] — written out rather than
+/// mixed in, because a `Fake` here would throw on whichever one the chart
+/// happens to call next and read as a missing feature rather than a missing
+/// stub.
+final class _NoPushSource implements TimeseriesSource {
+  _NoPushSource(this._inner);
+
+  final TimeseriesSource _inner;
+
+  @override
+  Future<Stream<TimeseriesInsert>?> liveInserts(String tableName) async => null;
+
+  @override
+  Future<List<TimeseriesData<dynamic>>> queryTimeseriesData(
+          String tableName, DateTime to,
+          {String? orderBy = 'time ASC', DateTime? from}) =>
+      _inner.queryTimeseriesData(tableName, to, orderBy: orderBy, from: from);
+
+  @override
+  Future<Map<String, List<TimeseriesData<dynamic>>>> queryTimeseriesDataMultiple(
+          List<String> tableNames, DateTime to,
+          {String? orderBy = 'time ASC', DateTime? from}) =>
+      _inner.queryTimeseriesDataMultiple(tableNames, to,
+          orderBy: orderBy, from: from);
+
+  @override
+  Future<List<TimeseriesData<dynamic>>> queryTimeseriesDataDownsampled(
+          String tableName, DateTime from, DateTime to,
+          {int maxPoints = 1000}) =>
+      _inner.queryTimeseriesDataDownsampled(tableName, from, to,
+          maxPoints: maxPoints);
+}
+
+/// [_harness], with a source that never pushes.
+Widget _pullOnlyHarness(Database database, Widget child) => ProviderScope(
+      overrides: [
+        databaseProvider.overrideWith((ref) async => database),
+        timeseriesSourceProvider.overrideWith(
+            (ref) async => _NoPushSource(DatabaseTimeseriesSource(database))),
+        stateManProvider.overrideWith((ref) async => _FakeStateMan()),
+      ],
+      child: MaterialApp(
+        home: Scaffold(
+          body: SizedBox(width: 900, height: 600, child: child),
+        ),
+      ),
+    );
+
 Widget _harness(Database database, Widget child) => ProviderScope(
       overrides: [
         databaseProvider.overrideWith((ref) async => database),
+        // The trend reads history and live rows through the source seam, not
+        // through `databaseProvider` — a gateway panel has no local database.
+        // Overridden here as well so resolution never reaches
+        // `gatewayConfigProvider`, which would want a device-local
+        // preferences platform this test has no reason to stand up. Same
+        // handle behind both, so the fake is still what answers.
+        timeseriesSourceProvider
+            .overrideWith((ref) async => DatabaseTimeseriesSource(database)),
         stateManProvider.overrideWith((ref) async => _FakeStateMan()),
       ],
       child: MaterialApp(
@@ -209,6 +278,48 @@ void main() {
 
     expect(find.textContaining('No stored history'), findsNothing,
         reason: 'the live point never reached the chart');
+
+    await _unmount(tester);
+  });
+
+  testWidgets('a source with no push channel draws live points from the poll',
+      (tester) async {
+    // The path a gateway panel takes, and the one the merge from main nearly
+    // broke: main's new throttle-timer guard asked whether any push
+    // subscription existed, and on a pull-only source there are none by
+    // construction — the fallback cancels them before starting the poll. The
+    // buffer would have filled and never drained.
+    //
+    // The history fails, so the chart has nothing drawn and the notice stands
+    // until something arrives. On this transport only the poll can bring it.
+    final failing = _FailHistoryOnly();
+
+    await tester.pumpWidget(
+        _pullOnlyHarness(failing, GraphAsset(_config(['line1/rate']))));
+    await _settle(tester);
+
+    expect(find.textContaining('No stored history'), findsOneWidget);
+    expect(find.byIcon(Icons.cloud_off), findsNothing,
+        reason: 'the poll IS the live feed here, so this chart is not dead — '
+            'a live count that only counted push subscriptions would put the '
+            'dead-chart panel on every gateway station');
+    expect(failing.db.hasChannel('line1/rate'), isFalse,
+        reason: 'a pull-only source must not have been asked for a channel');
+
+    // A row appears after the chart opened. The poll runs every
+    // `kTimeseriesPollInterval`; the throttle drains a second later.
+    failing.rows = {
+      'line1/rate': [TimeseriesData<dynamic>(42, DateTime.now())],
+    };
+    failing.failingHistory = const {};
+    await tester.pump(kTimeseriesPollInterval);
+    await tester.pump(const Duration(milliseconds: 1100));
+
+    expect(find.textContaining('No stored history'), findsNothing,
+        reason: 'the polled row never reached the chart — the throttle buffer '
+            'is filled by the poll and drained only by the throttle timer, so '
+            'a guard that starts the timer only for push subscriptions '
+            'strands every pull-only transport');
 
     await _unmount(tester);
   });
@@ -392,10 +503,26 @@ class _FailHistoryOnly extends Fake implements Database {
   @override
   final _FakeAppDatabase db = _FakeAppDatabase();
 
+  /// Rows to answer with instead of throwing, once set.
+  ///
+  /// Null — the default, and what every arm but the pull-only one uses — keeps
+  /// the original behaviour: the history always fails. Setting it is how a
+  /// test says "the database came back", which is the only way a poll-only
+  /// chart can receive anything.
+  Map<String, List<TimeseriesData<dynamic>>>? rows;
+
+  /// Ignored unless [rows] is set; there so the pull-only arm can read as
+  /// "stop failing" rather than as "start answering", which is what it means.
+  Set<String> failingHistory = const {};
+
   @override
   Future<List<TimeseriesData<dynamic>>> queryTimeseriesData(
       String tableName, DateTime to,
       {String? orderBy = 'time ASC', DateTime? from}) async {
-    throw TimeoutException('history query timed out');
+    final answers = rows;
+    if (answers == null || failingHistory.contains(tableName)) {
+      throw TimeoutException('history query timed out');
+    }
+    return answers[tableName] ?? const [];
   }
 }

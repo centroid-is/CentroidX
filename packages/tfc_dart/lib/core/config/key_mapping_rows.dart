@@ -266,3 +266,22 @@ ConfigItem _itemOf(ConfigItemRow row) => ConfigItem(
       updatedAt: row.updatedAt,
       updatedBy: row.updatedBy,
     );
+
+/// Every shared `preference` row id.
+///
+/// The enumeration half of [readSharedPreferenceValue], for a process that has
+/// no [ConfigStore] and has to answer `getKeys` / `getAll` — the relay's
+/// preference service on the backend. Ids only: the payloads are decoded one
+/// at a time by the reader that wants them, so a single unreadable row costs
+/// that key rather than the whole listing.
+///
+/// Shared scope only, for the reason [readSharedPreferenceValue] gives.
+Future<Set<String>> readSharedPreferenceIds(GeneratedDatabase db) async {
+  final table = _configItems(db);
+  final rows = await (db.select(table)
+        ..where((t) =>
+            t.kind.equals(ConfigKind.preference.wireName) &
+            t.scope.equals(ConfigScope.shared.wireName)))
+      .get();
+  return {for (final row in rows) row.id};
+}

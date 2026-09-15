@@ -125,12 +125,12 @@ class _PagedChangeStore extends Fake implements ConfigChangeStore {
 
 /// The header side of the same read.
 class _FakeAuditStore extends Fake implements AuditTrailStore {
-  _FakeAuditStore({this.headers = const <AuditEntryData>[]});
+  _FakeAuditStore({this.headers = const <AuditRecord>[]});
 
-  final List<AuditEntryData> headers;
+  final List<AuditRecord> headers;
 
   @override
-  Future<List<AuditEntryData>> entriesByAction(
+  Future<List<AuditRecord>> entriesByAction(
       Iterable<String> actionIds) async {
     final ids = actionIds.toSet();
     return headers.where((row) => ids.contains(row.actionId)).toList();

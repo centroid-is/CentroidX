@@ -29,7 +29,7 @@ import 'package:tfc/routes.dart';
 import 'package:tfc/widgets/access_gate.dart';
 import 'package:tfc/widgets/page_access_gate.dart';
 import 'package:tfc_access/tfc_access.dart' show AccessGroup, AccessSession;
-import 'package:tfc_dart/core/access/access_repository.dart' show AccessRepository;
+import 'package:tfc/core/access_authority.dart' show AccessAuthority;
 import 'package:tfc/widgets/dbus_gate.dart';
 import 'package:tfc/widgets/route_redirect.dart';
 
@@ -392,7 +392,7 @@ void main() {
         final lb = createLocationBuilder([_page('Home', '/')]);
         final gate = await buildGate(tester, lb, '/advanced/knowledge-base');
         expect(gate.group.name, 'configure');
-        expect(gate.allowWhenRepositoryUnavailable, isFalse,
+        expect(gate.allowWhenNobodyCanSignIn, isFalse,
             reason: 'a document library is not the page that configures the database');
         expect(gate.child, isA<TechDocLibraryPage>());
       });
@@ -448,7 +448,7 @@ void main() {
         final lb = createLocationBuilder([_page('Home', '/')]);
         final gate = await buildGate(tester, lb, '/advanced/audit-trail');
         expect(gate.group.name, 'users');
-        expect(gate.allowWhenRepositoryUnavailable, isFalse,
+        expect(gate.allowWhenNobodyCanSignIn, isFalse,
             reason: 'the trail is the database; there is nothing to read while it is down');
         expect(gate.child, isA<AuditTrailPage>());
       });
@@ -464,7 +464,11 @@ void main() {
         final lb = createLocationBuilder([_page('Home', '/')]);
         final gate = await buildGate(tester, lb, '/advanced/config-history');
         expect(gate.group.name, 'configure');
-        expect(gate.allowWhenRepositoryUnavailable, isFalse,
+        // `allowWhenNobodyCanSignIn` on this line: the flag main asserts as
+        // `allowWhenRepositoryUnavailable` was renamed here, because both of
+        // its earlier names claimed a condition narrower than the code
+        // enforced. See `access_gate.dart`.
+        expect(gate.allowWhenNobodyCanSignIn, isFalse,
             reason: 'the history is the database; there is nothing to read '
                 'while it is down');
         expect(gate.child, isA<ConfigHistoryPage>());
@@ -480,7 +484,7 @@ void main() {
         final lb = createLocationBuilder([_page('Home', '/')]);
         final gate = await buildGate(tester, lb, '/advanced/access');
         expect(gate.group.name, 'users');
-        expect(gate.allowWhenRepositoryUnavailable, isFalse,
+        expect(gate.allowWhenNobodyCanSignIn, isFalse,
             reason: 'with no repository there is no role table, so an exempt '
                 'admin page would edit nothing while looking like it worked');
         expect(gate.child, isA<AccessAdminPage>());
@@ -499,7 +503,7 @@ void main() {
         final exempt = <String>[];
         for (final path in kRaisedRoutes.keys) {
           final gate = await buildGate(tester, lb, path);
-          if (gate.allowWhenRepositoryUnavailable) exempt.add(path);
+          if (gate.allowWhenNobodyCanSignIn) exempt.add(path);
         }
         expect(exempt,
             unorderedEquals(['/advanced/server-config', '/advanced/ip-settings']));
@@ -623,7 +627,7 @@ void main() {
         // every un-commissioned panel while this stayed green.
         final commissioning = AsyncValue<AccessSession>.data(
             AccessSession.anonymous(const {AccessGroup.operate}));
-        const noRepository = AsyncValue<AccessRepository?>.data(null);
+        const noAuthority = AsyncValue<AccessAuthority>.data(AccessAuthority.none);
 
         for (final path in [
           AppRoutes.alarmView,
@@ -635,7 +639,7 @@ void main() {
             resolvePageAccess(
               group: accessGroupForRoute(path),
               path: path,
-              repository: noRepository,
+              authority: noAuthority,
               session: commissioning,
             ),
             AccessGateState.allowed,
@@ -645,7 +649,7 @@ void main() {
 
         // And the two that must survive the *group* half as well, because they
         // are `administer` and are how the station gets a database at all.
-        // Different mechanism — `routeAllowedWhenRepositoryUnavailable`, not
+        // Different mechanism — `routeAllowedWhenNobodyCanSignIn`, not
         // the whitelist — and untouched by this change, asserted here so that
         // widening the whitelist gating can never quietly cost it.
         for (final path in [kServerConfigRoute, kIpSettingsRoute]) {
@@ -653,7 +657,7 @@ void main() {
             resolvePageAccess(
               group: accessGroupForRoute(path),
               path: path,
-              repository: noRepository,
+              authority: noAuthority,
               session: commissioning,
             ),
             AccessGateState.allowed,
@@ -702,7 +706,10 @@ void main() {
           resolvePageAccess(
             group: accessGroupForRoute('/chiller'),
             path: '/chiller',
-            repository: const AsyncValue<AccessRepository?>.loading(),
+            // The gate asks whether anything on this station can verify a
+            // credential, not whether a repository exists — the two coincide
+            // on a direct station and part company on a gateway panel.
+            authority: const AsyncValue<AccessAuthority>.loading(),
             session: AsyncValue<AccessSession>.data(
                 AccessSession.anonymous(const {AccessGroup.operate})),
           ),

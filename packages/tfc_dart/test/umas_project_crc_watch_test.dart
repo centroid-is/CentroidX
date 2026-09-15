@@ -317,20 +317,42 @@ void main() {
         // the table rebuilds — verify that path instead.
 
         // Force a reconnect: disconnect + reconnect the wrapper.
-        wrapper.disconnect();
-        await Future.delayed(const Duration(milliseconds: 200));
-        wrapper.connect();
-        await Future.delayed(const Duration(milliseconds: 600));
-
-        // Verify a SECOND monitorReset + monitorRegister cycle.
-        final resetsAfterReconnect = stubLog
+        //
+        // Waited for, not slept through. #486 converted this file's other arms
+        // to `waitUntil` and left these two `Future.delayed`s; the 600 ms one
+        // then failed on `tfc-dart-test (windows-latest)` with the second reset
+        // count at 1 — the reconnect had not finished re-registering inside the
+        // guessed window. Polling for the count is safe here in a way it is not
+        // everywhere: it starts at 1 and the target is 2, so the condition
+        // cannot be satisfied before the reconnect does its work.
+        int resets() => stubLog
             .where((l) => l.contains('MonitorPlc: reset all registrations'))
             .length;
+        final resetsBefore = resets();
+
+        wrapper.disconnect();
+        await waitUntil(
+            () => wrapper.connectionStatus != ConnectionStatus.connected,
+            what: 'the wrapper to report the link down before redialling');
+        wrapper.connect();
+
+        // Verify a SECOND monitorReset + monitorRegister cycle.
+        //
+        // Waits on the **register**, not the reset. The cycle is reset then
+        // register, so a wait that stops at the reset returns mid-cycle and the
+        // register assertion below reads a count that has not moved yet —
+        // measured here as "a value greater than <1>, Actual: <1>" on about one
+        // local run in five. Waiting for the terminal event covers both, and
+        // the reset assertion still holds because a register cannot precede the
+        // reset that clears the table.
+        int registers() =>
+            stubLog.where((l) => l.contains('MonitorPlc: registered')).length;
+        await waitUntil(() => registers() > registersAfterFirstBuild,
+            what: 'the reconnect to re-register the MonitorPlc table');
+        final resetsAfterReconnect = resets();
         expect(resetsAfterReconnect, greaterThanOrEqualTo(2),
             reason: 'reconnect must trigger a fresh monitorReset');
-        final registersAfterReconnect = stubLog
-            .where((l) => l.contains('MonitorPlc: registered'))
-            .length;
+        final registersAfterReconnect = registers();
         expect(registersAfterReconnect, greaterThan(registersAfterFirstBuild),
             reason: 'reconnect must re-register the key after the bump');
       } finally {

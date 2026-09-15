@@ -92,7 +92,6 @@ import 'package:tfc/widgets/access_admin_notice.dart';
 import 'package:tfc/widgets/access_gate.dart';
 import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/access/access_repository.dart';
-import 'package:tfc_dart/core/database_drift.dart' show AppUserData;
 
 import '../helpers/golden_tolerance.dart';
 import '../helpers/golden_platform.dart';
@@ -153,22 +152,24 @@ List<AccessRole> _roles() => const [
       ),
     ];
 
-/// An account row. The hash and the salt are inert placeholders — nothing on this screen
-/// renders either, and a real PBKDF2 pair would be a credential in a test fixture for no
-/// gain.
-AppUserData _user(
+/// An account row. There is no credential in it at all: `UserSummary` declares
+/// none, so the placeholder hash and salt this fixture used to carry have
+/// nowhere left to go — and nothing on this screen ever rendered them.
+UserSummary _user(
   String username,
   String roleName, {
   required DateTime createdAt,
   DateTime? lastLoginAt,
   List<String> alsoHolds = const [],
 }) =>
-    AppUserData(
+    UserSummary(
       username: username,
       roleName: roleName,
-      additionalRoles: encodeAdditionalRoles(alsoHolds),
-      passwordHash: 'not-a-hash',
-      salt: 'not-a-salt',
+      // The decoded list, not the column: the roster speaks [UserSummary],
+      // which carries the extra roles already read back — there is no
+      // `encodeAdditionalRoles` here and no credential columns either, because
+      // the type has nowhere to put one.
+      additionalRoles: alsoHolds,
       createdAt: createdAt,
       lastLoginAt: lastLoginAt,
       stationAccount: false,
@@ -188,7 +189,7 @@ AppUserData _user(
 /// invent a combinatorial "Shift Leader + Maintenance" role for. The roster cell has to
 /// show both, and it has to read as one person rather than as two — see
 /// [kRoleLabelSeparator].
-List<AppUserData> _users() => [
+List<UserSummary> _users() => [
       _user('admin', 'Engineering',
           createdAt: DateTime(2026, 6, 2, 8, 15),
           lastLoginAt: DateTime(2026, 8, 31, 7, 5)),
@@ -220,13 +221,13 @@ class _AnsweringStore extends Fake implements AccessAdminStore {
   _AnsweringStore({required this.roleRows, required this.userRows});
 
   final List<AccessRole> roleRows;
-  final List<AppUserData> userRows;
+  final List<UserSummary> userRows;
 
   @override
   Future<List<AccessRole>> roles() async => roleRows;
 
   @override
-  Future<List<AppUserData>> listUsers() async => userRows;
+  Future<List<UserSummary>> listUsers() async => userRows;
 }
 
 /// A repository that is merely *present*. Only the locked image's [AccessGate] asks,

@@ -39,7 +39,7 @@ void main() {
     final prefs = prefsWith(jsonEncode({
       'alarms': [alarm('a').toJson()],
     }));
-    final man = await AlarmMan.create(prefs, _NoStateMan());
+    final man = await AlarmMan.create(prefs, _NoStateMan(), clock: DateTime.now);
 
     expect(man.config.autoNavigate, isFalse,
         reason: 'an upgrade must not start moving operators between screens');
@@ -47,7 +47,7 @@ void main() {
 
   test('setAutoNavigate persists, and survives a reload', () async {
     final prefs = prefsWith(jsonEncode(AlarmManConfig(alarms: [alarm('a')])));
-    final man = await AlarmMan.create(prefs, _NoStateMan());
+    final man = await AlarmMan.create(prefs, _NoStateMan(), clock: DateTime.now);
 
     man.setAutoNavigate(true);
 
@@ -55,14 +55,14 @@ void main() {
         reason: 'the switch the operator just flipped reads back immediately');
     expect((await stored(prefs))['auto_navigate'], isTrue);
 
-    final reloaded = await AlarmMan.create(prefs, _NoStateMan());
+    final reloaded = await AlarmMan.create(prefs, _NoStateMan(), clock: DateTime.now);
     expect(reloaded.config.autoNavigate, isTrue);
   });
 
   test('saving an alarm does not drop the flag', () async {
     final prefs = prefsWith(jsonEncode(
         AlarmManConfig(alarms: [alarm('a')], autoNavigate: true)));
-    final man = await AlarmMan.create(prefs, _NoStateMan());
+    final man = await AlarmMan.create(prefs, _NoStateMan(), clock: DateTime.now);
 
     man.updateAlarm(alarm('b'));
 
@@ -72,7 +72,7 @@ void main() {
   test('setAutoNavigate(false) turns it back off', () async {
     final prefs = prefsWith(jsonEncode(
         AlarmManConfig(alarms: [alarm('a')], autoNavigate: true)));
-    final man = await AlarmMan.create(prefs, _NoStateMan());
+    final man = await AlarmMan.create(prefs, _NoStateMan(), clock: DateTime.now);
 
     man.setAutoNavigate(false);
 

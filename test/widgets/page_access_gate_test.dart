@@ -23,6 +23,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/access_routes.dart';
+import 'package:tfc/core/access_authority.dart';
 import 'package:tfc/providers/access.dart';
 import 'package:tfc/models/menu_item.dart';
 import 'package:tfc/route_registry.dart';
@@ -34,9 +35,18 @@ import 'package:tfc_dart/core/access/access_repository.dart';
 
 class _StubRepository extends Fake implements AccessRepository {}
 
-const _loadingRepo = AsyncValue<AccessRepository?>.loading();
+/// The gate asks [AccessAuthority] — "can anything here verify a credential?"
+/// — rather than "is there a repository?". The two answers coincide on a
+/// direct station and part company on a gateway panel, which is the whole
+/// reason the question was renamed; these three stand for the three states the
+/// unit half exercises.
+const _loadingAuthority = AsyncValue<AccessAuthority>.loading();
+const _presentAuthority = AsyncValue<AccessAuthority>.data(AccessAuthority.local);
+const _absentAuthority = AsyncValue<AccessAuthority>.data(AccessAuthority.none);
+
+/// Still a repository, because the widget half drives the real
+/// `accessAuthorityProvider`, which derives the authority from this one.
 final _presentRepo = AsyncValue<AccessRepository?>.data(_StubRepository());
-const _absentRepo = AsyncValue<AccessRepository?>.data(null);
 
 const _loadingSession = AsyncValue<AccessSession>.loading();
 
@@ -71,9 +81,10 @@ void main() {
       expect(
         resolveAccessGate(
           group: AccessGroup.operate,
-          repository: _loadingRepo,
+          path: '/fillet',
+          authority: _loadingAuthority,
           session: _loadingSession,
-          allowWhenRepositoryUnavailable: false,
+          allowWhenNobodyCanSignIn: false,
         ),
         AccessGateState.allowed,
       );
@@ -84,7 +95,7 @@ void main() {
         resolvePageAccess(
           group: AccessGroup.configure,
           path: '/fillet',
-          repository: _loadingRepo,
+          authority: _loadingAuthority,
           session: _loadingSession,
         ),
         AccessGateState.waiting,
@@ -96,7 +107,7 @@ void main() {
         resolvePageAccess(
           group: AccessGroup.configure,
           path: '/fillet',
-          repository: _presentRepo,
+          authority: _presentAuthority,
           session: _session(),
         ),
         AccessGateState.denied,
@@ -108,7 +119,7 @@ void main() {
         resolvePageAccess(
           group: AccessGroup.configure,
           path: '/fillet',
-          repository: _presentRepo,
+          authority: _presentAuthority,
           session:
               _session(groups: {AccessGroup.operate, AccessGroup.configure}),
         ),
@@ -124,7 +135,7 @@ void main() {
         resolvePageAccess(
           group: AccessGroup.administer,
           path: kServerConfigRoute,
-          repository: _absentRepo,
+          authority: _absentAuthority,
           session: _session(),
         ),
         AccessGateState.allowed,
@@ -133,7 +144,7 @@ void main() {
         resolvePageAccess(
           group: AccessGroup.configure,
           path: '/advanced/page-editor',
-          repository: _absentRepo,
+          authority: _absentAuthority,
           session: _session(),
         ),
         AccessGateState.denied,
@@ -148,7 +159,7 @@ void main() {
         resolvePageAccess(
           group: AccessGroup.operate,
           path: '/anything',
-          repository: _presentRepo,
+          authority: _presentAuthority,
           session: _session(pages: null),
         ),
         AccessGateState.allowed,
@@ -161,7 +172,7 @@ void main() {
         resolvePageAccess(
           group: AccessGroup.operate,
           path: '/fillet',
-          repository: _presentRepo,
+          authority: _presentAuthority,
           session: session,
         ),
         AccessGateState.allowed,
@@ -170,7 +181,7 @@ void main() {
         resolvePageAccess(
           group: AccessGroup.operate,
           path: '/packing',
-          repository: _presentRepo,
+          authority: _presentAuthority,
           session: session,
         ),
         AccessGateState.denied,
@@ -182,7 +193,7 @@ void main() {
         resolvePageAccess(
           group: AccessGroup.operate,
           path: '/fillet',
-          repository: _presentRepo,
+          authority: _presentAuthority,
           session: _session(pages: const <String>{}),
         ),
         AccessGateState.denied,
@@ -197,7 +208,7 @@ void main() {
         resolvePageAccess(
           group: AccessGroup.configure,
           path: '/fillet',
-          repository: _presentRepo,
+          authority: _presentAuthority,
           session: _session(pages: const {'/fillet'}),
         ),
         AccessGateState.denied,
@@ -214,7 +225,7 @@ void main() {
           resolvePageAccess(
             group: AccessGroup.users,
             path: kAccessAdminRoute,
-            repository: _presentRepo,
+            authority: _presentAuthority,
             session: _session(groups: const {AccessGroup.users}, pages: pages),
           ),
           AccessGateState.allowed,
@@ -231,7 +242,7 @@ void main() {
         resolvePageAccess(
           group: AccessGroup.users,
           path: kAccessAdminRoute,
-          repository: _presentRepo,
+          authority: _presentAuthority,
           session: _session(groups: const {AccessGroup.operate}),
         ),
         AccessGateState.denied,
@@ -250,7 +261,7 @@ void main() {
         resolvePageAccess(
           group: AccessGroup.configure,
           path: '/advanced/alarm-editor',
-          repository: _presentRepo,
+          authority: _presentAuthority,
           session: session,
         ),
         AccessGateState.allowed,
@@ -259,7 +270,7 @@ void main() {
         resolvePageAccess(
           group: AccessGroup.configure,
           path: '/advanced/page-editor',
-          repository: _presentRepo,
+          authority: _presentAuthority,
           session: session,
         ),
         AccessGateState.denied,
@@ -279,7 +290,7 @@ void main() {
         resolvePageAccess(
           group: AccessGroup.operate,
           path: '/fillet',
-          repository: _loadingRepo,
+          authority: _loadingAuthority,
           session: _loadingSession,
         ),
         AccessGateState.waiting,
@@ -294,7 +305,7 @@ void main() {
         resolvePageAccess(
           group: AccessGroup.operate,
           path: '/fillet',
-          repository: _presentRepo,
+          authority: _presentAuthority,
           session: _loadingSession,
         ),
         AccessGateState.waiting,
@@ -311,7 +322,7 @@ void main() {
         resolvePageAccess(
           group: AccessGroup.operate,
           path: '/fillet',
-          repository: _presentRepo,
+          authority: _presentAuthority,
           session: AsyncValue<AccessSession>.error('no', StackTrace.empty),
         ),
         AccessGateState.allowed,

@@ -13,7 +13,7 @@
 /// selected by Phase 5, with nobody's test double in between.** Every test here
 /// drives a real `AccessAdminStore` over a real in-memory database through the
 /// real `DriftAuditSink`, and reads the row back through the real
-/// [AuditTrailStore]. A hand-built `AuditEntryData` would prove that a
+/// [AuditTrailStore]. A hand-built `AuditRecord` would prove that a
 /// hand-written row renders, which is a different and much weaker claim than
 /// the one 06-01 made.
 ///
@@ -87,11 +87,24 @@ const AccessRole _lineLeadAfter = AccessRole(
 
 /// Phase 5's three viewer files — the ones this phase claims it did not need
 /// to touch.
+///
+/// The third moved in Phase 17 (plan 17-02), into `tfc_dart`, so the backend
+/// serves the same class the panel calls. Re-pathed rather than left alone:
+/// `lib/core/audit_trail_store.dart` is now a fourteen-line `export`, and both
+/// arms below are absences — "not empty" and "does not contain `'admin'`" —
+/// which that stand-in satisfies for the same reason an empty file would. The
+/// arms would have gone on passing and stopped meaning anything, which is the
+/// silent failure this file exists to make loud.
 const List<String> _kViewerFiles = <String>[
   'lib/widgets/audit_trail_row.dart',
   'lib/widgets/audit_trail_filters.dart',
-  'lib/core/audit_trail_store.dart',
+  'packages/tfc_dart/lib/core/access/audit_trail_store.dart',
 ];
+
+/// The floor each viewer file must clear, so `isNotEmpty` cannot be satisfied
+/// by a re-export left behind at an old path. The smallest of the three is
+/// over 200 lines.
+const int _kMinimumViewerLines = 200;
 
 /// A commit subject scoped to a Phase 6 plan, as this repo spells them:
 /// `feat(06-03): ...`, `test(06-06): ...`.
@@ -165,11 +178,11 @@ void main() {
   }
 
   /// What Phase 5's store returns for [filters], right now.
-  Future<List<AuditEntryData>> read(AuditTrailFilters filters) =>
+  Future<List<AuditRecord>> read(AuditTrailFilters filters) =>
       trail.entries(filters.toQuery(now: DateTime.now()));
 
   /// The one `role.update` row, as the trail returned it.
-  AuditEntryData roleUpdate(List<AuditEntryData> rows) =>
+  AuditRecord roleUpdate(List<AuditRecord> rows) =>
       rows.singleWhere((row) => row.itemKey == 'role.update');
 
   // -------------------------------------------------------------------------
@@ -377,8 +390,14 @@ void main() {
   group('the viewer works because it is generic, not because of a branch', () {
     test("none of Phase 5's three viewer files carries an `admin` literal", () {
       for (final path in _kViewerFiles) {
-        final source = File(path).readAsStringSync();
+        final file = File(path);
+        final source = file.readAsStringSync();
         expect(source, isNotEmpty, reason: '$path is missing or empty');
+        expect(file.readAsLinesSync().length,
+            greaterThan(_kMinimumViewerLines),
+            reason: '$path must be the real viewer file, not a re-export left '
+                'behind at an old path. The assertion below is an absence, and '
+                'a stand-in satisfies it without proving anything.');
         expect(
           source.contains("'admin'"),
           isFalse,

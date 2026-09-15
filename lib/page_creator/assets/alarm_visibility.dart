@@ -472,7 +472,7 @@ class _AlarmVisibilityPaneState extends ConsumerState<AlarmVisibilityPane> {
   /// Subscribed once, not per build: a stream object made in `build` makes
   /// `StreamBuilder` start over on every rebuild, and the pane flashed
   /// "Connecting" for a frame each time.
-  late final Stream<(AlarmMan, List<AlarmActive>)> _stream =
+  late final Stream<(AlarmSource, List<AlarmActive>)> _stream =
       ref.read(alarmManProvider.future).asStream().switchMap(
             (alarmMan) => alarmMan.activeAlarms().map(
                 (set) => (alarmMan, matchingActiveAlarms(set, config.alarmUids))),
@@ -480,7 +480,7 @@ class _AlarmVisibilityPaneState extends ConsumerState<AlarmVisibilityPane> {
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<(AlarmMan, List<AlarmActive>)>(
+    return StreamBuilder<(AlarmSource, List<AlarmActive>)>(
       stream: _stream,
       builder: (context, snapshot) {
         if (snapshot.hasError) {
@@ -827,7 +827,7 @@ class _AlarmVisibilityConfigEditorState
   }
 
   Widget _alarmPicker(BuildContext context) {
-    return FutureBuilder<AlarmMan>(
+    return FutureBuilder<AlarmSource>(
       future: ref.watch(alarmManProvider.future),
       builder: (context, snapshot) {
         if (snapshot.hasError) {

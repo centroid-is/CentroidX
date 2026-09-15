@@ -1,0 +1,38 @@
+name: tfc_stateman_contract
+description: >-
+  The shared contract suite every StateManApi implementation is judged against.
+  This package exists so that package:test never enters a shared package's
+  dependencies: tfc_relay_protocol is imported by the Flutter app, and putting
+  test there would drag analyzer into the app's version solve — which has
+  blocked this repo twice in twelve months. Here, test is a real dependency
+  because the suite is the product.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.6.0
+
+dependencies:
+  # json_rpc_2 owns the wire envelope the whole project speaks, so the fault
+  # kit's channel harness and its malformed-peer injector must corrupt frames
+  # against the decoder that actually ships rather than against a stand-in.
+  # stream_channel comes with it (and was already transitive under test); the
+  # StreamChannelController harness is built directly on it.
+  json_rpc_2: ^4.1.0
+  stream_channel: ^2.1.4
+  test: ^1.25.0
+  tfc_relay_protocol:
+    path: ../tfc_relay_protocol
+  # The access contract exchanges tfc_access's own vocabulary — AccessSession,
+  # AccessGroup, AccessRole, AccessTemplate, AuthenticatedUser, AuditRecord,
+  # AccessDenied — rather than a wire twin of it, exactly as access_api.dart
+  # does one package down. tfc_relay_protocol already carries this edge (its
+  # first runtime dependency, 17-03); the contract kit needs it directly to
+  # NAME those types in the checks and in the honest fake. Pure Dart, four leaf
+  # deps already in the workspace solve, a path dependency so no registry fetch
+  # and no package-legitimacy question. The reverse edge stays forbidden.
+  tfc_access:
+    path: ../tfc_access
+
+dev_dependencies:
+  lints: ^4.0.0

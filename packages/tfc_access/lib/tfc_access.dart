@@ -23,3 +23,4 @@ export 'src/inactivity_monitor.dart';
 export 'src/inactivity_timeout.dart';
 export 'src/password_hasher.dart';
 export 'src/role_set.dart';
+export 'src/user_summary.dart';

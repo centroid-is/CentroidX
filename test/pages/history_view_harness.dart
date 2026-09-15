@@ -21,11 +21,13 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc_dart/core/collector.dart';
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/database_drift.dart';
+import 'package:tfc_dart/core/preferences.dart' show InMemoryPreferences;
 import 'package:tfc_dart/core/state_man.dart';
 
 import 'package:tfc/pages/history_view.dart';
 import 'package:tfc/providers/collector.dart';
 import 'package:tfc/providers/database.dart';
+import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/providers/state_man.dart';
 
 class FakeHistoryStateMan extends Fake implements StateMan {
@@ -121,6 +123,11 @@ Widget buildHistoryView({
       stateManProvider
           .overrideWith((ref) async => FakeHistoryStateMan(keyMappings)),
       databaseProvider.overrideWith((ref) async => fakeDb),
+      // The device-local store: `historyViewsProvider` and
+      // `timeseriesSourceProvider` consult the transport row before they
+      // decide where saved views and history come from, and an empty
+      // in-memory store reads as direct mode — this harness's station.
+      localPreferencesProvider.overrideWithValue(InMemoryPreferences()),
       collectorProvider
           .overrideWith((ref) async => FakeHistoryCollector(fakeDb, samples)),
     ],

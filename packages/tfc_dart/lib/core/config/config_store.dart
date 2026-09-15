@@ -70,7 +70,11 @@ import 'package:meta/meta.dart';
 import '../database.dart';
 import '../database_connections.dart';
 import '../database_drift.dart';
-import '../state_man.dart' show KeyMappings;
+// The pure barrel, not `state_man.dart`: that library holds `OpcUaStateMan`
+// and so `dart:ffi`, and the configuration store is in the closure of every
+// screen that edits configuration — including in a browser, which has no
+// OPC UA client at all. See `test/web/web_closure_guard_test.dart`.
+import '../state_man_types.dart' show KeyMappings;
 import 'config_change.dart';
 import 'config_diff.dart';
 import 'config_history_policy.dart';

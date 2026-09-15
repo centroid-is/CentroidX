@@ -1,3 +1,40 @@
 # Run test files sequentially so integration tests that share
 # Docker Compose services don't race each other.
 concurrency: 1
+
+# Declaring tags here is what makes `--tags` / `--exclude-tags` usable without
+# the "unknown tag" warning package:test prints for undeclared tags. The lesson
+# is `tfc_relay_local/dart_test.yaml`'s: an undeclared tag does not select, it
+# warns — so `--exclude-tags db` on a package that never declared `db` runs
+# every database leg and looks like it excluded them.
+tags:
+  contract:
+    # The shared StateManApi contract suite from tfc_stateman_contract, run
+    # against `BackendStateMan` — the backend's own adapter. Two legs carry it:
+    # test/core/relay/backend_contract_test.dart in memory, and
+    # test/integration/backend_contract_db_test.dart with a real TimescaleDB
+    # behind the data services.
+  db:
+    # Legs that need a REAL TimescaleDB, brought up by
+    # test/integration/docker_compose.dart (or by TIMESCALEDB_EXTERNAL=1
+    # against a natively provisioned server). The offline lane must stay
+    # offline: `dart test --exclude-tags db` must not touch Postgres.
+  ws:
+    # The contract leg that reaches the adapter across a REAL WebSocket rather
+    # than by a method call (13-11): `test/core/relay/backend_ws_contract_test
+    # .dart`. It binds a loopback port on 127.0.0.1 chosen by the OS, so it is
+    # tagged for the same reason `tfc_relay_local` tags `opcua` — a lane that
+    # needs a listening socket should be nameable when one is unavailable.
+    # Declared here, not merely used: an undeclared tag does not select, it
+    # warns, and `--exclude-tags ws` would then run this leg and look like it
+    # skipped it.
+  e2e:
+    # End-to-end legs against external hardware or a long-running rig.
+  soak:
+    # Long-running chaos legs. **tfc_dart has none today**, and the declaration
+    # is deliberate anyway: the phase-gate command is
+    # `dart test --exclude-tags "db || soak"`, run against this package and
+    # against tfc_relay_local (which does have a soak lane) with the same
+    # string. An undeclared tag in a boolean selector does not select, it
+    # warns — so the two packages must declare the same vocabulary or the gate
+    # means something different in each.

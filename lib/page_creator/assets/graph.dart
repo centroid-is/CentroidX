@@ -11,16 +11,17 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:logger/logger.dart';
 import 'package:tfc/converter/color_converter.dart';
 import 'package:tfc_dart/converter/duration_converter.dart';
-import 'package:tfc_dart/core/state_man.dart';
+import 'package:tfc_dart/core/state_man_types.dart';
 
 import '../../widgets/duration_field.dart';
 import 'common.dart';
 import 'helper/database_recovery.dart';
 import '../../widgets/graph.dart';
-import '../../providers/database.dart';
+import '../../core/timeseries_source.dart';
+import '../../providers/timeseries.dart' show kTimeseriesPollInterval;
+import '../../providers/timeseries_source.dart';
 import '../../providers/state_man.dart';
 import 'package:tfc_dart/core/database.dart';
-import 'package:tfc_dart/core/database_drift.dart' as drift_db;
 
 part 'graph.g.dart';
 
@@ -685,14 +686,34 @@ class _GraphAssetState extends ConsumerState<GraphAsset> {
   late Graph _graph;
   int _dataMinX;
   int _dataMaxX;
-  Database? _db;
+  TimeseriesSource? _source;
   bool _realTimeActive = true;
   /// Live feeds by [_seriesId], so a series whose table only appeared later
   /// can be subscribed without disturbing the ones already running.
-  final Map<String, StreamSubscription<String>> _realtimeSubscriptions = {};
+  ///
+  /// `TimeseriesInsert`, not the raw channel name: the source seam hands back
+  /// the row rather than a nudge to go and read one, so a gateway panel and a
+  /// direct one deliver a live sample the same way.
+  final Map<String, StreamSubscription<TimeseriesInsert>>
+      _realtimeSubscriptions = {};
   final _rtThrottleBuffer = List<Map<String, dynamic>>.empty(growable: true);
   Timer? _rtThrottleTimer;
   static const _rtThrottleInterval = Duration(seconds: 1);
+
+  /// The tail poll a source that cannot push is followed with.
+  ///
+  /// A gateway panel has no LISTEN/NOTIFY (`TimeseriesSource.liveInserts`), so
+  /// on that transport this timer is the only thing that ever advances a live
+  /// trend. Without it the chart draws its history and then freezes on a
+  /// running line — which is worse than an empty chart, because a frozen trend
+  /// reads as a stopped machine.
+  Timer? _rtPollTimer;
+
+  /// The instant the tail poll has already taken rows up to, so a poll asks
+  /// only for what is new. Newest row seen, never `DateTime.now()`: the
+  /// collector batches its inserts, and a poll that advanced to "now" would
+  /// step over every row whose `time` was still in a batch.
+  DateTime? _rtPolledThrough;
   StateMan? _stateMan;
   late cs.ChartTheme _chartTheme;
 
@@ -755,10 +776,10 @@ class _GraphAssetState extends ConsumerState<GraphAsset> {
     // replaying WAL. Without this the trend takes the null and stays empty
     // until the station is restarted. Same teardown/rebuild pair
     // didUpdateWidget uses; _init's generation counter settles any overlap.
-    reinitOnDatabaseAvailable(
+    reinitOnTimeseriesSourceAvailable(
       ref,
-      currentDatabase: () => _db,
-      onDatabaseAvailable: (_) {
+      currentSource: () => _source,
+      onSourceAvailable: (_) {
         if (!mounted) return;
         _cleanup();
         _init();
@@ -803,8 +824,8 @@ class _GraphAssetState extends ConsumerState<GraphAsset> {
         widget.config.headerText ?? widget.config.allKeys.join(',');
     _log.d('trend "$trendName": init, waiting for state manager');
     _stateMan = await ref.read(stateManProvider.future);
-    _log.d('trend "$trendName": waiting for database');
-    _db = await ref.read(databaseProvider.future);
+    _log.d('trend "$trendName": waiting for its timeseries source');
+    _source = await ref.read(timeseriesSourceProvider.future);
     if (!mounted || generation != _initGeneration) return;
     // Recorded only now: the signature resolves keys through StateMan, which
     // was not available when this init started.
@@ -906,55 +927,66 @@ class _GraphAssetState extends ConsumerState<GraphAsset> {
   Future<int> _initRealtimeUpdates() async {
     _graph.setNowButtonDisabled(_realTimeActive);
     if (!_realTimeActive) return 0;
-    if (_db == null) return 0; // this should never happen
-    final db = _db!;
+    if (_source == null) return 0; // this should never happen
+    final source = _source!;
     // Superseded inits must not hand their subscriptions to the winner.
     final generation = _initGeneration;
 
-    Future<StreamSubscription<String>> initSeries(
+    /// One arriving row, folded into the throttle buffer. Shared by the push
+    /// path and the poll path so the two cannot disagree about how a sample
+    /// becomes a point — which member is extracted, which axis it lands on,
+    /// and that `_dataMaxX` advances with it.
+    void ingest(GraphSeriesConfig series, bool isPrimary, DateTime time,
+        Object? raw) {
+      dynamic value = raw;
+      if (series.member?.isNotEmpty ?? false) {
+        value = extractSeriesMemberValue(value, series.member!);
+        if (value == null) return;
+      }
+      _dataMaxX = time.millisecondsSinceEpoch.toInt();
+      _rtThrottleBuffer.addAll(_unpackData(time.millisecondsSinceEpoch
+          .toDouble(), isPrimary ? 'y' : 'y2', value, series.legend));
+    }
+
+    /// The push channel for one series, or **null** when this transport has
+    /// none — which is not a failure, and is answered by the tail poll below.
+    Future<StreamSubscription<TimeseriesInsert>?> initSeries(
         GraphSeriesConfig series, bool isPrimary) async {
       final tableName = _stateMan!.resolveKey(
           series.key); // would be nice if key would know how to resolve itself
-      final channelName = await db.db.enableNotificationChannel(tableName);
-      final subscription = db.db.listenToChannel(channelName).listen((payload) {
-        drift_db.NotificationData notification =
-            drift_db.NotificationData.fromJson(payload);
-        if (notification.action == drift_db.NotificationAction.insert) {
-          if (notification.data.containsKey('time') &&
-              notification.data.containsKey('value')) {
-            final time = DateTime.parse(notification.data['time']);
-            dynamic value = notification.data['value'];
-            if (series.member?.isNotEmpty ?? false) {
-              value = extractSeriesMemberValue(value, series.member!);
-              if (value == null) return;
-            }
-            _dataMaxX = time.millisecondsSinceEpoch.toInt();
-            final x = time.millisecondsSinceEpoch.toDouble();
-            final axis = isPrimary ? 'y' : 'y2';
-            _rtThrottleBuffer
-                .addAll(_unpackData(x, axis, value, series.legend));
-            // _addData(_unpackData(x, axis, value, series.legend));
-            // _graph.panForward(time.millisecondsSinceEpoch.toDouble());
-          }
-          // todo non time value case
-        }
-      });
-      return subscription;
+      final stream = await source.liveInserts(tableName);
+      if (stream == null) return null;
+      return stream.listen(
+          (insert) => ingest(series, isPrimary, insert.time, insert.value));
     }
+
+    /// This transport has no push channel at all, learnt the first time
+    /// [initSeries] answers null. Transport-level and not per-series, which is
+    /// why one null is enough to settle it.
+    var pushes = true;
 
     Future<void> subscribe(GraphSeriesConfig series, bool isPrimary) async {
       final id = _seriesId(series, isPrimary);
       // Already live: do not open a second listener on the same channel.
       if (_realtimeSubscriptions.containsKey(id)) return;
-      final StreamSubscription<String> subscription;
+      final StreamSubscription<TimeseriesInsert>? subscription;
       try {
         subscription = await initSeries(series, isPrimary);
       } catch (e, st) {
+        // One series' channel failed. The others still get their feed, and
+        // the history already drawn stays — which is the whole point of
+        // subscribing per series rather than all-or-nothing.
         _log.w(
             'trend "${widget.config.headerText ?? ''}": no live feed for '
             '${series.legend}: $e',
             error: e,
             stackTrace: st);
+        return;
+      }
+      // Null is not a failure and is not per-series: this transport does not
+      // push at all, and the tail poll below is the live trend instead.
+      if (subscription == null) {
+        pushes = false;
         return;
       }
       if (!mounted ||
@@ -976,11 +1008,38 @@ class _GraphAssetState extends ConsumerState<GraphAsset> {
       await subscribe(series, false);
     }
 
+    if (!pushes) {
+      // A source with no push channel: the tail poll IS the live trend. Every
+      // series is polled — including any that did hand out a stream before the
+      // first null, so the two mechanisms never run side by side on one chart
+      // and double-count a row.
+      for (final subscription in _realtimeSubscriptions.values) {
+        subscription.cancel();
+      }
+      _realtimeSubscriptions.clear();
+      if (_rtPollTimer == null) {
+        _log.i(
+            'trend "${widget.config.headerText ?? widget.config.allKeys.join(',')}": '
+            'polling every ${kTimeseriesPollInterval.inSeconds}s — this '
+            'station\'s timeseries source has no push channel.');
+        _rtPollTimer = Timer.periodic(
+            kTimeseriesPollInterval, (_) => _pollRealtimeTail(ingest));
+      }
+    }
+
     if (!mounted || generation != _initGeneration) return 0;
 
     // One timer however many times this runs: a retry that picked up a table
     // appearing late would otherwise start a second one on the same buffer.
-    if (_rtThrottleTimer == null && _realtimeSubscriptions.isNotEmpty) {
+    //
+    // **Or a poll timer**, and the `or` is load-bearing. This buffer is filled
+    // by `ingest`, which both delivery paths share, and drained only here. On
+    // a transport with no push channel there are no subscriptions by
+    // construction — the branch above cancels them — so a guard that asked
+    // only about subscriptions would leave the poll filling a buffer nothing
+    // empties, and a gateway panel's trend would never draw a live point.
+    if (_rtThrottleTimer == null &&
+        (_realtimeSubscriptions.isNotEmpty || _rtPollTimer != null)) {
       _rtThrottleTimer = Timer.periodic(_rtThrottleInterval, (timer) {
         if (_rtThrottleBuffer.isNotEmpty && mounted) {
           _addData(_rtThrottleBuffer);
@@ -995,13 +1054,66 @@ class _GraphAssetState extends ConsumerState<GraphAsset> {
       _disableRealtimeUpdates();
       return 0;
     }
+    // The poll delivers every series at once, so on a pull-only transport the
+    // live count is the series count and not the (zero) subscription count.
+    // `_reportHistory` reserves the dead-chart error panel for "no history and
+    // nothing arriving either"; returning zero here would put that panel on a
+    // gateway panel whose poll is working, which is the one place the chart is
+    // allowed to lie and must not.
+    if (_rtPollTimer != null) {
+      return widget.config.primarySeries.length +
+          widget.config.secondarySeries.length;
+    }
     return _realtimeSubscriptions.length;
+  }
+
+  /// One tail poll: everything each series has recorded since the last one.
+  ///
+  /// The window opens at the newest row already on the chart, so a row the
+  /// collector wrote late — its `time` is inside a batch that had not been
+  /// flushed when the previous poll ran — is picked up by the next poll rather
+  /// than stepped over. Rows that are already on the chart are re-fetched and
+  /// re-ingested; that is deliberate, and cheap: the alternative is a poll
+  /// that opens at `now` and silently drops whatever the batcher was holding.
+  Future<void> _pollRealtimeTail(
+      void Function(GraphSeriesConfig, bool, DateTime, Object?) ingest) async {
+    final source = _source;
+    if (source == null || !mounted || !_realTimeActive) return;
+    final since = _rtPolledThrough ??
+        DateTime.fromMillisecondsSinceEpoch(_dataMaxX).toUtc();
+    DateTime? newest;
+    for (final (series, isPrimary) in [
+      for (final s in widget.config.primarySeries) (s, true),
+      for (final s in widget.config.secondarySeries) (s, false),
+    ]) {
+      try {
+        final rows = await source.queryTimeseriesData(
+            _stateMan!.resolveKey(series.key), since,
+            orderBy: 'time ASC');
+        if (!mounted) return;
+        for (final row in rows) {
+          if (!row.time.isAfter(since)) continue;
+          ingest(series, isPrimary, row.time, row.value);
+          if (newest == null || row.time.isAfter(newest)) newest = row.time;
+        }
+      } catch (e) {
+        // Said once per poll and not swallowed silently: on this transport the
+        // poll is the only delivery, so a failing one is the whole live trend
+        // stopping. The history already drawn stays, exactly as it does when a
+        // push channel dies.
+        _log.w('trend tail poll for "${series.key}" failed: $e');
+      }
+    }
+    if (newest != null) _rtPolledThrough = newest;
   }
 
   void _disableRealtimeUpdates() {
     _realTimeActive = false;
     _rtThrottleTimer?.cancel();
     _rtThrottleTimer = null;
+    _rtPollTimer?.cancel();
+    _rtPollTimer = null;
+    _rtPolledThrough = null;
     _rtThrottleBuffer.clear();
     // The operator has picked a range of their own; a retry landing on top of
     // it would drag the view back to the last few minutes.
@@ -1085,11 +1197,11 @@ class _GraphAssetState extends ConsumerState<GraphAsset> {
   }
 
   Future<GraphHistory> _queryData(DateTimeRange range) async {
-    if (_db == null) {
+    if (_source == null) {
       return GraphHistory(
           rows: const [], failures: const {}, failedCount: 0, seriesCount: 0);
     }
-    final db = _db!;
+    final db = _source!;
     final keys = {
       'y': widget.config.primarySeries,
       'y2': widget.config.secondarySeries
@@ -1389,6 +1501,15 @@ class _GraphAssetState extends ConsumerState<GraphAsset> {
     // alive for the life of the process.
     _rtThrottleTimer?.cancel();
     _rtThrottleTimer = null;
+    // And the tail poll, for the same reason and with more of it: on a
+    // transport with no push channel this is the *only* live delivery, so it
+    // is running on every such chart, and a leaked one holds this State — and
+    // the whole chart — alive for the life of the process while re-querying
+    // the database every five seconds. `_disableRealtimeUpdates` cancels it
+    // when the operator picks a range; nothing cancelled it on teardown.
+    _rtPollTimer?.cancel();
+    _rtPollTimer = null;
+    _rtPolledThrough = null;
     _rtThrottleBuffer.clear();
   }
 }

@@ -1,0 +1,38 @@
+# One suite at a time.
+#
+# package:test loads several suites at once by default, and on the VM they
+# share one process — so they share the file-descriptor table and the machine's
+# idea of how long a millisecond takes. Both are things this package measures.
+# It binds ephemeral ports for every WebSocket leg and counts descriptors in
+# the kill-cycle test, so a leak arm running beside another suite that is
+# opening sockets reads its neighbour's connections as a leak: measured in
+# tfc_stateman_contract at a delta of 40 over ten cycles ("about 4.00 per
+# cycle") against a proxy that leaks nothing. The wall-clock arms have the same
+# problem from the other end: a heartbeat deadline asserted to fire inside a
+# named window, and an event-loop lag monitor whose idle drift noise floor is
+# ±2 ms (03-RESEARCH Finding 10), are measurements of a machine — and a machine
+# running four suites is a different machine.
+#
+# The cost is this package's own parallelism. The alternative is a liveness
+# deadline competing with neighbours that stall the same event loop, which is
+# not a deadline.
+concurrency: 1
+
+# Declaring tags here is what makes `--tags` / `--exclude-tags` usable without
+# the "unknown tag" warning package:test prints for undeclared tags. Phase 2's
+# lesson: an undeclared tag does not select, it warns — so `--tags ws` on a
+# misspelling runs everything and looks like it ran nothing.
+tags:
+  contract:
+    # The shared 44-check StateManApi suite from tfc_stateman_contract, run
+    # over this transport rather than in memory.
+  meta:
+    # Cases that test the surface itself: that the barrel exports what it
+    # promises, that the handler table is closed, that a check bites a
+    # deliberately broken implementation.
+  faults:
+    # Socket-level fault legs through the TcpProxy kit. Wall-clock by design —
+    # they measure real delays through real loopback sockets.
+  ws:
+    # Integration over a real WebSocket on an ephemeral port. Wall-clock by
+    # design, and the only lane that needs a listening socket.

@@ -18,6 +18,8 @@ import '../models/menu_item.dart';
 import '../providers/preferences.dart';
 import '../route_registry.dart';
 import '../providers/access.dart';
+import '../providers/local_gateway_alarm.dart';
+import '../providers/gateway_link.dart' show relayCanAuthenticateProvider;
 import '../providers/theme.dart';
 import '../providers/alarm.dart';
 import '../providers/nav_alarm.dart';
@@ -143,7 +145,7 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
   /// stream on every scaffold rebuild -- every navigation, every pane inset
   /// change -- and the banner blinked back to the clock for a frame each
   /// time while the new StreamBuilder waited for its first value.
-  late final Stream<(AlarmMan, List<AlarmActive>)> _alarmStream =
+  late final Stream<(AlarmSource, List<AlarmActive>)> _alarmStream =
       Stream.fromFuture(ref.read(alarmManProvider.future)).asyncExpand(
           (alarmMan) => alarmMan
               .activeAlarms()
@@ -327,8 +329,9 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
       resolvePageAccess(
         group: accessGroupForRoute(AppRoutes.alarmView),
         path: AppRoutes.alarmView,
-        repository: ref.watch(accessRepositoryProvider),
+        authority: ref.watch(accessAuthorityProvider),
         session: ref.watch(accessSessionProvider),
+        relayCanAuthenticate: ref.watch(relayCanAuthenticateProvider),
       ) ==
       AccessGateState.allowed;
 
@@ -353,21 +356,46 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
   /// promises. Nothing reaches the screen while refused — the branch returns
   /// before a single alarm is read out of the snapshot.
   Widget _buildAlarmBanner(BuildContext context, WidgetRef ref) {
+    // The panel's OWN alarm — the gateway link is gone, or the transport
+    // could not even be built — merged into the one banner rather than given
+    // a second surface beside it: two banners competing for the row is how
+    // the real alarm stops being read (the argument that once justified the
+    // gateway-link chip, now spent on retiring it). It is read OUTSIDE the
+    // StreamBuilder because in gateway mode the plant's alarm stream itself
+    // rides the transport, so the very fault this alarm reports can leave
+    // `_alarmStream` errored or silent — and the banner must not need a
+    // working alarm source to say the alarm source's transport is gone.
+    // Null on every direct station and on a healthy link, so this costs the
+    // fleet nothing. Why it is local-only and never in TimescaleDB:
+    // lib/core/local_gateway_alarm.dart.
+    final localAlarm = ref.watch(localGatewayAlarmProvider);
+    // The whitelist gates the plant's alarms only. The panel's own link alarm
+    // is shown regardless: it says every value on this screen may be stale,
+    // and a page whitelist must not be able to hide that.
     final alarmViewOpen = _alarmViewOpen(ref);
-    return StreamBuilder<(AlarmMan, List<AlarmActive>)>(
+    return StreamBuilder<(AlarmSource, List<AlarmActive>)>(
         stream: _alarmStream,
         builder: (context, snapshot) {
-          if (alarmViewOpen &&
-              !snapshot.hasError &&
-              snapshot.hasData &&
-              snapshot.data!.$2.isNotEmpty) {
-            final (alarmMan, activeAlarms) = snapshot.data!;
-            final filteredAlarms = alarmMan.filterAlarms(activeAlarms, '');
+          final hasPlant =
+              alarmViewOpen && !snapshot.hasError && snapshot.hasData;
+          final plantAlarms = hasPlant
+              ? snapshot.data!.$1.filterAlarms(snapshot.data!.$2, '')
+              : const <AlarmActive>[];
+          // Local first, not severity-sorted in: while the gateway is down
+          // every plant row below may be stale, so the row that says so
+          // leads. The plant's own ordering is untouched behind it.
+          final filteredAlarms = [
+            if (localAlarm != null) localAlarm,
+            ...plantAlarms,
+          ];
+          if (filteredAlarms.isNotEmpty) {
             final highestPriorAlarms =
                 filteredAlarms.sublist(0, math.min(2, filteredAlarms.length));
 
             return GestureDetector(
-              onTap: () => context.beamToNamed(AppRoutes.alarmView),
+              onTap: alarmViewOpen
+                  ? () => context.beamToNamed(AppRoutes.alarmView)
+                  : null,
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: highestPriorAlarms.map((e) {
@@ -537,6 +565,10 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
         (accessElevated ? kAccessStatusActionMaxWidth : 48.0) +
         (kAccessStatusActionGap * 2) +
         _clockWidth;
+    // The gateway-link chip that used to sit left of the logo is gone — a
+    // lost or unbuildable gateway link now reports through the alarm banner
+    // (see _buildAlarmBanner), so the right cluster is back to the logo and
+    // the theme toggle and reserves nothing extra.
     const appBarRightMargin = 280.0;
 
     return Scaffold(
@@ -639,6 +671,12 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
+                          // The gateway-link chip lived here until 2026-09.
+                          // A lost (or never-buildable) gateway link is a
+                          // fault, and it now reports as one — through the
+                          // alarm banner in the centre, via
+                          // localGatewayAlarmProvider — instead of as a pill
+                          // nobody watched beside the logo.
                           // Only show SVG if not in mobile portrait mode
                           if (!(MediaQuery.of(context).orientation ==
                                   Orientation.portrait &&

@@ -357,7 +357,11 @@ class AlarmAutoNavigation extends _$AlarmAutoNavigation {
 
     () async {
       final PageManager pageManager;
-      final AlarmMan alarmMan;
+      // `AlarmSource`, not `AlarmMan`: a gateway panel is told its active set
+      // over the pipe and has a `RelayAlarmSource`. Naming the concrete class
+      // here would have made auto-navigation a direct-mode-only feature by
+      // a type annotation.
+      final AlarmSource alarmMan;
       try {
         pageManager = await pagesFuture;
         alarmMan = await alarmFuture;

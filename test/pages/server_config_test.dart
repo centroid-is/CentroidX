@@ -84,6 +84,11 @@ void main() {
 
       // Find Add Server buttons -- the Modbus one is the last one
       final addButtons = find.text('Add Server');
+      // The Advanced-JSON card (phase 3) added scroll extent below this
+      // section, so the placeholder scroll above can push the section
+      // header off the top; bring the button itself into view first.
+      await tester.ensureVisible(addButtons.last);
+      await settle(tester);
       // Tap the last Add Server button (belongs to Modbus section)
       await tester.tap(addButtons.last);
       await settle(tester);
@@ -98,7 +103,8 @@ void main() {
 
   // ==================== Group 3: Edit Modbus Server ====================
   group('Edit Modbus server', () {
-    testWidgets('editing host field updates the server config and shows unsaved badge',
+    testWidgets(
+        'editing host field updates the server config and arms the save button',
         (tester) async {
       await pumpAndLoad(tester, buildTestableServerConfig(stateManConfig: sampleModbusStateManConfig(),));
 
@@ -127,17 +133,17 @@ void main() {
       await tester.enterText(hostField, '10.0.0.1');
       await settle(tester);
 
-      // Unsaved badge should appear
-      // Scroll back up to see the badge
+      // The save button is the page's ONE unsaved indicator: it arms to
+      // "Save Configuration" (the orange pill is gone — phase 2 of
+      // quick/20260908-unify-config-ui).
       await tester.scrollUntilVisible(
-        find.text('Modbus TCP Servers'),
-        -200,
+        find.text('Save Configuration'),
+        200,
         scrollable: find.byType(Scrollable).first,
       );
       await settle(tester);
 
-      // Find "Unsaved" or "Unsaved Changes" text within the Modbus section
-      expect(find.textContaining('Unsaved'), findsAtLeastNWidgets(1));
+      expect(find.text('Save Configuration'), findsOneWidget);
     });
   });
 
@@ -402,15 +408,15 @@ void main() {
       await tester.enterText(intervalField.first, '500');
       await settle(tester);
 
-      // Scroll back up to see unsaved badge
+      // The armed save button is the one unsaved indicator.
       await tester.scrollUntilVisible(
-        find.text('Modbus TCP Servers'),
-        -200,
+        find.text('Save Configuration'),
+        200,
         scrollable: find.byType(Scrollable).first,
       );
       await settle(tester);
 
-      expect(find.textContaining('Unsaved'), findsAtLeastNWidgets(1));
+      expect(find.text('Save Configuration'), findsOneWidget);
     });
   });
 
@@ -538,15 +544,15 @@ void main() {
       await tester.tap(find.text('Schneider UMAS'));
       await settle(tester);
 
-      // Scroll back to top to check for unsaved changes badge
+      // The armed save button is the one unsaved indicator.
       await tester.scrollUntilVisible(
-        find.text('Modbus TCP Servers'),
-        -200,
+        find.text('Save Configuration'),
+        200,
         scrollable: find.byType(Scrollable).first,
       );
       await settle(tester);
 
-      expect(find.textContaining('Unsaved'), findsAtLeastNWidgets(1));
+      expect(find.text('Save Configuration'), findsOneWidget);
     });
   });
 }

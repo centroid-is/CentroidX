@@ -12,7 +12,7 @@
 library;
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 import 'package:tfc/page_creator/assets/schneider.dart';
 
 /// A parameter struct in the shape `DynamicValueWidget` renders and hands

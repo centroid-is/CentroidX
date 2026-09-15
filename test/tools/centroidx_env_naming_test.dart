@@ -39,6 +39,8 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
+import '../helpers/path_separators.dart';
+
 /// Directory basenames never descended into.
 ///
 /// Build output and tool caches contain copies of source — a stale
@@ -54,6 +56,16 @@ const _skipDirNames = <String>{
   'ephemeral',
   'Pods',
   '.idea',
+  // A Python virtualenv and its bytecode cache. `tools/load-bench/README.md`
+  // tells you to create one and `tools/load-bench/.gitignore` ignores it, so a
+  // developer who follows the instructions ends up with ~1,400 extra files
+  // here — enough on its own to push `skipped` past the ceiling below and
+  // fail this gate for a reason that has nothing to do with a `--dart-define`.
+  // Skipped by name rather than absorbed by raising the ceiling: the ceiling
+  // is what catches a skip rule that started matching source, and a ceiling
+  // loose enough to hide a virtualenv is loose enough to hide that too.
+  '.venv',
+  '__pycache__',
 };
 
 /// Binary file extensions, the only thing not read.
@@ -168,9 +180,8 @@ String _basename(String path) {
 
 /// Repo-relative path with forward slashes, so the same string compares equal
 /// on all three CI runners.
-String _relative(Directory root, String path) => path
-    .substring(root.path.length + 1)
-    .replaceAll(r'\', '/');
+String _relative(Directory root, String path) =>
+    withForwardSlashes(path.substring(root.path.length + 1));
 
 /// The extension including the leading dot, lowercased; empty for a file with
 /// no extension (`Dockerfile`) or a leading-dot name (`.gitignore`).

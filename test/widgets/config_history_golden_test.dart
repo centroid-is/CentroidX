@@ -72,6 +72,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show FontLoader;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc/core/audit_trail_store.dart';
 import 'package:tfc/core/config_change_store.dart';
 import 'package:tfc/pages/config_history.dart';
@@ -133,12 +134,12 @@ class _GoldenChangeStore extends Fake implements ConfigChangeStore {
 /// parentless action, which is how the populated image gets one without a
 /// special case anywhere in the page.
 class _GoldenAuditStore extends Fake implements AuditTrailStore {
-  _GoldenAuditStore({this.headers = const <AuditEntryData>[]});
+  _GoldenAuditStore({this.headers = const <AuditRecord>[]});
 
-  final List<AuditEntryData> headers;
+  final List<AuditRecord> headers;
 
   @override
-  Future<List<AuditEntryData>> entriesByAction(
+  Future<List<AuditRecord>> entriesByAction(
       Iterable<String> actionIds) async {
     final ids = actionIds.toSet();
     return headers.where((row) => ids.contains(row.actionId)).toList();

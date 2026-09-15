@@ -8,7 +8,7 @@ import 'dart:isolate';
 import 'dart:convert';
 
 import 'package:drift/drift.dart';
-import 'package:drift/native.dart';
+import 'sqlite_executor.dart';
 import 'package:meta/meta.dart' show visibleForTesting;
 import 'package:drift/isolate.dart';
 import 'package:drift_postgres/drift_postgres.dart';
@@ -29,11 +29,14 @@ import 'alarm.dart';
 import 'database.dart';
 import 'database_batch_insert.dart';
 import 'database_connections.dart';
+// Imported, not re-exported: a consumer that wants the payload vocabulary
+// should not have to take this file's `dart:io` with it. See that file's
+// header.
+import 'database_notification.dart';
 import 'config/config_item_table.dart'
     show ConfigChangeTable, ConfigItemTable;
 import 'mcp_tables.dart';
 import 'mcp_database.dart';
-import 'sqlite_loader.dart';
 
 part 'database_drift.g.dart';
 
@@ -56,7 +59,24 @@ class Alarm extends Table {
 
 class AlarmHistory extends Table {
   IntColumn get id => integer().autoIncrement()();
-  TextColumn get alarmUid => text().references(Alarm, #uid)();
+
+  /// The alarm definition this activation belongs to.
+  ///
+  /// **Deliberately NOT `.references(Alarm, #uid)`** (schema v7). Alarm
+  /// definitions live in the `alarm_man_config` preference JSON, not as rows:
+  /// nothing anywhere in this codebase has ever inserted into the [Alarm]
+  /// table. On Postgres, where foreign keys are always enforced, that made
+  /// **every** `alarm_history` insert a guaranteed SQLSTATE 23503, and it
+  /// never fired only because SVN has zero alarms configured and no alarm has
+  /// ever cleared. Dropping the constraint is what makes writing history
+  /// possible at all; backing definitions with the dead table instead is
+  /// recorded as a refused alternative (14-CONTEXT DI-5).
+  ///
+  /// Measured, not asserted: `test/integration/alarm_schema_v8_test.dart`
+  /// arms 1 and 2, against a real Postgres. A SQLite test cannot see this —
+  /// drift never issues `PRAGMA foreign_keys = ON`, so the constraint is inert
+  /// there and a green unit suite proves nothing about the plant.
+  TextColumn get alarmUid => text()();
   TextColumn get alarmTitle => text()();
   TextColumn get alarmDescription => text()();
   TextColumn get alarmLevel => text()();
@@ -66,6 +86,41 @@ class AlarmHistory extends Table {
   DateTimeColumn get createdAt => dateTime()();
   DateTimeColumn get deactivatedAt => dateTime().nullable()();
   DateTimeColumn get acknowledgedAt => dateTime().nullable()();
+
+  /// Which rule of the alarm produced this activation.
+  ///
+  /// An alarm may carry several rules and, before v7, the table could not tell
+  /// them apart. `(alarm_uid, rule_index)` with `deactivated_at IS NULL` is the
+  /// identity of an **open** row (14-CONTEXT D-4), enforced by
+  /// [_alarmHistoryOpenRowIndexStatement].
+  ///
+  /// **Nullable, and that has a consequence every writer must honour: NULLs are
+  /// DISTINCT in a unique index.** Two open rows for the same `alarm_uid` with
+  /// a NULL `rule_index` both insert — measured, arm 5 of
+  /// `alarm_schema_v8_test.dart`. So the "one open row per alarm-rule"
+  /// guarantee holds only for rows written WITH a rule index, and every writer
+  /// added by Phase 14 must supply one. It is nullable only because rows
+  /// written before v7 have no rule to point at; do not "fix" the index into
+  /// `COALESCE(rule_index, -1)` to close the gap, because that starts refusing
+  /// legacy rows the database is already holding.
+  IntColumn get ruleIndex => integer().nullable()();
+
+  /// Where [createdAt] / [deactivatedAt] came from: `plant` when every value
+  /// contributing to the evaluation carried a `sourceTime`, `backend_receipt`
+  /// when at least one did not and the backend's own receipt instant was used
+  /// instead (14-CONTEXT D-2).
+  ///
+  /// Nullable: rows written before v7 have no provenance to record, and a
+  /// missing label is honest about that where a defaulted one would not be.
+  TextColumn get tsSource => text().nullable()();
+
+  /// Why the row was closed: `cleared`, `acknowledged`, `inferred_restart` or
+  /// `inferred_config_change` (14-CONTEXT D-4).
+  ///
+  /// The two `inferred_*` values are the point of the column — they let a stop
+  /// analysis tell a measured clear from one reconstructed after a backend
+  /// restart, rather than reading both as the same fact.
+  TextColumn get deactivatedReason => text().nullable()();
 }
 
 class FlutterPreferences extends Table {
@@ -503,7 +558,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
   @visibleForTesting
   factory AppDatabase.inMemoryForTest() => AppDatabase._(
         DatabaseConfig(),
-        NativeDatabase.memory(logStatements: false),
+        sqliteInMemory(logStatements: false),
       );
 
   /// A generative constructor so a test can *subclass* [AppDatabase] and
@@ -600,7 +655,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
   }
 
   @override
-  int get schemaVersion => 12;
+  int get schemaVersion => 13;
 
   /// The `audit_entry` indexes, created outside Drift because Drift's
   /// `@TableIndex` cannot express `DESC` and every one of these is a
@@ -639,6 +694,82 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
   Future<void> _createAuditIndexes(Migrator m) async {
     for (final stmt in _auditIndexStatements) {
       await m.database.customStatement(stmt);
+    }
+  }
+
+  /// The partial unique index that makes "two open rows for one alarm-rule"
+  /// unrepresentable (schema v7, 14-CONTEXT D-4).
+  ///
+  /// `alarmHistoryOverlaps` and `StopIntervalSource` both read a row as ONE
+  /// interval with a nullable end, so a second open row for the same
+  /// alarm-rule double-counts every stop. Application-level discipline cannot
+  /// give that guarantee: it does not survive a crash between the SELECT and
+  /// the INSERT. The database can.
+  ///
+  /// **Partial on purpose.** Without `WHERE deactivated_at IS NULL` the index
+  /// would allow an alarm rule exactly one activation ever. Do not remove the
+  /// predicate, and do not wrap `rule_index` in `COALESCE` — see
+  /// [AlarmHistory.ruleIndex] for why NULLs staying distinct is the measured,
+  /// wanted behaviour.
+  ///
+  /// `IF NOT EXISTS` on both backends (SQLite 3.8+, Postgres 9.5+), for the
+  /// same reason [_auditIndexStatements] uses it: several SVN stations share
+  /// one database and every one of them runs the migration when it opens.
+  static const String _alarmHistoryOpenRowIndexStatement =
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_alarm_history_open '
+      'ON alarm_history (alarm_uid, rule_index) '
+      'WHERE deactivated_at IS NULL';
+
+  /// Create [_alarmHistoryOpenRowIndexStatement].
+  ///
+  /// Called from `onCreate` **and** from the v7 upgrade branch, on both
+  /// backends. Both, not just the upgrade: a database created from scratch by
+  /// a new station would otherwise carry no index at all, and the guarantee
+  /// would hold only on databases that happened to have been upgraded.
+  Future<void> _createAlarmHistoryOpenRowIndex(Migrator m) async {
+    await m.database.customStatement(_alarmHistoryOpenRowIndexStatement);
+  }
+
+  /// Drop every FOREIGN KEY on `alarm_history` that references `alarm`
+  /// (schema v7, Postgres only).
+  ///
+  /// **The name is discovered, not assumed** (14-CONTEXT CD-4). Drift's
+  /// default would be `alarm_history_alarm_uid_fkey`, but a database
+  /// provisioned by some other route may have named it differently, and a
+  /// `DROP CONSTRAINT` against a guessed name either fails or silently drops
+  /// nothing. `information_schema` knows.
+  ///
+  /// **Zero hits is a normal outcome, not an error** (A2): a database that
+  /// never carried the constraint is already in the state v7 wants. It is
+  /// logged and the migration carries on — throwing here would abort the whole
+  /// upgrade for a database that has nothing wrong with it.
+  ///
+  /// The constraint name is interpolated because a DDL identifier cannot be a
+  /// bind parameter. It comes from the server's own catalogue, never from a
+  /// row of alarm data, so T-14-01's "every value stays a `Variable`" is not
+  /// weakened here.
+  Future<void> _dropAlarmHistoryForeignKeys(Migrator m) async {
+    final found = await m.database.customSelect(
+      "SELECT tc.constraint_name AS name "
+      "FROM information_schema.table_constraints tc "
+      "JOIN information_schema.constraint_column_usage ccu "
+      "  ON ccu.constraint_name = tc.constraint_name "
+      " AND ccu.constraint_schema = tc.constraint_schema "
+      "WHERE tc.table_name = 'alarm_history' "
+      "  AND tc.constraint_type = 'FOREIGN KEY' "
+      "  AND ccu.table_name = 'alarm'",
+    ).get();
+
+    if (found.isEmpty) {
+      logger.i('Schema v8: no alarm_history -> alarm foreign key present; '
+          'nothing to drop');
+      return;
+    }
+    for (final row in found) {
+      final name = row.read<String>('name');
+      logger.i('Schema v8: dropping alarm_history foreign key "$name"');
+      await m.database.customStatement(
+          'ALTER TABLE alarm_history DROP CONSTRAINT IF EXISTS "$name"');
     }
   }
 
@@ -1020,6 +1151,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
           await m.createAll();
           await _createAuditIndexes(m);
           await _createAccessBindingIndexes(m);
+          await _createAlarmHistoryOpenRowIndex(m);
           await _createConfigIndexes(m);
           await _createConfigChangeNotifyTrigger(m);
           await _seedAccessRoles();
@@ -1348,10 +1480,37 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
           // nothing more — it does not connect to Postgres and cannot see a
           // wrong type or a statement that fails at runtime. The first thing
           // that will actually run them is a station.
-          if (from < 10) {
+          // `from < 13` rather than `< 10`, and probed rather than
+          // unconditional — the same widening this file has already applied
+          // twice above, one merge further along. `10` was written when it was
+          // the first version the merged line stamped. It is not any more:
+          // pre-merge builds of the relay-pipe branch stamped `user_version`
+          // 10 for *their* v10, which is the `alarm_history` arm at the bottom
+          // of this method and has nothing to do with configuration. A
+          // database from such a build opens at `from == 10`, skips this arm,
+          // and every `config_item` read fails on a table no later upgrade
+          // would ever create — the exact failure the two arms above widened
+          // to avoid, with the branches swapped.
+          //
+          // Widening needs the probe: on SQLite `m.createTable` is a bare
+          // `CREATE TABLE` and a station already carrying the tables would
+          // abort the migration on it. Postgres needs nothing new — that path
+          // has been `IF NOT EXISTS` since it was written.
+          if (from < 13) {
             if (native) {
-              await m.createTable(configItemTable);
-              await m.createTable(configChangeTable);
+              final existing = await m.database
+                  .customSelect(
+                      "SELECT name FROM sqlite_master WHERE type = 'table'")
+                  .get();
+              final present = {
+                for (final r in existing) r.read<String>('name'),
+              };
+              if (!present.contains(configItemTable.actualTableName)) {
+                await m.createTable(configItemTable);
+              }
+              if (!present.contains(configChangeTable.actualTableName)) {
+                await m.createTable(configChangeTable);
+              }
             } else {
               // PostgreSQL: raw `IF NOT EXISTS` DDL rather than
               // `m.createTable`, following the two arms above. Several SVN
@@ -1389,9 +1548,110 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
           if (from < 12) {
             await _createConfigIndexes(m);
           }
+
+          // **This arm has been renumbered three times and the number is not
+          // the point.** It was v7 on this branch, became v8 when main's
+          // page-visibility whitelist (#495) took 7, v10 when main also took 8
+          // (per-account inactivity timeout, #505) and 9 (additional roles,
+          // #512), and is v13 now that relational configuration (#465) has
+          // taken 10, 11 and 12. Each time the rule was the same and it is
+          // main's: whichever arm shipped first keeps its number, and this one
+          // moves up. That is also the safe direction — a station that has run
+          // the earlier arms gets this one on its next open, and one that has
+          // run none of them gets them all in order.
+          //
+          // The existence guard below is what makes a fourth renumber free,
+          // and this arm is now the case that reasoning was written for.
+          //
+          // Schema v13: `alarm_history` becomes writable, and an open
+          // activation row becomes a thing the database can hold exactly one
+          // of. See 14-CONTEXT D-5.
+          //
+          // **This is the first migration arm in this repository with an
+          // executed Postgres test** — `test/integration/alarm_schema_v8_test
+          // .dart` (named for the version it was written at), fourteen legs
+          // against a real server, half of them against a v6 shape built by
+          // hand and lifted through this branch. The v6 comment above records
+          // that no test had ever run one. This arm does not inherit that.
+          if (from < 13) {
+            if (native) {
+              // Guarded by whether the columns exist rather than by
+              // `from >= N`, which is the convention main's v8 arm above sets
+              // out and the reasoning holds here verbatim: an existence check
+              // is right in every merge order, a version comparison only in
+              // the one it was written for. This arm has now been renumbered
+              // three times, which is the case that reasoning is about.
+              //
+              // SQLite has no `ADD COLUMN IF NOT EXISTS` and no
+              // `DROP CONSTRAINT`. Neither matters here:
+              //
+              // * A SQLite database is per-process, so nothing else is racing
+              //   this branch.
+              // * The `alarm_uid -> alarm(uid)` foreign key is already inert.
+              //   Drift never issues `PRAGMA foreign_keys = ON` and nothing in
+              //   this package sets it in a `beforeOpen`, so SQLite has been
+              //   accepting these inserts all along — which is exactly why the
+              //   Postgres-only defect survived so long. Rebuilding the table
+              //   to remove a constraint that is not enforced would be a
+              //   copy-and-swap of the plant's history for no behavioural
+              //   change; it is deliberately not done.
+              final cols = await m.database
+                  .customSelect("PRAGMA table_info('alarm_history')")
+                  .get();
+              final present = {
+                for (final r in cols) r.read<String>('name'),
+              };
+              for (final (column, stmt) in const [
+                ('rule_index',
+                    'ALTER TABLE alarm_history ADD COLUMN rule_index INTEGER'),
+                ('ts_source',
+                    'ALTER TABLE alarm_history ADD COLUMN ts_source TEXT'),
+                ('deactivated_reason',
+                    'ALTER TABLE alarm_history ADD COLUMN deactivated_reason TEXT'),
+              ]) {
+                if (present.contains(column)) continue;
+                await m.database.customStatement(stmt);
+              }
+            } else {
+              // PostgreSQL: idempotent, for the several-stations-share-one-
+              // database reason the v6 branch records. Each of these has to be
+              // safe to run twice or the second station through aborts the
+              // migration and leaves the database half-upgraded.
+              //
+              // **`BIGINT`, not `INTEGER`.** Drift's Postgres dialect maps
+              // `IntColumn` to `bigint`, so a station that CREATES this schema
+              // gets `rule_index bigint` while `INTEGER` here would give an
+              // upgraded station `int4` — two shapes for one column, from one
+              // release. It is not cosmetic: drift reads the column as
+              // `DriftSqlType.int` and a client binding an int8 parameter
+              // against an int4 column gets SQLSTATE 08P01, "insufficient data
+              // left in message", which reads like a driver bug rather than a
+              // schema mismatch. Measured — `alarm_schema_v8_test.dart`'s
+              // column-parity arm compares the created and upgraded shapes
+              // column for column so the two paths cannot drift apart again.
+              for (final stmt in [
+                'ALTER TABLE alarm_history ADD COLUMN IF NOT EXISTS rule_index BIGINT',
+                'ALTER TABLE alarm_history ADD COLUMN IF NOT EXISTS ts_source TEXT',
+                'ALTER TABLE alarm_history ADD COLUMN IF NOT EXISTS deactivated_reason TEXT',
+              ]) {
+                await m.database.customStatement(stmt);
+              }
+              await _dropAlarmHistoryForeignKeys(m);
+            }
+            await _createAlarmHistoryOpenRowIndex(m);
+          }
         },
       );
 
+  // The web branch had these as `isSqliteExecutor(executor)` and
+  // `executor is PgDatabase`. Main's dialect reads supersede both and are the
+  // stricter answer on every platform: the type tests were the D-1 defect —
+  // false on every station, because the app opens its database through a
+  // DriftIsolate and holds a remote proxy — and `executor.dialect` is a
+  // web-safe drift API that also takes the last `PgDatabase` reference out of
+  // this file. `isSqliteExecutor` therefore has no caller left and goes with
+  // it; the rest of `sqlite_executor.dart` stays, because keeping
+  // `drift/native` out of the closure is what that seam is actually for.
   /// Whether this database is Postgres.
   ///
   /// Read off the executor's dialect, as [native] is, and for the same
@@ -1604,8 +1864,9 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
     if (sqliteFolder != null) {
       final dbFolder = sqliteFolder;
       final file = File(p.join(dbFolder.path, 'db.sqlite'));
-      // Use a local NativeDatabase (or FlutterQueryExecutor).
-      final executor = NativeDatabase.createInBackground(
+      // A local SQLite file, opened through the seam in
+      // `sqlite_executor.dart` so this library does not import `dart:ffi`.
+      final executor = sqliteInBackground(
         file,
         logStatements: config.debug,
       );
@@ -1644,25 +1905,13 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
   /// and passes no `sqliteFolder`, so it throws for a SQLite config.
   static AppDatabase createLocal(Directory folder,
       {bool logStatements = false}) {
-    final executor = NativeDatabase.createInBackground(
+    // Through the seam, so this file names no FFI type. The two callbacks
+    // that used to sit here — the sqlite3 library override and the WAL /
+    // busy_timeout pragmas — moved with it; `setup` takes sqlite3's own
+    // `Database`, which is FFI-bound and unnameable in a web build.
+    final executor = sqliteLocalMirror(
       File(p.join(folder.path, 'config.sqlite')),
       logStatements: logStatements,
-      // Runs inside the background isolate before the file is opened, which is
-      // the only place a library override can go. On the eLinux stations it is
-      // what makes sqlite3 loadable at all — see [loadSqliteOnLinux].
-      isolateSetup: loadSqliteOnLinux,
-      setup: (db) {
-        // `createInBackground` does nothing about journal mode, and in the
-        // default rollback journal a reader blocks a writer across processes
-        // (`bin/page_geometry.dart` reads this file out-of-process). WAL is
-        // durable in the file header, so setting it every open is a no-op —
-        // except on a database restored from a rollback-mode backup, which it
-        // repairs.
-        db.execute('PRAGMA journal_mode = WAL;');
-        // WAL still serialises writers. Without a timeout a concurrent write
-        // returns SQLITE_BUSY immediately instead of waiting.
-        db.execute('PRAGMA busy_timeout = 5000;');
-      },
     );
     return AppDatabase._(DatabaseConfig(), executor);
   }
@@ -1713,8 +1962,9 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
     } else if (sqliteFolder != null) {
       final dbFolder = sqliteFolder;
       final file = File(p.join(dbFolder.path, 'db.sqlite'));
-      // Use a local NativeDatabase (or FlutterQueryExecutor).
-      final executor = NativeDatabase.createInBackground(
+      // A local SQLite file, opened through the seam in
+      // `sqlite_executor.dart` so this library does not import `dart:ffi`.
+      final executor = sqliteInBackground(
         file,
         logStatements: config.debug,
       );
@@ -2358,6 +2608,69 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
     return channelName;
   }
 
+  /// Like [enableNotificationChannel], but the payload carries only the value
+  /// of [keyColumn] instead of the whole row.
+  ///
+  /// `pg_notify` payloads are capped at 8000 bytes, and the cap is enforced by
+  /// *erroring the statement that fired the trigger*. A row-payload trigger on
+  /// a table with large values — `config_item` holds a whole page, image and
+  /// all, in one row — would therefore make every save of that row fail
+  /// outright. This payload stays a few dozen bytes regardless of row size:
+  /// `{"action": TG_OP, "key": <keyColumn>}`.
+  ///
+  /// **Not the same thing as `config_change_notify`**, and the two coexist on
+  /// purpose. Main's trigger is on `config_change`, fires once per statement
+  /// and carries an empty payload: "something changed, re-read". That is what
+  /// a backend wanting to know whether to restart needs. This one is on the
+  /// live table and names the key, which is what a per-key fan-out needs —
+  /// `PreferenceChangeFeed` tells each relay client about the keys it asked
+  /// for, and cannot do that from a signal that does not say which key moved.
+  /// Different tables, different questions; neither replaces the other.
+  ///
+  /// It was deleted on main with `flutter_preferences`, the only table it was
+  /// used on there. It comes back because the relay's feed still needs it, now
+  /// pointed at `config_item`.
+  Future<String> enableKeyedNotificationChannel(
+      String tableName, String keyColumn) async {
+    final channelName = 'table_${tableName}_key_changes';
+
+    await customStatement('''
+    CREATE OR REPLACE FUNCTION "notify_${tableName}_key_change"()
+    RETURNS TRIGGER AS \$\$
+    BEGIN
+      PERFORM pg_notify(
+        '$channelName',
+        json_build_object(
+          'action', TG_OP,
+          'key', CASE WHEN TG_OP = 'DELETE' THEN OLD."$keyColumn" ELSE NEW."$keyColumn" END
+        )::text
+      );
+      RETURN COALESCE(NEW, OLD);
+    END;
+    \$\$ LANGUAGE plpgsql;
+  ''');
+
+    await customStatement('''
+  DROP TRIGGER IF EXISTS "${tableName}_key_notify" ON "$tableName";
+  ''');
+
+    try {
+      await customStatement('''
+  CREATE TRIGGER "${tableName}_key_notify"
+  AFTER INSERT OR UPDATE OR DELETE ON "$tableName"
+  FOR EACH ROW
+  EXECUTE FUNCTION "notify_${tableName}_key_change"();
+  ''');
+    } catch (e) {
+      // Two processes racing DROP+CREATE: losing the race is fine.
+      if (e.toString().contains('already exists')) {
+        return channelName;
+      }
+      rethrow;
+    }
+    return channelName;
+  }
+
   static Duration? parsePostgresInterval(String? interval) {
     if (interval == null) return null;
 
@@ -2792,28 +3105,8 @@ _HealthMonitor _startPoolHealthMonitor(pg.Pool pool, SendPort port) {
   return _HealthMonitor(stop, done.future);
 }
 
-/// How often the LISTEN/NOTIFY connection is checked for having died, on
-/// behalf of the channel streams riding on it. See
-/// [AppDatabase._ensureNotificationWatchdog].
-const kNotificationWatchdogInterval = Duration(seconds: 5);
-
-enum NotificationAction {
-  insert,
-  update,
-  delete,
-}
-
-class NotificationData {
-  final NotificationAction action;
-  final Map<String, dynamic> data;
-
-  NotificationData({required this.action, required this.data});
-
-  factory NotificationData.fromJson(String json) {
-    final data = jsonDecode(json);
-    return NotificationData(
-        action: NotificationAction.values
-            .byName((data['action'] as String).toLowerCase()),
-        data: data['data'] as Map<String, dynamic>);
-  }
-}
+// `kNotificationWatchdogInterval`, `NotificationAction` and `NotificationData`
+// used to close this file. They are hand-written and need only `dart:convert`,
+// so they now live in `database_notification.dart` — imported above, and not
+// re-exported. Reaching them no longer costs a reader `dart:io`,
+// `dart:isolate` and `drift_postgres`.

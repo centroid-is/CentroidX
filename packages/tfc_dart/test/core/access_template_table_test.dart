@@ -67,6 +67,23 @@ const _bindingIndex = 'idx_access_key_binding_template_name';
 const _conveyorRules =
     '{"p_cmd_JogFwd":"operate","p_cfg_ManualFreq":"setpoints"}';
 
+/// Undoes what schema **v10** added to `alarm_history`.
+///
+/// This file's v5 fixture is built by creating the CURRENT schema and removing
+/// what came later, so every version after v6 has to add its own rollback here
+/// or the fixture is not the shape it claims to be. Without these,
+/// `onUpgrade(5, 10)`'s SQLite arm aborts on
+/// `duplicate column name: rule_index` — the fixture, not the migration: a
+/// real v5 SQLite database has none of these columns.
+///
+/// The index goes first. SQLite refuses to drop a column an index refers to.
+const _v10Rollback = [
+  'DROP INDEX IF EXISTS idx_alarm_history_open',
+  'ALTER TABLE alarm_history DROP COLUMN rule_index',
+  'ALTER TABLE alarm_history DROP COLUMN ts_source',
+  'ALTER TABLE alarm_history DROP COLUMN deactivated_reason',
+];
+
 void main() {
   group('fresh install', () {
     test('creates access_template and access_key_binding', () async {
@@ -238,6 +255,9 @@ void main() {
       await db.customStatement('DROP TABLE audit_entry');
       await db.customStatement('DROP TABLE app_user');
       await db.customStatement('DROP TABLE app_role');
+      for (final stmt in _v10Rollback) {
+        await db.customStatement(stmt);
+      }
       await db.customStatement('PRAGMA user_version = 5');
       await db.close();
     }

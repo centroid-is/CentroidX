@@ -1,0 +1,44 @@
+# One suite at a time.
+#
+# package:test loads several suites at once by default, and on the VM they
+# share one process — so they share the file-descriptor table and the machine's
+# idea of how long a millisecond takes. Both are things this package measures.
+# It opens a real WebSocket to a real gateway on an ephemeral port for every
+# contract leg, and the reconnect and freshness arms are wall-clock assertions
+# about when a deadline fires. A leak arm running beside another suite that is
+# opening sockets reads its neighbour's connections as a leak: measured in
+# tfc_stateman_contract at a delta of 40 over ten cycles ("about 4.00 per
+# cycle") against a proxy that leaks nothing. And on this transport every round
+# trip already carries a 50–100 ms tick-quantised floor (04-RESEARCH Finding 8:
+# 50.0 ms mean over 50 ping calls), so there is no slack left to donate to a
+# neighbour stalling the same event loop.
+#
+# The cost is this package's own parallelism. The alternative is a freshness
+# deadline competing with neighbours that stall the same event loop, which is
+# not a deadline.
+concurrency: 1
+
+# Declaring tags here is what makes `--tags` / `--exclude-tags` usable without
+# the "unknown tag" warning package:test prints for undeclared tags. Phase 2's
+# lesson: an undeclared tag does not select, it warns — so `--tags ws` on a
+# misspelling runs everything and looks like it ran nothing.
+tags:
+  contract:
+    # The shared StateManApi suite from tfc_stateman_contract, run against
+    # RemoteStateMan over the real transport rather than in memory.
+  meta:
+    # Cases that test the surface itself: that the barrel exports what it
+    # promises, that a config refuses what it must, that a check bites a
+    # deliberately broken implementation.
+  faults:
+    # Socket-level fault legs through the TcpProxy kit. Wall-clock by design —
+    # they measure real delays through real loopback sockets.
+  ws:
+    # Integration against a real gateway on an ephemeral port. Wall-clock by
+    # design, and the only lane that needs a listening socket.
+  gate:
+    # The F1-F21 + G1-G6 resilience catalogue, driven through the real fault
+    # proxy against a real gateway. One case per catalogue row, audited in both
+    # directions by test/gate/gate_manifest_test.dart against the row registry
+    # beside it. Slower than every other lane by design — a flap window is a
+    # flap window — which is why it has its own GATE_LANE_BUDGET arm.

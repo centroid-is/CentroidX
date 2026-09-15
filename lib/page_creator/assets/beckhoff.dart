@@ -6,7 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:tfc/widgets/panes/standard_dialog.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:rxdart/rxdart.dart';
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 
 import 'common.dart';
 import 'ethercat_asset.dart';
@@ -19,7 +19,7 @@ import '../../painter/beckhoff/ek1110.dart';
 import '../../painter/beckhoff/ep_box.dart';
 import '../../painter/beckhoff/io8.dart';
 import '../../painter/beckhoff/ps2001.dart';
-import 'package:tfc_dart/core/state_man.dart';
+import 'package:tfc_dart/core/state_man_types.dart';
 import '../../providers/state_man.dart';
 import '../../widgets/panes/pane_chrome.dart';
 import '../../widgets/panes/side_pane.dart';

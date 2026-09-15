@@ -31,7 +31,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:open62541/open62541.dart' show DynamicValue, NodeId;
+import 'package:open62541/open62541_types.dart' show DynamicValue, NodeId;
 import 'package:tfc/pages/key_repository.dart';
 import 'package:tfc/core/access_template_store.dart';
 import 'package:tfc/pages/access_templates_section.dart';

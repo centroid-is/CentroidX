@@ -6,7 +6,7 @@ import 'package:tfc/page_creator/assets/conveyor_gate.dart';
 import 'package:tfc/page_creator/assets/common.dart';
 import 'package:tfc/providers/state_man.dart';
 import 'package:tfc_dart/core/state_man.dart';
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 
 // A conveyor's tap target must be the painted belt, not its bounding box.
 //

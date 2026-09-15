@@ -40,7 +40,7 @@ final menuTreeProvider = Provider<List<MenuItem>>.internal(
 @Deprecated('Will be removed in 3.0. Use Ref instead')
 // ignore: unused_element
 typedef MenuTreeRef = ProviderRef<List<MenuItem>>;
-String _$visibleMenuHash() => r'f5e4afaeb2408fa619c93e8a23122af0b0bca550';
+String _$visibleMenuHash() => r'29d3d7fcb8e91e5c6c3d104b55482a73b92ff22d';
 
 /// [menuTreeProvider] filtered by [resolvePageAccess], for the session in
 /// force.
