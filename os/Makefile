@@ -303,6 +303,8 @@ clean:
 	rm -rf $(GEN) $(PAYLOAD) $(OUT)/*.img $(OUT)/*.img.gz $(OUT)/*.bmap
 
 # The installer functions against a directory, no disk. Any bash; wg optional.
+# Then the GPU firmware guard and the recipe lines it guards.
 .PHONY: test
 test:
 	bash test/installer-test.sh
+	bash test/gpu-firmware-test.sh
