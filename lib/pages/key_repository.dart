@@ -55,8 +55,8 @@ enum _KeyStatus { ok, error, serverDisconnected, serverDisabled }
 /// | State | Chrome |
 /// |---|---|
 /// | no database (this constant) | 412 |
-/// | database, one template | not yet re-measured |
-/// | database, templates list at its 168 px cap | not yet re-measured |
+/// | database, templates closed (the default) | 308 |
+/// | database, templates open, list at its 168 px cap | 524 |
 ///
 /// **Re-measured when import/export moved into the key-mappings header.** The
 /// no-database figure was 516, and the separate import/export card plus the
@@ -66,17 +66,27 @@ enum _KeyStatus { ok, error, serverDisconnected, serverDisabled }
 /// rendered height. On the old layout that gives 780 - 264 = 516, reproducing
 /// the recorded figure exactly; on this one it gives 780 - 368 = 412.
 ///
-/// The two database rows are left unfilled rather than filled by subtracting
-/// 104. They are measurements, and they are about to move again when the
-/// access-templates section collapses — so they get measured then, not
-/// derived now.
+/// **The database rows were measured when the templates section learned to
+/// close**, with nine templates so the open list reaches its cap, and taken two
+/// independent ways: in the fallback at 800x600 (box minus list, as above) and
+/// laid out directly at 900x1000 (page minus list). Closed, both give 308 — the
+/// bar is one ellipsised line, so its height does not depend on the width.
+/// Open, they differ: 524 at 800 wide and 508 at 900, because the explanatory
+/// line under the section's headline wraps once more on the narrower panel.
+/// The table records the 800x600 figure, the condition every row here names.
 ///
-/// The unbound count row is ~30 px of the database figures and renders only
-/// when there is a database, so it does not enter the no-database figure.
+/// The default database state is now **below** the no-database one. The
+/// closed bar is 72 px, where the no-database section still carries its
+/// explanatory line and a note several lines long. The unbound count row is
+/// ~30 px of the database figures and renders only when there is a database.
 ///
-/// Raising the constant to cover the database worst case would engage the
-/// whole-page fallback on panels that lay out directly today, which is a worse
-/// trade than a short list on a window nobody runs the plant from.
+/// The worst case, open at the cap, is 524 — still below `minContentHeight`
+/// (412 + 264 = 676), so the fallback gives the column room and the key list
+/// is squeezed to about two cards rather than overflowing. Raising the
+/// constant to cover it would engage the whole-page fallback on panels that
+/// lay out directly today, which is a worse trade than a short list on a
+/// window nobody runs the plant from — and one the operator can undo by
+/// closing the section.
 const double kKeyRepositoryChromeHeight = 412;
 
 /// Three key cards. Below this the list is not worth showing and the page
