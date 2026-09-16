@@ -39,7 +39,7 @@ import 'package:stream_channel/stream_channel.dart';
 // wires the trail, the decorator writes it, and the master system's wider
 // vocabulary stays out of this file.
 import 'package:tfc_access/tfc_access.dart'
-    show AuditSink, AuthProvider, NullAuditSink;
+    show AccessGroup, AuditSink, AuthProvider, NullAuditSink;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
@@ -159,6 +159,7 @@ final class RelayServer {
     this.accounts,
     this.accessFor,
     this.loginVerifier,
+    this.anonymousGroups,
     required this.resolver,
     this.serverSupported = const [protocolVersion],
     this.onError = reportToStderr,
@@ -353,6 +354,19 @@ final class RelayServer {
   /// admitting awaiting-sign-in sessions on a gateway where nobody could
   /// ever sign in would be idle surface with no purpose.
   final AuthProvider? loginVerifier;
+
+  /// What a session nobody has signed in on holds: the groups of the plant's
+  /// `anonymous` account, read fresh at every credential-less `hello`
+  /// (`SessionLoginValidator.anonymousIdentity`). `composeBackendRelay` fills
+  /// it from the same account cache the token sweep resolves against, so the
+  /// row an administrator edits is the row the next walk-up session gets.
+  ///
+  /// Null — the default, and what every fixture in this package passes —
+  /// means the anonymous identity holds **nothing**, which since the
+  /// 2026-09-16 ruling that grades reads means it may read nothing either:
+  /// the fail-closed side, and the honest one for a gateway nobody told who
+  /// anonymous is.
+  final Set<AccessGroup> Function()? anonymousGroups;
 
   /// Builds each session's per-identity template/admin families at `hello`
   /// (D-11) — see [AccessScopeFactory]. Forwarded to every session exactly
@@ -553,7 +567,10 @@ final class RelayServer {
       // credential is refused exactly as it always was.
       _loaded = loginVerifier == null
           ? stations
-          : SessionLoginValidator(stations: stations, accounts: accounts);
+          : SessionLoginValidator(
+              stations: stations,
+              accounts: accounts,
+              anonymous: anonymousGroups);
     }
     // Before the bind, so it is the first thing in the log rather than a line
     // after the port is already open. `StackTrace.empty` is this package's

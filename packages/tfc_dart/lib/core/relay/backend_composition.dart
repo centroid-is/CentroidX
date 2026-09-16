@@ -214,6 +214,15 @@ final class _AccountCache {
 
   Map<String, ResolvedUser> _byUsername = const <String, ResolvedUser>{};
 
+  /// The `anonymous` account's groups, refreshed with the accounts and handed
+  /// to `RelayServer.anonymousGroups`. Empty until the first [refresh] — a
+  /// walk-up session admitted before the cache is filled holds nothing, which
+  /// is the side to be wrong on; `bin/main.dart` refreshes before it binds.
+  Set<AccessGroup> _anonymousGroups = const <AccessGroup>{};
+
+  /// The synchronous seam for the anonymous identity, read per hello.
+  Set<AccessGroup> anonymousGroups() => _anonymousGroups;
+
   /// The synchronous seam handed to `RelayServer.accounts`. Answers null for an
   /// unknown username — never an empty group set, which would be
   /// indistinguishable in the trail from an account deliberately granted
@@ -252,6 +261,10 @@ final class _AccountCache {
         );
       }
       _byUsername = next;
+      // The anonymous row is what a credential-less session is graded as
+      // (ruled 2026-09-16, reads included), so it moves with the accounts:
+      // an operator narrowing it takes effect on the next walk-up hello.
+      _anonymousGroups = (await _repository.anonymousAccount()).groups;
     } on Object catch (error, stack) {
       _logger.e('backend relay: account cache refresh failed; keeping the '
           'previously loaded ${_byUsername.length} account(s) rather than '
@@ -709,6 +722,7 @@ BackendRelayComposition composeBackendRelay({
       accounts: accounts,
       accessFor: scopeFactory,
       loginVerifier: loginVerifier,
+      anonymousGroups: accountCache?.anonymousGroups,
       onError: onError,
     );
   } else {
@@ -727,6 +741,7 @@ BackendRelayComposition composeBackendRelay({
       // `validator` credential source — a deployment that names its own
       // check has no `token_file` accounts, so this is null here anyway.
       loginVerifier: loginVerifier,
+      anonymousGroups: accountCache?.anonymousGroups,
       onError: onError,
     );
   }

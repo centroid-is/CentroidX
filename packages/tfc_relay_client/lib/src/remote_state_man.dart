@@ -795,6 +795,13 @@ final class RemoteStateMan implements StateManApi {
   /// thing to show; the value barrier is shut until a sign-in lands.
   bool get awaitingSignIn => _supervisor.awaitingSignIn;
 
+  /// True while the gateway withholds this session's reads from the account
+  /// that IS signed in — it lacks the read floor. [awaitingSignIn]'s sibling;
+  /// see `ConnectionSupervisor.readsWithheld`. [withheldReason] is the
+  /// gateway's wording, naming the group, for the screen.
+  bool get readsWithheld => _supervisor.readsWithheld;
+  String? get withheldReason => _supervisor.withheldReason;
+
   /// Completes when the hello is answered — whether or not the resync that
   /// follows can. The signal `session.login` waits behind, and the one a
   /// sign-in surface can await to know its socket is up. Distinct from
@@ -1813,7 +1820,9 @@ final class RemoteStateMan implements StateManApi {
     // name `Methods.ping` and nothing else, and `ping` is one of the four
     // methods the awaiting gate exempts — so this beats inside the partition
     // `awaiting_sign_in_test.dart` pins, and adds no reachable surface.
-    if (isReady || _supervisor.awaitingSignIn) {
+    // `readsWithheld` beats for the awaiting case's reason: it is the same
+    // held-open socket, and the same reaper is waiting on the far side.
+    if (isReady || _supervisor.awaitingSignIn || _supervisor.readsWithheld) {
       _heartbeat.start();
     } else {
       _heartbeat.stop();

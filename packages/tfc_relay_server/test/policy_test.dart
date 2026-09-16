@@ -323,6 +323,11 @@ final _panel = stationHolding(const {AccessGroup.operate});
 final _display = stationHolding(const <AccessGroup>{});
 final _engineer = stationHolding(AccessGroup.values.toSet());
 
+/// Holds `operate` alone: the read floor (ruled 2026-09-16), and nothing
+/// that writes. What a wall display holds on a plant that wants it to show
+/// the plant — and what `_display` no longer stands in for on the read arms.
+final _operator = stationHolding(const {AccessGroup.operate});
+
 // ---------------------------------------------------------------------------
 // The levers.
 //
@@ -1635,11 +1640,24 @@ void main() {
               'the same table, the same answer');
     });
 
-    test('the reads stay open to a station holding nothing', () async {
-      // The other half of the line: gating a read would leave a wall display
-      // showing an empty picker, which is the failure the gate is supposed to
-      // prevent arriving from the other side.
-      final gateway = await _Gateway.start(identity: _display);
+    test('the reads take the read floor: refused by name to a station '
+        'holding nothing, open to one holding operate', () async {
+      // The other half of the line, reversed on 2026-09-16: a wall display
+      // that may read the plant holds `operate` (the anonymous row grants it,
+      // or the station's account does), and a station holding NOTHING is
+      // refused the picker by name rather than shown an empty one — the
+      // refusal names the group, and the panel says which it is.
+      final nothing = await _Gateway.start(identity: _display);
+      await nothing.plant.historyViews.createHistoryView('Vaktir', [_key]);
+      final refused = await (await nothing.station()).refusal(
+          DataServiceMethods.historySelectViews,
+          params: const <String, Object?>{},
+          what: 'the picker, on a station holding nothing');
+      expect(refused.code, ServerErrorCodes.forbidden);
+      expect(refused.message, contains('"operate"'),
+          reason: 'the read floor is the policy\'s answer and is named');
+
+      final gateway = await _Gateway.start(identity: _operator);
       final id = await gateway.plant.historyViews
           .createHistoryView('Vaktir', [_key]);
       final station = await gateway.station();
@@ -1931,8 +1949,31 @@ void main() {
       expect(anonymous.store.writes, isEmpty);
     });
 
-    test('a view station reads every typed getter', () async {
+    test('a station holding nothing is refused every typed getter by name, '
+        'and records nothing', () async {
       final display = seenBy(_display);
+      await display.store.setBool('svn.ui.dark', true);
+      final prefs = display.served.preferences;
+      for (final (name, read) in <(String, Future<void> Function())>[
+        ('getBool', () => prefs.getBool('svn.ui.dark')),
+        ('getInt', () => prefs.getInt('svn.chart.maxPoints')),
+        ('getString', () => prefs.getString('svn.site.name')),
+        ('getStringList', () => prefs.getStringList('svn.page.recent')),
+        ('containsKey', () => prefs.containsKey('svn.ui.dark')),
+        ('getKeys', () => prefs.getKeys()),
+        ('getAll', () => prefs.getAll()),
+      ]) {
+        final refusal = await _refused(read, '$name from a station holding nothing');
+        expect(refusal.code, ServerErrorCodes.forbidden, reason: name);
+        expect(refusal.message, contains('"operate"'),
+            reason: '$name: the read floor (2026-09-16) is the policy\'s '
+                'answer, and the refusal names it');
+      }
+      expect(display.store.writes, isEmpty);
+    });
+
+    test('a view station holding operate reads every typed getter', () async {
+      final display = seenBy(_operator);
       // Seeded past the gate, on the store itself: a fixture written through
       // the wrapper would be a write, and this case is about reads.
       await display.store.setBool('svn.ui.dark', true);
@@ -1951,14 +1992,14 @@ void main() {
       expect(await prefs.getStringList('svn.page.recent'), ['frystir']);
       expect(await prefs.containsKey('svn.ui.dark'), isTrue);
       expect(await prefs.containsKey('svn.never.set'), isFalse,
-          reason: 'reads are all-visible, so a wall display renders a settings '
-              'page with real values in it. Gating the reads too would leave '
-              'every non-operate station showing a page of blanks and would '
-              'fail the round-trip contract check outright');
+          reason: 'a wall display holding the read floor renders a settings '
+              'page with real values in it; the floor is what keeps a '
+              'station holding nothing from rendering the plant\'s, and a '
+              'display the plant wants showing it holds operate');
     });
 
-    test('a view station enumerates the store', () async {
-      final display = seenBy(_display);
+    test('a view station holding operate enumerates the store', () async {
+      final display = seenBy(_operator);
       await display.store.setString('svn.site.name', 'Sæból');
       await display.store.setInt('svn.chart.maxPoints', 800);
 

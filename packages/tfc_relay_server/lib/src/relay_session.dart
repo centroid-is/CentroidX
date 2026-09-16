@@ -1047,6 +1047,10 @@ final class RelaySession {
       // The epoch is minted by `hello`, which cannot have run yet; the gate
       // guarantees no subscribe reaches a handler before it has.
       epochOf: () => _epoch ?? '',
+      // The read floor (ruled 2026-09-16): the same policy object the write
+      // gate asks, so a session's reads and writes are graded by one identity
+      // and cannot drift apart about who it is.
+      requirePlantRead: api.requirePlantRead,
     );
     // The handlers are per session; the outcome log they write to is not.
     // 04-REVIEW CR-02: `writeStatus` is only ever asked by a client that has
@@ -1075,6 +1079,7 @@ final class RelaySession {
       // reordered, would answer `forbidden` for a hidden key — the one answer
       // that leaks the existence the hiding rule conceals.
       canWriteKey: api.canWrite,
+      requirePlantRead: api.requirePlantRead,
     );
     // The alarm methods, built beside the value ones and given the **same
     // expression** for their gate rather than a copy of the role comparison.
@@ -1091,6 +1096,7 @@ final class RelaySession {
       sink: alarmAcks,
       history: alarmHistory,
       canWriteKey: api.canWrite,
+      requirePlantRead: api.requirePlantRead,
     );
     // Kept, unlike `handlers`, because this object owns state with a lifetime:
     // the hold-to-run map. `_teardown` has to be able to release it, and the

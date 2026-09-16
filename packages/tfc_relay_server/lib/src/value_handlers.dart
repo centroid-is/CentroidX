@@ -73,6 +73,7 @@ final class ValueHandlers {
     WriteOutcomeLog? outcomes,
     this.ownerOf,
     this.canWriteKey = _anyKeyWritable,
+    this.requirePlantRead = _openToAll,
   }) : outcomes =
             outcomes ?? WriteOutcomeLog(ttl: config.writeOutcomeTtl, now: now);
 
@@ -85,6 +86,7 @@ final class ValueHandlers {
   /// must behave as it did before this argument existed. Production never
   /// gets this: `RelaySession` always passes the session's own predicate.
   static bool _anyKeyWritable(String key) => true;
+  static void _openToAll(String method) {}
 
   final StateManApi api;
   final ServerConfig config;
@@ -120,6 +122,15 @@ final class ValueHandlers {
   /// above this gate and never reaches it — see the comment at the call site,
   /// which is where that ordering is load-bearing.
   final bool Function(String key) canWriteKey;
+
+  /// The read gate, asked **before the existence check** and about the call,
+  /// not the key: `PolicyStateMan.requirePlantRead`, through the predicate
+  /// `RelaySession` builds from it. A session that may not read the plant is
+  /// refused by name — with the sign-in marker when nobody has signed in on
+  /// it, with the group when somebody has — and is never told which of the
+  /// keys it asked about exist. Defaults to open, for the fixtures that build
+  /// these handlers without a policy; the session never does.
+  final void Function(String method) requirePlantRead;
 
   /// How many outcomes are being held. Read by the test that proves the log
   /// is bounded (T-04-06); nothing in production depends on it.
@@ -249,6 +260,7 @@ final class ValueHandlers {
     // reaches an error response makes the *error* unencodable — the 02-05 hang.
     final decoded = sanitize(params.asMap).value as Map;
     final key = _requireKey(decoded['key'], Methods.read);
+    requirePlantRead(Methods.read);
 
     // An answer, not a throw. The caller asked a legitimate question and
     // "this source does not serve that tag" is the answer to it; a refusal
@@ -285,6 +297,7 @@ final class ValueHandlers {
   Future<Object?> readFresh(rpc.Parameters params) async {
     final decoded = sanitize(params.asMap).value as Map;
     final key = _requireKey(decoded['key'], Methods.readFresh);
+    requirePlantRead(Methods.readFresh);
 
     if (!api.keys.contains(key)) return _unserved(key);
 
@@ -317,6 +330,7 @@ final class ValueHandlers {
           '${config.maxKeysPerSubscribe}; split the request or raise '
           'maxKeysPerSubscribe');
     }
+    requirePlantRead(Methods.readMany);
 
     final servable = api.keys.toSet();
     final wanted = <String>[];

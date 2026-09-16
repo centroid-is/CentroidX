@@ -256,16 +256,15 @@ mixin _GroupGate {
         group: group,
         allowed: false,
         actionId: method);
-    throw rpc.RpcException(
-        ServerErrorCodes.forbidden,
-        'a permission is missing, so "$method" was refused. '
-        '$what: nothing was changed, so this call definitively had no effect. '
-        'Do not retry — the session is fine and reading continues; what is '
-        'missing is the "${group.name}" permission, and permissions change '
-        'on this station\'s account in the access database rather than on '
-        'the next attempt',
-        data: substitutedRequest(method));
+    throw refusedForGroup(
+        identity: identity, group: group, method: method, what: what);
   }
+
+  /// The read gate: [requireReadFloor] on this session's identity. A family
+  /// whose write group is not `operate` passes it as [also], so the people
+  /// who may change the thing may also look at it.
+  void _requireRead(String method, String what, {AccessGroup? also}) =>
+      requireReadFloor(identityOf(), method, what, also: also);
 
   /// The allow row, recorded **after the delegation** has been initiated —
   /// the verdict was made either way, and the ordering keeps the row from
@@ -307,6 +306,97 @@ Map<String, Object?> substitutedRequest(String method) => <String, Object?>{
           'number is what makes the error itself unencodable, and an '
           'unencodable error on a path with no deadline is a hang',
     };
+
+/// The group reading the plant takes: `operate`, the floor every tag write
+/// is graded at when no template names another (`AccessPolicy.groupForTag`).
+///
+/// **Reads are graded now (ruled 2026-09-16), and graded the way everything
+/// else is** — against the groups the session holds, with no state outside
+/// the policy. A session nobody has signed in on holds what the plant's
+/// `anonymous` account holds (`SessionLoginValidator.anonymousIdentity`,
+/// fed from the `anonymous` row by `composeBackendRelay`), so on a plant
+/// whose anonymous account is `NoOp` a browser gets nothing until somebody
+/// signs in, and on a plant that grants anonymous `operate` a walk-up
+/// display keeps its reads. There is no "not signed in" flag anywhere on
+/// this path: the deployment decides in the database, once, and both
+/// transports answer the same question the same way.
+///
+/// Why `operate` and not the write group of the thing being read: a station
+/// reads `key_mappings` in order to build its client, and the key that
+/// takes `configure` to write is the one every operator's panel must read;
+/// a template binding a tag to `configure` withholds the *write* from an
+/// operator, not the reading. So the floor is one group, and a family whose
+/// own write group is not `operate` accepts that too (a `users`-holding
+/// administrator reads the templates screen; a `configure`-holding engineer
+/// reads the routing table) — see [requireReadFloor]'s `also`.
+const AccessGroup plantReadFloor = AccessGroup.operate;
+
+/// Whether [identity] clears the read floor: holds [plantReadFloor], or —
+/// when the family has a write group of its own — holds [also] instead.
+///
+/// Null identity is "nothing", by the same rule [PolicyStateMan.canSee] and
+/// `_GroupGate._requireGroup` answer by.
+bool holdsReadFloor(StationIdentity? identity, {AccessGroup? also}) {
+  if (identity == null) return false;
+  final session = identity.session;
+  return session.can(plantReadFloor) || (also != null && session.can(also));
+}
+
+/// The refusal a graded call gets, worded for **who** was refused.
+///
+/// Two messages, deliberately distinct, because the panel does different
+/// things with them. Nobody signed in: the message carries
+/// [SessionAuthMarkers.awaitingSignIn] — the marker the relay client keys its
+/// sign-in screen off (`connection_supervisor.dart`) — and says to sign in,
+/// because that is the thing that changes the answer. Somebody signed in and
+/// the account lacks the group: the message names the group, says the call
+/// had no effect and says not to retry, because nothing about the next
+/// attempt is different — the account has to change.
+///
+/// Both name the group. The anonymous message naming it is what keeps
+/// `anonymous_session_test.dart`'s sweep honest: every refusal on this wire
+/// is the policy's, and says what it wanted.
+rpc.RpcException refusedForGroup({
+  required StationIdentity? identity,
+  required AccessGroup group,
+  required String method,
+  required String what,
+}) {
+  if (identity == null || identity.isAnonymous) {
+    return rpc.RpcException(
+        ServerErrorCodes.forbidden,
+        '"$method" refused: ${SessionAuthMarkers.awaitingSignIn} — nobody '
+        'has signed in on this session, and the plant\'s anonymous account '
+        'does not hold the "${group.name}" permission this needs. $what: '
+        'nothing was changed and nothing was read. Sign in first; the '
+        'permission then comes from the account that signs in, not from the '
+        'next attempt',
+        data: substitutedRequest(method));
+  }
+  return rpc.RpcException(
+      ServerErrorCodes.forbidden,
+      'a permission is missing, so "$method" was refused. '
+      '$what: nothing was changed, so this call definitively had no effect. '
+      'Do not retry — the session is fine and reading continues; what is '
+      'missing is the "${group.name}" permission, and permissions change '
+      'on this station\'s account in the access database rather than on '
+      'the next attempt',
+      data: substitutedRequest(method));
+}
+
+/// Refuses [method] unless [identity] clears the read floor — see
+/// [plantReadFloor] and [holdsReadFloor].
+///
+/// **No ledger row.** The trail records decisions about changes; a refused
+/// read is not one, and a browser sitting on its sign-in screen re-asking
+/// every few seconds would otherwise write the trail full of nothing. What a
+/// refused read leaves behind is the refusal itself, by name.
+void requireReadFloor(StationIdentity? identity, String method, String what,
+    {AccessGroup? also}) {
+  if (holdsReadFloor(identity, also: also)) return;
+  throw refusedForGroup(
+      identity: identity, group: plantReadFloor, method: method, what: what);
+}
 
 /// The shared source, seen through one session's policy.
 ///
@@ -448,6 +538,17 @@ final class PolicyStateMan implements StateManApi {
   /// Consulted by `ValueHandlers` through the `canWriteKey` predicate
   /// `RelaySession` builds from it, after the existence check and before the
   /// fingerprint, the idempotency window and the outcome log.
+  /// Refuses [method] unless this session clears the read floor — the gate
+  /// `subscribe`, `read`, `readFresh`, `readMany` and `alarmHistory` ask
+  /// through the `requirePlantRead` predicate `RelaySession` builds from it,
+  /// **before the existence check**: a session that may not read the plant
+  /// is refused by name, once, about the call — not told key by key which
+  /// tags exist. `key_policy.dart`'s rule that a hidden key is spelled as
+  /// absent is untouched, because [canSee] still decides that afterwards for
+  /// the sessions that pass here.
+  void requirePlantRead(String method) =>
+      requireReadFloor(identityOf(), method, 'nothing was read');
+
   bool canWrite(String key) {
     final identity = identityOf();
     return identity != null && policy.canWrite(key, identity);
@@ -515,11 +616,12 @@ final class PolicyStateMan implements StateManApi {
   Future<HoldHandle> holdToRun(String key) => source.holdToRun(key);
 
   @override
-  BrowseApi get browse => _PolicyBrowse(source.browse, resolver, canSee);
+  BrowseApi get browse =>
+      _PolicyBrowse(source.browse, resolver, canSee, identityOf);
 
   @override
   TimeseriesApi get timeseries =>
-      _PolicyTimeseries(source.timeseries, resolver, canSee, tally);
+      _PolicyTimeseries(source.timeseries, resolver, canSee, tally, identityOf);
 
   @override
   HistoryViewApi get historyViews => _PolicyHistoryViews(
@@ -628,7 +730,8 @@ final class PolicyStateMan implements StateManApi {
 /// checks are unchanged by it. That is the acceptance shape 06-08 established:
 /// a filter must be provably invisible against the default policy.
 final class _PolicyBrowse implements BrowseApi {
-  const _PolicyBrowse(this._source, this._resolver, this._canSee);
+  const _PolicyBrowse(
+      this._source, this._resolver, this._canSee, this._identityOf);
 
   final BrowseApi _source;
   final SeriesResolver _resolver;
@@ -636,6 +739,11 @@ final class _PolicyBrowse implements BrowseApi {
   /// [PolicyStateMan.canSee], passed as a function rather than as the whole
   /// decorator so this class cannot reach anything else on it.
   final bool Function(String key) _canSee;
+
+  /// For the read floor ([requireReadFloor]), asked before any node is
+  /// looked at: the address space is the plant's, and a session that may not
+  /// read a tag may not walk the tree its name is in either.
+  final StationIdentity? Function() _identityOf;
 
   /// Whether this station may know [node] is in the address space.
   ///
@@ -650,12 +758,18 @@ final class _PolicyBrowse implements BrowseApi {
   }
 
   @override
-  Future<List<BrowseNode>> fetchRoots() async =>
-      (await _source.fetchRoots()).where(_visible).toList();
+  Future<List<BrowseNode>> fetchRoots() async {
+    requireReadFloor(_identityOf(), DataServiceMethods.browseFetchRoots,
+        'no nodes were listed');
+    return (await _source.fetchRoots()).where(_visible).toList();
+  }
 
   @override
-  Future<List<BrowseNode>> fetchChildren(BrowseNode parent) async =>
-      (await _source.fetchChildren(parent)).where(_visible).toList();
+  Future<List<BrowseNode>> fetchChildren(BrowseNode parent) async {
+    requireReadFloor(_identityOf(), DataServiceMethods.browseFetchChildren,
+        'no nodes were listed');
+    return (await _source.fetchChildren(parent)).where(_visible).toList();
+  }
 
   /// The detail of [node], or — for one this station may not see — **the
   /// answer a node that does not exist gets**.
@@ -672,6 +786,8 @@ final class _PolicyBrowse implements BrowseApi {
   /// changes its nonexistent shape has to change both.
   @override
   Future<BrowseNodeDetail> fetchDetail(BrowseNode node) async {
+    requireReadFloor(_identityOf(), DataServiceMethods.browseFetchDetail,
+        'no detail was read');
     if (!_visible(node)) {
       return BrowseNodeDetail(
           description: node.description, dataType: node.dataType);
@@ -681,6 +797,8 @@ final class _PolicyBrowse implements BrowseApi {
 
   @override
   Future<List<BrowseNode>?> resolvePath(String targetId) async {
+    requireReadFloor(_identityOf(), DataServiceMethods.browseResolvePath,
+        'no path was resolved');
     final chain = await _source.resolvePath(targetId);
     if (chain == null) return null;
     // Rule 3: any hidden step, anywhere in the chain, and there is no path.
@@ -755,7 +873,7 @@ final class _PolicyBrowse implements BrowseApi {
 /// established.
 final class _PolicyTimeseries implements TimeseriesApi {
   const _PolicyTimeseries(this._source, this._resolver, this._canSee,
-      this._tally);
+      this._tally, this._identityOf);
 
   final TimeseriesApi _source;
   final SeriesResolver _resolver;
@@ -765,6 +883,10 @@ final class _PolicyTimeseries implements TimeseriesApi {
   final bool Function(String key) _canSee;
 
   final SeriesMappingTally _tally;
+
+  /// For the read floor ([requireReadFloor]): history is the plant's values
+  /// with a time axis, and takes what reading them live takes.
+  final StationIdentity? Function() _identityOf;
 
   /// Whether this station may read [wireName]. **The name is not rewritten.**
   ///
@@ -823,6 +945,8 @@ final class _PolicyTimeseries implements TimeseriesApi {
   Future<List<TimeseriesData>> queryTimeseriesData(
       String tableName, DateTime to,
       {String? orderBy = 'time ASC', DateTime? from}) async {
+    requireReadFloor(_identityOf(), DataServiceMethods.timeseriesQuery,
+        'no samples were read');
     if (!_visible(tableName)) return const [];
     return _source.queryTimeseriesData(tableName, to,
         orderBy: orderBy, from: from);
@@ -847,6 +971,8 @@ final class _PolicyTimeseries implements TimeseriesApi {
   Future<Map<String, List<TimeseriesData>>> queryTimeseriesDataMultiple(
       List<String> tableNames, DateTime to,
       {String? orderBy = 'time ASC', DateTime? from}) async {
+    requireReadFloor(_identityOf(), DataServiceMethods.timeseriesQueryMultiple,
+        'no samples were read');
     final visible = <String>{
       for (final name in tableNames)
         if (_visible(name)) name,
@@ -865,6 +991,8 @@ final class _PolicyTimeseries implements TimeseriesApi {
   Future<List<TimeseriesData>> queryTimeseriesDataDownsampled(
       String tableName, DateTime from, DateTime to,
       {int maxPoints = 1000}) async {
+    requireReadFloor(_identityOf(), DataServiceMethods.timeseriesQueryDownsampled,
+        'no samples were read');
     if (!_visible(tableName)) return const [];
     return _source.queryTimeseriesDataDownsampled(tableName, from, to,
         maxPoints: maxPoints);
@@ -1068,8 +1196,10 @@ final class _PolicyHistoryViews with _GroupGate implements HistoryViewApi {
   /// always demanded (D-04) — rather than CR-03's one-size gate. The reads —
   /// [selectHistoryViews], [getHistoryViewKeys], [getHistoryViewGraphs],
   /// [getHistoryViewKeyNames], [listHistoryViewPeriods] and
-  /// [getGlobalRetentionHorizon] — stay ungated by design; they are bounded
-  /// instead, which is the other half of the review's finding (WR-05).
+  /// [getGlobalRetentionHorizon] — take the read floor ([requireReadFloor],
+  /// `operate` or the family's own `configure`) since 2026-09-16, and are
+  /// bounded as well, which is the other half of the review's finding
+  /// (WR-05).
   ///
   /// Under a `PermissiveTokenValidator` session, which holds every group,
   /// this gate is a no-op — which is why the two history-view contract
@@ -1088,13 +1218,22 @@ final class _PolicyHistoryViews with _GroupGate implements HistoryViewApi {
 
   /// Delegates. See the class doc: there are no keys on a
   /// [HistoryViewRecord] to filter, and the view itself is never hidden.
+  // The read floor for this family: `operate`, or `configure` — the group
+  // the family's own writes take, so whoever may save a view may list them.
+  void _requireReadView(String method, String what) =>
+      _requireRead(method, what, also: AccessGroup.configure);
+
   @override
-  Future<List<HistoryViewRecord>> selectHistoryViews() =>
-      _source.selectHistoryViews();
+  Future<List<HistoryViewRecord>> selectHistoryViews() {
+    _requireReadView(DataServiceMethods.historySelectViews,
+        'no views were listed');
+    return _source.selectHistoryViews();
+  }
 
   @override
   Future<Map<String, HistoryViewKeyRecord>> getHistoryViewKeys(
       int viewId) async {
+    _requireReadView(DataServiceMethods.historyGetKeys, 'no keys were read');
     final keys = await _source.getHistoryViewKeys(viewId);
     return {
       for (final entry in keys.entries)
@@ -1104,16 +1243,22 @@ final class _PolicyHistoryViews with _GroupGate implements HistoryViewApi {
 
   /// Delegates. Rule 2: a graph index is not a key.
   @override
-  Future<Map<int, HistoryViewGraphRecord>> getHistoryViewGraphs(int viewId) =>
-      _source.getHistoryViewGraphs(viewId);
+  Future<Map<int, HistoryViewGraphRecord>> getHistoryViewGraphs(int viewId) {
+    _requireReadView(DataServiceMethods.historyGetGraphs,
+        'no graphs were read');
+    return _source.getHistoryViewGraphs(viewId);
+  }
 
   /// The same filter as [getHistoryViewKeys], because the two are two reads of
   /// one row set and a caller picks whichever it needs. One fitted and the
   /// other forgotten would hide a key from the legend and hand it to the
   /// chart.
   @override
-  Future<List<String>> getHistoryViewKeyNames(int viewId) async =>
-      _visibleKeys(await _source.getHistoryViewKeyNames(viewId));
+  Future<List<String>> getHistoryViewKeyNames(int viewId) async {
+    _requireReadView(DataServiceMethods.historyGetKeyNames,
+        'no key names were read');
+    return _visibleKeys(await _source.getHistoryViewKeyNames(viewId));
+  }
 
   /// Open at the policy today, matching the panel: bookmarking eight hours
   /// you want to look at again is an operator doing their job (D-04). The
@@ -1148,17 +1293,33 @@ final class _PolicyHistoryViews with _GroupGate implements HistoryViewApi {
   }
 
   @override
-  Future<List<HistoryViewPeriodRecord>> listHistoryViewPeriods(int viewId) =>
-      _source.listHistoryViewPeriods(viewId);
+  Future<List<HistoryViewPeriodRecord>> listHistoryViewPeriods(int viewId) {
+    _requireReadView(DataServiceMethods.historyListPeriods,
+        'no windows were listed');
+    return _source.listHistoryViewPeriods(viewId);
+  }
 
   @override
-  Future<DateTime?> getGlobalRetentionHorizon() =>
-      _source.getGlobalRetentionHorizon();
+  Future<DateTime?> getGlobalRetentionHorizon() {
+    _requireReadView(DataServiceMethods.historyRetentionHorizon,
+        'no horizon was read');
+    return _source.getGlobalRetentionHorizon();
+  }
 }
 
-/// Stored preferences: **anyone authenticated may read them, and writing one
-/// takes the group the app's own table answers for THAT key** (17-07,
-/// 17-CONTEXT D-03; sweep §3.12 point 1 closed).
+/// Stored preferences: **reading one takes the read floor — `operate`, or
+/// the group the app's own table answers for THAT key — and writing one
+/// takes that key's group** (17-07, 17-CONTEXT D-03; sweep §3.12 point 1
+/// closed; reads graded 2026-09-16, see [plantReadFloor]).
+///
+/// A session nobody has signed in on holds the `anonymous` account's groups,
+/// so on a plant whose anonymous account holds nothing the boot key
+/// (`key_mappings`) is refused until somebody signs in — by name, with the
+/// sign-in marker — and the panel boots from its device-local copy of it
+/// (`relayed_preferences.dart`'s bootstrap read) and re-reads after the
+/// sign-in. That is the ring `anonymous_session_test.dart` used to pin open,
+/// closed on the client side rather than by serving the plant's routing to
+/// whoever opened the port.
 ///
 /// The least obvious of the four seams, because a preference key is not a
 /// plant key: `svn.chart.maxPoints` names a row in the gateway's own settings
@@ -1274,32 +1435,51 @@ final class _PolicyPreferences with _GroupGate implements PreferencesApi {
   }
 
 
+  // The eight reads. Each takes [_read] with its key (or none, for the two
+  // enumerations), so a reader adding a ninth sees what the other eight do.
+  // The floor is `operate`; a key whose write group is another one accepts
+  // that group too, so the engineer who may re-point `key_mappings` may also
+  // read it back without holding `operate`.
+  Future<T> _read<T>(String method, String? key, Future<T> Function() delegate) {
+    _requireRead(method, 'no value was read',
+        also: key == null ? null : _groupForKey(key));
+    return delegate();
+  }
+
   @override
   Future<Set<String>> getKeys({Set<String>? allowList}) =>
-      _source.getKeys(allowList: allowList);
+      _read(DataServiceMethods.prefGetKeys, null,
+          () => _source.getKeys(allowList: allowList));
 
   @override
   Future<Map<String, Object?>> getAll({Set<String>? allowList}) =>
-      _source.getAll(allowList: allowList);
+      _read(DataServiceMethods.prefGetAll, null,
+          () => _source.getAll(allowList: allowList));
 
   @override
-  Future<bool?> getBool(String key) => _source.getBool(key);
+  Future<bool?> getBool(String key) =>
+      _read(DataServiceMethods.prefGetBool, key, () => _source.getBool(key));
 
   @override
-  Future<int?> getInt(String key) => _source.getInt(key);
+  Future<int?> getInt(String key) =>
+      _read(DataServiceMethods.prefGetInt, key, () => _source.getInt(key));
 
   @override
-  Future<double?> getDouble(String key) => _source.getDouble(key);
+  Future<double?> getDouble(String key) => _read(
+      DataServiceMethods.prefGetDouble, key, () => _source.getDouble(key));
 
   @override
-  Future<String?> getString(String key) => _source.getString(key);
+  Future<String?> getString(String key) => _read(
+      DataServiceMethods.prefGetString, key, () => _source.getString(key));
 
   @override
   Future<List<String>?> getStringList(String key) =>
-      _source.getStringList(key);
+      _read(DataServiceMethods.prefGetStringList, key,
+          () => _source.getStringList(key));
 
   @override
-  Future<bool> containsKey(String key) => _source.containsKey(key);
+  Future<bool> containsKey(String key) => _read(
+      DataServiceMethods.prefContainsKey, key, () => _source.containsKey(key));
 
   // The seven mutators. Each takes [_graded] with its own key, so a reader
   // adding an eighth sees what the other seven do — and so there is exactly
@@ -1466,15 +1646,30 @@ final class _PolicyAccessTemplates with _GroupGate
     return applied;
   }
 
+  // The three reads take the read floor (`operate`), or the family's own
+  // write group (`users`, `groupForTemplate`'s answer) — so the administrator
+  // who may bind a key may see the bindings, and so may every operator's
+  // panel, which grades its own writes against them.
   @override
-  Future<List<AccessTemplate>> list() => _source().list();
+  Future<List<AccessTemplate>> list() {
+    _requireRead(AccessMethods.templateList, 'no templates were listed',
+        also: _groupFor('list'));
+    return _source().list();
+  }
 
   @override
-  Future<Map<String, String>> bindings() => _source().bindings();
+  Future<Map<String, String>> bindings() {
+    _requireRead(AccessMethods.templateBindings, 'no bindings were listed',
+        also: _groupFor('bindings'));
+    return _source().bindings();
+  }
 
   @override
-  Future<List<String>> keysBoundTo(String templateName) =>
-      _source().keysBoundTo(templateName);
+  Future<List<String>> keysBoundTo(String templateName) {
+    _requireRead(AccessMethods.templateKeysBoundTo, 'no keys were listed',
+        also: _groupFor('keysBoundTo'));
+    return _source().keysBoundTo(templateName);
+  }
 
   @override
   Future<void> create(AccessTemplate value, {String? reason}) =>
@@ -1513,9 +1708,10 @@ final class _PolicyAccessTemplates with _GroupGate
           () => _source().unbind(keyName, reason: reason));
 }
 
-/// Roles and accounts: nine writes gated, [roles] an open read matching the
-/// store — and [listUsers] gated, which is this decorator departing from the
-/// store's read policy **on an owner ruling** (2026-09-08):
+/// Roles and accounts: nine writes gated, [roles] a read on the read floor
+/// (`operate` or `users`, since 2026-09-16) — and [listUsers] gated at
+/// `users` alone, which is this decorator departing from the store's read
+/// policy **on an owner ruling** (2026-09-08):
 ///
 /// The store leaves its two reads ungated on the reasoning that a read is not
 /// an authorization change, and the app's deferral of a read gate was
@@ -1571,7 +1767,11 @@ final class _PolicyAccessAdmin with _GroupGate implements AccessAdminApi {
   /// names `listUsers` and the trail; widening it silently would be this
   /// file deciding policy.
   @override
-  Future<List<AccessRole>> roles() => _source().roles();
+  Future<List<AccessRole>> roles() {
+    _requireRead(AccessMethods.adminRoles, 'no roles were listed',
+        also: _groupFor('roles'));
+    return _source().roles();
+  }
 
   /// **Gated, unlike the store's read** — see the class doc.
   @override
@@ -1768,28 +1968,28 @@ final class _PolicyAudit with _GroupGate implements AuditApi {
 /// `state_man_config` row of `kPrefAccessRules` so the two transports onto
 /// one concern cannot disagree.
 ///
-/// The `relay` section's write refusal — you do not edit the socket over the
-/// socket — is the far end's, by name, per the interface doc; this decorator
-/// answers only who may ask at all.
-/// The gate on the plant's configuration rows: signed in, and `operate`.
+/// The gate on the plant's configuration rows: the read floor, `operate`,
+/// per kind.
 ///
-/// **Signed in first, by name.** Every other family here grades by group
-/// alone, and an anonymous identity fails those grades because it holds no
-/// group — on the plant this was measured on. It is customer data whether
-/// it does (`StationIdentity.anonymous`), and a plant whose `anonymous` row
-/// granted `operate` would otherwise serve its every page and key mapping
-/// to whoever opened the address in a browser. The rows are the plant's
-/// mimics and its routing, so they go to sessions somebody signed in on and
-/// to nobody else, and the refusal carries the same marker the rest of the
-/// sign-in vocabulary uses so a client can name it.
+/// **Graded by group, and by nothing else.** This family shipped with a
+/// signed-in check of its own in front of the group grade — an anonymous
+/// session holding `operate` was refused by name, on the reasoning that a
+/// plant whose `anonymous` row granted `operate` would otherwise serve its
+/// pages to whoever opened the address in a browser. That was a second rule
+/// the policy could not see, and it was retired on 2026-09-16 with the
+/// ruling that gates every read: the `anonymous` row IS the plant's answer
+/// to who a walk-up session is, and a plant that grants it `operate` has
+/// decided its mimics are for walk-up display. On the plant this was
+/// measured on the row is `NoOp`, so a browser is refused until somebody
+/// signs in — with the sign-in marker, from [refusedForGroup], the same
+/// wording every other family gives that session.
 ///
-/// **Then `operate`, per kind.** Pages and assets are what an operator
-/// looks at; key mappings are what the client subscribes through, and a
-/// session that may not read a tag (`operate` is the tag floor) has no
-/// use for the map that names it. The preference kind carries the page
-/// order and nothing a browser is not already served through
-/// `preferences.*`. The write half of these rows — `configure` — is not
-/// on this wire at all; `config_items_api.dart` says why.
+/// **`operate`, per kind, and only `operate`.** Pages and assets are what an
+/// operator looks at; key mappings are what the client subscribes through,
+/// and a session that may not read a tag has no use for the map that names
+/// it. Unlike the other families this one accepts no second group: the rows
+/// are read to *run* a panel, and `configure` — the group that may change
+/// them — is not on this wire at all; `config_items_api.dart` says why.
 final class _PolicyConfigItems with _GroupGate implements ConfigItemsApi {
   const _PolicyConfigItems(this._source, this.identityOf, this.ledger);
 
@@ -1806,34 +2006,15 @@ final class _PolicyConfigItems with _GroupGate implements ConfigItemsApi {
   @override
   String get gateSurface => AccessSurface.pref.wireName;
 
-  void _requireSignedIn(String method) {
-    final identity = identityOf();
-    if (identity == null || identity.isAnonymous) {
-      throw rpc.RpcException(
-          ServerErrorCodes.forbidden,
-          '$method refused: ${SessionAuthMarkers.awaitingSignIn} — nobody '
-          'has signed in on this session, and the plant\'s configuration '
-          'rows are served to signed-in sessions only. Sign in first.');
-    }
-  }
-
   @override
   Future<List<ConfigItemRecord>> items(String kind) {
-    _requireSignedIn(AccessMethods.configItemsItems);
-    _requireGroup(AccessGroup.operate, AccessMethods.configItemsItems,
-        'no rows were read',
-        itemKey: 'config_item.$kind', member: kind);
+    _requireRead(AccessMethods.configItemsItems, 'no rows were read');
     return _source().items(kind);
   }
 
   @override
   Future<ConfigItemsFingerprint> fingerprint(List<String> kinds) {
-    _requireSignedIn(AccessMethods.configItemsFingerprint);
-    for (final kind in kinds) {
-      _requireGroup(AccessGroup.operate, AccessMethods.configItemsFingerprint,
-          'no rows were counted',
-          itemKey: 'config_item.$kind', member: kind);
-    }
+    _requireRead(AccessMethods.configItemsFingerprint, 'no rows were counted');
     return _source().fingerprint(kinds);
   }
 }

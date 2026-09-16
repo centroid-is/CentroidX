@@ -74,19 +74,27 @@ succeed at all.
   is refused by name with the typo on the banner. `lib/core/
   gateway_declaration.dart` decides all of it without a DOM, so the VM tests
   it; the web arm only reads the tag.
-- **A browser is nobody until it signs in — on the client too.** The gateway
-  admits a credential-less `hello` as anonymous-awaiting-sign-in, an identity
-  with the groups the plant's `anonymous` row grants (none, on the plant this
-  was measured on) that may do nothing but wait. The client used to give that
-  same session the seeded Operator groups and no whitelist, so a browser drew
-  navigation into pages the gateway would not fill. Now a gateway client that
-  presented no token lands on no groups and an empty whitelist
-  (`lib/providers/access.dart`, `_anonymousSession`): every plant page refuses
-  with the sign-in first (`AccessSignInFirstBody`), every raised route with
-  the lock, and the first frame is a sign-in. Narrower than the server may be
-  on a plant whose `anonymous` row does grant pages; closing that gap means
-  the `hello` result carrying the admitted session's groups and pages, the
-  way `session.login` already does. A station with a token is unchanged.
+- **A browser is nobody until it signs in — on both ends.** The gateway
+  admits a credential-less `hello` as the plant's `anonymous` account, graded
+  by the one `AccessPolicy` like every other identity, **reads included**
+  (ruled 2026-09-16; `docs/relay-wire-api.md` §10). On this plant that row is
+  `NoOp`, so every read family — values, subscriptions, preferences, alarm
+  history, browse, history, timeseries, templates, roles, the trail, config
+  rows — refuses the session by name with the `awaiting_sign_in` marker
+  until somebody signs in, and a signed-in account lacking `operate` (the
+  read floor) is refused with the group named and no marker. A plant that
+  grants `anonymous` `operate` keeps a walk-up display's reads; the
+  deployment decides in the database, not in a flag. The client matches: a
+  gateway client that presented no token lands on no groups and an empty
+  whitelist (`lib/providers/access.dart`, `_anonymousSession`), so every
+  plant page refuses with the sign-in first (`AccessSignInFirstBody`), every
+  raised route with the lock, and the first frame is a sign-in; the relay
+  client holds the link with the barrier shut on the gateway's refusal
+  (`awaitingSignIn` / `readsWithheld`) and resumes on a sign-in. Still
+  narrower than the server may be on a plant whose `anonymous` row does
+  grant groups or pages: closing that gap means the `hello` result carrying
+  the admitted session's groups and pages, the way `session.login` already
+  does — the named follow-up. A station with a token is unchanged.
 - **A browser cannot pin.** `kCanPinTrustRoot` (the client's constant, now
   exported) is what `GatewayConfig` consults: in a browser a trustless
   `wss` row is dialable and Save runs no fetch-and-approve ceremony; `ws`,
@@ -103,7 +111,7 @@ succeed at all.
   credentials.
 - **Writes are allowed**, gated by the signed-in user's rights — enforced on
   the backend, which is also why the client-side preferences guard is not
-  applied in gateway mode.
+  applied in gateway mode. Reads are gated the same way since 2026-09-16.
 
 ## Known open, and owned elsewhere
 
@@ -112,8 +120,9 @@ succeed at all.
   (`configItems.items` one kind per call, `configItems.fingerprint`;
   `packages/tfc_relay_protocol/lib/src/config_items_api.dart`), cached in
   the browser's device-local store and refreshed on `preferences.changed`
-  — reads only, graded `operate`, refused to a session nobody signed in
-  on. There is no write on that route by design: a save is a merge against
+  — reads only, graded `operate` by the policy like every read, which on
+  this plant refuses a session nobody signed in on. There is no write on
+  that route by design: a save is a merge against
   the plant's rows, a `configure` check and an audited `config_change`, the
   discipline `ConfigStore` applies against a mirror, and a browser has none.
   Until that is designed, `lib/providers/page_manager.dart` refuses the save

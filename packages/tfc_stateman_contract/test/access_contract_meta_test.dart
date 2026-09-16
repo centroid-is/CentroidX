@@ -27,8 +27,10 @@ import 'package:tfc_stateman_contract/tfc_stateman_contract.dart';
 /// registers it.
 ///
 /// Still 27 after the access audit cut `accessTemplates.template` from the
-/// wire: the cut removed a *read* inside `checkTemplateReadsAreUngated` (four
-/// ungated reads became three), not a check. Written down here so the next
+/// wire: the cut removed a *read* inside the template-reads check (four
+/// reads became three; the check is
+/// `checkTemplateReadsRefuseNothingAnswerOperateOrUsers` since the reads
+/// were graded on 2026-09-16), not a check. Written down here so the next
 /// reader knows the non-shift was a decision, not an oversight.
 ///
 /// 29 since the page-visibility whitelist merged in: `setRolePages` and

@@ -347,6 +347,9 @@ filtered out of `keys` — the one getter that `read`, `readFresh`, `readMany`,
 *nonexistent-tag* path on all five without any of them being edited, and a
 client cannot probe for the existence of keys it may not see. **Existence is
 checked before permission**, and the two refusals never leak into each other.
+The read floor (§10) does not change this: it is asked *before* either, about
+the whole call, so a session that may not read the plant learns nothing about
+any key, and a session that may is still shown a hidden key as absent.
 
 ---
 
@@ -362,6 +365,69 @@ shared source once per session, between the handlers and the plant. Handlers
 never consult the policy themselves — which is the property that keeps a method
 added later from being able to forget it. A 2026-09-06 sweep walked all 43
 registered methods and found no bypass.
+
+### Reads are graded too (ruled 2026-09-16)
+
+Reads were deliberately ungated on this wire for as long as the only identity
+a socket could carry was a station token: a panel had to read `key_mappings`
+in order to build its client, and a gateway that refused the read to a
+session nobody had signed in on could not be booted at all (the "boot ring").
+Now that a browser signs in as a person, the deferral is reversed — and
+reversed the way everything else here is decided, **by the policy, not by a
+flag**:
+
+- A session nobody has signed in on is graded as the plant's **`anonymous`
+  account** — the same row direct mode grades a walk-up station by.
+  `SessionLoginValidator.anonymousIdentity` reads its groups through
+  `RelayServer.anonymousGroups`, which `composeBackendRelay` fills from the
+  same account cache the token sweep resolves against. The deployment decides
+  in the database: a `NoOp` anonymous row (this plant) makes a browser read
+  nothing until somebody signs in; a row granting `operate` keeps a walk-up
+  display's reads. There is no "not signed in" state anywhere in the policy.
+- **The read floor is `operate`** (`policy_state_man.dart`, `plantReadFloor`)
+  — the group every tag write is graded at when no template names another.
+  A family whose own write group is not `operate` accepts that group for its
+  reads as well: preferences and history views accept `configure` (the
+  engineer who may re-point `key_mappings` may read it back), templates and
+  `accessAdmin.roles` accept `users`. `accessAdmin.listUsers`, the audit
+  trail and the backend config keep their narrower groups (`users`,
+  `users`, `administer`). `configItems.*` takes `operate` alone — and no
+  longer keeps a signed-in check of its own in front of the policy.
+- **The value surfaces are refused about the call, not key by key.**
+  `subscribe`, `read`, `readFresh`, `readMany` and `alarmHistory` ask the
+  floor (`PolicyStateMan.requirePlantRead`) *before* the existence check, so
+  a session that may not read the plant is refused once, by name, and never
+  told which of the tags it asked about exist. The hiding rule below is
+  unchanged for the sessions that pass.
+- **Two messages, distinct by design.** Nobody signed in: the `forbidden`
+  carries `awaiting_sign_in` in its message and says to sign in — the marker
+  the relay client keys its sign-in screen off. Somebody signed in without
+  the group: the same code, no marker, the group named, "do not retry".
+  Both name the group, which is how the sweep in
+  `anonymous_session_test.dart` tells a policy refusal from a state outside
+  the policy.
+- **A refused read writes no audit row.** The trail is of decisions about
+  changes; a browser at its sign-in screen re-asking every few seconds must
+  not fill it.
+
+The boot ring is closed on the client instead of by serving the plant's
+routing to whoever reached the port: a gateway panel boots from its
+device-local copy of the boot key (`relayed_preferences.dart`'s bootstrap
+read) and re-reads after the sign-in; a browser fetches its rows through
+`configItems.*` after the sign-in. Token-presenting stations are graded by
+the station account's groups and never see any of this.
+
+**Client posture.** The relay client holds the link on either refusal of its
+resync subscribe rather than redialling it: `awaitingSignIn` (marker present —
+the sign-in screen) and `readsWithheld` (no marker — the signed-in account
+lacks the floor, `withheldReason` carries the gateway's wording). Both keep
+the socket up with the value barrier shut, and a later `session.login` drives
+the deferred resync. The app's own fail-closed anonymous session
+(`lib/providers/access.dart`) stays: `HelloResult` still carries no identity,
+so a browser cannot know what the plant's `anonymous` row grants and treats
+itself as nobody until it signs in. Closing that gap is one wire addition —
+the `hello` result carrying the admitted session's groups and page whitelist
+the way `session.login` already answers — and is the named follow-up.
 
 > **Planned change (Phase 17).** `tfc_relay_server` currently carries its own
 > two-value `Role { view, operate }` and an `Identity { stationId, role }`.
@@ -387,6 +453,10 @@ registered methods and found no bypass.
 5. Reset freshness on **inbound frames only**.
 6. Refuse non-finite write values before sending.
 7. Contain a bad snapshot entry to that entry.
+8. Expect a `forbidden` on `subscribe` and the other reads (§10). With
+   `awaiting_sign_in` in the message, hold the link and show a sign-in; without
+   it, hold the link and show the group the message names. Never redial on
+   either — nothing about the next attempt is different.
 
 **Web-specific:** always send `Uint8List`, never `List<int>` —
 `sink.add(List<int>)` sends a *text* frame on legacy web (`#1648`). Do not rely

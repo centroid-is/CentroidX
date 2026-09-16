@@ -93,7 +93,10 @@ final class SessionHandlers {
     required this.buffer,
     required this.subscriptions,
     required this.epochOf,
+    this.requirePlantRead = _openToAll,
   });
+
+  static void _openToAll(String method) {}
 
   final StateManApi api;
   final ServerConfig config;
@@ -110,6 +113,22 @@ final class SessionHandlers {
   /// a callback rather than captured, because these handlers are built during
   /// `_start` and the epoch is minted later.
   final String Function() epochOf;
+
+  /// The read gate, asked **before the existence check** and about the call,
+  /// not the key: `PolicyStateMan.requirePlantRead`, through the predicate
+  /// `RelaySession` builds from it. A session that may not read the plant is
+  /// refused by name — with the sign-in marker when nobody has signed in on
+  /// it, with the group when somebody has — and is never told which of the
+  /// keys it asked about exist. Defaults to open, for the fixtures that build
+  /// these handlers without a policy; the session never does.
+  ///
+  /// For `subscribe` this is the refusal the relay client keys its sign-in
+  /// screen off: a whole-call `forbidden` carrying the marker holds the link
+  /// up with the value barrier shut (`connection_supervisor.dart`), and a
+  /// successful `session.login` drives the deferred resync. Per-key
+  /// rejections would not do that — they would answer a snapshot of nothing
+  /// and leave the panel "ready" with every tile blank.
+  final void Function(String method) requirePlantRead;
 
   /// `subscribe`: one call, one answer, everything in it.
   Future<Object?> subscribe(rpc.Parameters params) async {
@@ -143,6 +162,8 @@ final class SessionHandlers {
           '"$rate" would ask the gateway either for everything at once or '
           'for nothing ever, and the client could not tell which it got');
     }
+
+    requirePlantRead(Methods.subscribe);
 
     // **A subscribe naming a live subscription re-establishes it** (04-REVIEW
     // CR-03): one entry, one seq, a fresh snapshot, a new generation.

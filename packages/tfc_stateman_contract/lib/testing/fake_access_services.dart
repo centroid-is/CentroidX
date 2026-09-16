@@ -191,6 +191,23 @@ class FakeAccessServices
     if (!allowed) throw AccessDenied(itemKey, required);
   }
 
+  /// The read gate (ruled 2026-09-16): refuses unless the session holds
+  /// [floor] — `operate`, what reading the plant takes — or, when the family
+  /// has a write group of its own, [also]. Throws [AccessDenied] naming the
+  /// floor. **Records nothing**: the trail is of decisions about changes, and
+  /// a refused read is not one — the relay's `requireReadFloor` makes the
+  /// same choice, for the same reason (a browser at its sign-in screen would
+  /// otherwise fill the trail re-asking).
+  ///
+  /// Consults the session through [_consultSession], so the sabotage that
+  /// stops consulting it damages reads and writes alike.
+  void requireRead(String itemKey, String member,
+      {AccessGroup floor = AccessGroup.operate, AccessGroup? also}) {
+    if (_consultSession(floor)) return;
+    if (also != null && _consultSession(also)) return;
+    throw AccessDenied(itemKey, floor);
+  }
+
   /// Whether the current session grants [required]. Its own method so a
   /// sabotage can stop consulting the session without touching the recording.
   bool _consultSession(AccessGroup required) => _session.can(required);
@@ -218,21 +235,31 @@ class FakeAccessServices
 
   // ============================================================ templates
 
+  // The three reads take the read floor, or the family's own `users`.
   @override
-  Future<List<AccessTemplate>> list() async => _templates.values.toList();
+  Future<List<AccessTemplate>> list() async {
+    requireRead('template', 'list', also: AccessGroup.users);
+    return _templates.values.toList();
+  }
 
   // No `template(name)` member: the access audit cut it from the wire (no
   // caller anywhere, including its own store). A caller that wants one
   // template derives it from [list] — as the meta test now does.
 
   @override
-  Future<Map<String, String>> bindings() async => Map.of(_bindings);
+  Future<Map<String, String>> bindings() async {
+    requireRead('template', 'bindings', also: AccessGroup.users);
+    return Map.of(_bindings);
+  }
 
   @override
-  Future<List<String>> keysBoundTo(String templateName) async => [
-        for (final entry in _bindings.entries)
-          if (entry.value == templateName) entry.key,
-      ];
+  Future<List<String>> keysBoundTo(String templateName) async {
+    requireRead('template', 'keysBoundTo', also: AccessGroup.users);
+    return [
+      for (final entry in _bindings.entries)
+        if (entry.value == templateName) entry.key,
+    ];
+  }
 
   @override
   Future<void> create(AccessTemplate value, {String? reason}) async {
@@ -293,12 +320,21 @@ class FakeAccessServices
 
   // ============================================================ roles & users
 
+  // `roles` takes the read floor or `users`; `listUsers` takes `users`
+  // alone — every username in the plant is not a wall display's to list
+  // (the relay's FIX-1 ruling, matched here so the three legs agree).
   @override
-  Future<List<AccessRole>> roles() async => _roles.values.toList();
+  Future<List<AccessRole>> roles() async {
+    requireRead('role', 'roles', also: AccessGroup.users);
+    return _roles.values.toList();
+  }
 
   @override
-  Future<List<UserSummary>> listUsers() async =>
-      _users.values.toList()..sort((a, b) => a.username.compareTo(b.username));
+  Future<List<UserSummary>> listUsers() async {
+    requireRead('user', 'listUsers', floor: AccessGroup.users);
+    return _users.values.toList()
+      ..sort((a, b) => a.username.compareTo(b.username));
+  }
 
   @override
   Future<void> createRole(AccessRole role, {String? reason}) async {
@@ -523,9 +559,10 @@ class FakeAccessServices
 
   @override
   Future<List<AuditRecord>> entries(AuditQueryParams query) async {
-    // Ungated (spec §11 read deferral). A filter honest enough to prove the
-    // trail grows: newest first, honouring the allowed/who filters the contract
-    // exercises.
+    // Graded `users` (ruled 2026-09-16; the relay carried it since FIX-1). A
+    // filter honest enough to prove the trail grows: newest first, honouring
+    // the allowed/who filters the contract exercises.
+    requireRead('audit', 'entries', floor: AccessGroup.users);
     return [
       for (final row in _audit.reversed)
         if ((query.who == null || row.who == query.who) &&
@@ -536,6 +573,7 @@ class FakeAccessServices
 
   @override
   Future<Map<String, int>> memberCountsByAction(List<String> actionIds) async {
+    requireRead('audit', 'memberCountsByAction', floor: AccessGroup.users);
     final counts = <String, int>{for (final id in actionIds) id: 0};
     for (final row in _audit) {
       if (counts.containsKey(row.actionId)) {
@@ -546,8 +584,10 @@ class FakeAccessServices
   }
 
   @override
-  Future<List<String>> distinctWho() async =>
-      {for (final row in _audit) row.who}.toList()..sort();
+  Future<List<String>> distinctWho() async {
+    requireRead('audit', 'distinctWho', floor: AccessGroup.users);
+    return {for (final row in _audit) row.who}.toList()..sort();
+  }
 
   // ============================================================ backend config
 
@@ -772,6 +812,17 @@ class BrokenAccessServices extends FakeAccessServices {
       default:
         super.requireGroup(required, itemKey, member);
     }
+  }
+
+  @override
+  void requireRead(String itemKey, String member,
+      {AccessGroup floor = AccessGroup.operate, AccessGroup? also}) {
+    // The blank-page damage refuses reads too: a gate that refused every
+    // write and served every read would be a different, milder defect.
+    if (damage == AccessDamage.refusesEverything) {
+      throw AccessDenied(itemKey, floor);
+    }
+    super.requireRead(itemKey, member, floor: floor, also: also);
   }
 
   @override

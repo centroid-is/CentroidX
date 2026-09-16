@@ -77,7 +77,8 @@ void _mode(
 // The check names, quoted from accessChecks so a rename fails here loudly.
 const _tplCreate =
     'creating a template refuses a configure session and permits a users one';
-const _tplReads = 'the template reads are ungated and still answer';
+const _tplReads =
+    'template reads: refuses a session holding nothing, permits operate or users';
 const _roleCreate = 'creating a role refuses configure and permits users';
 const _configWrite =
     'writing the backend config refuses configure and permits administer';
@@ -87,7 +88,8 @@ const _configValidate = 'the backend config is validated before it is persisted'
 const _relayLock = 'a relay-section edit is refused by name';
 const _auditRecords =
     'the audit trail records every decision, allowed and refused';
-const _auditReads = 'the audit reads are ungated';
+const _auditReads =
+    'audit reads: refuses a session holding nothing, permits users';
 const _pwNoEcho = 'setUserPassword never echoes the secret and still succeeds';
 const _pwPaired = 'resetting a password refuses configure and permits users';
 
@@ -127,22 +129,26 @@ void main() {
   });
 
   group('(b) refusesEverything — the blank page', () {
-    // Every permitted twin goes red. The template-reads and audit-records
-    // checks are COLLATERAL red — both do a gated create in their setup, which
-    // (b) refuses. The audit READS check needs no gated setup, so it is the
-    // honest control. Collateral recorded in the SUMMARY.
+    // Every permitted twin goes red. Since reads are graded (2026-09-16) the
+    // read checks have a permitted arm of their own, so the audit READS check
+    // — once the honest control here, needing no gated setup — reddens too:
+    // a blank page is blank for readers as well. Nothing stays green under
+    // (b) any more, and that is the finding rather than a gap: every check in
+    // the kit now has something the store must ANSWER.
     _mode(AccessDamage.refusesEverything,
-        red: [_tplCreate, _roleCreate, _configRead],
-        green: [_auditReads]);
+        red: [_tplCreate, _roleCreate, _configRead, _auditReads],
+        green: const []);
   });
 
   group('(c) ignoresSession — the gate never consulted', () {
-    // Every refusal arm goes red (nothing is refused). Reads-ungated stays
-    // green. The audit-records check is COLLATERAL red (its refused seed is now
-    // allowed, so no refusal row is recorded) — recorded in the SUMMARY.
+    // Every refusal arm goes red (nothing is refused) — the read checks
+    // included, since their refusal arm (a session holding nothing) is now
+    // graded through the same consultation. The audit-records check is
+    // COLLATERAL red (its refused seed is now allowed, so no refusal row is
+    // recorded) — recorded in the SUMMARY.
     _mode(AccessDamage.ignoresSession,
-        red: [_tplCreate, _roleCreate, _configRead],
-        green: [_tplReads]);
+        red: [_tplCreate, _roleCreate, _configRead, _tplReads, _auditReads],
+        green: const []);
   });
 
   group('(d) auditWritesNothing — the trail stops', () {

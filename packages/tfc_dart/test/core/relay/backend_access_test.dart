@@ -11,7 +11,8 @@
 ///  4. `origin` is `'relay'` on this path and `'operator'` on the app's
 ///  5. attribution: who / station / roleName land in the row
 ///  6. composed without a database, every member refuses BY NAME (P-12)
-///  7. reads are ungated — read permissions are deferred, spec §11
+///  7. reads are ungated AT THIS LAYER — the relay's policy decorator grades
+///     them (2026-09-16); this layer holds no permission check of its own
 ///  8. the last-`users`-holder invariant survives the trip
 ///  9. domain exceptions cross intact
 /// 10. this layer holds no permission check of its own (the grep)
@@ -624,11 +625,13 @@ void main() {
   });
 
   // ---------------------------------------------------------------------------
-  // Arm 7 — reads are ungated: read permissions are deferred, spec §11
+  // Arm 7 — reads are ungated at this layer: the read floor is the relay's
+  // policy decorator's (`policy_state_man.dart`, `requireReadFloor`, ruled
+  // 2026-09-16), and this layer holds no permission check of its own (arm 10)
   // ---------------------------------------------------------------------------
 
-  test('arm 7: every read answers for a session holding nothing — read '
-      'permissions are deferred, spec §11, not a hole', () async {
+  test('arm 7: every read answers for a session holding nothing — the read '
+      'floor is the policy layer\'s above this one, not a hole here', () async {
     await templates.create(_template('Readable'));
     await templates.bind('k.read', 'Readable');
 

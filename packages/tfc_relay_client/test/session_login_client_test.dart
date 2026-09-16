@@ -15,6 +15,8 @@ library;
 import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
 import 'package:test/test.dart';
 import 'package:tfc_access/tfc_access.dart';
+import 'package:tfc_relay_client/src/connection_supervisor.dart'
+    show LinkState;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 import 'package:tfc_relay_server/tfc_relay_server.dart';
 
@@ -36,6 +38,23 @@ ResolvedUser? _resolve(String username) => username == 'jon'
     ? const ResolvedUser(
         user: _engineer,
         groups: {AccessGroup.operate, AccessGroup.configure})
+    : null;
+
+/// An account that may administer accounts and read nothing of the plant:
+/// `users` without `operate`, the read floor (`policy_state_man.dart`,
+/// `plantReadFloor`).
+const _userAdmin = AuthenticatedUser(
+    username: 'gestur', roleName: 'User Admin', stationAccount: false);
+
+final class _UserAdminVerifier implements AuthProvider {
+  @override
+  Future<AuthenticatedUser?> authenticate(
+          String username, String password) async =>
+      username == 'gestur' && password == _password ? _userAdmin : null;
+}
+
+ResolvedUser? _resolveUserAdmin(String username) => username == 'gestur'
+    ? const ResolvedUser(user: _userAdmin, groups: {AccessGroup.users})
     : null;
 
 void main() {
@@ -153,6 +172,56 @@ void main() {
           reason: 'nobody is not an account: prose that printed the '
               'sentinel\'s self-naming string as one would be the lie its '
               'names exist to prevent');
+    });
+  });
+
+  group('the read floor, seen from the client (ruled 2026-09-16)', () {
+    test('a sign-in onto an account without operate holds the link with the '
+        'barrier shut — no redial, no stop, and the gateway\'s reason kept',
+        () async {
+      final fixture = relayFixture(
+        validator: SessionLoginValidator(accounts: _resolveUserAdmin),
+        accounts: _resolveUserAdmin,
+        loginVerifier: _UserAdminVerifier(),
+      );
+      addTearDown(fixture.teardown);
+      await fixture.client.sessionReady;
+      expect(fixture.client.awaitingSignIn, isTrue,
+          reason: 'nobody signed in: the resync subscribe was refused with '
+              'the marker, so the panel is at its sign-in screen');
+
+      final result = await fixture.client
+          .sessionLogin(username: 'gestur', password: _password);
+      expect(result.groups, {AccessGroup.users});
+
+      expect(fixture.client.isReady, isFalse,
+          reason: 'the account holds users and not operate, so the policy '
+              'withheld the plant: the barrier must stay shut, not open onto '
+              'a page of blanks');
+      expect(fixture.client.awaitingSignIn, isFalse,
+          reason: 'somebody IS signed in — this is not the sign-in screen');
+      expect(fixture.client.readsWithheld, isTrue);
+      expect(fixture.client.withheldReason, contains('"operate"'),
+          reason: 'the gateway names the group the account lacks, and the '
+              'screen shows that rather than a spinner');
+      expect(fixture.client.withheldReason,
+          isNot(contains(SessionAuthMarkers.awaitingSignIn)),
+          reason: 'the two refusals are distinct by design: this one says '
+              'to ask for the right, not to sign in');
+      expect(fixture.client.stopReason, isNull,
+          reason: 'a permission is not a dead credential: the loop must not '
+              'stop');
+      expect(fixture.client.lastDownReason, isNull,
+          reason: 'and not a dead link: the socket is held, not redialled — '
+              'a redial would land in the same hold one backoff later');
+      expect(fixture.client.linkState, isNot(LinkState.down));
+
+      // The hold lifts the way the awaiting one does: a sign-in onto an
+      // account that holds the floor drives the deferred resync.
+      await fixture.client.sessionLogout();
+      expect(fixture.client.readsWithheld, isTrue,
+          reason: 'a logout returns the far end to nobody; the hold stands '
+              'until a resync succeeds');
     });
   });
 }

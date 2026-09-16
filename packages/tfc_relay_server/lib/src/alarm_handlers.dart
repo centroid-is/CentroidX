@@ -25,6 +25,7 @@ final class AlarmHandlers {
     this.sink,
     this.history,
     this.canWriteKey = _anyKeyWritable,
+    this.requirePlantRead = _openToAll,
   });
 
   /// The default [canWriteKey]: every key is writable.
@@ -35,6 +36,7 @@ final class AlarmHandlers {
   /// own predicate, and `alarm_ack_test.dart`'s view-station arm goes through
   /// the real session for exactly that reason.
   static bool _anyKeyWritable(String key) => true;
+  static void _openToAll(String method) {}
 
   /// The session's `PolicyStateMan` view of the source.
   ///
@@ -70,6 +72,17 @@ final class AlarmHandlers {
   /// every call for `ownerOf`'s reason: these handlers are built during the
   /// session's `_start` and the identity is minted afterwards, by `_hello`.
   final bool Function(String key) canWriteKey;
+
+  /// The read gate, asked **before the existence check** and about the call,
+  /// not the key: `PolicyStateMan.requirePlantRead`, through the predicate
+  /// `RelaySession` builds from it. A session that may not read the plant is
+  /// refused by name — with the sign-in marker when nobody has signed in on
+  /// it, with the group when somebody has — and is never told which of the
+  /// keys it asked about exist. Defaults to open, for the fixtures that build
+  /// these handlers without a policy; the session never does.
+  /// The history is the plant's alarms with a time axis, and takes what
+  /// reading `ALARM.active` live takes.
+  final void Function(String method) requirePlantRead;
 
   /// An operator acknowledging one active alarm.
   ///
@@ -249,6 +262,8 @@ final class AlarmHandlers {
           'most ${AlarmHistoryParams.maxLimit}, and optional whole "fromMs" / '
           '"toMs" epoch milliseconds');
     }
+
+    requirePlantRead(Methods.alarmHistory);
 
     if (!api.keys.contains(AlarmKeys.active)) {
       throw rpc.RpcException(

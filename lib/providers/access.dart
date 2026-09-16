@@ -827,12 +827,19 @@ class AccessSessionController extends _$AccessSessionController {
       // the corner. That was the browser being MORE open than the station,
       // visibly, while being granted nothing — the honest screen is the lock.
       //
-      // Narrower than the server may be: a plant whose `anonymous` row does
-      // hold groups and pages would show them at a walk-up station and hide
-      // them in a browser. Closing that needs the wire to carry the admitted
-      // identity (a `hello` result with the session's groups and pages, the
-      // way `session.login` already answers), and until it does, failing
-      // closed is the side to be wrong on.
+      // The server grades that session the same way since 2026-09-16: a
+      // credential-less hello is the plant's `anonymous` account, and every
+      // read family — values and subscriptions included — asks the policy
+      // for `operate` with that account's groups (`policy_state_man.dart`,
+      // `plantReadFloor`). On this plant the row is `NoOp`, so nothing is
+      // served until somebody signs in, and this floor and the gateway's
+      // agree. Narrower than the server may be elsewhere: a plant whose
+      // `anonymous` row does hold groups and pages would show them at a
+      // walk-up station and hide them in a browser. Closing that needs the
+      // wire to carry the admitted identity (a `hello` result with the
+      // session's groups and pages, the way `session.login` already
+      // answers), and until it does, failing closed is the side to be wrong
+      // on.
       //
       // A client that DID present a token is not this case: the server
       // admitted it as the station's own account, and the floor below stands

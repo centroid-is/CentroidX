@@ -119,6 +119,15 @@ final AccessSession configureSession = _sessionOf({AccessGroup.configure});
 final AccessSession everyGroupSession =
     _sessionOf(AccessGroup.values.toSet());
 
+/// Holds `operate` only: the read floor (ruled 2026-09-16 — reads are graded
+/// like everything else, and `operate` is what reading the plant takes). May
+/// read templates and roles; may not administer either.
+final AccessSession operateSession = _sessionOf({AccessGroup.operate});
+
+/// Holds nothing at all: what a session nobody signed in on holds on a plant
+/// whose `anonymous` account is `NoOp`. Every graded read refuses it.
+final AccessSession nothingSession = _sessionOf(const {});
+
 // -----------------------------------------------------------------------------
 // Fixtures the checks build and read back
 // -----------------------------------------------------------------------------
@@ -263,22 +272,39 @@ Future<void> checkTemplateUnbindRefusesConfigurePermitsUsers(
       action: () => api.accessTemplates.unbind('ST101.CN02.MOT01'));
 }
 
-/// The three template reads are ungated (spec §11) — they succeed for a session
-/// holding nothing about templates, and the check SAYS so rather than leaving a
-/// reader to infer it from an absence.
+/// The three template reads take the read floor: refused to a session holding
+/// nothing, answered to one holding `operate` (every operator's panel grades
+/// its own writes against the bindings) or `users` (the administrator who may
+/// change them). Ruled 2026-09-16; before it they were ungated, on a deferral
+/// the spec has since reversed.
 ///
 /// There were four: `template(name)` was cut from the wire by the access audit
 /// (no caller anywhere, including its own store). A remote that wants one
 /// template derives it from `list()` — the capability's shape survives as a
 /// derivation, not as a wire member, so there is nothing here to judge.
-Future<void> checkTemplateReadsAreUngated(StateManApi api) async {
+Future<void> checkTemplateReadsRefuseNothingAnswerOperateOrUsers(
+    StateManApi api) async {
   final h = accessHarnessOf(api);
   // Seed one template with a users session so the reads have something to find.
   h.actAs(usersSession);
   await _seed(() => api.accessTemplates.create(_template('conveyor-r')), 'conveyor-r');
   await _seed(() => api.accessTemplates.bind('ST101.CN01.SEN01', 'conveyor-r'), 'a bound key');
 
-  for (final reader in <AccessSession>[configureSession, usersSession]) {
+  h.actAs(nothingSession);
+  for (final (name, read) in <(String, Future<void> Function())>[
+    ('list()', () => api.accessTemplates.list()),
+    ('bindings()', () => api.accessTemplates.bindings()),
+    ('keysBoundTo()', () => api.accessTemplates.keysBoundTo('conveyor-r')),
+  ]) {
+    final refusal = await within(_thrown(read), '$name for nobody');
+    expect(refusal, isA<AccessDenied>(),
+        reason: '$name answered a session holding nothing ($refusal): the '
+            'read floor is graded like every write, and a session nobody '
+            'signed in on holds what the anonymous account holds — nothing, '
+            'here');
+  }
+
+  for (final reader in <AccessSession>[operateSession, usersSession]) {
     h.actAs(reader);
     await within(_expectNoThrow(() => api.accessTemplates.list()),
         'list() for ${reader.roleName}');
@@ -290,9 +316,10 @@ Future<void> checkTemplateReadsAreUngated(StateManApi api) async {
   }
   final keys = await within(api.accessTemplates.keysBoundTo('conveyor-r'), 'keysBoundTo');
   expect(keys, contains('ST101.CN01.SEN01'),
-      reason: 'the reads are ungated, but they must still ANSWER: keysBoundTo '
-          'came back $keys, so the "ungated" arm was passing against a reader '
-          'that returns nothing for everyone');
+      reason: 'the reads are graded, but they must still ANSWER the sessions '
+          'that clear the floor: keysBoundTo came back $keys, so the '
+          'permitted arm was passing against a reader that returns nothing '
+          'for everyone');
 }
 
 /// A bound template's delete throws a domain error BEFORE the permission check
@@ -519,25 +546,47 @@ Future<void> checkSetUserPasswordRefusesConfigurePermitsUsers(
           const SetUserPasswordParams(subject: 'lykilord', password: 'second-pass')));
 }
 
-/// The two admin reads are ungated and must ANSWER.
-Future<void> checkAdminReadsAreUngated(StateManApi api) async {
+/// The two admin reads, graded (ruled 2026-09-16): `roles()` takes the read
+/// floor — `operate` or `users` — and `listUsers()` takes `users` alone, the
+/// FIX-1 ruling the relay already carried (every username in the plant is not
+/// a wall display's to list). A session holding nothing gets neither, and the
+/// permitted arms must still ANSWER.
+Future<void> checkAdminReadsRefuseNothingAnswerByFloor(StateManApi api) async {
   final h = accessHarnessOf(api);
   h.actAs(usersSession);
   await _seed(() => api.accessAdmin.createRole(_role('Read Probe', {AccessGroup.operate})), 'Read Probe');
   await _seed(() => api.accessAdmin.createUser(const NewUserParams(
       subject: 'read-probe-user', password: 'x-9', grantedRole: 'Read Probe')), 'read-probe-user');
 
-  for (final reader in <AccessSession>[configureSession, usersSession]) {
-    h.actAs(reader);
-    await within(_expectNoThrow(() => api.accessAdmin.roles()),
-        'roles() for ${reader.roleName}');
-    await within(_expectNoThrow(() => api.accessAdmin.listUsers()),
-        'listUsers() for ${reader.roleName}');
-  }
+  h.actAs(nothingSession);
+  expect(await within(_thrown(() => api.accessAdmin.roles()), 'roles() for nobody'),
+      isA<AccessDenied>(),
+      reason: 'roles() answered a session holding nothing');
+  expect(
+      await within(
+          _thrown(() => api.accessAdmin.listUsers()), 'listUsers() for nobody'),
+      isA<AccessDenied>(),
+      reason: 'listUsers() answered a session holding nothing');
+
+  h.actAs(operateSession);
+  await within(_expectNoThrow(() => api.accessAdmin.roles()),
+      'roles() for ${operateSession.roleName}');
+  expect(
+      await within(_thrown(() => api.accessAdmin.listUsers()),
+          'listUsers() for ${operateSession.roleName}'),
+      isA<AccessDenied>(),
+      reason: 'listUsers takes users, not the read floor: operate alone must '
+          'not list the plant\'s accounts');
+
+  h.actAs(usersSession);
+  await within(_expectNoThrow(() => api.accessAdmin.roles()),
+      'roles() for ${usersSession.roleName}');
+  await within(_expectNoThrow(() => api.accessAdmin.listUsers()),
+      'listUsers() for ${usersSession.roleName}');
   final roles = await within(api.accessAdmin.roles(), 'roles()');
   expect(roles.map((r) => r.name), contains('Read Probe'),
-      reason: 'roles() is ungated but must still answer: it came back without '
-          'the role just created, so the "ungated" arm was passing against a '
+      reason: 'roles() is graded but must still answer: it came back without '
+          'the role just created, so the permitted arm was passing against a '
           'reader that returns nothing');
 }
 
@@ -606,22 +655,40 @@ Future<void> checkSetUserPasswordDoesNotEchoTheSecret(StateManApi api) async {
 }
 
 // -----------------------------------------------------------------------------
-// Audit (read-only, ungated)
+// Audit (read-only, graded `users`)
 // -----------------------------------------------------------------------------
 
-/// The three audit reads succeed for a session holding nothing — read
-/// permissions are deferred (spec §11) and the check says so.
-Future<void> checkAuditReadsAreUngated(StateManApi api) async {
+/// The three audit reads take `users` — the trail of the who-may-do-what
+/// concern answers to the group that owns it, and an ungated trail would be
+/// every write anyone ever made readable by whoever reached the port. Refused
+/// to a session holding nothing (and to `operate` alone), answered to `users`.
+/// Ruled 2026-09-16 for the kit; the relay carried it since FIX-1.
+Future<void> checkAuditReadsRefuseNothingAnswerUsers(StateManApi api) async {
   final h = accessHarnessOf(api);
-  h.actAs(_sessionOf(const {}));
+  for (final denied in <AccessSession>[nothingSession, operateSession]) {
+    h.actAs(denied);
+    for (final (name, read) in <(String, Future<void> Function())>[
+      ('entries()', () => api.audit.entries(const AuditQueryParams())),
+      ('memberCountsByAction()',
+          () => api.audit.memberCountsByAction(const [])),
+      ('distinctWho()', () => api.audit.distinctWho()),
+    ]) {
+      final refusal =
+          await within(_thrown(read), '$name for ${denied.roleName}');
+      expect(refusal, isA<AccessDenied>(),
+          reason: '$name answered ${denied.roleName} ($refusal): the trail '
+              'takes users');
+    }
+  }
+  h.actAs(usersSession);
   await within(
       _expectNoThrow(() => api.audit.entries(const AuditQueryParams())),
-      'entries() for a session holding nothing');
+      'entries() for users');
   await within(
       _expectNoThrow(() => api.audit.memberCountsByAction(const [])),
-      'memberCountsByAction() for a session holding nothing');
+      'memberCountsByAction() for users');
   await within(_expectNoThrow(() => api.audit.distinctWho()),
-      'distinctWho() for a session holding nothing');
+      'distinctWho() for users');
 }
 
 /// Every decision the access families make lands a row in the trail — the
@@ -637,6 +704,9 @@ Future<void> checkAuditRecordsEveryDecision(StateManApi api) async {
   h.actAs(configureSession);
   await _thrown(() => api.accessTemplates.create(_template('audited-deny')));
 
+  // Read back as `users`: the trail takes that group (2026-09-16), and a
+  // configure session asking would be refused — a different property.
+  h.actAs(usersSession);
   final after = await within(api.audit.entries(const AuditQueryParams()), 'audit after');
   expect(after.length, greaterThanOrEqualTo(before + 2),
       reason: 'two decisions were made — one allowed, one refused — and the '
@@ -878,8 +948,8 @@ const accessChecks = <String, Check<StateManApi>>{
       checkTemplateBindRefusesConfigurePermitsUsers,
   'unbinding a key refuses configure and permits users':
       checkTemplateUnbindRefusesConfigurePermitsUsers,
-  'the template reads are ungated and still answer':
-      checkTemplateReadsAreUngated,
+  'template reads: refuses a session holding nothing, permits operate or users':
+      checkTemplateReadsRefuseNothingAnswerOperateOrUsers,
   'a bound template delete is a domain refusal, not a permission one':
       checkBoundTemplateDeleteIsADomainRefusalNotAPermissionOne,
   // roles and users
@@ -909,13 +979,15 @@ const accessChecks = <String, Check<StateManApi>>{
       checkSetUserPagesRefusesConfigurePermitsUsers,
   'resetting a password refuses configure and permits users':
       checkSetUserPasswordRefusesConfigurePermitsUsers,
-  'the admin reads are ungated and still answer': checkAdminReadsAreUngated,
+  'admin reads: refuses a session holding nothing, permits operate on roles and users on listUsers':
+      checkAdminReadsRefuseNothingAnswerByFloor,
   'deleting the last users-holding role is refused as a domain rule':
       checkLastUsersHolderDeleteIsRefusedAsADomainRule,
   'setUserPassword never echoes the secret and still succeeds':
       checkSetUserPasswordDoesNotEchoTheSecret,
   // audit
-  'the audit reads are ungated': checkAuditReadsAreUngated,
+  'audit reads: refuses a session holding nothing, permits users':
+      checkAuditReadsRefuseNothingAnswerUsers,
   'the audit trail records every decision, allowed and refused':
       checkAuditRecordsEveryDecision,
   // backend config

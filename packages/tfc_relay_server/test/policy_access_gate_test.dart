@@ -320,6 +320,121 @@ List<String?> _stringsOf(AuditRecord row) => [
     ];
 
 void main() {
+  group('the read floor (ruled 2026-09-16): every read family is graded by '
+      'the groups the session holds, anonymous graded as the anonymous '
+      'account', () {
+    // One table, every read family, three sessions: nobody signed in holding
+    // nothing (refused, sign-in marker), nobody signed in holding operate
+    // (served — the plant's anonymous row decides), somebody signed in
+    // without operate (refused as a permission, no marker). The sweep the
+    // coordinator runs against the live gateway is this table over the wire.
+    final reads = <String, Future<void> Function(PolicyStateMan served)>{
+      'preferences.getString': (s) => s.preferences.getString('key_mappings'),
+      'preferences.getKeys': (s) => s.preferences.getKeys(),
+      'browse.fetchRoots': (s) => s.browse.fetchRoots(),
+      'timeseries.query': (s) =>
+          s.timeseries.queryTimeseriesData('CN01.MOT01.speed', DateTime(2026)),
+      'historyViews.selectHistoryViews': (s) =>
+          s.historyViews.selectHistoryViews(),
+      'accessTemplates.list': (s) => s.accessTemplates.list(),
+      'accessAdmin.roles': (s) => s.accessAdmin.roles(),
+      'configItems.items': (s) => s.configItems.items('page'),
+      'subscribe (requirePlantRead)': (s) async =>
+          s.requirePlantRead(Methods.subscribe),
+      'alarmHistory (requirePlantRead)': (s) async =>
+          s.requirePlantRead(Methods.alarmHistory),
+    };
+
+    test('a session nobody signed in on, holding nothing, is refused every '
+        'read by name — with the sign-in marker AND the group', () async {
+      final nobody = _seenBy(
+          StationIdentity.anonymous(groups: const {}, station: 'browser'));
+      for (final entry in reads.entries) {
+        final refusal = await _refused(
+            () => entry.value(nobody.served), '${entry.key} for nobody');
+        expect(refusal.code, ServerErrorCodes.forbidden,
+            reason: '${entry.key}: a graded refusal is -32005');
+        expect(refusal.message, contains(SessionAuthMarkers.awaitingSignIn),
+            reason: '${entry.key}: nobody signed in, so the client must be '
+                'able to name it as "sign in" from the marker');
+        expect(refusal.message, contains('"operate"'),
+            reason: '${entry.key}: the policy\'s refusal names the group it '
+                'wanted — there is no session state outside the policy');
+      }
+      expect(nobody.sink.rows, isEmpty,
+          reason: 'refused reads record nothing: a browser at its sign-in '
+              'screen must not fill the trail');
+    });
+
+    test('a session nobody signed in on, holding operate, is served every '
+        'read — the anonymous row is the plant\'s answer', () async {
+      final walkUp = _seenBy(StationIdentity.anonymous(
+          groups: const {AccessGroup.operate}, station: 'canteen-display'));
+      for (final entry in reads.entries) {
+        await entry.value(walkUp.served);
+      }
+    });
+
+    test('somebody signed in without operate is refused as a permission — '
+        'no marker, the group named', () async {
+      final userAdmin = _seenBy(_userAdmin);
+      // Not every family: users clears the floor where users is the family's
+      // own group (templates, roles), which the arm below pins.
+      for (final name in [
+        'preferences.getString',
+        'preferences.getKeys',
+        'browse.fetchRoots',
+        'timeseries.query',
+        'historyViews.selectHistoryViews',
+        'configItems.items',
+        'subscribe (requirePlantRead)',
+        'alarmHistory (requirePlantRead)',
+      ]) {
+        final refusal = await _refused(
+            () => reads[name]!(userAdmin.served), '$name for a user admin');
+        expect(refusal.code, ServerErrorCodes.forbidden);
+        expect(refusal.message,
+            isNot(contains(SessionAuthMarkers.awaitingSignIn)),
+            reason: '$name: somebody is signed in — "ask for the right", '
+                'never "sign in"');
+        expect(refusal.message, contains('"operate"'), reason: name);
+      }
+    });
+
+    test('a family whose own write group is not operate accepts that group '
+        'for its reads too', () async {
+      final userAdmin = _seenBy(_userAdmin);
+      await userAdmin.served.accessTemplates.list();
+      await userAdmin.served.accessTemplates.bindings();
+      await userAdmin.served.accessAdmin.roles();
+      expect(userAdmin.plant.templates.reached, contains('list'));
+
+      final engineer = _seenBy(stationHolding(const {AccessGroup.configure},
+          station: 'ENG-01', username: 'eng-panel', roleName: 'Engineering'));
+      await engineer.served.preferences.getString('key_mappings');
+      await engineer.served.historyViews.selectHistoryViews();
+      await _refused(() => engineer.served.preferences.getString('svn.ui.dark'),
+          'a plain preference read from configure alone');
+      await _refused(() => engineer.served.configItems.items('page'),
+          'a config-item read from configure alone');
+    });
+
+    test('a station holding operate is unchanged: every read answers, and '
+        'a write refusal for it still names the group without the marker',
+        () async {
+      final station = _seenBy(stationHolding(const {AccessGroup.operate},
+          station: 'ST101', username: 'ST101-panel', roleName: 'Line Panel'));
+      for (final entry in reads.entries) {
+        await entry.value(station.served);
+      }
+      final refusal = await _refused(
+          () => station.served.accessAdmin.listUsers(),
+          'listUsers from a station holding operate');
+      expect(refusal.message, isNot(contains(SessionAuthMarkers.awaitingSignIn)));
+      expect(refusal.message, contains('"users"'));
+    });
+  });
+
   group('FIX 1: the trail and the account list take users, server-side', () {
     for (final probe in <String,
         Future<void> Function(PolicyStateMan served)>{
@@ -515,38 +630,58 @@ void main() {
       expect(allowed.plant.templates.reached, ['bind']);
     });
 
-    test('configItems is refused to a session nobody signed in on, by name, '
-        'and served to operate', () async {
-      // The browser's case: a credential-less hello is admitted as anonymous,
-      // and the rows are the plant's mimics and routing — served to nobody
-      // who has not signed in, whatever groups the anonymous row grants.
-      final anonymous = _seenBy(StationIdentity.anonymous(
-          groups: {AccessGroup.operate}, station: 'browser'));
+    test('configItems is graded by the groups the session holds — the '
+        'anonymous account\'s included — and by nothing else', () async {
+      // The browser's case: a credential-less hello is admitted as anonymous
+      // holding what the plant's `anonymous` row grants. Holding nothing, it
+      // is refused by name with the sign-in marker; holding operate, it is
+      // served — the row is the plant's decision about walk-up display, and
+      // this family no longer keeps a signed-in check of its own in front of
+      // the policy (ruled 2026-09-16).
+      final nobody = _seenBy(
+          StationIdentity.anonymous(groups: const {}, station: 'browser'));
       final refusal = await _refused(
-          () => anonymous.served.configItems.items('page'),
+          () => nobody.served.configItems.items('page'),
           'a config-item read from a session nobody signed in on');
+      expect(refusal.code, ServerErrorCodes.forbidden);
       expect(refusal.message, contains(SessionAuthMarkers.awaitingSignIn),
-          reason: 'the client names the refusal from the marker, so an '
-              'anonymous session that happens to hold operate is told to '
-              'sign in rather than that a permission is missing');
+          reason: 'the client names the refusal from the marker: nobody has '
+              'signed in, so the message says to sign in');
+      expect(refusal.message, contains('"operate"'),
+          reason: 'and it names the group, because it is the policy\'s '
+              'refusal and not a session state outside it');
       await _refused(
-          () => anonymous.served.configItems.fingerprint(const ['page']),
+          () => nobody.served.configItems.fingerprint(const ['page']),
           'a fingerprint from a session nobody signed in on');
+      expect(nobody.sink.rows, isEmpty,
+          reason: 'a refused read records nothing — the trail is of '
+              'decisions about changes');
 
-      // Signed in without operate: refused as a permission.
+      final walkUp = _seenBy(StationIdentity.anonymous(
+          groups: const {AccessGroup.operate}, station: 'canteen-display'));
+      expect(await walkUp.served.configItems.items('page'), isA<List<Object?>>(),
+          reason: 'anonymous holding operate IS served: the plant granted '
+              'it, in the one row that decides who a walk-up session is');
+
+      // Signed in without operate: refused as a permission, without the
+      // marker — the two messages are distinct by design.
       final noOperate = _seenBy(stationHolding(const {AccessGroup.users},
           station: 'HQ-01', username: 'hq-admin-panel', roleName: 'User Admin'));
       final denied = await _refused(
           () => noOperate.served.configItems.items('asset'),
           'a config-item read from a session without operate');
       expect(denied.code, ServerErrorCodes.forbidden);
+      expect(denied.message, isNot(contains(SessionAuthMarkers.awaitingSignIn)),
+          reason: 'somebody IS signed in: the answer is "ask for the '
+              'right", never "sign in"');
+      expect(denied.message, contains('"operate"'));
 
       // Signed in with operate: served, and a read records nothing.
       final allowed = _seenBy(stationHolding(const {AccessGroup.operate},
           station: 'ST101', username: 'ST101-panel', roleName: 'Line Panel'));
-      expect(await allowed.served.configItems.items('page'), isEmpty,
-          reason: 'the fake plant holds no rows; what matters is that the '
-              'call reached it');
+      expect(await allowed.served.configItems.items('page'), isA<List<Object?>>(),
+          reason: 'what matters is that the call reached the plant and '
+              'answered');
       expect(allowed.sink.rows, isEmpty,
           reason: 'a read, like every read, records nothing');
     });

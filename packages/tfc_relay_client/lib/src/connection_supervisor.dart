@@ -107,6 +107,16 @@ const int _versionMismatch = -32004;
 /// drives it verbatim against a scripted gateway, end to end.
 const int _unauthorized = -32003;
 
+/// The JSON-RPC error code the gateway refuses a graded call with — the
+/// policy's answer, since 2026-09-16 for reads as well as writes.
+///
+/// Declared here for [_versionMismatch]'s reason. On the resync subscribe it
+/// means "this session may not read the plant": with the sign-in marker in
+/// the message, nobody has signed in ([awaitingSignIn]); without it, the
+/// signed-in account lacks the read floor ([readsWithheld]). Both hold the
+/// link rather than redial it — see [_holdForPolicy].
+const int _forbidden = -32005;
+
 /// The code this client reports its own handler failures under.
 const int _handlerFailed = -32000;
 
@@ -315,6 +325,28 @@ final class ConnectionSupervisor {
   /// sign-in-able condition instead.
   bool _awaitingSignIn = false;
   bool get awaitingSignIn => _awaitingSignIn;
+
+  /// True while the gateway refused this session's reads **with somebody
+  /// signed in** — the signed-in account does not hold the read floor
+  /// (`operate`), so the policy withheld the resync subscribe by name and
+  /// without the sign-in marker. The awaiting condition's sibling, and held
+  /// the same way: socket up, hello answered, value barrier shut, nothing
+  /// retried. Nothing about the next attempt is different — the account has
+  /// to change — so a redial loop would flap the link every backoff for as
+  /// long as that person stays signed in, and would tell them nothing
+  /// [withheldReason] does not.
+  ///
+  /// Cleared by every path that clears [awaitingSignIn]: a fresh hello, a
+  /// `_down`, a `_stop`, and [resumeAfterSignIn] — which a later
+  /// `session.login` onto a different account drives exactly as it drives
+  /// the awaiting case.
+  bool _readsWithheld = false;
+  bool get readsWithheld => _readsWithheld;
+
+  /// The gateway's own wording for the withheld reads, for the screen: it
+  /// names the group. Null unless [readsWithheld].
+  String? _withheldReason;
+  String? get withheldReason => _withheldReason;
 
   /// The epoch of the current hello, kept so a successful `session.login` can
   /// drive the resync that the awaiting state deferred — see [resumeAfterSignIn].
@@ -723,6 +755,8 @@ final class ConnectionSupervisor {
       // resync reaches `ready` below.
       _lastEpoch = hello.epoch;
       _awaitingSignIn = false;
+      _readsWithheld = false;
+      _withheldReason = null;
       _openSession();
 
       // Adopts the epoch and re-establishes every page. It returns only when
@@ -730,42 +764,11 @@ final class ConnectionSupervisor {
       await _resync.onHello(hello.epoch);
       if (_disposed || gen != _generation) return;
     } on rpc.RpcException catch (error) {
-      // The awaiting-sign-in refusal is neither a dead credential nor a dead
-      // link: it is the resync subscribe hitting the gateway's gate on a
-      // session nobody has signed in on. Recognised by the marker the gate
-      // puts in every such refusal, and handled BEFORE the `unauthorized`
-      // arm below — which would otherwise `_stop` the loop and turn a panel
-      // that should show a sign-in screen into one that shows "credential
-      // refused". The socket stays up (the session gate is already open, the
-      // heartbeat keeps it alive), and a successful `session.login` drives
-      // the deferred resync through [resumeAfterSignIn].
-      if (error.message.contains(SessionAuthMarkers.awaitingSignIn)) {
-        _awaitingSignIn = true;
-        _lastDownReason = null;
-        // Re-announce the state we are already in, so anything that keys off
-        // the link re-evaluates now that `awaitingSignIn` is true.
-        //
-        // **Why an explicit re-emit and not a new state.** This branch keeps
-        // the link in `resyncing` on purpose — socket up, hello answered,
-        // nothing subscribed — and `_enter` de-duplicates, so entering
-        // `resyncing` again emits nothing. That silence had a cost measured on
-        // the rig: `RemoteStateMan` starts its heartbeat from this stream, the
-        // stream never fired when a session became awaiting, the pump never
-        // beat, and the gateway closed the session on its own deadline
-        // (`4003 — no heartbeat for 6098 ms`). The panel reconnected, went
-        // awaiting, fell silent and was reaped again, every six seconds,
-        // which is not long enough for anyone to type a password.
-        //
-        // Listeners must therefore tolerate the same state twice. That is
-        // already true of `_onLinkState`, whose work is idempotent by
-        // construction (both heartbeat calls are, and `_wasReady` is a latch).
-        if (!_states.isClosed) _states.add(_state);
-        // Not `ready` and not `down`: the value barrier stays shut, nothing
-        // is retried, and the connection is held. The state stays
-        // `resyncing` — socket up, hello answered — which is the honest
-        // description of a panel waiting at its sign-in screen.
-        return;
-      }
+      // A policy refusal of the resync subscribe is neither a dead credential
+      // nor a dead link, and is handled BEFORE the `unauthorized` arm below —
+      // which would otherwise `_stop` the loop and turn a panel that should
+      // show a sign-in screen into one that shows "credential refused".
+      if (_holdForPolicy(error)) return;
       // The gateway answered and said no. A version refusal is the one answer
       // that will not change on the next attempt, and it is taken from the
       // answer rather than from the close that follows it — Finding 2's
@@ -803,6 +806,53 @@ final class ConnectionSupervisor {
     _enter(LinkState.ready);
   }
 
+  /// Holds the link on a refusal the **policy** made about the resync
+  /// subscribe, and says whether it did.
+  ///
+  /// Two refusals, one posture. With the sign-in marker in the message the
+  /// session is one nobody has signed in on ([awaitingSignIn]); without it,
+  /// and coded `forbidden`, somebody is signed in and the account lacks the
+  /// read floor ([readsWithheld]). Either way the socket stays up (the
+  /// session gate is already open, the heartbeat keeps it alive), the value
+  /// barrier stays shut, nothing is retried, and a successful `session.login`
+  /// drives the deferred resync through [resumeAfterSignIn]. Any other
+  /// refusal is the caller's to judge.
+  ///
+  /// **Why an explicit re-emit and not a new state.** Both holds keep the
+  /// link in `resyncing` on purpose — socket up, hello answered, nothing
+  /// subscribed — and `_enter` de-duplicates, so entering `resyncing` again
+  /// emits nothing. That silence had a cost measured on the rig:
+  /// `RemoteStateMan` starts its heartbeat from this stream, the stream never
+  /// fired when a session became awaiting, the pump never beat, and the
+  /// gateway closed the session on its own deadline (`4003 — no heartbeat for
+  /// 6098 ms`). The panel reconnected, went awaiting, fell silent and was
+  /// reaped again, every six seconds, which is not long enough for anyone to
+  /// type a password. So the state is re-announced, and listeners must
+  /// tolerate the same state twice — already true of `_onLinkState`, whose
+  /// work is idempotent by construction (both heartbeat calls are, and
+  /// `_wasReady` is a latch).
+  bool _holdForPolicy(rpc.RpcException error) {
+    if (error.message.contains(SessionAuthMarkers.awaitingSignIn)) {
+      _awaitingSignIn = true;
+      _readsWithheld = false;
+      _withheldReason = null;
+    } else if (error.code == _forbidden) {
+      _readsWithheld = true;
+      _withheldReason = error.message;
+      _awaitingSignIn = false;
+    } else {
+      return false;
+    }
+    _lastDownReason = null;
+    // Not `ready` and not `down`: the value barrier stays shut, nothing is
+    // retried, and the connection is held. The state stays `resyncing` —
+    // socket up, hello answered — which is the honest description of a panel
+    // waiting at its sign-in screen, or telling its operator which permission
+    // the account they signed in with does not hold.
+    if (!_states.isClosed) _states.add(_state);
+    return true;
+  }
+
   /// Drives the resync an awaiting session deferred, after a `session.login`
   /// the gateway accepted — the client half of "the gate lifted".
   ///
@@ -819,12 +869,24 @@ final class ConnectionSupervisor {
   /// refuses the subscribe for some *other* reason does not leave a session
   /// wedged half-signed-in.
   Future<void> resumeAfterSignIn() async {
-    if (_disposed || !_awaitingSignIn) return;
+    if (_disposed || !(_awaitingSignIn || _readsWithheld)) return;
     final gen = _generation;
     _awaitingSignIn = false;
+    _readsWithheld = false;
+    _withheldReason = null;
     try {
       await _resync.onHello(_lastEpoch);
       if (_disposed || gen != _generation) return;
+    } on rpc.RpcException catch (error) {
+      if (_disposed || gen != _generation) return;
+      // The person who signed in holds an account the policy will not serve
+      // reads to: held exactly as the connect path holds it, not taken down —
+      // a `_down` here would redial, be admitted, subscribe, be refused, and
+      // land in the same hold one backoff later with a "link died" reason
+      // that was never true.
+      if (_holdForPolicy(error)) return;
+      _down(gen, 'the link died before the snapshot landed: $error');
+      return;
     } catch (error) {
       _down(gen, 'the link died before the snapshot landed: $error');
       return;
@@ -1431,6 +1493,8 @@ final class ConnectionSupervisor {
     barrier.rearm();
     _rearmSession();
     _awaitingSignIn = false;
+    _readsWithheld = false;
+    _withheldReason = null;
     _lastDownReason = why;
     _enter(LinkState.down);
     if (_stopped) return;
@@ -1454,6 +1518,8 @@ final class ConnectionSupervisor {
     barrier.rearm();
     _rearmSession();
     _awaitingSignIn = false;
+    _readsWithheld = false;
+    _withheldReason = null;
     _enter(LinkState.down);
   }
 

@@ -28,25 +28,29 @@
 ///
 /// ## The claim, in one line
 ///
-/// **Nothing here opens the socket.** Preference reads were already ungated on
-/// this wire by design — `policy_state_man.dart`'s `_PolicyPreferences.
-/// getString` is a straight passthrough, and its doc says "anyone
-/// authenticated may read them" — and `canSee` ships all-visible. What the
-/// blanket gate added on top was a second, method-shaped rule that the policy
-/// never saw. Deleting it makes the two transports answer the same question
-/// the same way; every refusal below is the **policy's**, made server-side,
-/// naming the group it wanted.
+/// **Every refusal on this wire is the policy's**, made server-side, naming
+/// the group it wanted — and since the 2026-09-16 ruling that includes the
+/// reads. What the blanket gate added on top of the policy was a second,
+/// method-shaped rule the policy never saw; it stayed deleted. What changed
+/// after it is that reads are graded like writes, against the groups the
+/// session holds (`policy_state_man.dart`'s `requireReadFloor`), so a session
+/// nobody signed in on holding nothing is refused a read by the policy —
+/// with the sign-in marker in the message, so the panel can say "sign in"
+/// rather than "a permission is missing", and with the group named, so the
+/// sweep below can tell it from a state outside the policy.
 ///
-/// ## What anonymous holds here, and the line this file does not cross
+/// ## What anonymous holds here, and where it comes from
 ///
-/// The identity's group set is **injected** and defaults to empty. That is the
-/// deliberate first increment: with an empty set, every write question on this
-/// wire answers no, and the only thing that changes is that reads stop being
-/// refused by a rule the policy never made. Sourcing the set from the
-/// `Operator` row — which is what direct mode's `anonymousGroups()` does, and
-/// which would grant `operate`, and with it plant writes, to anything that can
-/// reach the port — is a separate decision with a plant-wide blast radius, and
-/// it is not made in this file.
+/// The identity's group set is **injected** (`SessionLoginValidator.anonymous`)
+/// and defaults to empty. `composeBackendRelay` fills it from the plant's
+/// `anonymous` account row through the same cache the token sweep resolves
+/// against, so the deployment decides in the database: a `NoOp` anonymous row
+/// (the plant this was measured on) makes a browser read nothing until
+/// somebody signs in; a row granting `operate` keeps a walk-up display's reads
+/// — and, as before, its writes. The boot ring the first half of this file
+/// used to pin open (a panel reads `key_mappings` to build its client) is
+/// closed on the client side instead: a gateway panel boots from its
+/// device-local copy of the boot key and re-reads after the sign-in.
 library;
 
 import 'dart:convert';
@@ -144,10 +148,10 @@ Set<String> _callableMethods() => {
     };
 
 void main() {
-  group('the boot deadlock, at the server', () {
-    test(
-        'a credential-less session may READ the boot key — this is the rig '
-        'failure, and it is a read the policy never refused', () async {
+  group('the read floor, over the wire: what anonymous holds decides', () {
+    test('holding nothing, the boot key is refused BY THE POLICY, with the '
+        'sign-in marker and the group — not served, not a third state',
+        () async {
       final prefs = FakePreferences();
       await prefs.setString(_keyMappings, '{"nodes":{}}');
       final fixture = relayFixture(
@@ -155,31 +159,70 @@ void main() {
       await fixture.ready;
       await fixture.hello();
 
-      final value = await fixture.request(
+      final refusal = await fixture.refusal(
         DataServiceMethods.prefGetString,
         params: const {'key': _keyMappings},
         what: 'the boot key read by a panel nobody has signed in on',
       );
-
-      expect(value, '{"nodes":{}}',
-          reason: 'a panel reads key_mappings in ORDER TO BUILD its client, '
-              'and it cannot sign in until it has booted. Refusing this is '
-              'the ring the rig measured — and the refusal was never the '
-              'policy\'s: preference reads are a straight passthrough '
-              '(policy_state_man.dart\'s _PolicyPreferences.getString)');
+      expect(refusal.code, ServerErrorCodes.forbidden,
+          reason: '518 KiB of plant routing is not something an '
+              'unauthenticated peer reads any more than re-points; the '
+              'panel boots from its device-local copy instead');
+      expect(refusal.message, contains(SessionAuthMarkers.awaitingSignIn),
+          reason: 'nobody has signed in, and the panel names that from the '
+              'marker: a sign-in screen, not "a permission is missing"');
+      expect(refusal.message, contains('"operate"'),
+          reason: 'and it is the policy\'s refusal, naming the group — the '
+              'sweep below tells it from the deleted blanket gate by that');
     });
 
-    test('and it may subscribe — reads are ungated on this wire by design, on '
-        'both transports', () async {
+    test('holding nothing, subscribe is refused the same way — the whole '
+        'call, before any key is looked at', () async {
       final fixture = relayFixture(validator: SessionLoginValidator());
       await fixture.ready;
+      fixture.served.setValue(_plantKey, 1200);
       await fixture.hello();
 
+      final refusal = await fixture.refusal(
+        Methods.subscribe,
+        params: const SubscribeParams(
+            sub: 'page-1', keys: [_plantKey, 'NO.SUCH.KEY']).toJson(),
+        what: 'a subscribe from a session nobody has signed in on',
+      );
+      expect(refusal.code, ServerErrorCodes.forbidden);
+      expect(refusal.message, contains(SessionAuthMarkers.awaitingSignIn),
+          reason: 'this is the refusal the relay client keys its sign-in '
+              'screen off: the link is held with the value barrier shut');
+      expect(refusal.message, isNot(contains('NO.SUCH.KEY')),
+          reason: 'refused about the call, not key by key: a session that '
+              'may not read the plant is not told which tags exist');
+    });
+
+    test('holding operate — the plant\'s anonymous row granting it — the '
+        'same reads are served: no signed-in check stands outside the policy',
+        () async {
+      final prefs = FakePreferences();
+      await prefs.setString(_keyMappings, '{"nodes":{}}');
+      final fixture = relayFixture(
+          validator: SessionLoginValidator(
+              anonymous: () => const {AccessGroup.operate}),
+          preferences: prefs);
+      await fixture.ready;
+      fixture.served.setValue(_plantKey, 1200);
+      await fixture.hello();
+
+      expect(
+          await fixture.request(DataServiceMethods.prefGetString,
+              params: const {'key': _keyMappings},
+              what: 'the boot key, on a walk-up display'),
+          '{"nodes":{}}');
       await fixture.request(
         Methods.subscribe,
         params: const SubscribeParams(sub: 'page-1', keys: [_plantKey]).toJson(),
-        what: 'a subscribe from a session nobody has signed in on',
+        what: 'a subscribe on a walk-up display',
       );
+      await fixture.request(DataServiceMethods.browseFetchRoots,
+          params: const <String, Object?>{}, what: 'the address space');
     });
   });
 
@@ -377,11 +420,21 @@ void main() {
           await fixture.request(method,
               params: const <String, Object?>{}, what: method);
         } on rpc.RpcException catch (error) {
-          expect(error.message, isNot(contains('awaiting_sign_in')),
-              reason: '$method still carries the deleted third state. Every '
-                  'refusal on this wire must be the policy\'s, naming the '
-                  'group it wanted — or a decode/plumbing answer — never a '
-                  'session state the master system cannot see');
+          // The marker is allowed on exactly one kind of refusal: the
+          // policy's, which names the group it wanted in the same message
+          // (`refusedForGroup`). A marker without a group is the deleted
+          // blanket gate back under another name.
+          if (error.message.contains('awaiting_sign_in')) {
+            expect(error.code, ServerErrorCodes.forbidden,
+                reason: '$method carried the sign-in marker on something '
+                    'other than a policy refusal');
+            expect(error.message, contains('permission'),
+                reason: '$method carried the sign-in marker without naming '
+                    'a permission. Every refusal on this wire must be the '
+                    'policy\'s, naming the group it wanted — or a '
+                    'decode/plumbing answer — never a session state the '
+                    'master system cannot see');
+          }
         }
       }
     });
@@ -391,9 +444,11 @@ void main() {
       // relaxation chosen on its own: the drop existed because an
       // unauthenticated session could not read a preference at all, so naming
       // a changed key disclosed a vocabulary it had no other way to see. It
-      // can read them now — the policy says so, on both transports — and
-      // withholding the notification would leave a panel holding a stale
-      // `key_mappings` with no way to learn it.
+      // could read them. Since 2026-09-16 the reads are graded again — by
+      // the policy this time — and the notification stays: it names a key,
+      // not a value, and a walk-up display whose anonymous row grants
+      // `operate` still depends on it to notice its boot key moved. A session
+      // that may not read the value learns only that a name changed.
       final fixture = relayFixture(validator: SessionLoginValidator());
       await fixture.ready;
       await fixture.hello();

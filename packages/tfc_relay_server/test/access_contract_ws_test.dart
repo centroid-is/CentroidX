@@ -231,7 +231,7 @@ const _methodsByCheck = <String, Set<String>>{
     AccessMethods.templateBind,
     AccessMethods.templateUnbind,
   },
-  'the template reads are ungated and still answer': {
+  'template reads: refuses a session holding nothing, permits operate or users': {
     AccessMethods.templateCreate,
     AccessMethods.templateBind,
     AccessMethods.templateList,
@@ -294,7 +294,7 @@ const _methodsByCheck = <String, Set<String>>{
     AccessMethods.adminCreateUser,
     AccessMethods.adminSetUserPassword,
   },
-  'the admin reads are ungated and still answer': {
+  'admin reads: refuses a session holding nothing, permits operate on roles and users on listUsers': {
     AccessMethods.adminCreateRole,
     AccessMethods.adminCreateUser,
     AccessMethods.adminRoles,
@@ -308,7 +308,7 @@ const _methodsByCheck = <String, Set<String>>{
     AccessMethods.adminCreateUser,
     AccessMethods.adminSetUserPassword,
   },
-  'the audit reads are ungated': {
+  'audit reads: refuses a session holding nothing, permits users': {
     AccessMethods.auditEntries,
     AccessMethods.auditMemberCountsByAction,
     AccessMethods.auditDistinctWho,
