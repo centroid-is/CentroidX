@@ -1472,6 +1472,17 @@ final class ConnectionSupervisor {
     // `connecting` there is a reconnect already scheduled, and a second one
     // here would halve the backoff the schedule just chose.
     if (_state != LinkState.ready && _state != LinkState.resyncing) return;
+    // Held for policy: nothing is subscribed, so nothing is expected to
+    // arrive, and silence is not the half-open case — it is the gateway
+    // waiting, as asked, for a sign-in. Measured on the rig (2026-09-16):
+    // the awaiting refusal landed, this fired three seconds later, `_down`
+    // redialled, the next hello was refused the same way, and the browser
+    // blinked "gateway unreachable" every backoff — seven sockets in 35 s.
+    // The heartbeat pump keeps beating in both holds (`RemoteStateMan`
+    // starts it for them), so a socket that really dies is still noticed —
+    // by the close, which is how a held socket can end. The watchdog re-arms
+    // on the first frame the resync after sign-in brings in.
+    if (_awaitingSignIn || _readsWithheld) return;
     _down(_generation,
         'no frame of any kind for ${config.freshnessDeadline.inMilliseconds} '
         'ms: the socket is open and the gateway has stopped speaking, which '

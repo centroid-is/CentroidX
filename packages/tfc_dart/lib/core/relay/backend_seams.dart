@@ -149,6 +149,16 @@ abstract interface class BackendValueSource {
   /// 13-03's file.
   void markStale(Iterable<String> keys);
 
+  /// Restores keys the sweep badged stale, to the quality each held before.
+  ///
+  /// The counterpart of [markStale], and the reason the badge is not one-way:
+  /// a tag that is merely constant — a stopped drive, a checklist boolean —
+  /// arrives once and is aged out ten seconds later, and nothing else would
+  /// ever un-badge it, so a healthy plant reads as unknown for as long as it
+  /// stays still. Only a value still reading `badStale` is touched; a fresh
+  /// sample or a comms fault that has since landed is never overwritten.
+  void restoreStale(Map<String, relay.Quality> keys);
+
   /// Badges [key] as having a write in flight (`Quality.goodWritePending`).
   ///
   /// Owner: plan 13-08 (write readback). The pending state is a property of the

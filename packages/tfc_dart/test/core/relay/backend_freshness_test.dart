@@ -208,6 +208,8 @@ class _Fixture {
       linkOf: (key) => pipe.workerOf(key)?.toString(),
       logger: _quiet(),
     );
+    // As `composeBackendRelay` wires it: frames feed the link anchor.
+    pipe.onWorkerFrame = (_, keys) => sweep.heardKeys(keys);
   }
 
   final bool twoWorkers;
@@ -885,6 +887,93 @@ void main() {
   // sweep would report as a runner timeout naming this file instead of as the
   // named failure naming the promise. Two minutes moves that boundary out of
   // the way without loosening a single assertion.
+  group('the anchor is fed by frames, and a stale badge is taken back '
+      '(measured 2026-09-16: 1196 of 1377 keys purple on a running plant)', () {
+    test('chatter on a key NOBODY watches keeps a watched constant on the '
+        'same link good', () async {
+      final f = _Fixture();
+      addTearDown(f.tearDown);
+      final constant = f.watch(_speedKey);
+      f.alpha.deliver(_speedKey, _good(true));
+      await _settle();
+      // `_otherKey` is owned by alpha and watched by nobody: before this
+      // change its frames moved no anchor, because only a node listener on a
+      // watched key could.
+      var n = 0;
+      final chatter = Timer.periodic(f.sweep.interval, (_) {
+        f.alpha.deliver(_otherKey, _good(++n));
+      });
+      addTearDown(chatter.cancel);
+      await f.pastDeadline();
+      await f.pastDeadline();
+      expect(constant.value.quality, relay.Quality.good,
+          reason: 'the link spoke the whole time — through a key nobody '
+              'happened to be watching. A frame is the worker saying the '
+              'link is alive, whoever is listening');
+      expect(constant.value.value, isTrue);
+    });
+
+    test('a key badged stale is restored to the quality it held when its '
+        'link is heard from again, and ages again when it goes quiet',
+        () async {
+      final f = _Fixture();
+      addTearDown(f.tearDown);
+      final constant = f.watch(_speedKey);
+      f.alpha.deliver(_speedKey, _good(1450));
+      await _settle();
+      await f.pastDeadline();
+      await f.pastDeadline();
+      expect(constant.value.quality, relay.Quality.badStale,
+          reason: 'nothing on the link spoke: the sweep badged it, as before');
+      expect(f.sweep.degraded, contains(_speedKey));
+
+      var n = 0;
+      final chatter = Timer.periodic(f.sweep.interval, (_) {
+        f.alpha.deliver(_otherKey, _good(++n));
+      });
+      await f.pastDeadline();
+      expect(constant.value.quality, relay.Quality.good,
+          reason: 'the link is speaking again and the key has not changed: '
+              'that is a constant tag on a live link, not a tag that '
+              'stopped arriving. Before this change the badge was one-way '
+              'and a constant key stayed purple for ever');
+      expect(constant.value.value, 1450,
+          reason: 'the value it arrived with, not a blank');
+      expect(f.sweep.degraded, isNot(contains(_speedKey)));
+
+      chatter.cancel();
+      await f.pastDeadline();
+      await f.pastDeadline();
+      expect(constant.value.quality, relay.Quality.badStale,
+          reason: 'the restoration is not a pardon: a link that goes quiet '
+              'again is caught again');
+    });
+
+    test('a fresh sample for a badged key clears the badge on its own terms',
+        () async {
+      final f = _Fixture();
+      addTearDown(f.tearDown);
+      final node = f.watch(_speedKey);
+      f.alpha.deliver(_speedKey, _good(1));
+      await _settle();
+      await f.pastDeadline();
+      await f.pastDeadline();
+      expect(node.value.quality, relay.Quality.badStale);
+      f.alpha.deliver(_speedKey,
+          relay.DynamicValue.of(2, quality: relay.Quality.badCommFault));
+      await _settle();
+      expect(node.value.quality, relay.Quality.badCommFault,
+          reason: 'the sample carries its own quality');
+      expect(f.sweep.degraded, isNot(contains(_speedKey)),
+          reason: 'and the sweep has nothing left to take back');
+      await f.insideDeadline();
+      expect(node.value.quality, relay.Quality.badCommFault,
+          reason: 'a restore must never overwrite a fault with a stale '
+              'key\'s old good: only a node still reading badStale is '
+              'the sweep\'s to put back');
+    });
+  });
+
   group('the freshness contract, at the production deadline', () {
     runFreshnessContract(makeHarnessedBackendStateMan);
   }, timeout: const Timeout(Duration(minutes: 2)));

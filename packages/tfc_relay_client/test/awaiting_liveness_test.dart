@@ -40,6 +40,7 @@ library;
 
 import 'package:test/test.dart';
 import 'package:tfc_access/tfc_access.dart';
+import 'package:tfc_relay_client/tfc_relay_client.dart' show ClientConfig;
 import 'package:tfc_relay_server/tfc_relay_server.dart';
 
 import 'support/client_harness.dart';
@@ -152,5 +153,54 @@ void main() {
             'deadline the way a real one always is');
     expect(fixture.client.isReady, isTrue,
         reason: 'the gate lifted and the deferred resync ran');
+  }, timeout: const Timeout(Duration(seconds: 30)));
+
+  test('a policy refusal during connect opens exactly one socket: the link is '
+      'held past the freshness deadline, not redialled', () async {
+    // The reconnect loop measured on 2026-09-16: the resync subscribe was
+    // refused with the sign-in marker, the supervisor held — and three seconds
+    // later the freshness watchdog, seeing no frame, took the link down and
+    // redialled into the same refusal. Seven sockets in 35 s, a banner
+    // blinking "gateway unreachable" on a session that was fine.
+    const deadline = Duration(milliseconds: 300);
+    final fixture = relayFixture(
+      validator: SessionLoginValidator(accounts: _resolve),
+      accounts: _resolve,
+      loginVerifier: _Verifier(),
+      clientConfig: ClientConfig(
+        controlDeadline: const Duration(milliseconds: 200),
+        writeDeadline: const Duration(milliseconds: 400),
+        freshnessDeadline: deadline,
+        backoffBase: const Duration(milliseconds: 20),
+        backoffCap: const Duration(milliseconds: 100),
+        deadlineFloor: const Duration(milliseconds: 50),
+      ),
+    );
+    addTearDown(fixture.teardown);
+    var gone = 0;
+    final watch = fixture.server.sessions.gone.listen((_) => gone++);
+    addTearDown(watch.cancel);
+
+    await fixture.client.sessionReady;
+    expect(fixture.client.awaitingSignIn, isTrue,
+        reason: 'the connect-path subscribe was refused with the marker: '
+            'this is the hold under test');
+
+    // Five freshness deadlines, with nothing subscribed and nothing arriving
+    // but ping answers.
+    await Future<void>.delayed(deadline * 5);
+
+    expect(fixture.client.awaitingSignIn, isTrue,
+        reason: 'still held: a redial would have minted a fresh hello and '
+            'landed in the hold again, but through `_down`');
+    expect(fixture.client.lastDownReason, isNull,
+        reason: 'the watchdog must not read expected silence as a half-open '
+            'socket while the session is held for policy');
+    expect(fixture.client.stopReason, isNull);
+    expect(gone, 0,
+        reason: 'no session ended — the socket the panel was admitted on is '
+            'the socket it is still on');
+    expect(fixture.server.sessions.sessionCount, 1,
+        reason: 'exactly one socket, ever, for this sign-in screen');
   }, timeout: const Timeout(Duration(seconds: 30)));
 }

@@ -456,6 +456,32 @@ final class BackendLiveValues implements BackendValueSource {
   ///    transient one. The comparison is on the band rather than on one code,
   ///    so a code invented later is handled on the day it is invented.
   @override
+  /// The reverse of [markStale], for keys the sweep badged stale and has
+  /// since heard the link of again: each is put back to the quality it held
+  /// before — and only if it still reads `badStale`. A key that has moved on
+  /// to anything else (a fresh sample, a comm fault from the pipe) is left
+  /// exactly as it is: those carry their own truth, and the sweep's badge was
+  /// the only thing it was entitled to take back.
+  ///
+  /// Without this a constant tag stayed purple for as long as it stayed
+  /// constant: the sweep is one-way by construction (rule 1 leaves anything
+  /// at or above `badStale` alone), and nothing else ever wrote the node.
+  /// Measured on 2026-09-16 as 1196 of 1377 keys stale on a running plant.
+  void restoreStale(Map<String, relay.Quality> keys) {
+    final batch = <String, relay.DynamicValue>{};
+    for (final entry in keys.entries) {
+      final key = entry.key;
+      if (relay.PipeKeys.isPipeKey(key)) continue;
+      if (relay.AlarmKeys.isAlarmKey(key)) continue;
+      final cached = _pipe.store.peek(key);
+      if (cached == null) continue;
+      if (cached.quality != relay.Quality.badStale) continue;
+      batch[key] = cached.copyWith(quality: entry.value);
+    }
+    if (batch.isEmpty) return;
+    _pipe.store.applyBatch(batch);
+  }
+
   void markStale(Iterable<String> keys) {
     final batch = <String, relay.DynamicValue>{};
     for (final key in keys) {

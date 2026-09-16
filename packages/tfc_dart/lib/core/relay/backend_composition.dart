@@ -444,8 +444,9 @@ BackendRelayComposition composeBackendRelay({
       // (`backend_freshness.dart`, HARD-01): the worker the pipe routes it to,
       // narrowed by the server alias its mapping names, because one worker
       // hosts every OPC UA server of its family and a change on one PLC
-      // proves nothing about another. Null until the pipe has routed the key,
-      // which is also when there is nothing on the link to hear yet.
+      // proves nothing about another. Null for a key no worker owns (a
+      // mapping whose server is disabled or unknown), which then ages on its
+      // own — there is no link to vouch for it.
       linkOf: (key) {
         final worker = pipe.workerOf(key);
         if (worker == null) return null;
@@ -457,6 +458,10 @@ BackendRelayComposition composeBackendRelay({
       },
       logger: logger,
     );
+    // The anchor is fed by every frame a worker delivers, not only by the
+    // keys somebody watches — see `backend_freshness.dart`'s library doc for
+    // the 2026-09-16 measurement that made this necessary.
+    pipe.onWorkerFrame = (_, keys) => sweep.heardKeys(keys);
   }
 
   // --------------------------------------------------------------- discovery

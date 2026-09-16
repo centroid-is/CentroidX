@@ -23,7 +23,7 @@ library;
 import 'dart:async';
 
 import 'package:flutter/foundation.dart'
-    show ValueListenable, debugPrint, visibleForTesting;
+    show ValueListenable, debugPrint, kIsWeb, visibleForTesting;
 import 'package:flutter/material.dart';
 import 'package:json_annotation/json_annotation.dart';
 import 'package:media_kit/media_kit.dart';
@@ -276,6 +276,16 @@ class _RtspCameraViewState extends State<RtspCameraView> {
 
   void _open() {
     if (widget.config.url.isEmpty) return;
+    // **Deferred in a browser** (Jón, 2026-09-16): media_kit has no web arm
+    // in this build, and constructing its player there fails asynchronously
+    // — past the `catch` below — so the asset degrades the way the web-view
+    // asset does (`WebViewAssetConfig.check`): the platform placeholder,
+    // decided up front, and nothing of media_kit touched. Same shape as a
+    // station where libmpv cannot load.
+    if (kIsWeb) {
+      _unavailable = true;
+      return;
+    }
     try {
       _playback = (RtspCameraView.debugPlaybackFactory ??
           _MediaKitPlayback.new)(widget.config);

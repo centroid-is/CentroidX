@@ -201,6 +201,10 @@ final class FakeBackendValueSource implements BackendValueSource {
   void markStale(Iterable<String> keys) => _unused('markStale');
 
   @override
+  void restoreStale(Map<String, relay.Quality> keys) =>
+      _unused('restoreStale');
+
+  @override
   Future<relay.DynamicValue> readFresh(String key) => _unused('readFresh');
 
   @override

@@ -136,6 +136,37 @@
 /// hide it would make a healthy constant tag decay, which is F3 — the very
 /// defect Phase 16 is reproducing.
 ///
+/// ## The link anchor is fed by frames, and a stale badge is taken back
+///
+/// Two defects measured on 2026-09-16, when the per-link anchor above reached
+/// 33 good keys out of 1377 on a running plant:
+///
+///  1. **The anchor only moved on watched keys.** [_heard] is a node
+///     listener, and a node notifies only when a *watched* key changes; a
+///     link whose chatter was on keys nobody watched looked silent, and every
+///     constant key on it aged out. The anchor is now fed by every frame the
+///     worker delivers ([heardKeys], from `PipeMainEndpoint.onWorkerFrame`),
+///     whoever is listening: a frame is the link speaking.
+///  2. **The badge was one-way.** Rule 1 leaves anything at or above
+///     `badStale` alone, and nothing else ever wrote a constant key's node —
+///     so a key badged stale once, for any reason (a link quiet for ten
+///     seconds after a panel subscribed, before anything on it changed),
+///     stayed purple for as long as it stayed constant. [sweep] now keeps the
+///     quality a key held before it was badged and **restores it** the moment
+///     the key's anchor is fresh again ([BackendLiveValues.restoreStale],
+///     which refuses to touch a node that has since moved on to a fresh
+///     sample or a comm fault). A stale badge is the sweep's claim that the
+///     link stopped speaking; when the link speaks, the claim is withdrawn.
+///
+/// What this still does not cover, stated rather than hidden: a link on
+/// which **nothing** changes for [staleAfter] — a stopped line at night, a
+/// Modbus device of static registers — sends no frames, because workers
+/// forward changes and not polls, and its keys will badge stale although
+/// the link is fine. Closing that needs the worker to say "still polling"
+/// (a keep-alive frame per server, or the OPC UA publish keep-alive
+/// forwarded), which is a pipe protocol change and a decision about what
+/// "fresh" means for a static plant.
+///
 /// Protocol types are imported `as relay`, the house rule inside `tfc_dart`.
 library;
 
@@ -254,8 +285,13 @@ final class BackendFreshnessSweep implements BackendValueSource {
   /// so a sweep that asked would still be refused, and the arm would pass
   /// against a sweep whose own exclusion had been deleted. Bounded by the keys
   /// that have ever been watched, which is bounded by the key mappings.
-  Set<String> get degraded => Set<String>.unmodifiable(_degraded);
-  final Set<String> _degraded = <String>{};
+  Set<String> get degraded => Set<String>.unmodifiable(_degraded.keys);
+
+  /// Each key the sweep badged stale, with the quality it held before — what
+  /// [sweep] puts back when the key's anchor is fresh again. A key that is
+  /// heard (a fresh sample) leaves the map in [_heard]: the sample carries its
+  /// own quality, and the badge has nothing left to take back.
+  final Map<String, relay.Quality> _degraded = <String, relay.Quality>{};
 
   /// One handle per key, so two callers watching one tag share one registration
   /// with the sweep and one refcount underneath.
@@ -395,6 +431,10 @@ final class BackendFreshnessSweep implements BackendValueSource {
   void markStale(Iterable<String> keys) => _values.markStale(keys);
 
   @override
+  void restoreStale(Map<String, relay.Quality> keys) =>
+      _values.restoreStale(keys);
+
+  @override
   void markPending(String key) => _values.markPending(key);
 
   @override
@@ -453,14 +493,51 @@ final class BackendFreshnessSweep implements BackendValueSource {
       }
       stale.add(key);
     }
+    // The other direction: a key this sweep badged stale whose anchor has
+    // moved since — the link spoke again, through a frame or a watched
+    // change — gets the quality it held back. Its own [_lastHeard] has not
+    // moved (nothing arrived for *it*), which is exactly why the anchor is
+    // the link's: on a live link a constant tag is a tag that has not
+    // changed, not one that has stopped arriving.
+    final restore = <String, relay.Quality>{};
+    for (final entry in _degraded.entries) {
+      final anchor = _anchorOf(entry.key);
+      if (anchor == null) continue;
+      if (now - anchor >= staleAfter.inMilliseconds) continue;
+      restore[entry.key] = entry.value;
+    }
+    if (restore.isNotEmpty) {
+      _degraded.removeWhere((key, _) => restore.containsKey(key));
+      _logger.i('backend freshness: ${restore.length} key(s) heard from again '
+          'on their link and are no longer badged stale');
+      _apply(() => _values.restoreStale(restore));
+    }
+
     if (stale.isEmpty) return;
-    _degraded.addAll(stale);
+    for (final key in stale) {
+      _degraded[key] = _watched[key]!.value.quality;
+    }
     // One line per transition, never per tick: the band guard above means a
     // key that is already stale stages nothing, so a plant that has gone quiet
     // logs once and then says nothing more about it.
     _logger.w('backend freshness: ${stale.length} key(s) went quiet for longer '
         'than ${staleAfter.inMilliseconds} ms and are now badged stale');
     _apply(() => _values.markStale(stale));
+  }
+
+  /// The link anchor, fed from the worker's frames: every key in a delivered
+  /// frame proves its link is speaking, watched or not. Wired by the
+  /// composition to `PipeMainEndpoint.onWorkerFrame`; see the library doc for
+  /// why the node listener alone was not enough.
+  void heardKeys(Iterable<String> keys) {
+    if (_disposed) return;
+    final linkOf = _linkOf;
+    if (linkOf == null) return;
+    final now = _monotonic.elapsedMilliseconds;
+    for (final key in keys) {
+      final link = linkOf(key);
+      if (link != null) _lastHeardByLink[link] = now;
+    }
   }
 
   /// Runs [mutation] with [_applying] raised, so the notifications it causes
@@ -564,6 +641,9 @@ final class BackendFreshnessSweep implements BackendValueSource {
     if (!_lastHeard.containsKey(key)) return;
     final now = _monotonic.elapsedMilliseconds;
     _lastHeard[key] = now;
+    // A sample arrived for this key: whatever it carries is the truth now,
+    // and the sweep's badge has nothing left to take back.
+    _degraded.remove(key);
     // The link too: this arrival proves the session behind every other key
     // on it alive (library doc, HARD-01).
     final link = _linkOf?.call(key);

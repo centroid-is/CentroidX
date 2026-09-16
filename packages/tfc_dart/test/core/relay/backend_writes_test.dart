@@ -365,6 +365,10 @@ class _ExplodingValues implements BackendValueSource {
   void markStale(Iterable<String> keys) => _inner.markStale(keys);
 
   @override
+  void restoreStale(Map<String, relay.Quality> keys) =>
+      _inner.restoreStale(keys);
+
+  @override
   relay.DynamicValue? read(String key) => _inner.read(key);
 
   @override

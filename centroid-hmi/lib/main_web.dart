@@ -73,6 +73,7 @@ import 'package:tfc/providers/page_manager.dart'
 import 'package:tfc/providers/preferences.dart'
     show initDeviceLocalPreferences;
 import 'package:tfc/providers/theme.dart';
+import 'package:tfc/core/web_logging.dart';
 import 'package:tfc/theme.dart';
 import 'package:tfc/route_registry.dart';
 import 'package:tfc/routes.dart';
@@ -87,6 +88,10 @@ import 'navigation.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // The console is the only log a browser has, and `Logger` says nothing in
+  // a release build unless told to — which is how the asset bug hid.
+  routeLoggerToConsole();
 
   // The keychain — none — before the store. `Preferences.create` asks
   // `SecureStorage.getInstance()`, and the default that answers when nothing

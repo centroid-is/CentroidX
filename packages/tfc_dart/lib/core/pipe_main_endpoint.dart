@@ -288,6 +288,17 @@ class PipeMainEndpoint {
   /// Which worker owns [key], or null when none does.
   int? workerOf(String key) => _keyToWorker[key];
 
+  /// Told about every value frame a worker delivers — which worker, and the
+  /// keys it carried — before the frame is applied.
+  ///
+  /// The freshness sweep's link anchor (`backend_freshness.dart`, HARD-01)
+  /// hangs off this rather than off the value nodes: a node only notifies a
+  /// listener when a *watched* key changes, so a link whose chatter happened
+  /// to be on keys nobody was watching looked silent, and every constant key
+  /// on it was badged stale ten seconds after a panel subscribed. A frame is
+  /// the worker saying "this link is speaking", whoever is listening.
+  void Function(int workerIndex, Iterable<String> keys)? onWorkerFrame;
+
   /// The cached value for [key] — [relay.notYetKnown] until one arrives.
   relay.DynamicValue read(String key) => store.node(key).value;
 
@@ -497,6 +508,7 @@ class PipeMainEndpoint {
   /// mode this project exists to remove.
   void _applyFrame(int index, PipeFrame frame) {
     if (frame.values.isNotEmpty) {
+      onWorkerFrame?.call(index, frame.values.keys);
       // BEFORE applyBatch. The batch notifies its listeners synchronously, and
       // `BackendLiveValues.subscribeStamped` reads the provenance inside that
       // notification to pair it with the value. Recording it afterwards would
