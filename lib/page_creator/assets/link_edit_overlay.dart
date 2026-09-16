@@ -280,11 +280,28 @@ class _LinkEditOverlayState extends State<LinkEditOverlay> {
         children: [
           // Right-clicking the cable itself adds a corner there. A wide
           // invisible stroke, because the ink is far too thin to aim at.
+          //
+          // It sits over the canvas, so it also answers the drag the canvas
+          // would have: without that a selected cable could not be moved at
+          // all. An unplugged one moves with the pointer; a plugged one is
+          // placed by its devices and a drag along it means nothing.
           Positioned.fill(
             child: GestureDetector(
               behavior: HitTestBehavior.deferToChild,
               onSecondaryTapUp: (d) =>
                   _showCableMenu(d.localPosition, d.globalPosition),
+              onPanStart: widget.link.isPluggedIn ? null : (_) => _begin(),
+              onPanUpdate: widget.link.isPluggedIn
+                  ? null
+                  : (d) {
+                      final c = widget.link.coordinates;
+                      widget.link.coordinates = Coordinates(
+                        x: c.x + d.delta.dx / widget.canvas.width,
+                        y: c.y + d.delta.dy / widget.canvas.height,
+                      );
+                      _changed();
+                    },
+              onPanEnd: widget.link.isPluggedIn ? null : (_) => _end(),
               child: CustomPaint(
                 painter: _CableTargetPainter(
                   resolved: resolved,
