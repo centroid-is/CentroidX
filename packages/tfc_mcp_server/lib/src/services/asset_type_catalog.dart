@@ -1576,6 +1576,53 @@ class AssetTypeCatalog {
             description: 'Initial page number to display (1-based)'),
       ],
     ),
+    AssetTypeInfo(
+      assetName: 'WagonStationStripConfig',
+      displayName: 'Wagon Stations',
+      category: 'Visualization',
+      description:
+          "A pallet wagon's stations, drawn as one horizontal strip: one cell "
+          'per commissioned station, in rail order, saying who it is, whether '
+          'it hands pallets to the wagon or takes them from it, what it is '
+          'doing now, and how far along the rail it stands. Drop it directly '
+          'under a rails-mode ConveyorConfig and it reads as the row of '
+          "stations that conveyor's wagon runs between. Reads the whole row "
+          'off ONE key: the PLC publishes the stations as a single '
+          'ARRAY [1..10] OF ST_WagonStation node, so the strip costs one '
+          'subscription however many stations exist. Do not bind a key per '
+          'field. Array entries whose xEnabled is false, or whose sName is '
+          'empty, are the uncommissioned tail and are not drawn. Each cell '
+          'shows one derived state, first match wins: blocked '
+          '(xWaitingForInterLock or xInterLock) beats delivering (xOutfeed) '
+          'beats ready (xStationReady) beats asking (xStationOrder) beats '
+          'idle. Only blocked is loud. The cell whose xAtStation is true is '
+          "marked as the wagon's current location. Size it wide: it is a "
+          'strip, not a lamp.',
+      properties: [
+        AssetPropertyInfo(
+            name: 'stationsKey',
+            type: 'String',
+            description:
+                "Key of the wagon's ARRAY [1..10] OF ST_WagonStation. One "
+                'node for the whole row. Empty draws a sample of the strip '
+                'rather than an empty box.',
+            required: true),
+        AssetPropertyInfo(
+            name: 'wagonStateKey',
+            type: 'String?',
+            description:
+                "Optional key of the wagon's own state string "
+                '(p_cmd_sWagonState, a plain STRING), shown as a chip in the '
+                'strip header. Omit it and the strip renders exactly as well '
+                'on the array alone.'),
+        AssetPropertyInfo(
+            name: 'showPositions',
+            type: 'bool',
+            description:
+                "Print each cell's position along the rail in mm. Default "
+                'true; turn it off on a narrow strip.'),
+      ],
+    ),
   ];
 
   /// The asset types that extend `EtherCatAsset` in the HMI: one EtherCAT
