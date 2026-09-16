@@ -92,6 +92,37 @@
 ///     the PLC is down is the same denial of service arrived at slowly. See
 ///     [_onWorkerDied] for what "the link" means when there are three workers.
 ///
+/// ## Freshness is anchored per link as well as per key (HARD-01)
+///
+/// A key's age is measured from the later of two anchors: the last value
+/// heard *for that key*, and the last value heard *on that key's link* —
+/// the OPC UA session, Modbus socket or M2400 link it is served over, as
+/// [linkOf] names it. The per-key anchor alone was F3, and the browser build
+/// measured it on the plant on 2026-09-16: OPC UA notifies on **change**, so
+/// a healthy line's stable signals — `BER01.Running`, a stopped drive's
+/// 0 Hz, every checklist boolean — arrive once when the watcher attaches and
+/// then never again, and ten seconds later the sweep badged all of them
+/// `badStale`. Purple conveyors and exclamation-marked diodes on a plant
+/// where nothing was wrong; only the frequencies that happened to jitter
+/// stayed good. A station in direct mode never showed it because it does not
+/// run this sweep.
+///
+/// A data change on any tag of a session proves that session's publish loop
+/// alive, and a monitored item on a live session that has not notified has
+/// not changed — that is what the protocol promises. So the link's last
+/// arrival vouches for its constant tags. What it cannot vouch for is a link
+/// nobody has heard from at all: a frozen session, a PLC that stopped
+/// scanning, go quiet on every tag at once, the link anchor ages with them,
+/// and every key on it still goes stale at the deadline — which is the
+/// failure this file exists to catch, and it is caught exactly as before.
+/// The trade is a single blackholed tag on an otherwise talking link, which
+/// now reads fresh; the doctrine below says why that window was already
+/// accepted.
+///
+/// [linkOf] is a seam, not a lookup this file does itself: the composition
+/// root knows the pipe's worker routing and the key mappings' server alias,
+/// and hands in one function. Without it the sweep is per-key, as it was.
+///
 /// ## What this file does NOT do
 ///
 /// **It does not close D-12-08-a and does not widen it.** There is a measured
@@ -139,15 +170,21 @@ final class BackendFreshnessSweep implements BackendValueSource {
   ///
   /// [interval] defaults to [intervalFor] of the deadline. It is not a
   /// constant because it is derived from a number the caller supplies.
+  ///
+  /// [linkOf] names the link a key is served over — see the library doc.
+  /// Null for a key served over no link (a health key, or one the pipe has
+  /// not routed yet), which is then aged on its own arrivals alone.
   BackendFreshnessSweep({
     required BackendValueSource values,
     required this.staleAfter,
+    String? Function(String key)? linkOf,
     PipeMainEndpoint? pipe,
     Duration? interval,
     Logger? logger,
   })  : _values = values,
         _pipe = pipe,
         interval = interval ?? intervalFor(staleAfter),
+        _linkOf = linkOf,
         _logger = logger ?? Logger() {
     if (pipe == null) return;
     // Registered in the constructor rather than by the composition root, for
@@ -159,6 +196,7 @@ final class BackendFreshnessSweep implements BackendValueSource {
 
   final BackendValueSource _values;
   final PipeMainEndpoint? _pipe;
+  final String? Function(String key)? _linkOf;
   final Logger _logger;
 
   /// How long a value may go unheard-of before it stops being trustworthy.
@@ -229,6 +267,9 @@ final class BackendFreshnessSweep implements BackendValueSource {
   /// map when its last watcher goes, because an unwatched key has no monitored
   /// item to be fresh from and nobody to tell.
   final Map<String, int> _lastHeard = <String, int>{};
+
+  /// When a value last arrived on each link, by [_linkOf]'s name for it.
+  final Map<String, int> _lastHeardByLink = <String, int>{};
 
   /// The broadcast controllers [subscribe] handed out, closed on [dispose].
   final List<StreamController<relay.DynamicValue>> _streams =
@@ -403,7 +444,7 @@ final class BackendFreshnessSweep implements BackendValueSource {
       if (!relay.isStaleNow(
         key: key,
         quality: entry.value.value.quality,
-        lastHeardMs: _lastHeard[key],
+        lastHeardMs: _anchorOf(key),
         nowMs: now,
         staleAfter: staleAfter,
         skipAlarmKeys: true,
@@ -521,7 +562,22 @@ final class BackendFreshnessSweep implements BackendValueSource {
   void _heard(String key) {
     if (_applying) return;
     if (!_lastHeard.containsKey(key)) return;
-    _lastHeard[key] = _monotonic.elapsedMilliseconds;
+    final now = _monotonic.elapsedMilliseconds;
+    _lastHeard[key] = now;
+    // The link too: this arrival proves the session behind every other key
+    // on it alive (library doc, HARD-01).
+    final link = _linkOf?.call(key);
+    if (link != null) _lastHeardByLink[link] = now;
+  }
+
+  /// The later of the key's own last arrival and its link's, or null when
+  /// the key is not being watched at all.
+  int? _anchorOf(String key) {
+    final own = _lastHeard[key];
+    if (own == null) return null;
+    final link = _linkOf?.call(key);
+    final onLink = link == null ? null : _lastHeardByLink[link];
+    return onLink == null || onLink < own ? own : onLink;
   }
 
   void _arm() {

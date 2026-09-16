@@ -77,6 +77,45 @@ Future<void> checkListenDeliversCurrentValue(StateManApi api) async {
 /// The property an implementation loses when a subscription dies while the link
 /// stays up: the page keeps rendering the last number it saw, and nothing on
 /// screen says so.
+/// A key whose value was in place BEFORE anybody listened delivers that
+/// value to the listener without waiting for a change.
+///
+/// The case [checkListenDeliversCurrentValue] does not exercise: there the
+/// value is set after the listener attaches, so a source that only forwarded
+/// *changes* would pass it. On a plant most signals are stable by design — a
+/// healthy line is exactly the case where nothing changes — and a subscribe
+/// that produces nothing until the next change renders every one of them as
+/// unknown. The wire's answer is the snapshot in the subscribe result; this
+/// is the property, on every leg, that the snapshot exists and lands.
+Future<void> checkListenDeliversValueSetBeforeListening(
+    StateManApi api) async {
+  final plant = harnessOf(api);
+  plant.setValue(_speedKey, 1450);
+  // Do not attach anything first: the point is that nobody was listening
+  // when the value was set.
+  final node = api.listen(_speedKey);
+  final seen = observe(node);
+  try {
+    // An in-memory source may already hold it; a remote one lands it with
+    // the subscribe snapshot, which is a notification. Either is right; a
+    // source that does neither is the defect.
+    if (node.value.value != 1450) {
+      await within(seen.next,
+          'the value that was already in place arriving for a new listener');
+    }
+  } finally {
+    seen.stop();
+  }
+  expect(node.value.asInt, 1450,
+      reason: 'the key held 1450 before anybody listened and the listener '
+          'never received it — a subscribe that waits for the next change is '
+          'a replay-shaped contract, and a stable plant never changes');
+  expect(node.value.quality.isGood, isTrue,
+      reason: 'the snapshot must carry the quality the source holds, not a '
+          'placeholder; a value that arrived stale for having been stable is '
+          'the purple conveyor on a running line');
+}
+
 Future<void> checkListenDeliversSubsequentChanges(StateManApi api) async {
   final plant = harnessOf(api);
 
@@ -228,6 +267,8 @@ Future<void> checkDisposeStopsNotifications(StateManApi api) async {
 /// The key is the test name, so a failure in CI reads as the promise that was
 /// broken rather than as a function identifier.
 const subscribeChecks = <String, Check<StateManApi>>{
+  'a value in place before anybody listened is delivered without a change':
+      checkListenDeliversValueSetBeforeListening,
   'a subscribed key delivers its current value, good':
       checkListenDeliversCurrentValue,
   'a listener is notified of every change after it attaches':

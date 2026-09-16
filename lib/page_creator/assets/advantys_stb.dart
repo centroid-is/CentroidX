@@ -1087,7 +1087,9 @@ class STBNIP2311Config extends BaseAsset {
     final cfg = _$STBNIP2311ConfigFromJson(json);
     final before = cfg.subdevices.length;
     cfg.subdevices.retainWhere(
-      (s) => _kAllowedSTBSubdeviceTypeNames.contains(s.runtimeType.toString()),
+      // `assetName`, not `runtimeType.toString()`: dart2js minifies the
+      // latter, and this filter would then drop every subdevice in a browser.
+      (s) => _kAllowedSTBSubdeviceTypeNames.contains(s.assetName),
     );
     final dropped = before - cfg.subdevices.length;
     if (dropped > 0) {
@@ -1374,10 +1376,10 @@ class _STBNIP2311ConfigContentState extends State<_STBNIP2311ConfigContent> {
                               index: index,
                               child: const Icon(Icons.drag_indicator),
                             ),
-                            title: Text(sub.runtimeType.toString()),
+                            title: Text(sub.assetName),
                             onTap: () => showStandardDialog<void>(
                               context: context,
-                              title: sub.runtimeType.toString(),
+                              title: sub.assetName,
                               subtitle: 'Configuration',
                               builder: (_) => sub.configure(context),
                             ),

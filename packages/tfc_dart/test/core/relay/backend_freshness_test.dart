@@ -204,6 +204,8 @@ class _Fixture {
       values: values,
       staleAfter: staleAfter,
       pipe: pipe,
+      // The worker is the link here: alpha and beta are two sessions.
+      linkOf: (key) => pipe.workerOf(key)?.toString(),
       logger: _quiet(),
     );
   }
@@ -493,6 +495,56 @@ void main() {
       node.addListener(first);
       expect(f.sweep.running, isTrue);
       node.removeListener(first);
+    });
+
+    test(
+        'a constant key on a link that is otherwise heard from stays good; '
+        'the same key on a silent link still ages (HARD-01)', () async {
+      // The plant as measured on 2026-09-16: a healthy line is mostly
+      // signals that never change. OPC UA notifies on change, so BER01.Running
+      // arrives once and then never — and the per-key sweep badged it stale
+      // ten seconds later, on a session that was talking the whole time.
+      final f = _Fixture(twoWorkers: true);
+      addTearDown(f.tearDown);
+      final constant = f.watch(_speedKey); // alpha
+      final far = f.watch(_farKey); // beta
+      f.alpha.deliver(_speedKey, _good(true));
+      f.beta!.deliver(_farKey, _good(true));
+      await _settle();
+
+      // Alpha keeps talking about a DIFFERENT key, well past the deadline.
+      // Beta says nothing more.
+      final talking = f.watch(_otherKey);
+      var speed = 0;
+      final chatter = Timer.periodic(f.sweep.interval, (_) {
+        f.alpha.deliver(_otherKey, _good(++speed));
+      });
+      addTearDown(chatter.cancel);
+      await f.pastDeadline();
+      await f.pastDeadline();
+
+      expect(constant.value.quality, relay.Quality.good,
+          reason: 'the key never changed, but its session did not stop '
+              'talking: a monitored item on a live session that has not '
+              'notified has not changed, and badging it stale is the purple '
+              'conveyor on a running line');
+      expect(constant.value.value, isTrue,
+          reason: 'and it still carries the value it arrived with');
+      expect(talking.value.quality, relay.Quality.good);
+      expect(far.value.quality, relay.Quality.badStale,
+          reason: 'beta has been silent for the whole window: nothing on that '
+              'link vouches for this key, so it ages exactly as before — the '
+              'frozen session is still caught');
+
+      // And when alpha falls silent too, its constant key ages like any
+      // other: the link anchor is a witness, not an exemption.
+      chatter.cancel();
+      await f.pastDeadline();
+      await f.pastDeadline();
+      expect(constant.value.quality, relay.Quality.badStale,
+          reason: 'the whole link went quiet and the constant key read '
+              'fresh — that is the frozen-fresh page this file exists to '
+              'prevent');
     });
 
     test('a key nobody watches is never swept, and one that is watched is',

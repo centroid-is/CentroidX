@@ -427,6 +427,21 @@ BackendRelayComposition composeBackendRelay({
       values: liveValues,
       staleAfter: staleAfter,
       pipe: pipe,
+      // The link a key is served over, for the per-link anchor
+      // (`backend_freshness.dart`, HARD-01): the worker the pipe routes it to,
+      // narrowed by the server alias its mapping names, because one worker
+      // hosts every OPC UA server of its family and a change on one PLC
+      // proves nothing about another. Null until the pipe has routed the key,
+      // which is also when there is nothing on the link to hear yet.
+      linkOf: (key) {
+        final worker = pipe.workerOf(key);
+        if (worker == null) return null;
+        final entry = keyMappings.nodes[key];
+        final alias = entry?.opcuaNode?.serverAlias ??
+            entry?.modbusNode?.serverAlias ??
+            entry?.m2400Node?.serverAlias;
+        return alias == null ? 'worker:$worker' : 'worker:$worker/$alias';
+      },
       logger: logger,
     );
   }

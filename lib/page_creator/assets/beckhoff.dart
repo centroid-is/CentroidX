@@ -430,10 +430,10 @@ class _CXxxxxConfigContentState extends State<_CXxxxxConfigContent> {
                               index: index,
                               child: const Icon(Icons.drag_indicator),
                             ),
-                            title: Text(sub.runtimeType.toString()),
+                            title: Text(sub.assetName),
                             onTap: () => showStandardDialog<void>(
                               context: context,
-                              title: sub.runtimeType.toString(),
+                              title: sub.assetName,
                               subtitle: 'Configuration',
                               // A slice is a subdevice of its own: its binding
                               // goes under its form, the same way the page
@@ -723,10 +723,10 @@ class _EK1100ConfigContentState extends State<_EK1100ConfigContent> {
                               index: index,
                               child: const Icon(Icons.drag_indicator),
                             ),
-                            title: Text(sub.runtimeType.toString()),
+                            title: Text(sub.assetName),
                             onTap: () => showStandardDialog<void>(
                               context: context,
-                              title: sub.runtimeType.toString(),
+                              title: sub.assetName,
                               subtitle: 'Configuration',
                               // A slice is a subdevice of its own: its binding
                               // goes under its form, the same way the page

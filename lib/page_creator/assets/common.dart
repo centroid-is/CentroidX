@@ -39,6 +39,11 @@ import '../../widgets/boolean_expression.dart';
 import '../../widgets/bit_mask_grid.dart';
 import '../../widgets/key_mapping_sections.dart';
 import 'bulk_property.dart';
+// For the stored name of this asset's own type. An import cycle with the
+// registry (it imports every asset file), and a deliberate one: the name a
+// freshly built asset writes into a page has to be the name the registry
+// reads back, and there is exactly one place both are pinned.
+import 'registry.dart';
 
 // The `Asset.bulkProperties` contract is declared here, so every asset file
 // that implements it gets the descriptor types along with `Asset` itself.
@@ -321,12 +326,19 @@ abstract class BaseAsset implements Asset {
 
   BaseAsset() {
     if (variant == 'unknown') {
-      variant = runtimeType.toString();
+      // The registry's name for this type, never `runtimeType.toString()`:
+      // in a release web build that is a minified token, and an asset built
+      // from the palette would write it into the page as its `asset_name` —
+      // a row no station could ever read back. The fallback is for a type
+      // registered without a name, which on a station still spells itself.
+      variant = AssetRegistry.nameOf(runtimeType) ?? runtimeType.toString();
     }
   }
 
+  // From the stored name, for the same reason: a palette that read the
+  // runtime type would list minified tokens in a browser.
   @override
-  String get displayName => _humanize(runtimeType.toString());
+  String get displayName => _humanize(assetName);
 
   @override
   String get category => 'General';

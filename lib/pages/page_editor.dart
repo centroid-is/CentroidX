@@ -1836,7 +1836,7 @@ class _PageEditorState extends ConsumerState<PageEditor> {
     page.assets[result.index] = updated;
     _currentPage = targetPage;
     _isProposal = true;
-    _proposalTitle = updated.text ?? updated.runtimeType.toString();
+    _proposalTitle = updated.text ?? updated.assetName;
     _proposedAssets = {..._proposedAssets, updated};
   }
 
