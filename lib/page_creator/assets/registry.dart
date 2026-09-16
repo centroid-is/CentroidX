@@ -42,7 +42,6 @@ import 'third_party.dart';
 import 'alarm_visibility.dart';
 import 'rtsp_camera.dart';
 import 'web_view.dart';
-import 'wagon_station_strip.dart';
 
 class AssetRegistry {
   static final Logger _log = Logger();
@@ -109,7 +108,6 @@ class AssetRegistry {
     AlarmVisibilityConfig: AlarmVisibilityConfig.fromJson,
     RtspCameraConfig: RtspCameraConfig.fromJson,
     WebViewAssetConfig: WebViewAssetConfig.fromJson,
-    WagonStationStripConfig: WagonStationStripConfig.fromJson,
   };
 
   static final Map<Type, Asset Function()> defaultFactories = {
@@ -176,7 +174,6 @@ class AssetRegistry {
     AlarmVisibilityConfig: AlarmVisibilityConfig.preview,
     RtspCameraConfig: RtspCameraConfig.preview,
     if (kWebViewEnabled) WebViewAssetConfig: WebViewAssetConfig.preview,
-    WagonStationStripConfig: WagonStationStripConfig.preview,
   };
 
   static void registerFromJsonFactory<T extends Asset>(

@@ -12,10 +12,11 @@
 /// commissioned hold whatever was last written to them, which is usually
 /// zeros and occasionally not. `xEnabled` and a non-empty `sName` are what
 /// separate a station from that tail, and [wagonStationsFromValue] is the only
-/// place that decision is made — a naive render draws ten cells of garbage.
+/// place that decision is made — a naive render draws ten docks of garbage.
 ///
-/// Nothing in this library knows about Flutter: it is the family's data layer,
-/// so a strip, a pane and a test can all decode the same array.
+/// Nothing in this library knows about Flutter: it is the data layer under the
+/// docks a rails conveyor draws beside its track and the pane a dock opens, so
+/// both — and the tests — decode the same array the same way.
 library;
 
 import 'package:open62541/open62541.dart' show DynamicValue;
@@ -50,20 +51,15 @@ abstract final class WagonStationFields {
 /// Which way a pallet moves between the station and the wagon.
 enum WagonStationRole {
   /// The station hands a pallet to the wagon.
-  source('Source', 'Source'),
+  source('Source'),
 
   /// The station takes a pallet from the wagon.
-  destination('Destination', 'Dest');
+  destination('Destination');
 
-  const WagonStationRole(this.label, this.shortLabel);
+  const WagonStationRole(this.label);
 
-  /// The word in full, for a tooltip or a pane.
+  /// The word a pane prints.
   final String label;
-
-  /// What a cell calls it. A cell is about 100 px wide and the word shares
-  /// its line with the side, so `Destination · Behind` would be shown as
-  /// `Destination …` — which is the half that says least.
-  final String shortLabel;
 
   static WagonStationRole fromRaw(int raw) =>
       raw == 1 ? destination : source;
@@ -114,7 +110,7 @@ enum WagonStationState {
 /// One entry of the array, decoded.
 ///
 /// Every member of the struct is carried, including the two completion flags
-/// the strip does not draw: they are what a pane showing one station's
+/// the dock does not draw: they are what the pane showing one station's
 /// handshake would need, and decoding the struct twice in two places is how
 /// the two decodings drift apart.
 class WagonStation {
@@ -164,7 +160,7 @@ class WagonStation {
   /// A commissioned station, as opposed to the array's stale tail.
   bool get isCommissioned => enabled && name.isNotEmpty;
 
-  /// The one word the cell shows. First match wins; see [WagonStationState].
+  /// The one word a dock is coloured by and its pane prints. First match wins; see [WagonStationState].
   WagonStationState get state {
     if (waitingForInterlock || interlock) return WagonStationState.blocked;
     if (outfeed) return WagonStationState.delivering;
@@ -173,10 +169,59 @@ class WagonStation {
     return WagonStationState.idle;
   }
 
-  /// The position as the cell prints it, or an em dash when the PLC has not
+  /// The position as a pane prints it, or an em dash when the PLC has not
   /// published a number.
   String get positionLabel =>
       position.isFinite ? '${position.round()} mm' : '—';
+
+  /// Where along the rail this station stands, 0..1, on the same scale as
+  /// the wagon's own `p_stat_rPosition_percentage`.
+  ///
+  /// That scale is `FB_Wagon`'s, not ours: 0 is the reference end and 1 is
+  /// the furthest enabled station ([wagonRailLength]). Using it is what makes
+  /// a dock line up with the wagon parked at it — both are placed by the same
+  /// fraction, so they cannot disagree about where the station is.
+  double railFraction(double railLength) {
+    if (!position.isFinite || !railLength.isFinite || railLength <= 0) {
+      return 0;
+    }
+    return (position / railLength).clamp(0.0, 1.0);
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is WagonStation &&
+      other.index == index &&
+      other.name == name &&
+      other.role == role &&
+      other.side == side &&
+      other.position == position &&
+      other.enabled == enabled &&
+      other.atStation == atStation &&
+      other.interlock == interlock &&
+      other.order == order &&
+      other.ready == ready &&
+      other.deliveryComplete == deliveryComplete &&
+      other.outfeed == outfeed &&
+      other.outfeedComplete == outfeedComplete &&
+      other.waitingForInterlock == waitingForInterlock;
+
+  @override
+  int get hashCode => Object.hash(
+      index,
+      name,
+      role,
+      side,
+      position,
+      enabled,
+      atStation,
+      interlock,
+      order,
+      ready,
+      deliveryComplete,
+      outfeed,
+      outfeedComplete,
+      waitingForInterlock);
 
   /// Decodes one array element, or null when it is not a struct at all.
   static WagonStation? tryParse(DynamicValue value, {required int index}) {
@@ -214,9 +259,8 @@ class WagonStation {
 /// Two things happen here and nowhere else:
 ///
 ///  - the array's uncommissioned tail is dropped ([WagonStation.isCommissioned]);
-///  - what is left is ordered by [WagonStation.position], so the strip reads
-///    the way the rail does rather than the way the PLC happens to have
-///    declared the array.
+///  - what is left is ordered by [WagonStation.position], so it reads the
+///    way the rail does rather than the way the PLC declared the array.
 ///
 /// The sort is stable on the array index, so two stations sharing a position
 /// — which the PLC allows, one in front and one behind — keep the order the
@@ -236,9 +280,29 @@ List<WagonStation> wagonStationsFromValue(DynamicValue? array) {
   return stations;
 }
 
-/// A row of stations for the palette tile and for an asset dropped before its
-/// array is bound — a picture of the thing, which says what it is for better
-/// than an empty box does.
+/// The length of the rail the wagon's percentage is measured against: the
+/// furthest position of any *enabled* entry, in mm.
+///
+/// This mirrors `FB_Wagon` line for line — `rMaxStationPosition` is the
+/// maximum `p_stat_rPosition` over entries with `xEnabled` set, and the name
+/// plays no part in it. [wagonStationsFromValue] is stricter about what it
+/// draws, but the scale has to be the PLC's or a dock drifts off the wagon
+/// parked at it. Zero when nothing is enabled or the value is not an array.
+double wagonRailLength(DynamicValue? array) {
+  if (array == null || !array.isArray) return 0;
+  var longest = 0.0;
+  for (final element in array.asArray) {
+    if (!element.isObject || !_bool(element, WagonStationFields.enabled)) {
+      continue;
+    }
+    final position = _double(element, WagonStationFields.position);
+    if (position.isFinite && position > longest) longest = position;
+  }
+  return longest;
+}
+
+/// A row of stations for goldens and for tests that want a plausible rail
+/// without building an array — a picture of the thing.
 ///
 /// Deliberately invented names: a sample is drawn into a golden, and a golden
 /// is a published image.
@@ -293,7 +357,7 @@ List<WagonStation> sampleWagonStations() => const [
 
 // `DynamicValue.operator[]` throws on a missing member, so every read is
 // guarded: a PLC running an older revision of the DUT must degrade to a
-// quieter cell, not take the page down.
+// quieter dock, not take the page down.
 bool _bool(DynamicValue v, String f) => v.contains(f) ? v[f].asBool : false;
 
 double _double(DynamicValue v, String f) =>
@@ -307,7 +371,7 @@ String _str(DynamicValue v, String f) =>
 /// TwinCAT's OPC UA server publishes an enum as its numeric value, which is
 /// what [names] is a fallback for rather than the main path: a server
 /// configured to publish the enum's *name* instead would otherwise land every
-/// station on ordinal 0 silently, and a whole strip labelled "Source" looks
+/// station on ordinal 0 silently, and a whole rail of sources looks
 /// plausible enough to go unnoticed.
 int _enum(DynamicValue v, String f, Map<String, int> names) {
   if (!v.contains(f)) return 0;
