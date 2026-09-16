@@ -2,6 +2,7 @@ package ui
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -183,5 +184,31 @@ func TestAutoRefreshDue(t *testing.T) {
 	state.beginLoad(true)
 	if state.autoRefreshDue(landed.Add(time.Hour)) {
 		t.Error("must not start a second refresh while one is running")
+	}
+}
+
+// The bar must say how old the list is, and a list that could not be
+// re-checked must not read as a current one.
+func TestCheckedCaption(t *testing.T) {
+	state := &pickerState{selected: -1, notesCacheFor: -1, channel: update.ChannelStable}
+	if text, _ := checkedCaption(state); text != "" {
+		t.Errorf("nothing checked yet: expected no caption, got %q", text)
+	}
+
+	checked := time.Date(2026, 9, 16, 9, 30, 0, 0, time.UTC)
+	state.landReleases(state.beginLoad(false), buildTestReleases(), nil, checked)
+	stamp := checked.Local().Format("15:04")
+	if text, failed := checkedCaption(state); text != "Checked "+stamp || failed {
+		t.Errorf("expected %q, got %q (failed=%v)", "Checked "+stamp, text, failed)
+	}
+
+	state.beginLoad(true)
+	if text, _ := checkedCaption(state); text != "Checking..." {
+		t.Errorf("expected the caption to show the check in progress, got %q", text)
+	}
+
+	state.landReleases(state.loadGen, nil, errors.New("connection refused"), checked.Add(5*time.Minute))
+	if text, failed := checkedCaption(state); !failed || !strings.Contains(text, stamp) {
+		t.Errorf("expected a failure caption naming the list's age %s, got %q (failed=%v)", stamp, text, failed)
 	}
 }

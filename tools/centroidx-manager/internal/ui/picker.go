@@ -157,7 +157,13 @@ func loadReleases(state *pickerState, eng *update.Engine, installer PickerInstal
 			state.installedVersion = installer.InstalledVersion()
 			state.installRecord = loadInstallRecordOrNil()
 		}
-		state.landReleases(gen, releases, err, time.Now())
+		if state.landReleases(gen, releases, err, time.Now()) {
+			if err != nil {
+				log.Printf("warn: checking the %s channel for versions failed: %v", channel, err)
+			} else {
+				log.Printf("checked the %s channel: %d versions listed", channel, len(releases))
+			}
+		}
 		w.Invalidate()
 	}()
 }
@@ -492,14 +498,12 @@ func layoutChannelBar(gtx layout.Context, th *material.Theme, state *pickerState
 				return layout.Inset{Left: unit.Dp(10), Right: unit.Dp(10)}.Layout(gtx, lbl.Layout)
 			}),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				label := "Refresh"
-				if state.refreshing || state.loading {
-					label = "Checking..."
-				}
+				// The label stays put while a check runs — the caption says
+				// "Checking..." — so the bar does not reflow under the cursor.
 				if !state.canRefresh() {
 					gtx = gtx.Disabled()
 				}
-				btn := material.Button(th, &state.refreshBtn, label)
+				btn := material.Button(th, &state.refreshBtn, "Refresh")
 				btn.Background = ColorSurface()
 				btn.Color = ColorMuted()
 				return btn.Layout(gtx)
@@ -512,6 +516,9 @@ func layoutChannelBar(gtx layout.Context, th *material.Theme, state *pickerState
 // last attempt to re-check it failed — a list that cannot refresh must not
 // pass for a current one. failed=true when it should read as an error.
 func checkedCaption(s *pickerState) (text string, failed bool) {
+	if s.refreshing {
+		return "Checking...", false
+	}
 	if s.lastChecked.IsZero() {
 		return "", false
 	}
