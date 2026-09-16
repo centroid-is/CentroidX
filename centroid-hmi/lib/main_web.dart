@@ -1,5 +1,5 @@
-/// The browser entrypoint: the eight routes of `docs/web-client-scope.md` and
-/// nothing else.
+/// The browser entrypoint: the eight routes of `docs/web-client-scope.md`, the
+/// plant's own pages, and nothing else.
 ///
 /// ## Why this is a second entrypoint and not a flag
 ///
@@ -68,6 +68,8 @@ import 'package:tfc/pages/preferences.dart';
 import 'package:tfc/pages/server_config.dart';
 import 'package:tfc/providers/menu.dart'
     show menuComposerProvider, routablePathsProvider;
+import 'package:tfc/providers/page_manager.dart'
+    show bootstrapPageManagerProvider, pageManagerProvider;
 import 'package:tfc/providers/preferences.dart'
     show initDeviceLocalPreferences;
 import 'package:tfc/providers/theme.dart';
@@ -77,6 +79,7 @@ import 'package:tfc/routes.dart';
 import 'package:tfc/transition_delegate.dart';
 import 'package:tfc/widgets/access_gate.dart';
 import 'package:tfc/widgets/page_access_gate.dart';
+import 'package:tfc/widgets/route_redirect.dart';
 import 'package:tfc_dart/core/secure_storage/secure_storage.dart'
     show SecureStorage;
 
@@ -108,8 +111,17 @@ Future<void> main() async {
       // And every entry this build carries no route for is dropped before it
       // is offered, so an operator is never shown History View or IP Settings
       // and told "not found" on tap. The same filter the station applies
-      // (`main.dart`), keyed on the same route table the router serves.
-      routablePathsProvider.overrideWithValue(webRoutePaths()),
+      // (`main.dart`) — with one difference that is the whole reason the
+      // browser's routes are not a table built once at boot: a station knows
+      // its pages before `runApp`, a browser learns them after sign-in and
+      // again on every change, so the routable set follows the page manager
+      // (`_webPlantPagePattern` serves whatever it holds) rather than being
+      // read off a table that would never hold them.
+      routablePathsProvider.overrideWith((ref) {
+        final manager = ref.watch(pageManagerProvider).valueOrNull ??
+            ref.watch(bootstrapPageManagerProvider);
+        return {...kWebFixedRoutes, ...?manager?.pages.keys};
+      }),
     ],
     child: const CentroidWebApp(),
   ));
@@ -133,23 +145,120 @@ List<MenuItem> _composeWebMenu(PageManager pageManager) {
   return items;
 }
 
-/// The eight routes, with the same gates the native build applies.
+/// The eight routes, with the same gates the native build applies — and the
+/// plant's pages, resolved live.
 ///
 /// `installRaisedRoutes` first, exactly as `createLocationBuilder` does it: the
 /// navigation menu resolves a path's group through [RouteRegistry], and if the
 /// table were built before the raised routes were declared the menu and the
 /// gates could disagree about which entries are locked.
+///
+/// **Why the plant's pages are one pattern and not one route each.** The
+/// station registers a route per page (`main.dart`, `addRoute`) because it
+/// knows its pages before `runApp`; a browser does not — its rows arrive over
+/// the relay after sign-in and again on every change (`relayed_config_items.
+/// dart`), and a Beamer route table is fixed once the delegate exists. So the
+/// eight fixed routes are joined by [_webPlantPagePattern], which matches
+/// every other path and hands it to [_WebPlantPage] to resolve against the
+/// page manager *as it is now*: a page → the same `PageAccessGate` +
+/// `AssetView` the station wraps it in, group and whitelist alike; no such
+/// page → not found. Nothing is opened that the station would not open.
 RoutesLocationBuilder buildWebRoutes() {
   installRaisedRoutes();
-  return RoutesLocationBuilder(routes: _webRouteTable());
+  return RoutesLocationBuilder(routes: {
+    ..._webRouteTable(),
+    _webPlantPagePattern: (context, state, args) {
+      final path = state.uri.path;
+      return BeamPage(
+        key: ValueKey('page:$path'),
+        child: _WebPlantPage(path: path),
+      );
+    },
+  });
 }
 
-/// The paths [buildWebRoutes] serves, for `routablePathsProvider`.
+/// The eight fixed paths this build serves, for the routable filter and for
+/// the wildcard to step around.
 ///
 /// Read off the same table rather than kept as a second list, so a route
 /// added to one cannot be forgotten by the other — the failure that filter
 /// exists to prevent, one layer up.
-Set<String> webRoutePaths() => _webRouteTable().keys.cast<String>().toSet();
+final Set<String> kWebFixedRoutes =
+    _webRouteTable().keys.cast<String>().toSet();
+
+/// Every path that is not `/` and not one of the eight fixed routes.
+///
+/// A `RegExp` and not Beamer's `'*'`, for two reasons that are both about
+/// what Beamer stacks. Beamer builds one page per matching route, sorted by
+/// pattern length, and shows the last: a bare `'*'` (length 1) sorts beside
+/// `'/'` and would cover Home on `/` or sit under it on a plant page depending
+/// on map order, where this pattern is longer than every fixed key and so is
+/// always the top page where it matches. And it does not match the fixed
+/// routes at all, so no plant-page widget is ever mounted beneath Server
+/// Config or the sign-in gate. `/` itself is excluded because Home is
+/// [_WebHome]'s decision.
+final RegExp _webPlantPagePattern = RegExp(
+  '^(?!(?:${kWebFixedRoutes.where((p) => p != '/').map(RegExp.escape).join('|')})'
+  r'(?:[/?#]|$))/.+',
+);
+
+/// One of the plant's pages, gated exactly as `main.dart` gates it —
+/// `PageAccessGate` (the page's declared group, then the session's whitelist)
+/// around `AssetView` — but resolved against the page manager as it is now,
+/// so a page that arrives with the rows after sign-in, or changes while the
+/// tab is open, is reachable without a reload. A path the manager does not
+/// hold is not found, which is the answer the station's router gives too.
+class _WebPlantPage extends ConsumerWidget {
+  const _WebPlantPage({required this.path});
+
+  final String path;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final manager = ref.watch(pageManagerProvider).valueOrNull ??
+        ref.watch(bootstrapPageManagerProvider);
+    final page = manager?.pages[path];
+    if (page == null) return const PageNotFound();
+    return PageAccessGate(
+      path: path,
+      title: page.menuItem.label,
+      child: AssetView(pageName: path),
+    );
+  }
+}
+
+/// What `/` opens: the plant's Home when it has one, otherwise its first
+/// reachable page — the same two answers `main.dart` gives, decided live.
+///
+/// The station decides this once, before `runApp`, from the pages it has
+/// cached. A browser decides it on every build: before sign-in the page
+/// manager holds the built-in default, which does have a `/`, so the gate in
+/// front of it shows the sign-in; once the plant's rows arrive there may be
+/// no page keyed `/` at all (the measured plant has none — every page lives
+/// under a section), and `/` then redirects to the first page the menu
+/// lists, through the same `RouteRedirect` the station uses, which only
+/// beams while the router is actually at `/`. A plant with no pages keeps
+/// the gated view, which says the page is not found rather than nothing.
+class _WebHome extends ConsumerWidget {
+  const _WebHome();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final manager = ref.watch(pageManagerProvider).valueOrNull ??
+        ref.watch(bootstrapPageManagerProvider);
+    final target = manager == null || manager.pages.containsKey('/')
+        ? null
+        : firstMenuPath(manager.getRootMenuItems());
+    if (target == null) {
+      return const PageAccessGate(
+        path: '/',
+        title: 'Home',
+        child: AssetView(pageName: '/'),
+      );
+    }
+    return RouteRedirect(from: '/', target: target);
+  }
+}
 
 Map<Pattern, dynamic Function(BuildContext, BeamState, Object?)>
     _webRouteTable() {
@@ -167,20 +276,14 @@ Map<Pattern, dynamic Function(BuildContext, BeamState, Object?)>
       );
 
   return {
-    // The plant page, registered the way `main.dart` registers every page:
-    // behind the page gate (group and whitelist, like any page-manager route)
-    // and inside `AssetView`, which is the app shell — the bar, the alarm
-    // banner, the sign-in affordance. A bare `PlantPageView` here was a page
-    // with no shell at all: nothing to navigate with, and when its layout
-    // could not be loaded, nothing on the screen.
+    // Home — or the plant's first page when it has no Home. Decided live by
+    // [_WebHome]; a hardcoded `AssetView('/')` here was "page not found" on a
+    // plant whose every page lives under a section. The plant's other pages
+    // are served by [_webPlantPagePattern], appended in [buildWebRoutes].
     '/': (context, state, args) => const BeamPage(
           key: ValueKey('/'),
           title: 'Home',
-          child: PageAccessGate(
-            path: '/',
-            title: 'Home',
-            child: AssetView(pageName: '/'),
-          ),
+          child: _WebHome(),
         ),
     // Behind the page gate, as `main.dart` registers it: the whitelist can
     // drop Alarm View from the menu, and without the gate the address still
