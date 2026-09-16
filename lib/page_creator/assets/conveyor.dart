@@ -1112,7 +1112,51 @@ class ConveyorConfig extends BaseAsset {
   bool get mirrorsWithPage => true;
 
   String? key;
+
+  /// The conveyor's settings node — the belt's own dimensions.
+  ///
+  /// It always carries the belt length the batch overlay measures against.
+  /// Whether it also carries the batch array depends on when the PLC was
+  /// written: see [batchArrayKey].
   String? batchesKey;
+
+  /// The node carrying the batch array, when the PLC keeps it apart from
+  /// [batchesKey].
+  ///
+  /// Where the array lives depends on the PLC vintage. Older programs keep it
+  /// inside the conveyor settings struct next to the belt length, so
+  /// [batchesKey] alone supplies both and this stays unset. Newer ones hold
+  /// it in the conveyor's own function block, which is a different node from
+  /// the settings, so the two have to be bound separately: [batchesKey] for
+  /// the length, this for the array.
+  ///
+  /// Lines are downloaded at different times and both vintages can appear on
+  /// one page, so this is an extra optional key rather than a migration.
+  /// Unset, the overlay reads exactly what it always read; set, the length
+  /// still comes from [batchesKey] and only the array moves.
+  ///
+  /// May be bound either at the array node itself or at the struct holding
+  /// it — both shapes decode, and the element members are the same under
+  /// either layout.
+  String? batchArrayKey;
+
+  /// The node carrying the line recipe's batch length, in millimetres: how
+  /// much belt one occupied slot takes up.
+  ///
+  /// This used to be a fixed 500 mm with a `todo` next to it, because the PLC
+  /// did not publish it. It does now, on the recipe the line runs. Unset, the
+  /// overlay keeps that same [defaultBatchLengthMm], so nothing already on a
+  /// page changes until the key is bound.
+  ///
+  /// May be bound at the recipe struct or straight at its length member.
+  String? batchLengthKey;
+
+  /// The batch length used when [batchLengthKey] is unbound or unreadable.
+  ///
+  /// The constant the overlay was hard-coded to before the recipe published
+  /// one. Keeping it as the fallback is what makes [batchLengthKey] optional.
+  static const double defaultBatchLengthMm = 500;
+
   String? frequencyKey;
   String? tripKey;
 
@@ -1292,6 +1336,8 @@ class ConveyorConfig extends BaseAsset {
   ConveyorConfig(
       {this.key,
       this.batchesKey,
+      this.batchArrayKey,
+      this.batchLengthKey,
       this.frequencyKey,
       this.tripKey,
       this.runningKey,
@@ -1393,6 +1439,8 @@ class RollerConveyorConfig extends ConveyorConfig {
   RollerConveyorConfig(
       {super.key,
       super.batchesKey,
+      super.batchArrayKey,
+      super.batchLengthKey,
       super.frequencyKey,
       super.tripKey,
       super.runningKey,
@@ -1487,7 +1535,20 @@ class _ConveyorConfigContentState extends State<_ConveyorConfigContent> {
         KeyField(
           initialValue: widget.config.batchesKey,
           onChanged: (val) => setState(() => widget.config.batchesKey = val),
-          label: 'Batches key',
+          label: 'Batches key (conveyor settings: belt length)',
+        ),
+        const SizedBox(height: 8),
+        KeyField(
+          initialValue: widget.config.batchArrayKey,
+          onChanged: (val) => setState(() => widget.config.batchArrayKey = val),
+          label: 'Batch array key (only if separate from the settings)',
+        ),
+        const SizedBox(height: 8),
+        KeyField(
+          initialValue: widget.config.batchLengthKey,
+          onChanged: (val) =>
+              setState(() => widget.config.batchLengthKey = val),
+          label: 'Batch length key (recipe, mm)',
         ),
         const SizedBox(height: 8),
         KeyField(
@@ -2321,6 +2382,16 @@ class _ConveyorState extends ConsumerState<Conveyor>
         (label: 'drive', key: widget.config.key!, optional: false),
       if (_bound(widget.config.batchesKey))
         (label: 'batches', key: widget.config.batchesKey!, optional: true),
+      // Both halves of the overlay are optional in their own right: on a PLC
+      // that keeps the array with the settings neither of these is bound, and
+      // on one that split them a dead array or recipe node must cost the
+      // overlay and nothing else.
+      if (_bound(widget.config.batchArrayKey))
+        (label: 'batchArray', key: widget.config.batchArrayKey!,
+            optional: true),
+      if (_bound(widget.config.batchLengthKey))
+        (label: 'batchLength', key: widget.config.batchLengthKey!,
+            optional: true),
       if (_bound(widget.config.frequencyKey))
         (label: 'frequency', key: widget.config.frequencyKey!, optional: true),
       if (_bound(widget.config.runningKey))
@@ -2419,7 +2490,24 @@ class _ConveyorState extends ConsumerState<Conveyor>
         // on every stream tick.
         if (!(widget.config.simulateBatches ?? false) &&
             dynValue['batches'] != null) {
-          _updateBatches(dynValue['batches']!);
+          // Unbound `batchArrayKey` means the array is still where it always
+          // was, inside the settings value — every page written before the
+          // array could live on its own node reads exactly what it read
+          // before. Bound, the array comes off its own node and there is
+          // deliberately no fall-back to the settings: a PLC that moved the
+          // array does not carry it there any more, so a dead array node
+          // costs the overlay and nothing else rather than silently drawing
+          // something stale.
+          final arrayValue = _bound(widget.config.batchArrayKey)
+              ? dynValue['batchArray']
+              : dynValue['batches'];
+          if (arrayValue != null) {
+            _updateBatches(
+              dynValue['batches']!,
+              arrayValue,
+              batchLength: _batchLengthIn(dynValue['batchLength']),
+            );
+          }
         }
 
         // Wagon position: raw 0..100% like the elevator's position key,
@@ -2587,16 +2675,85 @@ class _ConveyorState extends ConsumerState<Conveyor>
       )
       .startWith(null);
 
-  void _updateBatches(DynamicValue dynConveyor) {
-    final conveyorLength = dynConveyor['p_stat_Length'].asDouble;
-    const batchLength = 500; // todo variable mm
+  /// The batch array carried by [value], or null if there is not one.
+  ///
+  /// A key can be mapped at the array node itself or at the struct that holds
+  /// it, and both turn up in page configs, so accept either shape. A struct
+  /// that simply has no array member — the conveyor settings on a PLC that
+  /// moved the array into the function block — yields null, and the overlay
+  /// is skipped. It used to throw out of `build` instead, which is a red box
+  /// over an asset whose drive was reading fine.
+  static List<DynamicValue>? _batchArrayIn(DynamicValue value) {
+    if (value.isArray) return value.asArray;
+    if (value.contains(_batchArrayMember)) {
+      final member = value[_batchArrayMember];
+      if (member.isArray) return member.asArray;
+    }
+    return null;
+  }
+
+  /// The member the PLC publishes the array under, under either layout.
+  static const _batchArrayMember = 'p_stat_Batches';
+
+  /// The belt length [value] reports, or null when it does not carry one.
+  static double? _conveyorLengthIn(DynamicValue value) {
+    if (!value.contains('p_stat_Length')) return null;
+    final length = value['p_stat_Length'].asDouble;
+    // A zero length would divide every slot position by nothing.
+    return length > 0 ? length : null;
+  }
+
+  /// The batch length the recipe node reports, in millimetres, or null when
+  /// the key is unbound, its node dead, or the value unusable.
+  ///
+  /// Accepts the recipe struct or the length member on its own, the same way
+  /// [_batchArrayIn] accepts either shape. A non-positive length is refused
+  /// rather than used: it would give every slot zero width and empty the
+  /// overlay without saying why.
+  static double? _batchLengthIn(DynamicValue? value) {
+    if (value == null) return null;
+    final member =
+        value.contains(_batchLengthMember) ? value[_batchLengthMember] : value;
+    if (!member.isDouble && !member.isInteger) return null;
+    final mm = member.asDouble;
+    return mm > 0 ? mm : null;
+  }
+
+  /// The member the line recipe publishes the batch length under.
+  static const _batchLengthMember = 'batchLength';
+
+  /// Rebuilds the batch overlay.
+  ///
+  /// [settings] is the conveyor settings value, which carries the belt length
+  /// the slot positions are measured against. [arrayValue] is where the batch
+  /// array itself comes from: the same [settings] value on a PLC that keeps
+  /// the two together, or the separate node bound to
+  /// [ConveyorConfig.batchArrayKey] on one that split them. The element
+  /// members are the same either way, so only the source differs.
+  ///
+  /// [batchLength] is the recipe's slot length in millimetres;
+  /// null falls back to [ConveyorConfig.defaultBatchLengthMm].
+  void _updateBatches(DynamicValue settings, DynamicValue arrayValue,
+      {double? batchLength}) {
+    final conveyorLength = _conveyorLengthIn(settings);
+    if (conveyorLength == null) return;
+    final batches = _batchArrayIn(arrayValue);
+    if (batches == null) return;
+    final slotLength = batchLength ?? ConveyorConfig.defaultBatchLengthMm;
     var idx = 0;
-    final batches = dynConveyor['p_stat_Batches'].asArray;
     for (final batchInfo in batches) {
+      // Element members, unchanged by the move. Guarded because a key bound
+      // one node off still yields an array, and an array of the wrong thing
+      // should cost this overlay rather than throw out of `build`.
+      if (!batchInfo.contains('xOccupied') ||
+          !batchInfo.contains('position')) {
+        idx++;
+        continue;
+      }
       final occupied = batchInfo['xOccupied'].asBool;
       final backendOfBatch = batchInfo['position'].asDouble;
       final relativeStart = backendOfBatch / conveyorLength;
-      final relativeEnd = (backendOfBatch + batchLength) / conveyorLength;
+      final relativeEnd = (backendOfBatch + slotLength) / conveyorLength;
       if (occupied) {
         _batches[idx.toString()] =
             Batch(start: relativeStart, end: relativeEnd);
