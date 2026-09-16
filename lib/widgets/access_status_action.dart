@@ -78,7 +78,7 @@ const String kAccessPanelBadgeTooltip =
 class AccessStatusAction extends ConsumerWidget {
   const AccessStatusAction({
     super.key,
-    this.openSignIn = showAccessSignInDialog,
+    this.openSignIn = showAccessSignInDialogAndGoHome,
     this.openChangePassword = showAccessChangePasswordDialog,
   });
 

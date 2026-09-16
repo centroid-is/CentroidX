@@ -44,6 +44,7 @@ final class UserSummary {
     this.allowedPages,
     this.additionalRoles = const <String>[],
     this.inactivityTimeoutMinutes,
+    this.homePage,
   });
 
   /// The account name — `app_user.username`, the primary key.
@@ -105,6 +106,12 @@ final class UserSummary {
   /// [stationAccount] makes a session immortal. `resolveInactivityTimeout`
   /// is the one place the null case and the clamping are decided.
   final int? inactivityTimeoutMinutes;
+
+  /// The page this account's sessions open on (`app_user.home_page`), as a
+  /// route path, or null for Home — see `AppUserData.homePage`. Carried here
+  /// so the roster can say it wherever the roster is rendered, the gateway
+  /// panel included; setting it is `AccessAdminStore.setUserHomePage`.
+  final String? homePage;
 
   /// This account's personal page whitelist, decoded — `app_user.allowed_pages`.
   ///

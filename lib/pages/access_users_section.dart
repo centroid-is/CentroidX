@@ -92,8 +92,10 @@ import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/access/access_repository.dart';
 
 import '../core/access_admin_store.dart';
+import '../models/menu_item.dart';
 import '../providers/access.dart';
 import '../providers/access_admin.dart';
+import '../providers/menu.dart';
 import '../widgets/access_admin_notice.dart';
 import '../widgets/access_pages_editor.dart';
 import '../widgets/panes/pane_chrome.dart';
@@ -568,6 +570,48 @@ final String kAccessUserTimeoutRangeNote =
 
 const String kAccessUserTimeoutDefaultLabel = 'Use default';
 
+/// The home-page control on an account's row.
+Key kAccessUserHomePageKey(String username) =>
+    Key('access-user-home-page-$username');
+
+/// The marker under the name of an account with a home page of its own.
+Key kAccessUserHomePageTagKey(String username) =>
+    Key('access-user-home-page-tag-$username');
+
+/// The marker's text: the page's name, which is what an administrator reads
+/// the menu by, and its address only when this station has no such page.
+String kAccessUserHomePageTag(String page) => 'opens $page';
+
+const String kAccessUserHomePageTooltip = 'Home page for this account';
+
+/// One choice in the home-page dialog; null is Home, "no page of its own".
+Key kAccessUserHomePageOptionKey(String? path) =>
+    Key('access-user-home-page-option-${path ?? ''}');
+const Key kAccessUserHomePageSaveKey = Key('access-user-home-page-save');
+
+String kAccessUserHomePageTitle(String username) =>
+    'Home page for "$username"';
+
+/// What the choice does, and on which panels.
+const String kAccessUserHomePageNote =
+    'Signing in as this account opens this page, on every panel. So does a '
+    'panel committed to it, when it starts and whenever somebody else\'s '
+    'session on it ends. The change is recorded.';
+
+/// The anonymous account's version: its home page is every logged-out panel's.
+const String kAccessUserHomePageAnonymousNote =
+    'Every panel with nobody signed in opens this page when it starts, and '
+    'returns to it when a session ends. A panel that must open somewhere else '
+    'does it through its own station account. The change is recorded.';
+
+const String kAccessUserHomePageDefaultLabel = 'Home';
+const String kAccessUserHomePageDefaultSubtitle = 'No page of its own';
+
+/// A stored page this station has no route for — renamed, deleted, or not
+/// synced here yet. Offered so Save does not quietly drop it.
+const String kAccessUserHomePageStaleSubtitle =
+    'Not a page on this station — opens Home here';
+
 /// The four cells, one key each, so a test asserts the *column* rather than
 /// some text that happens to be on screen.
 Key kAccessUserNameKey(String username) => Key('access-user-name-$username');
@@ -883,12 +927,14 @@ const int _kNameFlex = 5;
 const int _kRoleFlex = 5;
 const int _kWhenFlex = 6;
 
-/// Six 48 px icon buttons: station account, timeout, pages, role, password,
-/// delete. Widened from 192 when the Pages control joined them and from 240
-/// when the timeout did — a fixed width with one more button than it was sized
-/// for overflows the row rather than wrapping, which is how this number earns
-/// a comment.
-const double _kActionsWidth = 288;
+/// Seven compact (40 px) icon buttons: station account, timeout, home page,
+/// pages, role, password, delete. Widened from 192 when the Pages control
+/// joined them and from 240 when the timeout did; the home page made seven,
+/// and seven at 48 px squeezed the timestamps below their gap at 900 px, so
+/// the buttons went compact instead of the columns going narrower. A fixed
+/// width with one more button than it was sized for overflows the row rather
+/// than wrapping, which is how this number earns a comment.
+const double _kActionsWidth = 280;
 
 /// The drag handle's slot at the start of every row, in front of the four
 /// flex columns so its width comes out of all of them in proportion. Taken out
@@ -1152,6 +1198,7 @@ class _UserTileState extends ConsumerState<_UserTile> {
                                     .onSurfaceVariant),
                       ),
                     ],
+
                   ],
                 ),
               ),
@@ -1185,6 +1232,7 @@ class _UserTileState extends ConsumerState<_UserTile> {
                   children: [
                     if (!_anonymous) ...[
                       IconButton(
+                        visualDensity: VisualDensity.compact,
                         key: kAccessUserStationAccountKey(user.username),
                         icon: Icon(
                             user.stationAccount
@@ -1197,6 +1245,7 @@ class _UserTileState extends ConsumerState<_UserTile> {
                         onPressed: _toggleStationAccount,
                       ),
                       IconButton(
+                        visualDensity: VisualDensity.compact,
                         key: kAccessUserTimeoutKey(user.username),
                         icon: Icon(
                             _ownTimeout != null
@@ -1213,7 +1262,21 @@ class _UserTileState extends ConsumerState<_UserTile> {
                         onPressed: user.stationAccount ? null : _setTimeout,
                       ),
                     ],
+                    // Every account, the anonymous one included: its home
+                    // page is where a logged-out panel opens.
                     IconButton(
+                      visualDensity: VisualDensity.compact,
+                      key: kAccessUserHomePageKey(user.username),
+                      icon: Icon(
+                          user.homePage != null
+                              ? Icons.home
+                              : Icons.home_outlined,
+                          size: 18),
+                      tooltip: kAccessUserHomePageTooltip,
+                      onPressed: _setHomePage,
+                    ),
+                    IconButton(
+                      visualDensity: VisualDensity.compact,
                       key: kAccessUserPagesKey(user.username),
                       icon: Icon(
                           _overridesPages
@@ -1224,6 +1287,7 @@ class _UserTileState extends ConsumerState<_UserTile> {
                       onPressed: _togglePages,
                     ),
                     IconButton(
+                      visualDensity: VisualDensity.compact,
                       key: kAccessUserChangeRoleKey(user.username),
                       icon: const Icon(Icons.badge_outlined, size: 18),
                       tooltip: 'Change role',
@@ -1231,12 +1295,14 @@ class _UserTileState extends ConsumerState<_UserTile> {
                     ),
                     if (!_anonymous) ...[
                       IconButton(
+                        visualDensity: VisualDensity.compact,
                         key: kAccessUserSetPasswordKey(user.username),
                         icon: const Icon(Icons.password_outlined, size: 18),
                         tooltip: 'Set password',
                         onPressed: _setPassword,
                       ),
                       IconButton(
+                        visualDensity: VisualDensity.compact,
                         key: kAccessUserDeleteKey(user.username),
                         icon: const Icon(Icons.delete_outline, size: 18),
                         tooltip: 'Delete account',
@@ -1306,13 +1372,18 @@ class _UserTileState extends ConsumerState<_UserTile> {
   }
 
   /// The username, with the no-password badge beside it and, under the
-  /// reserved account's name, the tag saying what the row is.
+  /// name, what else identifies the row: the reserved account's tag, and the
+  /// page the account opens on.
   ///
   /// The badge sits beside the name rather than in a column of its own: it is
   /// a fact about *this account*, and a reader scanning the roster for open
   /// accounts should find it without crossing the row. It never appears on the
   /// reserved row, which carries no password in a different sense — see
   /// [kAnonymousPasswordSentinel] — and says so with its tag instead.
+  ///
+  /// The home page sits here rather than beside the roles, which already
+  /// carry the pages and timeout tags and wrap a two-role account onto two
+  /// lines; a third tag there broke the role names mid-word.
   Widget _nameCell(BuildContext context) {
     final theme = Theme.of(context);
     final name = Row(
@@ -1336,18 +1407,29 @@ class _UserTileState extends ConsumerState<_UserTile> {
         ],
       ],
     );
-    if (!_anonymous) return name;
+    final homePage = user.homePage;
+    if (!_anonymous && homePage == null) return name;
+    final tagStyle = theme.textTheme.labelSmall
+        ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         name,
-        Text(
-          kAccessUserAnonymousTag,
-          key: kAccessUserAnonymousTagKey,
-          style: theme.textTheme.labelSmall
-              ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
-        ),
+        if (_anonymous)
+          Text(
+            kAccessUserAnonymousTag,
+            key: kAccessUserAnonymousTagKey,
+            style: tagStyle,
+          ),
+        if (homePage != null)
+          Text(
+            kAccessUserHomePageTag(_homePageLabel(homePage)),
+            key: kAccessUserHomePageTagKey(user.username),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: tagStyle,
+          ),
       ],
     );
   }
@@ -1549,6 +1631,50 @@ class _UserTileState extends ConsumerState<_UserTile> {
     if (!wrote) return;
     if (mounted) setState(() => _refusal = null);
     // Last, because it can unmount this subtree — see [_afterWrite].
+    await _afterWrite(ref);
+  }
+
+  /// The menu name of [path], or [path] itself when this station has no such
+  /// page.
+  String _homePageLabel(String path) {
+    for (final page in homePageChoices(ref.read(menuTreeProvider))) {
+      if (page.path == path) return page.label;
+    }
+    return path;
+  }
+
+  /// Sets or clears the page this account's sessions open on, as one
+  /// `user.home_page` row.
+  ///
+  /// The dialog only collects the answer; the write happens here, through the
+  /// same [_write] path as every other control. Choosing the page already
+  /// stored writes nothing. No session refresh is needed — nothing a live
+  /// session holds changes — but [_afterWrite] still reloads the roster.
+  Future<void> _setHomePage() async {
+    if (_busy) return;
+    final result = await showDialog<_HomePageChoice>(
+      context: context,
+      builder: (_) => _HomePageDialog(
+        username: user.username,
+        anonymous: _anonymous,
+        current: user.homePage,
+        pages: homePageChoices(ref.read(menuTreeProvider)),
+      ),
+    );
+    if (result == null || !mounted) return;
+    if (result.path == user.homePage) return;
+
+    _busy = true;
+    final wrote = await _write(
+      context,
+      ref,
+      () => widget.store.setUserHomePage(user.username, result.path),
+      onRefused: _showRefusal,
+      vanished: user.username,
+    );
+    _busy = false;
+    if (!wrote) return;
+    if (mounted) setState(() => _refusal = null);
     await _afterWrite(ref);
   }
 
@@ -2591,6 +2717,194 @@ class _SetTimeoutDialogState extends State<_SetTimeoutDialog> {
                   ?.copyWith(color: theme.colorScheme.error),
             ),
           ],
+        ],
+      ),
+    );
+  }
+}
+
+class _HomePageChoice {
+  const _HomePageChoice(this.path);
+
+  /// The account's new home page, or null for Home.
+  final String? path;
+}
+
+/// One page a home page may be set to, or a section heading between them.
+@visibleForTesting
+class HomePageChoice {
+  const HomePageChoice({
+    required this.label,
+    required this.path,
+    required this.depth,
+    this.isSection = false,
+  });
+
+  final String label;
+  final String path;
+  final int depth;
+  final bool isSection;
+}
+
+/// The pages of [menu], flat and in menu order, that a home page may name:
+/// every routable destination except `/` itself, which is the dialog's "Home"
+/// choice. Sections come through as headings, and only when they hold a page.
+///
+/// The full tree, never the editing administrator's visible menu — this sets
+/// what a *different* session opens on, exactly as the Pages editor decides
+/// what a different session sees.
+@visibleForTesting
+List<HomePageChoice> homePageChoices(List<MenuItem> menu, [int depth = 0]) {
+  final out = <HomePageChoice>[];
+  for (final item in menu) {
+    if (item.isNavigationSection) {
+      final children = homePageChoices(item.children, depth + 1);
+      if (children.every((c) => c.isSection)) continue;
+      out.add(HomePageChoice(
+        label: item.label,
+        path: item.path ?? '',
+        depth: depth,
+        isSection: true,
+      ));
+      out.addAll(children);
+      continue;
+    }
+    final path = item.path;
+    if (path == null || path.isEmpty || path == '/') continue;
+    out.add(HomePageChoice(label: item.label, path: path, depth: depth));
+  }
+  return out;
+}
+
+/// Collects one account's home page.
+///
+/// Writes nothing itself: it pops a [_HomePageChoice] and the row performs the
+/// write through `_write`, like the timeout dialog does.
+class _HomePageDialog extends StatefulWidget {
+  const _HomePageDialog({
+    required this.username,
+    required this.anonymous,
+    required this.current,
+    required this.pages,
+  });
+
+  final String username;
+  final bool anonymous;
+
+  /// The stored page, or null for Home.
+  final String? current;
+
+  final List<HomePageChoice> pages;
+
+  @override
+  State<_HomePageDialog> createState() => _HomePageDialogState();
+}
+
+class _HomePageDialogState extends State<_HomePageDialog> {
+  /// The radio value. `''` stands for Home: `RadioGroup` hands a null back for
+  /// "nothing chosen", which must not read as a choice.
+  late String _selected = widget.current ?? '';
+
+  /// The stored page when this station has no route for it.
+  late final String? _stale = widget.current != null &&
+          !widget.pages
+              .any((p) => !p.isSection && p.path == widget.current)
+      ? widget.current
+      : null;
+
+  Widget _option({
+    required String value,
+    required String label,
+    String? subtitle,
+    int depth = 0,
+  }) {
+    return Padding(
+      padding: EdgeInsets.only(left: 16.0 * depth),
+      child: RadioListTile<String>(
+        key: kAccessUserHomePageOptionKey(value.isEmpty ? null : value),
+        dense: true,
+        contentPadding: EdgeInsets.zero,
+        controlAffinity: ListTileControlAffinity.leading,
+        value: value,
+        title: Text(label),
+        subtitle: subtitle == null ? null : Text(subtitle),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return StandardDialogFrame(
+      title: kAccessUserHomePageTitle(widget.username),
+      showClose: false,
+      actions: [
+        PaneAction(
+          label: 'Cancel',
+          onPressed: () => Navigator.of(context).pop(),
+        ),
+        PaneAction.primary(
+          label: 'Save',
+          buttonKey: kAccessUserHomePageSaveKey,
+          onPressed: () => Navigator.of(context).pop(
+              _HomePageChoice(_selected.isEmpty ? null : _selected)),
+        ),
+      ],
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _note(
+            context,
+            widget.anonymous
+                ? kAccessUserHomePageAnonymousNote
+                : kAccessUserHomePageNote,
+          ),
+          const SizedBox(height: 8),
+          Flexible(
+            child: SingleChildScrollView(
+              child: RadioGroup<String>(
+                groupValue: _selected,
+                onChanged: (value) {
+                  if (value != null) setState(() => _selected = value);
+                },
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _option(
+                      value: '',
+                      label: kAccessUserHomePageDefaultLabel,
+                      subtitle: kAccessUserHomePageDefaultSubtitle,
+                    ),
+                    if (_stale != null)
+                      _option(
+                        value: _stale,
+                        label: _stale,
+                        subtitle: kAccessUserHomePageStaleSubtitle,
+                      ),
+                    for (final page in widget.pages)
+                      if (page.isSection)
+                        Padding(
+                          padding: EdgeInsets.only(
+                              left: 16.0 * page.depth, top: 8, bottom: 2),
+                          child: Text(
+                            page.label,
+                            style: theme.textTheme.labelMedium?.copyWith(
+                                color: theme.colorScheme.onSurfaceVariant),
+                          ),
+                        )
+                      else
+                        _option(
+                          value: page.path,
+                          label: page.label,
+                          depth: page.depth,
+                        ),
+                  ],
+                ),
+              ),
+            ),
+          ),
         ],
       ),
     );

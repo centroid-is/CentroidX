@@ -113,20 +113,18 @@ void main() {
       );
     });
 
-    test('an unplugged cable answers for its box, like any other asset', () {
-      // It has no devices to derive a shape from and behaves as a plain
-      // rectangle until it is plugged in.
+    test('an unplugged cable answers along its line, like a plugged one', () {
+      // Its points are its position now, so its box is the run's bounds and a
+      // drag lands on the cable, not on a rectangle it used to be drawn in.
       final cable = EtherCatLinkConfig()
         ..coordinates = Coordinates(x: 0.5, y: 0.5);
       final page = <Asset>[cable];
-      expect(
-        editorHitTestAsset(
-            pointer: const Offset(500, 415),
-            asset: cable,
-            assets: page,
-            canvas: canvas),
-        isTrue,
-      );
+      bool hits(Offset at) => editorHitTestAsset(
+          pointer: at, asset: cable, assets: page, canvas: canvas);
+      expect(hits(const Offset(500, 404)), isTrue);
+      expect(hits(const Offset(440, 398)), isTrue);
+      expect(hits(const Offset(500, 430)), isFalse,
+          reason: 'inside the old 8% box, nowhere near the cable');
     });
 
     test('the target is wider than the ink', () {

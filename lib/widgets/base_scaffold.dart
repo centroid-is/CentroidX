@@ -14,9 +14,9 @@ import 'package:logger/logger.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'nav_dropdown.dart';
 import 'access_status_action.dart';
-import '../core/startup_url.dart';
+import 'home_page_navigation.dart';
 import '../models/menu_item.dart';
-import '../providers/preferences.dart';
+import '../providers/home_page.dart';
 import '../route_registry.dart';
 import '../providers/access.dart';
 import '../providers/local_gateway_alarm.dart';
@@ -162,6 +162,11 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
     // the route the scaffold is being built for.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _takeAlarmNavigation();
+      // The session may have resolved before any scaffold was listening.
+      final session = mounted
+          ? ref.read(accessSessionProvider).valueOrNull
+          : null;
+      if (session != null) unawaited(_maybeBootHome(session));
     });
   }
 
@@ -466,35 +471,54 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
       after.user!.stationAccount &&
       after.user!.username != before.user!.username;
 
-  /// Beams back to the station's startup page — the sign-out return.
+  /// Beams to the home page of the session the panel fell to — the sign-out
+  /// return.
   ///
   /// An anonymous session must not be left staring at a raised page it
-  /// cannot reach from its own menu; the kiosk answer is the boot answer,
-  /// resolved by the same [resolveStartupPath] validation `main.dart` runs,
-  /// so a startup page deleted since it was picked falls back to `/` here
-  /// exactly as it does at boot.
+  /// cannot reach from its own menu; the answer is the page that account
+  /// opens on, resolved exactly as boot resolves it.
   ///
-  /// Reading the device-local store is an await; the scaffold can unmount
-  /// (this very beam unmounts it) and the session can re-elevate during it,
-  /// so both are re-checked after.
-  Future<void> _returnToStartupPage() async {
-    final stored = await readStartupUrl(ref.read(localPreferencesProvider));
-    if (!mounted) return;
-    // Somebody signed in during the await. A station account is not somebody:
-    // it is the panel's own floor, and falling to it is why this may be
-    // running at all.
-    final now = ref.read(accessSessionProvider).valueOrNull;
-    if (now != null && now.isElevated && !now.user!.stationAccount) return;
-    // The full tree, deliberately, not `visibleMenu`. `resolveStartupPath`
-    // answers "is this path routable"; whether *this* person may open it is
-    // the route gate's question, and it answers with an honest refusal page.
-    // Resolving against the filtered view instead would silently re-target
-    // somebody's startup page to a different one.
-    final target =
-        resolveStartupPath(stored, menuItems: ref.read(menuTreeProvider));
-    final beamer = Beamer.of(context);
-    if (beamer.configuration.uri.path == target) return;
-    beamer.beamToNamed(target);
+  /// The lookup is an await; the scaffold can unmount (this very beam
+  /// unmounts it) and the session can re-elevate during it, so both are
+  /// re-checked after.
+  Future<void> _returnHome(AccessSession floor) async {
+    await goToHomePage(
+      context: context,
+      ref: ref,
+      session: floor,
+      proceed: (_) {
+        // Somebody signed in during the await. A station account is not
+        // somebody: it is the panel's own floor, and falling to it is why
+        // this may be running at all.
+        final now = ref.read(accessSessionProvider).valueOrNull;
+        return !(now != null && now.isElevated && !now.user!.stationAccount);
+      },
+    );
+  }
+
+  /// Takes the boot navigation to [session]'s home page, if this process
+  /// still owes it — see [BootHomePageDebt].
+  Future<void> _maybeBootHome(AccessSession session) async {
+    final debt = ref.read(bootHomePageDebtProvider);
+    if (!debt.owed || debt.inFlight) return;
+    debt.inFlight = true;
+    try {
+      final answer = await goToHomePage(
+        context: context,
+        ref: ref,
+        session: session,
+        // An account with no page of its own opens where the router already
+        // put the panel. Beaming "to /" there would only replay the redirect
+        // a station without a Home page sends `/` through.
+        onlyIfSet: true,
+        // Re-asked after the lookup: the operator may have touched the screen
+        // while it was out.
+        proceed: (_) => debt.owed,
+      );
+      if (answer.known) debt.settle();
+    } finally {
+      debt.inFlight = false;
+    }
   }
 
   @override
@@ -515,9 +539,12 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
       final after = next.valueOrNull;
       final wasElevated = before?.isElevated ?? false;
       final isElevated = after?.isElevated ?? false;
+      if (after != null) unawaited(_maybeBootHome(after));
       if (!wasElevated) return;
       if (!isElevated || _fellToPanel(before!, after!)) {
-        unawaited(_returnToStartupPage());
+        // An errored session reads as nobody signed in, which is the
+        // anonymous account's home page.
+        unawaited(_returnHome(after ?? AccessSession.anonymous(const {})));
       }
     });
 

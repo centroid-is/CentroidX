@@ -1035,6 +1035,89 @@ void main() {
     });
   });
 
+  // `home_page` on app_user — the page an account's sessions open on. No
+  // schema arm, exactly like `sort_order` above.
+  group('the home_page column (no schema arm)', () {
+    late Directory tempDir;
+    late File dbFile;
+
+    setUp(() {
+      tempDir = Directory.systemTemp.createTempSync('tfc_home_page_test');
+      dbFile = File('${tempDir.path}/app.sqlite');
+    });
+
+    tearDown(() {
+      if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+    });
+
+    Future<Set<String>> columnNames(GeneratedDatabase db) async {
+      final rows = await db.customSelect('PRAGMA table_info(app_user)').get();
+      return rows.map((r) => r.read<String>('name')).toSet();
+    }
+
+    Future<AppDatabase> reopen() async {
+      final db = AppDatabase.forTest(
+        DatabaseConfig(),
+        NativeDatabase(dbFile, logStatements: false),
+      );
+      await db.customSelect('SELECT 1').getSingle();
+      return db;
+    }
+
+    test('a fresh install has it', () async {
+      final db = await reopen();
+      addTearDown(() => db.close());
+      expect(await columnNames(db), contains('home_page'));
+    });
+
+    test('a database without it gains it on the next open, every row NULL, '
+        'and the anonymous seed still runs', () async {
+      final first = await reopen();
+      await first.customStatement(
+        "INSERT INTO app_user "
+        "(username, role_name, password_hash, salt, created_at, station_account) "
+        "VALUES ('jon', 'Engineering', 'hash', 'salt', '2026-09-01T00:00:00Z', 0)",
+      );
+      await first
+          .customStatement("DELETE FROM app_user WHERE username = 'anonymous'");
+      await first.customStatement('ALTER TABLE app_user DROP COLUMN home_page');
+      final version = (await first
+              .customSelect('PRAGMA user_version')
+              .getSingle())
+          .read<int>('user_version');
+      await first.close();
+
+      final db = await reopen();
+      addTearDown(() => db.close());
+      expect(await columnNames(db), contains('home_page'));
+      final rows =
+          await db.customSelect('SELECT username, home_page FROM app_user').get();
+      expect(rows.map((r) => r.read<String>('username')),
+          containsAll(['jon', 'anonymous']));
+      for (final row in rows) {
+        expect(row.read<String?>('home_page'), isNull);
+      }
+      expect(
+          (await db.customSelect('PRAGMA user_version').getSingle())
+              .read<int>('user_version'),
+          version,
+          reason: 'no schema arm');
+    });
+
+    test('a second open over the column is harmless', () async {
+      await (await reopen()).close();
+      final db = await reopen();
+      addTearDown(() => db.close());
+      expect(await columnNames(db), contains('home_page'));
+    });
+
+    test('the Postgres statement adds it idempotently', () {
+      final source = File('lib/core/database_drift.dart').readAsStringSync();
+      expect(source,
+          contains('ALTER TABLE app_user ADD COLUMN IF NOT EXISTS home_page TEXT'));
+    });
+  });
+
   group('the anonymous account seed', () {
     Future<AppDatabase> open() async {
       final db = AppDatabase.inMemoryForTest();

@@ -297,6 +297,24 @@ class AppUser extends Table {
   /// Display order only, added on open with no schema version — see
   /// [AppRole.sortOrder].
   IntColumn get sortOrder => integer().nullable()();
+
+  /// The page this account's sessions open on, as a route path such as
+  /// `/pages/packing`, or NULL for Home (`/`).
+  ///
+  /// Per account rather than per station: the page somebody works from is
+  /// theirs wherever they sign in. The reserved anonymous account's value is
+  /// where every logged-out panel opens, and a station account's is where
+  /// that panel opens — which is how two panels fronting different equipment
+  /// still open on different pages.
+  ///
+  /// Never validated against the pages here. A path that names no routable
+  /// page — renamed, deleted, unpublished, or not synced to this station yet —
+  /// falls back to Home where it is read (`resolveHomePath`), so a stale value
+  /// costs a landing page, never a boot.
+  ///
+  /// Added on open by `_ensureHomePageColumn` rather than by a schema arm, for
+  /// the reason [sortOrder] gives: every existing row is correct as NULL.
+  TextColumn get homePage => text().nullable()();
 }
 
 /// The human-action audit trail: append-only, never pruned.
@@ -836,18 +854,40 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
     }
   }
 
-  /// Whether [table] already has `sort_order`. [table] is one of the two
-  /// literals [_ensureSortOrderColumns] passes, never caller input, which is
-  /// why it is interpolated.
-  Future<bool> _hasSortOrderColumn(String table) async {
+  /// Whether [table] already has `sort_order`.
+  Future<bool> _hasSortOrderColumn(String table) =>
+      _hasColumn(table, 'sort_order');
+
+  /// Make sure `app_user` carries the nullable `home_page` column, the page an
+  /// account's sessions open on.
+  ///
+  /// Not a schema arm, for every reason [_ensureSortOrderColumns] gives, and
+  /// built the same way: probed first on both backends, never throws, logs
+  /// what it could not do. `access_schema_test.dart` reads the Postgres
+  /// literal out of the source.
+  Future<void> _ensureHomePageColumn() async {
+    try {
+      if (await _hasColumn('app_user', 'home_page')) return;
+      await customStatement(native
+          ? 'ALTER TABLE app_user ADD COLUMN home_page TEXT'
+          : 'ALTER TABLE app_user ADD COLUMN IF NOT EXISTS home_page TEXT');
+      logger.i('Added app_user.home_page');
+    } on Object catch (e) {
+      logger.w('Could not ensure app_user.home_page: $e');
+    }
+  }
+
+  /// Whether [table] already has [column]. Both are literals from this file,
+  /// never caller input, which is why they are interpolated.
+  Future<bool> _hasColumn(String table, String column) async {
     if (native) {
       final cols = await customSelect("PRAGMA table_info('$table')").get();
-      return cols.any((r) => r.read<String>('name') == 'sort_order');
+      return cols.any((r) => r.read<String>('name') == column);
     }
     final rows = await customSelect(
       'SELECT 1 FROM information_schema.columns '
       "WHERE table_schema = current_schema() AND table_name = '$table' "
-      "AND column_name = 'sort_order'",
+      "AND column_name = '$column'",
     ).get();
     return rows.isNotEmpty;
   }
@@ -1136,6 +1176,9 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
           // throws, the seed swallows it, and the anonymous account is not
           // put back.
           await _ensureSortOrderColumns();
+          // Before the seed for the same reason: `home_page` is read by the
+          // same generated mapping.
+          await _ensureHomePageColumn();
           await _seedAnonymousAccount();
         },
         onCreate: (m) async {

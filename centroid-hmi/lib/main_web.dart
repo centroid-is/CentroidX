@@ -239,6 +239,21 @@ class _WebPlantPage extends ConsumerWidget {
 /// lists, through the same `RouteRedirect` the station uses, which only
 /// beams while the router is actually at `/`. A plant with no pages keeps
 /// the gated view, which says the page is not found rather than nothing.
+///
+/// **The account's own home page is not honoured here yet.** Since #564 a
+/// station opens on the home page of the account its session resolves to
+/// (`BaseScaffold`'s boot navigation, through `homePageLookupProvider`,
+/// which reads `app_user.home_page` from the database). A browser has no
+/// database and the wire carries no home page for the session's own account:
+/// `session.login` answers the user and the groups, and `listUsers` — which
+/// does carry `UserSummary.homePage` — takes `users`. So the lookup answers
+/// "unknown", the boot debt is not owed on this entrypoint, and `/` resolves
+/// as above. Closing it is the same wire addition the sign-in floor names
+/// (`lib/providers/access.dart`, `_anonymousSession`): the `hello` result
+/// and the `session.login` result carrying the admitted account's home page
+/// beside its groups and pages, after which this widget honours it exactly
+/// as `main.dart` does and falls back to the first menu path only where the
+/// account names none.
 class _WebHome extends ConsumerWidget {
   const _WebHome();
 

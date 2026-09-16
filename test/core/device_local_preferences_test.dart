@@ -14,7 +14,7 @@ library;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/core/device_local_preferences.dart';
 import 'package:tfc/core/gateway_config.dart';
-import 'package:tfc/core/startup_url.dart';
+import 'package:tfc/core/home_page.dart' show kRetiredStartupUrlPrefKey;
 import 'package:tfc/core/system_clock.dart';
 import 'package:tfc/core/update_channel.dart';
 
@@ -28,9 +28,10 @@ void main() {
       expect(isDeviceLocalPreferenceKey(GatewayConfig.prefsKey), isTrue);
     });
 
-    test('startup_url is device-local — a shared row overwrites every '
-        "station's own choice on each sync (#354)", () {
-      expect(isDeviceLocalPreferenceKey(startupUrlPrefsKey), isTrue);
+    test('the retired startup_url is still device-local — a shared row '
+        "overwrote every station's own choice on each sync (#354), and the "
+        'drop must reach this station\'s copy', () {
+      expect(isDeviceLocalPreferenceKey(kRetiredStartupUrlPrefKey), isTrue);
     });
 
     test('the update channel is device-local — a station is moved to a '

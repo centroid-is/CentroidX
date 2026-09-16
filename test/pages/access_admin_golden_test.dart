@@ -161,6 +161,7 @@ UserSummary _user(
   required DateTime createdAt,
   DateTime? lastLoginAt,
   List<String> alsoHolds = const [],
+  String? homePage,
 }) =>
     UserSummary(
       username: username,
@@ -173,6 +174,7 @@ UserSummary _user(
       createdAt: createdAt,
       lastLoginAt: lastLoginAt,
       stationAccount: false,
+      homePage: homePage,
     );
 
 /// The roster, in the order the repository returns it: by username.
@@ -990,6 +992,73 @@ void main() {
         await expectLater(
           find.byType(MaterialApp),
           matchesGoldenFile('goldens/access_admin_anonymous_roles.png'),
+        );
+      });
+    });
+
+    testWidgets('the home page dialog, with the tag it leaves on the row',
+        (tester) async {
+      await withClock(Clock.fixed(_frozen), () async {
+        _sizeView(tester, const Size(900, 900));
+        // The pages a home page may name: two plain pages and a section.
+        final registry = RouteRegistry();
+        registry.menuItems.clear();
+        registry.addMenuItem(
+            const MenuItem(label: 'Home', path: '/', icon: Icons.home));
+        registry.addMenuItem(const MenuItem(
+            label: 'Packing', path: '/packing', icon: Icons.inventory));
+        registry.addMenuItem(const MenuItem(
+          label: 'Halls',
+          path: '/halls',
+          icon: Icons.folder,
+          isSection: true,
+          children: [
+            MenuItem(label: 'Freezer', path: '/halls/freezer', icon: Icons.ac_unit),
+            MenuItem(label: 'Roe', path: '/halls/roe', icon: Icons.egg),
+          ],
+        ));
+
+        // The roster speaks UserSummary on this branch (the wire's row), so
+        // the home page is set the way the other rows are built.
+        final users = [
+          for (final u in _users())
+            u.username == 'linar'
+                ? _user('linar', 'Shift Leader',
+                    alsoHolds: const ['Maintenance'],
+                    createdAt: DateTime(2026, 7, 14, 6, 30),
+                    lastLoginAt: DateTime(2026, 8, 30, 22, 10),
+                    homePage: '/halls/freezer')
+                : u,
+        ];
+        await tester.pumpWidget(_dialogHost(
+          theme: light,
+          store: _AnsweringStore(roleRows: _roles(), userRows: users),
+          session: _withUsers(),
+        ));
+        await tester.pumpAndSettle();
+
+        // The row names the page by its menu name, beside the roles.
+        expect(find.byKey(kAccessUserHomePageTagKey('linar')), findsOneWidget);
+        expect(find.text(kAccessUserHomePageTag('Freezer')), findsOneWidget);
+
+        await tester.tap(find.byKey(kAccessUserHomePageKey('linar')));
+        await tester.pumpAndSettle();
+
+        // The state key: open on linar, the stored page chosen, sections as
+        // headings rather than choices.
+        expect(find.byKey(kAccessUserHomePageSaveKey), findsOneWidget);
+        expect(find.text(kAccessUserHomePageNote), findsOneWidget);
+        expect(find.byKey(kAccessUserHomePageOptionKey('/halls/freezer')),
+            findsOneWidget);
+        expect(find.byKey(kAccessUserHomePageOptionKey('/halls')), findsNothing);
+        final chosen = tester.widget<RadioGroup<String>>(
+            find.byType(RadioGroup<String>));
+        expect(chosen.groupValue, '/halls/freezer');
+        expect(tester.takeException(), isNull);
+
+        await expectLater(
+          find.byType(MaterialApp),
+          matchesGoldenFile('goldens/access_admin_home_page.png'),
         );
       });
     });

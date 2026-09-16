@@ -45,7 +45,7 @@
 library;
 
 import 'gateway_config.dart';
-import 'startup_url.dart';
+import 'home_page.dart' show kRetiredStartupUrlPrefKey;
 import 'system_clock.dart';
 import 'update_channel.dart';
 
@@ -86,10 +86,12 @@ final Set<String> kDeviceLocalPreferenceKeys = Set.unmodifiable({
   // required rather than merely correct: a panel reads this to find out which
   // backend to ask, so it cannot be a thing the backend answers.
   GatewayConfig.prefsKey,
-  // A shared `startup_url` row overwrites every station's own choice on each
-  // sync — the bug #354 fixed, and `preferences.dart` still deletes such a row
-  // on sight in direct mode.
-  startupUrlPrefsKey,
+  // The retired per-station startup page (#564 moved it onto accounts). Still
+  // device-local by name so `dropRetiredStartupUrl` reaches this station's
+  // own copy, and so a stray shared row never syncs over anything — the bug
+  // #354 fixed; `preferences.dart` still deletes such a row on sight in
+  // direct mode.
+  kRetiredStartupUrlPrefKey,
   // Stations are moved to a prerelease build one at a time, on purpose; a
   // shared value would move the whole plant at once.
   updateChannelPrefsKey,

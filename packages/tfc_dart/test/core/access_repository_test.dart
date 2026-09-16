@@ -1990,6 +1990,79 @@ void main() {
     });
   });
 
+  group('the home page on a user', () {
+    setUp(() async {
+      await repo.createFirstUser(username: 'jon', password: 'pw');
+    });
+
+    test('a fresh account has none, meaning Home', () async {
+      expect((await repo.user('jon'))!.homePage, isNull);
+    });
+
+    test('setHomePage round-trips, and null clears it', () async {
+      await repo.setHomePage('jon', '/pages/packing');
+      expect((await repo.user('jon'))!.homePage, '/pages/packing');
+
+      await repo.setHomePage('jon', null);
+      expect((await repo.user('jon'))!.homePage, isNull);
+    });
+
+    test('Home itself is stored as no value, not as "/"', () async {
+      // One spelling for "opens on Home", so the roster and the trail cannot
+      // show two different answers for the same account.
+      await repo.setHomePage('jon', '/pages/packing');
+      await repo.setHomePage('jon', '/');
+      expect((await repo.user('jon'))!.homePage, isNull);
+    });
+
+    test('a value that is not a route path throws', () async {
+      for (final bad in ['', 'pages/packing', 'https://example.com/']) {
+        await expectLater(
+          () => repo.setHomePage('jon', bad),
+          throwsA(isA<ArgumentError>()),
+          reason: '"$bad" must be refused',
+        );
+      }
+      expect((await repo.user('jon'))!.homePage, isNull);
+    });
+
+    test('the anonymous account may have one — it is every logged-out panel\'s',
+        () async {
+      await repo.setHomePage(kAnonymousUsername, '/pages/freezer');
+      expect((await repo.user(kAnonymousUsername))!.homePage, '/pages/freezer');
+    });
+
+    test('re-seeding a drifted anonymous account keeps its home page', () async {
+      // The seed puts the reserved row's password and flags back; the page a
+      // logged-out panel opens on is not drift, it is the setting.
+      await repo.setHomePage(kAnonymousUsername, '/pages/freezer');
+      await db.customStatement(
+          "UPDATE app_user SET station_account = 1 WHERE username = 'anonymous'");
+      await db.seedAnonymousAccountForTest();
+      final row = (await repo.user(kAnonymousUsername))!;
+      expect(row.stationAccount, isFalse);
+      expect(row.homePage, '/pages/freezer');
+    });
+
+    test('naming no account throws', () async {
+      expect(
+        () => repo.setHomePage('nobody', '/pages/packing'),
+        throwsA(isA<UserNotFoundException>()),
+      );
+    });
+
+    test('setRole preserves it', () async {
+      await repo.createUser(
+        username: 'ann',
+        password: 'pw',
+        roleName: 'Engineering',
+      );
+      await repo.setHomePage('jon', '/pages/packing');
+      await repo.setRole('jon', kOperatorRoleName);
+      expect((await repo.user('jon'))!.homePage, '/pages/packing');
+    });
+  });
+
   group('anonymousAccount pages', () {
     test('carries the held role whole — groups and pages together', () async {
       await repo.setRoleAllowedPages(kOperatorRoleName, {'/'});

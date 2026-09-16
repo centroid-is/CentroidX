@@ -86,6 +86,20 @@ class AnalogBoxConfig extends BaseAsset {
   @ColorConverter()
   Color hysteresisColor;
 
+  /// Whether the name is drawn beside the box on the page.
+  ///
+  /// The name is two things at once — the caption on the mimic and the title
+  /// of the pane the box opens — so clearing it to get a bare bar would also
+  /// leave the pane titled "Analog value". This is the switch that separates
+  /// them: off, the mimic shows only the bar and the name lives on in the
+  /// pane. Same field and same default as `SectionButtonConfig.showName`,
+  /// which is the asset that first had to tell the two apart.
+  ///
+  /// True by default, and absent from pages saved before it existed, so every
+  /// box that has a caption today keeps it.
+  @JsonKey(name: 'show_name', defaultValue: true)
+  bool showName;
+
   /// Whether tapping opens the detail side pane. The JSON key predates the
   /// dialog→pane conversion and is kept for persisted pages.
   @JsonKey(name: 'enable_dialog')
@@ -115,6 +129,7 @@ class AnalogBoxConfig extends BaseAsset {
     this.setpoint1Color = Colors.red,
     this.setpoint2Color = Colors.orange,
     this.hysteresisColor = const Color(0x44FF0000),
+    this.showName = true,
     this.enableDialog = true,
     this.graphConfig,
   });
@@ -134,13 +149,14 @@ class AnalogBoxConfig extends BaseAsset {
         setpoint2Color = Colors.orange,
         hysteresisColor = const Color(0x44FF0000),
         errorKey = null,
+        showName = true,
         enableDialog = true,
         graphConfig = GraphAssetConfig.preview();
 
-  /// The scale, shape and colours — everything about how the bar reads that
-  /// is worth setting on a row of them at once. The OPC UA keys are left to
-  /// the per-asset form: pointing eight boxes at one tag is a mistake that
-  /// looks like eight working boxes.
+  /// The scale, shape, colours and whether the name is painted — everything
+  /// about how the bar reads that is worth setting on a row of them at once.
+  /// The OPC UA keys are left to the per-asset form: pointing eight boxes at
+  /// one tag is a mistake that looks like eight working boxes.
   @JsonKey(includeFromJson: false, includeToJson: false)
   @override
   List<BulkProperty> get bulkProperties => [
@@ -201,6 +217,16 @@ class AnalogBoxConfig extends BaseAsset {
           apply: (value) => reverseFill = value,
         ),
         BoolBulkProperty(
+          id: 'AnalogBoxConfig.showName',
+          // Short enough for the bulk pane's label column: "Show name on
+          // page" ellipsised there, and the group heading already says which
+          // asset's name is meant.
+          label: 'Show name',
+          group: _bulkGroup,
+          read: () => showName,
+          apply: (value) => showName = value,
+        ),
+        BoolBulkProperty(
           id: 'AnalogBoxConfig.enableDialog',
           label: 'Opens pane',
           group: _bulkGroup,
@@ -245,6 +271,13 @@ class AnalogBoxConfig extends BaseAsset {
       ];
 
   static const String _bulkGroup = 'Analog Box';
+
+  /// The page paints the caption only when [showName] is on. The pane's
+  /// title comes from [text] either way — hiding the caption does not
+  /// un-name the box.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  bool get showLabel => showName;
 
   factory AnalogBoxConfig.fromJson(Map<String, dynamic> json) =>
       _$AnalogBoxConfigFromJson(json);
@@ -439,6 +472,16 @@ class _AnalogBoxConfigEditorState extends State<_AnalogBoxConfigEditor> {
                   onChanged: (s) => setState(() => widget.config.size = s),
                 ),
                 const SizedBox(height: 12),
+                SwitchListTile(
+                  key: const Key('analog-name-visible'),
+                  title: const Text('Show the name on the page'),
+                  subtitle: const Text(
+                    'Off leaves a bare bar on the mimic. The pane it opens '
+                    'is still titled with the name.',
+                  ),
+                  value: widget.config.showName,
+                  onChanged: (v) => setState(() => widget.config.showName = v),
+                ),
                 SwitchListTile(
                   title: const Text('Enable tap pane'),
                   value: widget.config.enableDialog,
@@ -726,6 +769,74 @@ String _fmtValue(double v) {
 String _paneTitle(AnalogBoxConfig config) =>
     config.text?.isNotEmpty == true ? config.text! : 'Analog value';
 
+/// The preview trend's y-range: whatever the page author pinned on [axis],
+/// end by end, falling back to the auto-scaled [auto] for any bound left
+/// unset.
+///
+/// Pinning is what makes a row of boxes comparable at a glance — four buffers
+/// all drawn 0–100 read as four levels, four auto-scaled buffers read as four
+/// unrelated squiggles. Honouring the two ends separately means "start at
+/// zero, find your own ceiling" is expressible, which is the common case.
+///
+/// Public because the rule has to have exactly one home: the preview and the
+/// expanded chart are drawn by different widgets, and before this the pinned
+/// axis reached only the expanded one.
+({double min, double max}) analogBoxTrendYRange(
+  GraphAxisConfig? axis,
+  ({double min, double max}) auto,
+) =>
+    (min: axis?.min ?? auto.min, max: axis?.max ?? auto.max);
+
+/// The pane's trend tile, or null when the page author left the trend out
+/// (or left it with no series to draw).
+///
+/// Extracted from the pane loader so the preview and the expanded chart are
+/// built in one place off one config — the way `conveyorTrendTile` is — and
+/// so a test can hold the same object the pane builds. They were built from
+/// different things before: the expanded chart from the whole
+/// [GraphAssetConfig], the preview from loose fields that did not include the
+/// axis, so an asset pinned to 0–100 drew pinned when expanded and
+/// auto-scaled in the tile.
+PaneGraphTile? analogBoxTrendTile(AnalogBoxConfig config) {
+  final gc = config.graphConfig;
+  if (gc == null) return null;
+  if (gc.primarySeries.isEmpty && config.analogKey.isNotEmpty) {
+    gc.primarySeries = [
+      GraphSeriesConfig(
+        key: config.analogKey,
+        label: config.text ?? 'Value',
+      ),
+    ];
+  }
+  gc.graphType = GraphType.timeseries;
+  final series = gc.primarySeries.isNotEmpty ? gc.primarySeries.first : null;
+  if (series == null) return null;
+  return PaneGraphTile(
+    // The preview drops the chart's own legend to keep the width, so
+    // the header names the trace instead.
+    label: series.label,
+    // Tall enough for a line chart to be readable rather than
+    // decorative — the conveyor's trend height, taken off the shared
+    // constant rather than a literal that happens to match.
+    height: kPaneTrendTileHeight,
+    preview: AnalogBoxTrendGraphLoader(
+      keyName: series.key,
+      member: series.member,
+      seriesLabel: series.label,
+      units: config.units,
+      showButtons: false,
+      compact: true,
+      xSpan: const Duration(minutes: 5),
+      // The same axis object the expanded chart reads, not a copy of its
+      // numbers: one place decides whether this trend is pinned or auto.
+      yAxis: gc.yAxis,
+    ),
+    expandedTitle: '${_paneTitle(config)} — trend',
+    expandedSize: kPaneTrendDialogSize,
+    expandedBuilder: (_) => GraphAsset(gc),
+  );
+}
+
 /// Subscribes the configured keys and feeds [AnalogBoxPane] plain values.
 ///
 /// The subscriptions live and die with the pane — closing it releases them
@@ -802,47 +913,7 @@ class _AnalogBoxPaneLoaderState extends ConsumerState<_AnalogBoxPaneLoader> {
       await writeTag(ref, sm, key, curr);
     }
 
-    // Trend tile — only when the page author opted the trend in. The small
-    // preview charts the primary series from the collector; the full chart
-    // behind the tap honours the whole GraphAssetConfig (extra series, time
-    // window), as the old dialog's embedded graph did.
-    Widget? trendTile;
-    final gc = config.graphConfig;
-    if (gc != null) {
-      if (gc.primarySeries.isEmpty && config.analogKey.isNotEmpty) {
-        gc.primarySeries = [
-          GraphSeriesConfig(
-            key: config.analogKey,
-            label: config.text ?? 'Value',
-          ),
-        ];
-      }
-      gc.graphType = GraphType.timeseries;
-      final series = gc.primarySeries.isNotEmpty ? gc.primarySeries.first : null;
-      if (series != null) {
-        trendTile = PaneGraphTile(
-          // The preview drops the chart's own legend to keep the width, so
-          // the header names the trace instead.
-          label: series.label,
-          // Tall enough for a line chart to be readable rather than
-          // decorative — the conveyor's trend height, taken off the shared
-          // constant rather than a literal that happens to match.
-          height: kPaneTrendTileHeight,
-          preview: AnalogBoxTrendGraphLoader(
-            keyName: series.key,
-            member: series.member,
-            seriesLabel: series.label,
-            units: config.units,
-            showButtons: false,
-            compact: true,
-            xSpan: const Duration(minutes: 5),
-          ),
-          expandedTitle: '${_paneTitle(config)} — trend',
-          expandedSize: kPaneTrendDialogSize,
-          expandedBuilder: (_) => GraphAsset(gc),
-        );
-      }
-    }
+    final trendTile = analogBoxTrendTile(config);
 
     return StreamBuilder<Map<String, DynamicValue>>(
       stream: combined,
@@ -1191,6 +1262,24 @@ class AnalogBoxTrendGraph extends ConsumerWidget {
   /// and the tile caption names the chart instead.
   final bool compact;
 
+  /// The asset's configured y-axis, or null to scale to the data.
+  ///
+  /// Only [GraphAxisConfig.min] and [GraphAxisConfig.max] are read: the unit
+  /// and the tick options belong to the expanded chart, which has the gutter
+  /// for them. A bound left unset keeps the auto-scaled one — see
+  /// [analogBoxTrendYRange].
+  final GraphAxisConfig? yAxis;
+
+  /// A fixed visible window instead of the rolling one ending now.
+  ///
+  /// Null in production, and meant to stay that way. The wall clock is what a
+  /// golden cannot have — the chart prints absolute times along the bottom,
+  /// so two runs a second apart produce different pixels. Same seam, and the
+  /// same reasoning, as `BoxErectorBpmGraph.xRange`; [Graph] already prefers
+  /// `xRange` over `xSpan`.
+  @visibleForTesting
+  final DateTimeRange? xRange;
+
   const AnalogBoxTrendGraph({
     required this.collector,
     required this.keyName,
@@ -1200,6 +1289,8 @@ class AnalogBoxTrendGraph extends ConsumerWidget {
     this.showButtons = true,
     this.xSpan = const Duration(minutes: 5),
     this.compact = false,
+    this.yAxis,
+    this.xRange,
     super.key,
   });
 
@@ -1228,8 +1319,7 @@ class AnalogBoxTrendGraph extends ConsumerWidget {
         // samples inside that window. Scaling to all two hours is what made
         // the trace sit flat and then jump the moment an old extreme aged
         // out of the buffer — see [stableTrendRange].
-        final windowStart = DateTime.now()
-            .subtract(xSpan)
+        final windowStart = (xRange?.start ?? DateTime.now().subtract(xSpan))
             .millisecondsSinceEpoch
             .toDouble();
         var minY = double.infinity;
@@ -1256,7 +1346,7 @@ class AnalogBoxTrendGraph extends ConsumerWidget {
           maxY = last;
         }
 
-        final range = stableTrendRange(minY, maxY);
+        final range = analogBoxTrendYRange(yAxis, stableTrendRange(minY, maxY));
 
         final graphConfig = GraphConfig(
           type: GraphType.timeseries,
@@ -1266,7 +1356,9 @@ class AnalogBoxTrendGraph extends ConsumerWidget {
             min: range.min,
             max: range.max,
           ),
-          xSpan: xSpan,
+          // A fixed [xRange] wins over the rolling span — see the field.
+          xSpan: xRange == null ? xSpan : null,
+          xRange: xRange,
           // One series, already named by the pane — the legend column would
           // only take width off a plot this small.
           legend: !compact,
@@ -1305,6 +1397,9 @@ class AnalogBoxTrendGraphLoader extends ConsumerWidget {
   final Duration xSpan;
   final bool compact;
 
+  /// See [AnalogBoxTrendGraph.yAxis].
+  final GraphAxisConfig? yAxis;
+
   const AnalogBoxTrendGraphLoader({
     required this.keyName,
     required this.seriesLabel,
@@ -1313,6 +1408,7 @@ class AnalogBoxTrendGraphLoader extends ConsumerWidget {
     this.showButtons = true,
     this.xSpan = const Duration(minutes: 5),
     this.compact = false,
+    this.yAxis,
     super.key,
   });
 
@@ -1333,6 +1429,7 @@ class AnalogBoxTrendGraphLoader extends ConsumerWidget {
           showButtons: showButtons,
           xSpan: xSpan,
           compact: compact,
+          yAxis: yAxis,
         );
       },
     );

@@ -46,12 +46,14 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:shared_preferences_platform_interface/in_memory_shared_preferences_async.dart';
 import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
 import 'package:tfc/core/access_admin_store.dart';
+import 'package:tfc/models/menu_item.dart';
 import 'package:tfc/pages/access_users_section.dart';
 import 'package:tfc/providers/access.dart';
 import 'package:tfc/providers/access_admin.dart';
 import 'package:tfc/providers/access_policy.dart';
 import 'package:tfc/widgets/access_admin_notice.dart';
 import 'package:tfc/widgets/access_denied_prompt.dart';
+import 'package:tfc/route_registry.dart';
 import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/access/access_repository.dart';
 import 'package:tfc_dart/core/access/local_auth_provider.dart';
@@ -202,6 +204,14 @@ class _RecordingStore extends AccessAdminStore {
       {String origin = 'operator', String? reason}) async {
     calls.add('setUserStationAccount:$username:$value');
     return super.setUserStationAccount(username, value,
+        origin: origin, reason: reason);
+  }
+
+  @override
+  Future<void> setUserHomePage(String username, String? path,
+      {String origin = 'operator', String? reason}) async {
+    calls.add('setUserHomePage:$username:$path');
+    return super.setUserHomePage(username, path,
         origin: origin, reason: reason);
   }
 
@@ -543,6 +553,168 @@ void main() {
       expect(find.byKey(kAccessUserTimeoutTagKey('bob')), findsNothing,
           reason: 'a stored number governs nothing while the flag is set, so '
               'showing it beside the role would only mislead');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // The per-account home page
+  //
+  // It used to be one device-local startup page per panel. It is an account's
+  // own now — the anonymous account's included, which is where every
+  // logged-out panel opens.
+  // -------------------------------------------------------------------------
+  group('the home page', () {
+    setUp(() {
+      final registry = RouteRegistry();
+      registry.menuItems.clear();
+      registry.addMenuItem(
+          const MenuItem(label: 'Home', path: '/', icon: Icons.home));
+      registry.addMenuItem(const MenuItem(
+          label: 'Packing', path: '/pages/packing', icon: Icons.inventory));
+      registry.addMenuItem(const MenuItem(
+        label: 'Halls',
+        path: '/halls',
+        icon: Icons.folder,
+        isSection: true,
+        children: [
+          MenuItem(label: 'Freezer', path: '/halls/freezer', icon: Icons.ac_unit),
+        ],
+      ));
+    });
+
+    Future<void> seedBob({String? homePage}) async {
+      await repository.createUser(
+          username: 'bob', password: 'pw', roleName: 'Shift Leader');
+      if (homePage != null) await repository.setHomePage('bob', homePage);
+    }
+
+    Future<String?> storedHomePage(String username) async =>
+        (await repository.user(username))!.homePage;
+
+    testWidgets('picking a page saves it as the account\'s home page',
+        (tester) async {
+      await seedBob();
+      await pumpSection(tester, overrides());
+
+      await tester.tap(find.byKey(kAccessUserHomePageKey('bob')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(kAccessUserHomePageOptionKey('/halls/freezer')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(kAccessUserHomePageSaveKey));
+      await tester.pumpAndSettle();
+
+      expect(await storedHomePage('bob'), '/halls/freezer');
+      expect(store!.calls, contains('setUserHomePage:bob:/halls/freezer'));
+    });
+
+    testWidgets('the dialog offers pages, not sections', (tester) async {
+      await seedBob();
+      await pumpSection(tester, overrides());
+
+      await tester.tap(find.byKey(kAccessUserHomePageKey('bob')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(kAccessUserHomePageOptionKey('/pages/packing')),
+          findsOneWidget);
+      expect(find.byKey(kAccessUserHomePageOptionKey('/halls/freezer')),
+          findsOneWidget);
+      expect(find.byKey(kAccessUserHomePageOptionKey('/halls')), findsNothing,
+          reason: 'a section groups pages but does not route');
+    });
+
+    testWidgets('choosing Home clears the account\'s own page', (tester) async {
+      await seedBob(homePage: '/pages/packing');
+      await pumpSection(tester, overrides());
+
+      await tester.tap(find.byKey(kAccessUserHomePageKey('bob')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(kAccessUserHomePageOptionKey(null)));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(kAccessUserHomePageSaveKey));
+      await tester.pumpAndSettle();
+
+      expect(await storedHomePage('bob'), isNull);
+    });
+
+    testWidgets('saving the page already stored writes nothing', (tester) async {
+      await seedBob(homePage: '/pages/packing');
+      await pumpSection(tester, overrides());
+
+      await tester.tap(find.byKey(kAccessUserHomePageKey('bob')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(kAccessUserHomePageSaveKey));
+      await tester.pumpAndSettle();
+
+      expect(store!.calls, isNot(contains(startsWith('setUserHomePage'))));
+    });
+
+    testWidgets('a stored page this station cannot route is still shown, and '
+        'kept unless changed', (tester) async {
+      // It may be a page another station has and this one has not synced; a
+      // dialog that silently dropped it would make Save destructive.
+      await seedBob(homePage: '/pages/elsewhere');
+      await pumpSection(tester, overrides());
+
+      await tester.tap(find.byKey(kAccessUserHomePageKey('bob')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(kAccessUserHomePageOptionKey('/pages/elsewhere')),
+          findsOneWidget);
+      await tester.tap(find.byKey(kAccessUserHomePageSaveKey));
+      await tester.pumpAndSettle();
+      expect(await storedHomePage('bob'), '/pages/elsewhere');
+    });
+
+    testWidgets('the row names the account\'s home page beside the role',
+        (tester) async {
+      await seedBob(homePage: '/halls/freezer');
+      await pumpSection(tester, overrides());
+
+      expect(find.byKey(kAccessUserHomePageTagKey('bob')), findsOneWidget);
+      expect(find.text(kAccessUserHomePageTag('Freezer')), findsOneWidget,
+          reason: 'the page\'s name, not its address');
+    });
+
+    testWidgets('an account opening on Home carries no tag', (tester) async {
+      await seedBob();
+      await pumpSection(tester, overrides());
+
+      expect(find.byKey(kAccessUserHomePageTagKey('bob')), findsNothing);
+    });
+
+    testWidgets('the anonymous account has one — every logged-out panel\'s',
+        (tester) async {
+      await pumpSection(tester, overrides());
+
+      await tester.tap(find.byKey(kAccessUserHomePageKey(kAnonymousUsername)));
+      await tester.pumpAndSettle();
+      expect(find.text(kAccessUserHomePageAnonymousNote), findsOneWidget);
+      await tester.tap(find.byKey(kAccessUserHomePageOptionKey('/pages/packing')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(kAccessUserHomePageSaveKey));
+      await tester.pumpAndSettle();
+
+      expect(await storedHomePage(kAnonymousUsername), '/pages/packing');
+    });
+
+    testWidgets('a session without users is refused at Save and nothing is '
+        'written', (tester) async {
+      await seedBob();
+      session = _configureOnly();
+      await pumpSection(tester, overrides());
+
+      await tester.tap(find.byKey(kAccessUserHomePageKey('bob')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(kAccessUserHomePageOptionKey('/pages/packing')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(kAccessUserHomePageSaveKey));
+      await tester.pumpAndSettle();
+
+      expect(await storedHomePage('bob'), isNull);
+      final rows = sink.rows.where((r) => r.itemKey == 'user.home_page');
+      expect(rows, hasLength(1));
+      expect(rows.single.allowed, isFalse,
+          reason: 'a denied write is recorded, like every other on this screen');
     });
   });
 

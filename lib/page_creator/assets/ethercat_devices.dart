@@ -277,7 +277,12 @@ abstract final class _Col {
   static const state = 56.0;
   static const port = 26.0;
   static const crc = 52.0;
-  static const drops = 44.0;
+  /// The header sets this, not the figures: link-loss totals saturate at 255,
+  /// so three digits is the widest value that can ever appear, while
+  /// 'Link loss' measures 64 px in the header style. Same width as [clean],
+  /// whose header is the same nine characters — the old 44 px fitted 'Drops'
+  /// and would have wrapped this onto a second line inside a 22 px row.
+  static const linkLoss = 72.0;
   static const clean = 72.0;
   static const rowHeight = 22.0;
 
@@ -793,7 +798,7 @@ class _HeaderRow extends StatelessWidget {
               child: Text(p.letter, style: style, textAlign: TextAlign.center),
             ),
           cell('CRC', _Col.crc, right: true),
-          cell('Drops', _Col.drops, right: true),
+          cell('Link loss', _Col.linkLoss, right: true),
           if (layout.showClean) cell('Clean for', _Col.clean, right: true),
         ],
       ),
@@ -1001,7 +1006,7 @@ class _SubdeviceRow extends StatelessWidget {
                 ),
               ),
               SizedBox(
-                width: _Col.drops,
+                width: _Col.linkLoss,
                 child: Text(
                   d == null || d.linkLostSum == 0 ? '·' : '${d.linkLostSum}',
                   textAlign: TextAlign.right,
@@ -1056,7 +1061,7 @@ class _SubdeviceRow extends StatelessWidget {
     return Tooltip(
       message: [
         'Port ${p.letter} → ${n?.label ?? 'not connected'}',
-        if (d != null) 'CRC $crc · drops $lost',
+        if (d != null) 'CRC $crc · link loss $lost',
         if (d != null && d.portFlagged(p)) d.linkFault!.label,
       ].join('\n'),
       waitDuration: const Duration(milliseconds: 400),

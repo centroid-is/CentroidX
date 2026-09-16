@@ -1015,8 +1015,7 @@ class CreatePageWidget extends StatefulWidget {
   final bool isSection;
   final String basePath;
 
-  /// What else changing the address costs, in the caller's words — e.g. that
-  /// this station's startup page points at the page being renamed. Shown
+  /// What else changing the address costs, in the caller's words. Shown
   /// under the address checkbox once it is ticked.
   final String? addressChangeNote;
 
@@ -1048,8 +1047,8 @@ class _CreatePageWidgetState extends State<CreatePageWidget> {
 
   /// Whether an existing page's address should follow its new name.
   ///
-  /// Off by default: the address is what links, bookmarks and the station's
-  /// startup setting point at, so renaming for readability must not quietly
+  /// Off by default: the address is what links, bookmarks and accounts' home
+  /// pages point at, so renaming for readability must not quietly
   /// move the page out from under them. Ignored when creating, where there is
   /// no old address to keep.
   bool _changeAddress = false;
@@ -1162,8 +1161,8 @@ class _CreatePageWidgetState extends State<CreatePageWidget> {
             subtitle: Text(
               _changeAddress
                   ? _addressWarning(existing, proposed)
-                  : 'Renaming leaves the address alone, so links and this '
-                      'station\'s startup setting keep working.',
+                  : 'Renaming leaves the address alone, so links and home '
+                      'pages that point here keep working.',
             ),
           ),
         ],

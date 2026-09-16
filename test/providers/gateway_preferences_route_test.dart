@@ -23,7 +23,7 @@ import 'package:tfc_dart/core/access/guarded_preferences.dart';
 import 'package:tfc_dart/core/config/shared_row_preferences.dart';
 import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc/core/gateway_config.dart';
-import 'package:tfc/core/startup_url.dart';
+import 'package:tfc/core/home_page.dart' show kRetiredStartupUrlPrefKey;
 import 'package:tfc/providers/database.dart';
 import 'package:tfc/providers/gateway.dart';
 import 'package:tfc/providers/gateway_preferences_slot.dart';
@@ -157,7 +157,7 @@ void main() {
     final prefs = await container.read(systemPreferencesProvider.future);
     container.read(gatewayPreferencesSlotProvider).fill(backend);
 
-    await prefs.setString(startupUrlPrefsKey, '/lines/1');
+    await prefs.setString(kRetiredStartupUrlPrefKey, '/lines/1');
 
     expect(backend.store, isEmpty,
         reason: 'a shared startup_url row overwrites every station\'s own '
@@ -165,7 +165,7 @@ void main() {
     expect(
         await container
             .read(localPreferencesProvider)
-            .getString(startupUrlPrefsKey),
+            .getString(kRetiredStartupUrlPrefKey),
         '/lines/1');
   });
 
@@ -184,13 +184,13 @@ void main() {
     final container = _container(gateway: _gateway, holdStateMan: true);
     final backend = _Backend();
     addTearDown(backend.dispose);
-    backend.store[startupUrlPrefsKey] = '/somebody-elses-page';
+    backend.store[kRetiredStartupUrlPrefKey] = '/somebody-elses-page';
 
     await container.read(preferencesProvider.future);
     container.read(gatewayPreferencesSlotProvider).fill(backend);
     await pumpEventQueue();
 
-    expect(backend.store[startupUrlPrefsKey], '/somebody-elses-page',
+    expect(backend.store[kRetiredStartupUrlPrefKey], '/somebody-elses-page',
         reason: 'the migration deletes the shared row it finds. On this '
             'transport that row is the BACKEND\'s, and deleting it would be '
             'one panel reaching across and changing a value it does not own');

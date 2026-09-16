@@ -871,6 +871,48 @@ void main() {
           isNull);
     });
 
+    test('setUserHomePage records user.home_page with the path', () async {
+      await repository.createUser(
+          username: 'bob', password: 'pw2', roleName: 'Shift Leader');
+      repository.calls.clear();
+      final store = buildStore();
+
+      await store.setUserHomePage('bob', '/pages/packing');
+
+      final row = sink.rows.single;
+      expect(row.itemKey, 'user.home_page');
+      expect(row.member, 'bob');
+      expect(row.oldValue, isNull, reason: 'null is Home, "no value of its own"');
+      expect(row.newValue, '/pages/packing');
+      expect((await _people(repository)).single.homePage, '/pages/packing');
+    });
+
+    test('the anonymous account\'s home page is recorded like anybody\'s',
+        () async {
+      final store = buildStore();
+
+      await store.setUserHomePage(kAnonymousUsername, '/pages/freezer');
+
+      final row = sink.rows.single;
+      expect(row.itemKey, 'user.home_page');
+      expect(row.member, kAnonymousUsername);
+      expect(row.newValue, '/pages/freezer');
+    });
+
+    test('setting Home records the move back to null, never "/"', () async {
+      await repository.createUser(
+          username: 'bob', password: 'pw2', roleName: 'Shift Leader');
+      await repository.setHomePage('bob', '/pages/packing');
+      final store = buildStore();
+
+      await store.setUserHomePage('bob', '/');
+
+      final row = sink.rows.single;
+      expect(row.oldValue, '/pages/packing');
+      expect(row.newValue, isNull);
+      expect((await _people(repository)).single.homePage, isNull);
+    });
+
     test('setUserPassword records user.password and nothing about the password',
         () async {
       const secret = 'zXq7-never-in-a-row';
@@ -1009,6 +1051,15 @@ void main() {
           (s) => s.setUserInactivityTimeout('bob', 45));
       expect((await _people(repository)).single.inactivityTimeoutMinutes,
           isNull);
+    });
+
+    test('setUserHomePage', () async {
+      await repository.createUser(
+          username: 'bob', password: 'pw', roleName: 'Shift Leader');
+      repository.calls.clear();
+      await expectGated('user.home_page',
+          (s) => s.setUserHomePage('bob', '/pages/packing'));
+      expect((await _people(repository)).single.homePage, isNull);
     });
 
     test('setUserPassword', () async {

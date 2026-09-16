@@ -182,7 +182,7 @@ class EtherCatLinkPaneBody extends StatelessWidget {
           'damage is upstream of it rather than on it.';
     }
     if (s.lostLinks > s.connectCount) {
-      return 'The controller has counted more link drops than the PLC scan '
+      return 'The controller has counted more link losses than the PLC scan '
           'saw, which means this link is flapping faster than the cycle time.';
     }
     return 'Errors are being counted on this cable itself.';
@@ -374,7 +374,7 @@ class _EndRow extends StatelessWidget {
           ),
           const SizedBox(width: 8),
           Text(
-            d == null ? '—' : 'CRC $crc · drops $lost',
+            d == null ? '—' : 'CRC $crc · link loss $lost',
             style: theme.textTheme.bodySmall?.copyWith(
               fontFeatures: const [FontFeature.tabularFigures()],
               color: crc > 0 || lost > 0 ? states.yellow : null,

@@ -325,4 +325,128 @@ void main() {
       expect(EtherCatLinkConfig().boxOn(const [], Size.zero), isNull);
     });
   });
+
+  group('an unplugged cable is its points', () {
+    // Nothing to derive a position from, so its box is the run itself: move
+    // the box and the points move, resize it and they scale, and the handles
+    // the editor draws on those points sit on the line the stack paints.
+    const canvas = Size(1000, 600);
+
+    EtherCatLinkConfig free({List<LinkWaypoint>? waypoints}) =>
+        EtherCatLinkConfig(
+          run: LinkRun(
+            from: LinkEnd(x: 0.2, y: 0.4),
+            to: LinkEnd(x: 0.6, y: 0.4),
+            waypoints: waypoints,
+          ),
+          thickness: 0.01,
+        );
+
+    test('its box is the bounds of its points', () {
+      final cfg = free();
+      final box = cfg.boxOn([cfg], canvas)!;
+      expect(box.left, closeTo(0.19, 1e-9));
+      expect(box.right, closeTo(0.61, 1e-9));
+      expect(box.top, closeTo(0.39, 1e-9));
+      expect(box.bottom, closeTo(0.41, 1e-9));
+      expect(cfg.coordinates.x, closeTo(0.4, 1e-9));
+      expect(cfg.coordinates.y, closeTo(0.4, 1e-9));
+      expect(cfg.size.width, closeTo(0.42, 1e-9));
+      expect(cfg.size.height, closeTo(0.02, 1e-9));
+    });
+
+    test('a corner outside the ends is inside its box', () {
+      final cfg = free(waypoints: [LinkWaypoint.onRun(0.5, -0.5)]);
+      // 0.4 long, so the corner sits 0.2 above the run.
+      expect(cfg.boxOn([cfg], canvas)!.top, closeTo(0.19, 1e-9));
+    });
+
+    test('moving it moves the points, corners and all', () {
+      final cfg = free(waypoints: [LinkWaypoint.onRun(0.5, -0.5)]);
+      cfg.coordinates = Coordinates(x: 0.5, y: 0.45);
+      expect(cfg.run.from.x, closeTo(0.3, 1e-9));
+      expect(cfg.run.to.x, closeTo(0.7, 1e-9));
+      // The centre of the box, which the corner pulls up by 0.1.
+      expect(cfg.run.from.y, closeTo(0.55, 1e-9));
+      expect(cfg.coordinates.x, closeTo(0.5, 1e-9));
+      expect(cfg.coordinates.y, closeTo(0.45, 1e-9));
+      final w = cfg.run.waypoints.single;
+      expect((w.t, w.n), (0.5, -0.5));
+    });
+
+    test('resizing it scales the points about its centre', () {
+      final cfg = free();
+      final before = cfg.size;
+      cfg.size = RelativeSize(
+          width: before.width * 1.5, height: before.height * 1.5);
+      // The box grows to what was asked; the stroke does not scale.
+      expect(cfg.size.width, closeTo(0.63, 1e-9));
+      expect(cfg.run.from.x, closeTo(0.095, 1e-9));
+      expect(cfg.run.to.x, closeTo(0.705, 1e-9));
+      expect(cfg.coordinates.x, closeTo(0.4, 1e-9));
+    });
+
+    test('a resize never collapses the run to nothing', () {
+      final cfg = free();
+      cfg.size = const RelativeSize(width: 0.001, height: 0.001);
+      expect(cfg.run.to.x - cfg.run.from.x, greaterThan(0));
+    });
+
+    test('it is never rotated: a run turns by moving its points', () {
+      // The stack rotates the painted widget by the angle, and the handles are
+      // placed from the points, so an angle would pull the two apart.
+      final cfg = free();
+      cfg.coordinates = Coordinates(x: 0.4, y: 0.4, angle: 90);
+      expect(cfg.coordinates.angle, isNull);
+    });
+
+    test('a fresh cable from the palette lands where it was dropped', () {
+      final cfg = EtherCatLinkConfig();
+      cfg.coordinates = Coordinates(x: 0.7, y: 0.2);
+      final box = cfg.boxOn([cfg], canvas)!;
+      expect(box.center.dx, closeTo(0.7, 1e-9));
+      expect(box.center.dy, closeTo(0.2, 1e-9));
+      // Wide enough to see and to grab.
+      expect(cfg.run.to.x - cfg.run.from.x, closeTo(0.18, 1e-9));
+    });
+
+    test('round-trips through JSON without moving', () {
+      final cfg = free(waypoints: [LinkWaypoint.onRun(0.3, 0.2)])
+        ..variant = 'EtherCatLinkConfig';
+      final back = EtherCatLinkConfig.fromJson(cfg.toJson());
+      expect(back.run.from.x, closeTo(0.2, 1e-9));
+      expect(back.run.to.x, closeTo(0.6, 1e-9));
+      expect(back.run.from.y, closeTo(0.4, 1e-9));
+    });
+
+    test('a page saved before this draws where it used to', () {
+      // It used to be drawn across its own box, from the stored coordinates
+      // and size, with the stored ends ignored. Loading lays the ends there.
+      final legacy = {
+        'asset_name': 'EtherCatLinkConfig',
+        'coordinates': {'x': 0.5, 'y': 0.3, 'angle': null},
+        'size': {'width': 0.2, 'height': 0.08},
+        'key': '',
+        'run': LinkRun().toJson(),
+        'thickness': 0.006,
+      };
+      final cfg = EtherCatLinkConfig.fromJson(legacy);
+      expect(cfg.run.from.y, closeTo(0.3, 1e-9));
+      expect(cfg.run.to.y, closeTo(0.3, 1e-9));
+      expect((cfg.run.from.x + cfg.run.to.x) / 2, closeTo(0.5, 1e-9));
+      // Near enough: the old drawing put the ends on the box edge, the box
+      // is now measured round the stroke.
+      expect(cfg.run.to.x - cfg.run.from.x, closeTo(0.2, 0.015));
+    });
+
+    test('a plugged cable keeps its stored box: its devices place it', () {
+      final a = _Box(x: 0.2, y: 0.3)..ensureId();
+      final cfg = EtherCatLinkConfig(
+        run: LinkRun(from: LinkEnd(assetId: a.id, port: 'X2')),
+      );
+      cfg.coordinates = Coordinates(x: 0.9, y: 0.9);
+      expect(cfg.run.to.x, 0.7);
+      expect(cfg.coordinates.x, 0.9);
+    });
+  });
 }

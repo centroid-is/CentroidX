@@ -42,6 +42,7 @@ AnalogBoxConfig _$AnalogBoxConfigFromJson(Map<String, dynamic> json) =>
           ? const Color(0x44FF0000)
           : const ColorConverter()
               .fromJson(json['hyst_color'] as Map<String, dynamic>),
+      showName: json['show_name'] as bool? ?? true,
       enableDialog: json['enable_dialog'] as bool? ?? true,
       graphConfig: json['graph_config'] == null
           ? null
@@ -87,6 +88,7 @@ Map<String, dynamic> _$AnalogBoxConfigToJson(AnalogBoxConfig instance) =>
       'sp1_color': const ColorConverter().toJson(instance.setpoint1Color),
       'sp2_color': const ColorConverter().toJson(instance.setpoint2Color),
       'hyst_color': const ColorConverter().toJson(instance.hysteresisColor),
+      'show_name': instance.showName,
       'enable_dialog': instance.enableDialog,
       'graph_config': instance.graphConfig?.toJson(),
     };

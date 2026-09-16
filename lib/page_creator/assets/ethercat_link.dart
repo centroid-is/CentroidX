@@ -199,14 +199,25 @@ class EtherCatLinkConfig extends BaseAsset {
     this.key = '',
     LinkRun? run,
     this.thickness = 0.006,
-  }) : run = run ?? LinkRun() {
-    // BaseAsset defaults to a 3% square, which is the wrong shape for
-    // something whose whole nature is being long and thin. A cable dropped
-    // from the palette wants to be wide enough to see and to grab before it
-    // is plugged into anything. `fromJson` overwrites this from the stored
-    // size, so it only ever affects a newly made one.
-    size = const RelativeSize(width: 0.18, height: 0.08);
+  }) : run = run ??
+            LinkRun(
+              // Wide enough to see and to grab before it is plugged into
+              // anything, centred on the origin so that dropping it off the
+              // palette -- which sets [coordinates] -- carries it to the drop.
+              from: LinkEnd(x: -_kFreshHalfLength, y: 0),
+              to: LinkEnd(x: _kFreshHalfLength, y: 0),
+            ) {
+    // The stored box, which only a plugged-in cable keeps. `super.` so this
+    // does not go through [size], which would scale the run.
+    super.size = const RelativeSize(width: 0.18, height: 0.08);
   }
+
+  /// Half the length of a cable fresh off the palette, as a page fraction.
+  static const double _kFreshHalfLength = 0.09;
+
+  /// The shortest an unplugged run may be resized down to. Below this the
+  /// ends sit on top of each other and there is nothing left to grab.
+  static const double _kMinFreeLength = 0.01;
 
   /// The palette tile: a bend, because a straight line is not recognisable as
   /// a cable and every other tile in the grid is a picture of its thing.
@@ -244,41 +255,105 @@ class EtherCatLinkConfig extends BaseAsset {
 
   /// True once either end is plugged into something.
   ///
-  /// An unplugged cable has nothing to derive a position from, so it stays an
-  /// ordinary box asset: it sits where it was dropped, drags with the mouse
-  /// and is selected by its rectangle, exactly like everything else off the
-  /// palette. The moment an end names a device, that device decides where the
-  /// cable is and [boxOn] takes over.
+  /// Until then the cable's points are its position: see [coordinates]. The
+  /// moment an end names a device, that device decides where the cable is and
+  /// moving the cable's own box no longer means anything.
   @JsonKey(includeFromJson: false, includeToJson: false)
   bool get isPluggedIn => run.from.assetId != null || run.to.assetId != null;
 
-  /// The run laid across this asset's own box, for a cable plugged into
-  /// nothing.
+  /// Where an unplugged run sits, in page fractions, stroke included.
   ///
-  /// The stored free-end coordinates are a *fallback for a binding that
-  /// broke*, not a position an operator ever set, so they are not what an
-  /// unplugged cable should be drawn between. Its own box is.
-  LinkRun runAcrossOwnBox() {
-    final half = size.width / 2;
-    final copy = run.copy();
-    copy.from
-      ..assetId = null
-      ..x = coordinates.x - half
-      ..y = coordinates.y;
-    copy.to
-      ..assetId = null
-      ..x = coordinates.x + half
-      ..y = coordinates.y;
-    return copy;
+  /// An unplugged cable has no devices to derive a position from, so its
+  /// points *are* its position. [coordinates] and [size] are read from these
+  /// bounds and writing them moves or scales the points, which is what makes
+  /// every editor operation that only knows about boxes -- drag, nudge, align,
+  /// grow, paste -- carry the drawn run and its handles with it.
+  Rect _freeBounds() => run.boundsIn(LinkAnchors.none, pad: thickness);
+
+  @override
+  Coordinates get coordinates {
+    if (isPluggedIn) {
+      final c = super.coordinates;
+      return Coordinates(x: c.x, y: c.y);
+    }
+    final c = _freeBounds().center;
+    return Coordinates(x: c.dx, y: c.dy);
   }
 
-  /// The box the run occupies, from wherever its devices currently are.
+  /// Never rotated. `AssetStack` turns the painted widget by the angle while
+  /// the editor's handles are placed from the points, so an angle is exactly
+  /// how the two come apart; a run turns by moving its points instead.
+  @override
+  set coordinates(Coordinates value) {
+    if (!isPluggedIn) {
+      final c = _freeBounds().center;
+      _translateFree(value.x - c.dx, value.y - c.dy);
+    }
+    super.coordinates = Coordinates(x: value.x, y: value.y);
+  }
+
+  void _translateFree(double dx, double dy) {
+    for (final end in [run.from, run.to]) {
+      end
+        ..x += dx
+        ..y += dy;
+    }
+  }
+
+  @override
+  RelativeSize get size {
+    if (isPluggedIn) return super.size;
+    final b = _freeBounds();
+    return RelativeSize(width: b.width, height: b.height);
+  }
+
+  /// Scales an unplugged run about its centre.
+  ///
+  /// Uniformly, by whichever axis the run mostly lies along: corners are held
+  /// as a fraction of the run's length, so stretching one axis alone would
+  /// not stretch the drawing, it would bend it. A run with no extent at all
+  /// has nothing to scale and is laid out across the width instead.
+  @override
+  set size(RelativeSize value) {
+    super.size = value;
+    if (isPluggedIn) return;
+    final b = _freeBounds();
+    final pad = 2 * thickness;
+    final w = b.width - pad, h = b.height - pad;
+    final c = b.center;
+    if (math.max(w, h) < 1e-9) {
+      final half = math.max(value.width - pad, _kMinFreeLength) / 2;
+      run.from
+        ..x = c.dx - half
+        ..y = c.dy;
+      run.to
+        ..x = c.dx + half
+        ..y = c.dy;
+      return;
+    }
+    final along = w >= h;
+    final wanted = (along ? value.width : value.height) - pad;
+    final length = (Offset(run.to.x, run.to.y) - Offset(run.from.x, run.from.y))
+        .distance;
+    var f = wanted / (along ? w : h);
+    if (length * f < _kMinFreeLength) f = _kMinFreeLength / length;
+    for (final end in [run.from, run.to]) {
+      end
+        ..x = c.dx + (end.x - c.dx) * f
+        ..y = c.dy + (end.y - c.dy) * f;
+    }
+    // Scaled about the old centre, so the new bounds are centred there too:
+    // every point, corners included, is an affine image of the ends.
+  }
+
+  /// The box the run occupies: from wherever its devices currently are, or
+  /// from its own points when it is plugged into nothing.
   ///
   /// Padded by the stroke so the end caps are inside it: a rect measured on
   /// the centreline clips half the cable away at the extremes.
   @override
   Rect? boxOn(List<Asset> page, Size canvas) {
-    if (canvas.isEmpty || !isPluggedIn) return null;
+    if (canvas.isEmpty) return null;
     return run.boundsIn(PageLinkAnchors(page, canvas), pad: thickness);
   }
 
@@ -291,7 +366,6 @@ class EtherCatLinkConfig extends BaseAsset {
   @override
   bool hitTestBox(Offset local, Size boxSize, List<Asset> page, Size canvas) {
     final box = boxOn(page, canvas);
-    // Unplugged, so it really is an ordinary box asset.
     if (box == null) return true;
     final resolved = run.resolve(canvas, PageLinkAnchors(page, canvas));
     final origin = Offset(box.left * canvas.width, box.top * canvas.height);
@@ -626,25 +700,32 @@ class _EtherCatLinkState extends ConsumerState<EtherCatLink> {
 
     return LayoutBuilder(builder: (context, constraints) {
       final scope = PageAssetsScope.maybeOf(context);
-      // The run is resolved in whole-page coordinates, then drawn relative to
-      // this asset's own box -- which is a slice of the page, not the page.
-      final canvas =
-          scope?.canvas ?? Size(constraints.maxWidth, constraints.maxHeight);
-      final box = widget.config.boxOn(scope?.assets ?? const [], canvas);
+      final Size canvas;
       final ResolvedLink resolved;
       final Offset origin;
-      if (box == null) {
-        // Unplugged: an ordinary box asset, drawn across itself.
-        resolved =
-            widget.config.runAcrossOwnBox().resolve(canvas, LinkAnchors.none);
-        origin = Offset(
-          widget.config.coordinates.x * canvas.width - constraints.maxWidth / 2,
-          widget.config.coordinates.y * canvas.height -
-              constraints.maxHeight / 2,
-        );
-      } else {
+      final box = scope == null
+          ? null
+          : widget.config.boxOn(scope.assets, scope.canvas);
+      if (scope != null && box != null) {
+        // The run is resolved in whole-page coordinates, then drawn relative
+        // to this asset's own box -- which is a slice of the page, not the
+        // page. The same resolve the editor's handles are placed from.
+        canvas = scope.canvas;
         resolved = widget.config.run.resolve(canvas, anchors);
         origin = Offset(box.left * canvas.width, box.top * canvas.height);
+      } else {
+        // No page around it (the palette tile, the drag feedback): fit the
+        // run into whatever box it was given.
+        final bounds = widget.config.run
+            .boundsIn(LinkAnchors.none, pad: widget.config.thickness);
+        final scale = math.min(
+          constraints.maxWidth / math.max(bounds.width, 1e-9),
+          constraints.maxHeight / math.max(bounds.height, 1e-9),
+        );
+        canvas = Size(scale, scale);
+        resolved = widget.config.run.resolve(canvas, LinkAnchors.none);
+        origin = bounds.center * scale -
+            Offset(constraints.maxWidth / 2, constraints.maxHeight / 2);
       }
 
       final painter = EtherCatLinkPainter(

@@ -269,6 +269,51 @@ void main() {
       );
     });
 
+    // The EL2008's pane, the output twin of the EL1008 images above. Its lit
+    // lamps are the same green as the EL1008's — square, because they are
+    // outputs — and not the yellow that means manual mode everywhere else.
+    testWidgets('the EL2008 pane lights its outputs green', (tester) async {
+      await frame(tester, const Size(900, 900));
+
+      final config = BeckhoffEL2008Config(
+        nameOrId: 'ST101.A1.04',
+        rawStateKey: _rawKey,
+        descriptionsKey: _descriptionsKey,
+        channelDescriptions: const ['Infeed belt run', '', 'Reject flap'],
+      );
+
+      await tester.pumpWidget(ProviderScope(
+        overrides: [
+          stateManProvider.overrideWith((ref) async => _StubStateMan({
+                _rawKey: structValue('O', {1, 3}),
+                _descriptionsKey: DynamicValue.fromList(
+                    List.generate(8, (i) => 'Key ch${i + 1}')),
+              })),
+        ],
+        child: MaterialApp(
+          theme: light,
+          home: Scaffold(
+            body: Center(
+              child: SizedBox(
+                width: 200,
+                height: 400,
+                child: Builder(builder: (context) => config.build(context)),
+              ),
+            ),
+          ),
+        ),
+      ));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byType(IO8Widget));
+      await tester.pumpAndSettle();
+
+      await expectLater(
+        find.byType(MaterialApp),
+        matchesGoldenFile('goldens/beckhoff_el2008_pane.png'),
+      );
+    });
+
     // The EP2338's pane: the case the terminals do not have, where a point
     // carries both directions on one pin. Two lamps per row, round for the
     // input and square for the output, against one description — the port is

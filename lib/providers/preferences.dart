@@ -12,8 +12,8 @@ import 'package:riverpod/riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../core/gateway_config.dart';
+import '../core/home_page.dart';
 import '../core/relayed_preferences.dart';
-import '../core/startup_url.dart';
 import 'access.dart';
 import 'access_policy.dart';
 import 'config_store.dart';
@@ -381,51 +381,29 @@ Future<Preferences> preferences(Ref ref) async {
     });
   }
 
-  // A startup_url row in the shared database would overwrite every station's
-  // local choice on each sync; delete it the moment it is seen. Runs on every
-  // (re)connect because this provider is rebuilt then — idempotent.
+  // The retired per-station startup page (`startup_url`). A row of it in the
+  // shared database would be copied over the local store on every sync, so
+  // it is deleted the moment it is seen. Runs on every (re)connect because
+  // this provider is rebuilt then — idempotent.
   //
   // Through `systemWrites`, not the checked path: this is the app deleting a
   // row on its own behalf at boot, with nobody signed in, so a session check
-  // would refuse it and the per-station startup page would silently stop
-  // working again — the exact bug #354 fixed. It still produces one audit row,
-  // marked `origin: 'system'`, which is how the mcp.config migration is
-  // recorded too.
+  // would refuse it. It still produces one audit row, marked
+  // `origin: 'system'`, which is how the mcp.config migration is recorded too.
+  // `dropRetiredStartupUrl` never throws — a shared write with no Postgres is
+  // logged and retried on the next connect.
   //
-  // **Direct mode only.** The migration exists because the shared store's sync
-  // copies every shared row over the local store, so a stray shared
-  // `startup_url` permanently overwrites each station's own choice.
-  // `RelayedPreferences` performs no such sync, and it routes `startup_url` to
-  // this station by name, so on that transport the hazard is structurally
-  // absent and there is nothing to migrate.
-  //
-  // Being precise about what this guard is worth, because it is easy to
-  // overstate: **removing it changes no observable behaviour today.** Both
-  // sides of the migration resolve to the same device-local store on that
-  // transport, so it would read a value, delete it and write it straight back
-  // — churn on every reconnect, and nothing else. What the guard buys is that
-  // if `startup_url` ever stopped being device-local, this would not quietly
-  // become a panel reaching across and deleting the backend's row.
-  //
-  // Deleting a stray row from the shared database remains a direct-mode
-  // station's job, exactly as before.
-  //
-  // It can now also be refused outright: a shared write with no Postgres
-  // throws rather than returning false. That is not a station that may fail to
-  // boot, so it is caught and logged — the stale row is deleted on the next
-  // connect, and until then the local choice still wins because the read is
-  // device-local.
+  // **The shared row is a direct-mode station's to delete.** On the relay
+  // transport the shared store is the backend's, and a panel deleting a row
+  // there would be one panel reaching across and changing a value it does
+  // not own — `gateway_preferences_route_test.dart` pins that. The key is
+  // routed device-local on both transports (`device_local_preferences.dart`),
+  // so this station's own copy below is the one a panel actually used, and
+  // is dropped either way.
   if (!gateway.isGateway) {
-    try {
-      await migrateStartupUrlToDeviceLocal(
-        shared: systemWritesOf(prefs),
-        local: localCache,
-      );
-    } on Object catch (e) {
-      _logger.w('the shared startup_url row was not cleaned up this time; the '
-          'next reconnect retries it: $e');
-    }
+    await dropRetiredStartupUrl(systemWritesOf(prefs), logger: _logger);
   }
+  await dropRetiredStartupUrl(localCache, logger: _logger);
 
   return prefs;
 }

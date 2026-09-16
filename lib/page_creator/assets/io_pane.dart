@@ -126,8 +126,10 @@ class IoChannelList extends StatelessWidget {
 
 /// The lamp for one [IOState], in this repo's state vocabulary.
 ///
-/// Green is the plant telling us something and yellow is us driving it, so
-/// an input high and an output high are not the same colour. Forced is
+/// A lit channel is green whichever way the wire runs — the same green an
+/// EL9222 draws for supplying load. Direction is the shape, not the colour:
+/// yellow means manual mode everywhere else in the app, and an energised
+/// output is not manual. Forced is
 /// orange wherever it appears in this repo, and it can still appear here:
 /// the force *controls* are gone because the PLC accepts no override, but a
 /// value the PLC reports as forced is still worth showing, and showing it
@@ -148,7 +150,7 @@ class IoStateLamp extends StatelessWidget {
     final color = switch (state) {
       IOState.error => colors.red,
       IOState.forcedHigh || IOState.forcedLow => Colors.orange,
-      IOState.high => isOutput ? colors.yellow : colors.green,
+      IOState.high => colors.green,
       IOState.low => Colors.white,
     };
 

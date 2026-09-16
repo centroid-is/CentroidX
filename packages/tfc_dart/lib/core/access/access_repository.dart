@@ -1204,6 +1204,33 @@ class AccessRepository {
     if (updated == 0) throw UserNotFoundException(username);
   }
 
+  /// Sets the page [username]'s sessions open on, or clears it with null so
+  /// they open on Home.
+  ///
+  /// [path] is a route path — it starts with `/`. `/` itself is stored as
+  /// NULL, so "opens on Home" has one spelling in the column and the trail.
+  /// Anything else throws [ArgumentError] rather than being stored: a value
+  /// that could never route is a mistake the caller can still fix.
+  ///
+  /// Whether [path] names a page is **not** checked here. Pages live in the
+  /// page editor's data and may not have synced to this station yet; a path
+  /// that routes nowhere falls back to Home where it is read.
+  ///
+  /// The anonymous account is allowed one, unlike a timeout or a station
+  /// flag: its home page is where every logged-out panel opens.
+  ///
+  /// Throws [UserNotFoundException] when there is no such account.
+  Future<void> setHomePage(String username, String? path) async {
+    if (path != null && !path.startsWith('/')) {
+      throw ArgumentError.value(path, 'path', 'must be a route path');
+    }
+    final stored = path == '/' ? null : path;
+    final updated = await (db.update(db.appUser)
+          ..where((t) => t.username.equals(username)))
+        .write(AppUserCompanion(homePage: Value(stored)));
+    if (updated == 0) throw UserNotFoundException(username);
+  }
+
   /// Replace [username]'s roles with [roleNames], the first becoming the
   /// account's primary role.
   ///
@@ -1389,5 +1416,6 @@ class AccessRepository {
         // them agreeing if it ever starts de-duplicating or reordering.
         additionalRoles: rolesOf(row).skip(1).toList(growable: false),
         inactivityTimeoutMinutes: row.inactivityTimeoutMinutes,
+        homePage: row.homePage,
       );
 }

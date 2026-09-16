@@ -669,6 +669,7 @@ Map<String, Object?> userSummaryToJson(UserSummary value) => <String, Object?>{
         'lastLoginAtMs': value.lastLoginAt!.toUtc().millisecondsSinceEpoch,
       if (value.allowedPages != null)
         'allowedPages': pagesToJson(value.allowedPages),
+      if (value.homePage != null) 'homePage': value.homePage,
       // Omitted when empty, following `displayName`: a backend that does not
       // send it means "holds only its primary role", which is what an absent
       // key decodes to. Order is preserved — the roster renders the set and
@@ -701,6 +702,9 @@ UserSummary userSummaryFromJson(Map<String, Object?> json) => UserSummary(
       allowedPages: _pagesFromJson(json['allowedPages']),
       additionalRoles: _rolesFromJson(json['additionalRoles']),
       inactivityTimeoutMinutes: (json['inactivityTimeoutMinutes'] as num?)?.toInt(),
+      // Absent means Home, exactly as a NULL column does; a backend from
+      // before #564 never sends it and decodes the same.
+      homePage: json['homePage'] as String?,
     );
 
 /// A wire `additionalRoles` value as a list, **forgiving and narrowing**.
