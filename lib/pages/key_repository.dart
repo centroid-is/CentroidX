@@ -54,21 +54,30 @@ enum _KeyStatus { ok, error, serverDisconnected, serverDisabled }
 ///
 /// | State | Chrome |
 /// |---|---|
-/// | no database (this constant) | 516 |
-/// | database, one template | 592 |
-/// | database, templates list at its 168 px cap | 696 |
+/// | no database (this constant) | 412 |
+/// | database, one template | not yet re-measured |
+/// | database, templates list at its 168 px cap | not yet re-measured |
 ///
-/// The unbound count row is ~30 px of that, and it renders only when there is
-/// a database — so the no-database figure is unchanged by 04-08 and the
-/// goldens do not move. The worst case, 696, is still **below**
-/// `minContentHeight` (516 + 264 = 780), so the fallback gives the column
-/// enough room and the key list is squeezed to one card rather than
-/// overflowing. Verified by measurement at 800x600 with ten templates.
+/// **Re-measured when import/export moved into the key-mappings header.** The
+/// no-database figure was 516, and the separate import/export card plus the
+/// 16 px gap above it were 104 px of that. Taken the same way as before: in the
+/// whole-page fallback at 800x600 with no database the content box is
+/// `minContentHeight` tall, so the chrome is that box minus the key list's
+/// rendered height. On the old layout that gives 780 - 264 = 516, reproducing
+/// the recorded figure exactly; on this one it gives 780 - 368 = 412.
 ///
-/// Raising the constant to cover 696 would push `minContentHeight` to ~960 and
-/// engage the whole-page fallback on panels that lay out directly today, which
-/// is a worse trade than a short list on a window nobody runs the plant from.
-const double kKeyRepositoryChromeHeight = 516;
+/// The two database rows are left unfilled rather than filled by subtracting
+/// 104. They are measurements, and they are about to move again when the
+/// access-templates section collapses — so they get measured then, not
+/// derived now.
+///
+/// The unbound count row is ~30 px of the database figures and renders only
+/// when there is a database, so it does not enter the no-database figure.
+///
+/// Raising the constant to cover the database worst case would engage the
+/// whole-page fallback on panels that lay out directly today, which is a worse
+/// trade than a short list on a window nobody runs the plant from.
+const double kKeyRepositoryChromeHeight = 412;
 
 /// Three key cards. Below this the list is not worth showing and the page
 /// scrolls as a whole instead.
@@ -214,10 +223,12 @@ class KeyRepositoryContent extends ConsumerWidget {
       ],
     );
 
-    // Header, save button, the access-templates section and import/export are
-    // fixed height; below this the key list has no room left and the column
-    // would overflow. Fall back to scrolling the page as a whole (the key list
-    // itself stays lazy).
+    // Header, save button and the access-templates section are fixed height;
+    // below this the key list has no room left and the column would overflow.
+    // Fall back to scrolling the page as a whole (the key list itself stays
+    // lazy). Import/export no longer has a card of its own here -- it sits in
+    // the key-mappings header -- see [kKeyRepositoryChromeHeight] for what that
+    // changed.
     //
     // **Re-derived when the templates section landed, not nudged.** The old
     // value was 320, and it was never a height at which this column fitted:
