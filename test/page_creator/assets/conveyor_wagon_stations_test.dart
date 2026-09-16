@@ -158,6 +158,26 @@ void main() {
           isFalse);
     });
 
+    test('the rail tap band follows the track into its narrowed strip', () {
+      // The traverse drive answers on the painted rails. With docks bound the
+      // rails are painted in the middle band, so the tap band must be
+      // measured there too, or it reaches out over the docks.
+      final docked = _painter(stations: [_s('A', 0)]);
+      final rail = WagonDockGeometry.railBand(_size);
+      final band = docked.railBandRect(_size)!;
+      final bare = ConveyorPainter(
+              color: Colors.grey,
+              batches: const {},
+              angle: 0,
+              paintSize: rail.size,
+              onRails: true)
+          .railBandRect(rail.size)!;
+      expect(band, bare.shift(rail.topLeft));
+      for (final dock in docked.docks(_size)) {
+        expect(band.overlaps(dock.body), isFalse);
+      }
+    });
+
     test('stationsKey round-trips through JSON', () {
       final config = ConveyorConfig(
           onRails: true, stationsKey: 'EPW01.stations');
@@ -239,6 +259,29 @@ void main() {
       expect(find.text('Needs a pallet'), findsOneWidget);
       expect(find.text('Behind the wagon'), findsOneWidget);
       expect(find.text('10380 mm'), findsOneWidget);
+    });
+
+    testWidgets('with stations bound, the rail still opens the traverse drive',
+        (tester) async {
+      await pumpRail(tester, stationArray([station('Magazine', position: 0)]));
+      final paint = tester.widget<CustomPaint>(find
+          .descendant(
+              of: find.byType(Conveyor), matching: find.byType(CustomPaint))
+          .first);
+      final painter = paint.painter! as ConveyorPainter;
+      final size = painter.paintSize!;
+      final rail = painter.railBandRect(size)!;
+      // Far along the track from the wagon parked mid-rail, and away from
+      // every dock.
+      final onRail = Offset(size.width * 0.9, rail.center.dy);
+      expect(painter.wagonRect(size).contains(onRail), isFalse);
+
+      await tester.tapAt(tester.getTopLeft(find.byType(Conveyor)) + onRail);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+
+      expect(find.byType(SidePane), findsOneWidget);
+      expect(find.text('Wagon drive'), findsOneWidget);
     });
   });
 }

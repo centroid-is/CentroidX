@@ -2693,6 +2693,8 @@ class _ConveyorState extends ConsumerState<Conveyor>
         final p = details.localPosition;
         // Docks first: they sit outside the wagon, so nothing else claims
         // the same point, and the wagon parked over one must not swallow it.
+        // Anything else falls through to the wagon's own regions below, the
+        // rail included.
         if (onStationTap != null) {
           for (final dock in painter.docks(size)) {
             if (dock.body.contains(p)) {
@@ -2700,7 +2702,6 @@ class _ConveyorState extends ConsumerState<Conveyor>
               return;
             }
           }
-          if (!painter.wagonRect(size).contains(p)) return;
         }
         if (onLeftEdgeTap != null &&
             (painter.safetyEdgeRect(size, left: true)?.contains(p) ??
@@ -4161,10 +4162,17 @@ class ConveyorPainter extends CustomPainter {
   /// a tap target derived from its own copy of the numbers drifts away from
   /// the ink the operator is aiming at. Null off the rails, and on a box too
   /// short to draw a track in.
+  ///
+  /// Measured in the strip the track is actually painted in — with station
+  /// docks bound that is the middle band, not the whole box, and a gauge
+  /// taken from the box height would reach out over the docks.
   Rect? railBandRect(Size size) {
-    if (!onRails || size.width <= 0 || size.height <= 2) return null;
-    final cy = size.height / 2;
-    final half = _railGauge(size) / 2 + _railStrokeWidth(size) / 2;
+    if (!onRails || size.width <= 0) return null;
+    final band = _railBand(size);
+    if (band.height <= 2) return null;
+    final cy = band.center.dy;
+    final half =
+        _railGauge(band.size) / 2 + _railStrokeWidth(band.size) / 2;
     return Rect.fromLTRB(0, cy - half, size.width, cy + half);
   }
 
