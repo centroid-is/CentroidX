@@ -916,14 +916,14 @@ void main() {
       await tester.pumpWidget(buildTestableKeyRepository());
       await tester.pumpAndSettle();
 
-      expect(find.text('Export'), findsOneWidget);
+      expect(find.byKey(kKeyMappingsExportKey), findsOneWidget);
     });
 
     testWidgets('import button is rendered', (tester) async {
       await tester.pumpWidget(buildTestableKeyRepository());
       await tester.pumpAndSettle();
 
-      expect(find.text('Import'), findsOneWidget);
+      expect(find.byKey(kKeyMappingsImportKey), findsOneWidget);
     });
   });
 
