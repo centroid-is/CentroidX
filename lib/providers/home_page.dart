@@ -77,7 +77,9 @@ class BootHomePageDebt {
 }
 
 /// This process's [BootHomePageDebt]. The shell overrides it with the instance
-/// its global pointer route forgives; anywhere else — a test, the page editor
-/// harness — gets one of its own.
+/// its global pointer route forgives. Anywhere else — a test, the page editor
+/// harness — owes nothing: only a real start of the app moves a panel on its
+/// own, and a harness that mounts a scaffold must not go reading the database
+/// for a navigation nobody asked for.
 final bootHomePageDebtProvider =
-    Provider<BootHomePageDebt>((ref) => BootHomePageDebt());
+    Provider<BootHomePageDebt>((ref) => BootHomePageDebt(owed: false));

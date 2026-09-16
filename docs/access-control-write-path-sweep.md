@@ -262,7 +262,6 @@ in §5.
 
 | File and line | Call | Store | Reached from | Verdict |
 |---|---|---|---|---|
-| `lib/core/startup_url.dart:24, 26` | `prefs.remove/setString(startupUrlPrefsKey)` | preferences | the startup-page control | `guarded by 03-06` |
 | `lib/core/update_channel.dart:42` | `p.setString(updateChannelPrefsKey, ...)` | preferences | the update-channel control | construction `enforced by 03-11`; the write itself is `guarded by 03-06` |
 | `lib/chat/chat_widget.dart:189, 361, 392, 394` | `prefs.setString/remove(...)` | preferences | the chat provider-settings dialog | `guarded by 03-06` |
 | `lib/providers/collector.dart:27` | `prefs.setString(Collector.configLocation, ...)` | preferences | `collectorProvider` at boot | `guarded by 03-09` |
@@ -991,7 +990,6 @@ from one behind a Save button.
 
 | Call site | Expression as written | Resolves to | Rule in `kPrefAccessRules` | Group | When |
 |---|---|---|---|---|---|
-| `startup_url.dart:24, 26` | `startupUrlPrefsKey` | `startup_url` | exact `startup_url` | `operate` | behind a control |
 | `update_channel.dart:36` | `updateChannelPrefsKey` | `update_channel` | exact `update_channel` | `administer` | behind a control |
 | `chat_widget.dart:189` | `kSelectedProvider` | `llm.selected_provider` | prefix `llm.` | `administer` | behind a control |
 | `chat_widget.dart:361` | `prefKey` (switch on provider) | `llm.claude.api_key`, `llm.openai.api_key`, `llm.gemini.api_key` | prefix `llm.` | `administer` | behind a control |

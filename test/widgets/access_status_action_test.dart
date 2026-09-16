@@ -437,9 +437,12 @@ void main() {
       expect(find.text('Login'), findsNothing);
     });
 
-    test('the default opener is the real sign-in dialog', () {
+    test('the default opener is the real sign-in dialog, going home after',
+        () {
+      // The app bar's sign-in is starting work, so it lands on the account's
+      // home page; the refusal prompts keep the plain dialog.
       expect(const AccessStatusAction().openSignIn,
-          same(showAccessSignInDialog));
+          same(showAccessSignInDialogAndGoHome));
     });
   });
 

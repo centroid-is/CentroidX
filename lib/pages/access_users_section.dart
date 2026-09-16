@@ -520,7 +520,7 @@ const String kAccessUserTimeoutDefaultLabel = 'Use default';
 Key kAccessUserHomePageKey(String username) =>
     Key('access-user-home-page-$username');
 
-/// The marker beside the role of an account with a home page of its own.
+/// The marker under the name of an account with a home page of its own.
 Key kAccessUserHomePageTagKey(String username) =>
     Key('access-user-home-page-tag-$username');
 
@@ -861,12 +861,14 @@ const int _kNameFlex = 5;
 const int _kRoleFlex = 5;
 const int _kWhenFlex = 6;
 
-/// Six 48 px icon buttons: station account, timeout, pages, role, password,
-/// delete. Widened from 192 when the Pages control joined them and from 240
-/// when the timeout did — a fixed width with one more button than it was sized
-/// for overflows the row rather than wrapping, which is how this number earns
-/// a comment.
-const double _kActionsWidth = 336;
+/// Seven compact (40 px) icon buttons: station account, timeout, home page,
+/// pages, role, password, delete. Widened from 192 when the Pages control
+/// joined them and from 240 when the timeout did; the home page made seven,
+/// and seven at 48 px squeezed the timestamps below their gap at 900 px, so
+/// the buttons went compact instead of the columns going narrower. A fixed
+/// width with one more button than it was sized for overflows the row rather
+/// than wrapping, which is how this number earns a comment.
+const double _kActionsWidth = 280;
 
 /// The drag handle's slot at the start of every row, in front of the four
 /// flex columns so its width comes out of all of them in proportion. Taken out
@@ -1130,23 +1132,7 @@ class _UserTileState extends ConsumerState<_UserTile> {
                                     .onSurfaceVariant),
                       ),
                     ],
-                    if (user.homePage != null) ...[
-                      const SizedBox(width: 6),
-                      Flexible(
-                        child: Text(
-                          kAccessUserHomePageTag(_homePageLabel(user.homePage!)),
-                          key: kAccessUserHomePageTagKey(user.username),
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context)
-                              .textTheme
-                              .labelSmall
-                              ?.copyWith(
-                                  color: Theme.of(context)
-                                      .colorScheme
-                                      .onSurfaceVariant),
-                        ),
-                      ),
-                    ],
+
                   ],
                 ),
               ),
@@ -1175,6 +1161,7 @@ class _UserTileState extends ConsumerState<_UserTile> {
                   children: [
                     if (!_anonymous) ...[
                       IconButton(
+                        visualDensity: VisualDensity.compact,
                         key: kAccessUserStationAccountKey(user.username),
                         icon: Icon(
                             user.stationAccount
@@ -1187,6 +1174,7 @@ class _UserTileState extends ConsumerState<_UserTile> {
                         onPressed: _toggleStationAccount,
                       ),
                       IconButton(
+                        visualDensity: VisualDensity.compact,
                         key: kAccessUserTimeoutKey(user.username),
                         icon: Icon(
                             _ownTimeout != null
@@ -1206,6 +1194,7 @@ class _UserTileState extends ConsumerState<_UserTile> {
                     // Every account, the anonymous one included: its home
                     // page is where a logged-out panel opens.
                     IconButton(
+                      visualDensity: VisualDensity.compact,
                       key: kAccessUserHomePageKey(user.username),
                       icon: Icon(
                           user.homePage != null
@@ -1216,6 +1205,7 @@ class _UserTileState extends ConsumerState<_UserTile> {
                       onPressed: _setHomePage,
                     ),
                     IconButton(
+                      visualDensity: VisualDensity.compact,
                       key: kAccessUserPagesKey(user.username),
                       icon: Icon(
                           _overridesPages
@@ -1226,6 +1216,7 @@ class _UserTileState extends ConsumerState<_UserTile> {
                       onPressed: _togglePages,
                     ),
                     IconButton(
+                      visualDensity: VisualDensity.compact,
                       key: kAccessUserChangeRoleKey(user.username),
                       icon: const Icon(Icons.badge_outlined, size: 18),
                       tooltip: 'Change role',
@@ -1233,12 +1224,14 @@ class _UserTileState extends ConsumerState<_UserTile> {
                     ),
                     if (!_anonymous) ...[
                       IconButton(
+                        visualDensity: VisualDensity.compact,
                         key: kAccessUserSetPasswordKey(user.username),
                         icon: const Icon(Icons.password_outlined, size: 18),
                         tooltip: 'Set password',
                         onPressed: _setPassword,
                       ),
                       IconButton(
+                        visualDensity: VisualDensity.compact,
                         key: kAccessUserDeleteKey(user.username),
                         icon: const Icon(Icons.delete_outline, size: 18),
                         tooltip: 'Delete account',
@@ -1307,23 +1300,38 @@ class _UserTileState extends ConsumerState<_UserTile> {
     );
   }
 
-  /// The username, and under the anonymous account's name the tag saying what
-  /// the row is.
+  /// The username, and under it what else identifies the row: the anonymous
+  /// account's tag, and the page the account opens on.
+  ///
+  /// The home page sits here rather than beside the roles, which already
+  /// carry the pages and timeout tags and wrap a two-role account onto two
+  /// lines; a third tag there broke the role names mid-word.
   Widget _nameCell(BuildContext context) {
     final name = Text(user.username, key: kAccessUserNameKey(user.username));
-    if (!_anonymous) return name;
+    final homePage = user.homePage;
+    if (!_anonymous && homePage == null) return name;
     final theme = Theme.of(context);
+    final tagStyle = theme.textTheme.labelSmall
+        ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         name,
-        Text(
-          kAccessUserAnonymousTag,
-          key: kAccessUserAnonymousTagKey,
-          style: theme.textTheme.labelSmall
-              ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
-        ),
+        if (_anonymous)
+          Text(
+            kAccessUserAnonymousTag,
+            key: kAccessUserAnonymousTagKey,
+            style: tagStyle,
+          ),
+        if (homePage != null)
+          Text(
+            kAccessUserHomePageTag(_homePageLabel(homePage)),
+            key: kAccessUserHomePageTagKey(user.username),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: tagStyle,
+          ),
       ],
     );
   }
