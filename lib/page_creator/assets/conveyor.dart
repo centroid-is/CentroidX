@@ -957,11 +957,37 @@ bool driveStateIsMoving(DriveState state) =>
 /// reads as pressed: a safety edge whose sensor is broken must fail safe,
 /// not quietly disarm. A plain bool answers with itself. Anything else is
 /// not pressed — the edge only claims a press it can stand behind.
-bool readSafetyEdge(DynamicValue? value) {
+///
+/// [inverted] reads the edge as **normally closed**: the signal is true while
+/// the edge is healthy and drops to false when it is pressed or the cable
+/// breaks. It flips the OUTPUT term and nothing else:
+///
+/// ```text
+/// normal:   output || fault
+/// inverted: !output || fault
+/// ```
+///
+/// Inverting the whole expression instead — `!(output || fault)` — would make
+/// a FAULTED sensor read as safe, which is the one answer a safety indicator
+/// must never give, and strictly worse than reading a healthy NC edge as
+/// pressed. So `fault` stays an independent OR under both polarities.
+///
+/// A null or unreadable value is "not pressed" under **both** polarities, on
+/// purpose. It is not a sensor saying anything — it is no sensor at all (the
+/// subscription is still connecting, the key is unbound, the node is the
+/// wrong type) and there is nothing to invert. A genuinely broken sensor does
+/// not arrive here as null; it arrives as a struct with `fault` set, and that
+/// still reads pressed. Painting every wagon's bumpers red for the second it
+/// takes a page to connect is the cry-wolf failure this flag exists to fix,
+/// and a dead link is the comms alarm's job, not the bumper's.
+bool readSafetyEdge(DynamicValue? value, {bool inverted = false}) {
   if (value == null) return false;
   final fb = SensorFbState.tryParse(value);
-  if (fb != null) return fb.output || fb.fault;
-  if (value.value is bool) return value.value as bool;
+  if (fb != null) return (inverted ? !fb.output : fb.output) || fb.fault;
+  if (value.value is bool) {
+    final raw = value.value as bool;
+    return inverted ? !raw : raw;
+  }
   return false;
 }
 
@@ -1151,7 +1177,8 @@ class ConveyorConfig extends BaseAsset {
   bool? beltAlongRails;
 
   /// Keys for the safety edges on the wagon's two moving sides — a plain
-  /// BOOL (true = pressed) or an `FB_Sensor` HMI struct, decoded by
+  /// BOOL (true = pressed, or the other way round under
+  /// [invertSafetyPolarity]) or an `FB_Sensor` HMI struct, decoded by
   /// [readSafetyEdge] (a faulted sensor reads as pressed — fail safe).
   /// Idle they draw nothing; tripped, the bumper on that side lights up in
   /// fault red. Only read while [railsActive]. Left/right are in the
@@ -1166,6 +1193,21 @@ class ConveyorConfig extends BaseAsset {
   /// rail (see `wagon_station_docks.dart`), and the track narrows to the
   /// middle. Only read while [railsActive].
   String? stationsKey;
+
+  /// Reads both safety edges as **normally closed**: true while the edge is
+  /// healthy, false when it is pressed or the cable breaks. That is how a
+  /// safety edge is usually wired, and with the default reading such an edge
+  /// sits in fault red from the moment the page opens — which teaches an
+  /// operator to ignore the one indicator that must never be ignored.
+  ///
+  /// One flag for both edges rather than one per side: a wagon's two bumpers
+  /// come off the same loop and are wired alike.
+  ///
+  /// Default false is exactly the reading every page on disk was drawn with,
+  /// so nothing changes until this is turned on. Inversion applies to the
+  /// sensor's output term only — a faulted sensor still reads as pressed
+  /// under both polarities. See [readSafetyEdge].
+  bool invertSafetyPolarity;
 
   /// The wagon's footprint along the rail run, as a fraction of the box
   /// width. The belt conveys across the rails, so this is the belt's width.
@@ -1269,6 +1311,7 @@ class ConveyorConfig extends BaseAsset {
       this.safetyLeftKey,
       this.safetyRightKey,
       this.stationsKey,
+      this.invertSafetyPolarity = false,
       this.wagonLength,
       this.beltThickness,
       List<ChildGateEntry>? gates,
@@ -1281,6 +1324,7 @@ class ConveyorConfig extends BaseAsset {
   ConveyorConfig.preview()
       : gates = [],
         turns = [],
+        invertSafetyPolarity = false,
         key = previewStr;
 
   @override
@@ -1296,6 +1340,31 @@ class ConveyorConfig extends BaseAsset {
       ),
     );
   }
+
+  /// Safety-edge polarity, and only that.
+  ///
+  /// It is the one conveyor setting that is routinely identical across a
+  /// whole selection — the edges on a run of wagons come from the same
+  /// wiring standard — and the one whose being wrong is invisible until it
+  /// matters. Keys stay out of the bulk editor for the reason
+  /// `TextBulkProperty` gives: pointing every selected asset at one tag is
+  /// rarely what was meant and cannot be seen on the mimic.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<BulkProperty> get bulkProperties => [
+        ...super.bulkProperties,
+        BoolBulkProperty(
+          id: 'ConveyorConfig.invertSafetyPolarity',
+          label: 'Safety edges normally closed',
+          group: _bulkGroup,
+          read: () => invertSafetyPolarity,
+          apply: (value) => invertSafetyPolarity = value,
+        ),
+      ];
+
+  /// Shared with [RollerConveyorConfig], which inherits the descriptor whole,
+  /// so a mixed selection of box and roller belts still merges into one row.
+  static const String _bulkGroup = 'Conveyor';
 
   factory ConveyorConfig.fromJson(Map<String, dynamic> json) =>
       _$ConveyorConfigFromJson(json);
@@ -1343,6 +1412,7 @@ class RollerConveyorConfig extends ConveyorConfig {
       super.safetyLeftKey,
       super.safetyRightKey,
       super.stationsKey,
+      super.invertSafetyPolarity,
       super.wagonLength,
       super.beltThickness,
       super.gates,
@@ -1580,6 +1650,19 @@ class _ConveyorConfigContentState extends State<_ConveyorConfigContent> {
             onChanged: (val) =>
                 setState(() => widget.config.safetyRightKey = val),
             label: 'Safety edge key, right (BOOL or FB_Sensor)',
+          ),
+          SwitchListTile(
+            title: const Text('Safety edges normally closed'),
+            subtitle: Text(
+              widget.config.invertSafetyPolarity
+                  ? 'Pressed when the signal is false. A faulted sensor '
+                      'still reads as pressed.'
+                  : 'Pressed when the signal is true.',
+            ),
+            value: widget.config.invertSafetyPolarity,
+            onChanged: (val) =>
+                setState(() => widget.config.invertSafetyPolarity = val),
+            contentPadding: EdgeInsets.zero,
           ),
           const SizedBox(height: 8),
           KeyField(
@@ -2390,8 +2473,10 @@ class _ConveyorState extends ConsumerState<Conveyor>
               : null,
           wagonPosition: wagonPosition,
           chassisColor: chassisColor,
-          safetyLeftActive: readSafetyEdge(dynValue['safetyLeft']),
-          safetyRightActive: readSafetyEdge(dynValue['safetyRight']),
+          safetyLeftActive: readSafetyEdge(dynValue['safetyLeft'],
+              inverted: widget.config.invertSafetyPolarity),
+          safetyRightActive: readSafetyEdge(dynValue['safetyRight'],
+              inverted: widget.config.invertSafetyPolarity),
           onBeltTap: hasMainKey
               ? () => _showDrivePane(context, widget.config.key!,
                   subtitle: 'Conveyor', icon: Icons.conveyor_belt)
@@ -2975,7 +3060,8 @@ class _ConveyorState extends ConsumerState<Conveyor>
         builder: (context, stateMan, dynValue) {
           final fb = SensorFbState.tryParse(dynValue);
           if (fb == null) {
-            final pressed = readSafetyEdge(dynValue);
+            final pressed = readSafetyEdge(dynValue,
+                inverted: widget.config.invertSafetyPolarity);
             return simple(
                 pressed
                     ? const PaneStatus.fault('Pressed')
