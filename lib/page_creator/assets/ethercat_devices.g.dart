@@ -13,6 +13,7 @@ EtherCatDeviceTableConfig _$EtherCatDeviceTableConfigFromJson(
           ?.map((e) => EcPlcConfig.fromJson(e as Map<String, dynamic>))
           .toList(),
       problemsOnly: json['problemsOnly'] as bool? ?? false,
+      startCollapsed: json['startCollapsed'] as bool? ?? false,
     )
       ..variant = json['asset_name'] as String
       ..id = json['id'] as String?
@@ -37,6 +38,7 @@ Map<String, dynamic> _$EtherCatDeviceTableConfigToJson(
       'plcAssetKey': instance.plcAssetKey,
       'plcs': instance.plcs.map((e) => e.toJson()).toList(),
       'problemsOnly': instance.problemsOnly,
+      'startCollapsed': instance.startCollapsed,
     };
 
 const _$TextPosEnumMap = {
