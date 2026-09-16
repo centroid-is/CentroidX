@@ -1803,43 +1803,56 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
                             children: [
                               const FaIcon(FontAwesomeIcons.key, size: 20),
                               const SizedBox(width: 8),
-                              Flexible(
-                                child: Text('Key Mappings',
-                                    // One line, always. This row carries the
-                                    // title, the unsaved badge, a 200 px search
-                                    // field, Add Key and the import/export
-                                    // pair; when the badge appears the fixed
-                                    // children can exceed the width, the
-                                    // `Spacer` goes to zero and an unbounded
-                                    // title wraps into a tall column of
-                                    // characters -- which cost the key list
-                                    // below it ~216 px. Ellipsis degrades the
-                                    // title instead of the list. Measured:
-                                    // without this the list collapsed from 368
-                                    // to 152 px the moment anything was
-                                    // unsaved.
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .titleMedium),
-                              ),
-                              if (_hasUnsavedChanges) ...[
-                                const SizedBox(width: 8),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 8, vertical: 4),
-                                  decoration: BoxDecoration(
-                                      color: Colors.orange,
-                                      borderRadius: BorderRadius.circular(12)),
-                                  child: const Text('Unsaved Changes',
-                                      style: TextStyle(
-                                          color: Colors.white,
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.bold)),
+                              // The title and the unsaved badge share one
+                              // `Expanded`, and the free space in this row is
+                              // all of it -- so search, Add Key and the
+                              // import/export pair sit flush against the card's
+                              // right edge. The title beside a `Spacer` at this
+                              // level was a loose `Flexible` splitting the free
+                              // space with it, and the share the title did not
+                              // use was left at the row's end: the import/export
+                              // pair's first golden had it ~130 px short of the
+                              // corner it was moved to.
+                              Expanded(
+                                child: Row(
+                                  children: [
+                                    Flexible(
+                                      child: Text('Key Mappings',
+                                          // One line, always. When the badge
+                                          // appears the fixed children can
+                                          // exceed the width, and an unbounded
+                                          // title wraps into a tall column of
+                                          // characters -- which cost the key
+                                          // list below it ~216 px. Ellipsis
+                                          // degrades the title instead of the
+                                          // list. Measured: without this the
+                                          // list collapsed from 368 to 152 px
+                                          // the moment anything was unsaved.
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .titleMedium),
+                                    ),
+                                    if (_hasUnsavedChanges) ...[
+                                      const SizedBox(width: 8),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 8, vertical: 4),
+                                        decoration: BoxDecoration(
+                                            color: Colors.orange,
+                                            borderRadius:
+                                                BorderRadius.circular(12)),
+                                        child: const Text('Unsaved Changes',
+                                            style: TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 12,
+                                                fontWeight: FontWeight.bold)),
+                                      ),
+                                    ],
+                                  ],
                                 ),
-                              ],
-                              const Spacer(),
+                              ),
                               SizedBox(
                                 width: 200,
                                 child: TextField(

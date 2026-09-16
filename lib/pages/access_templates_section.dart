@@ -1088,29 +1088,41 @@ class _AccessTemplatesSectionState
                 Icon(Icons.shield_outlined,
                     size: 18, color: theme.colorScheme.onSurfaceVariant),
                 const SizedBox(width: 8),
-                if (collapsed) ...[
-                  // Both lines of text are one line each, ellipsised. This row
-                  // also holds New template and the toggle, and text that
-                  // wrapped would grow the very bar that exists to stay short
-                  // — the trap the key-mappings header above fell into.
-                  Flexible(
-                    child: Text(kAccessTemplatesHeadline,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.titleSmall),
-                  ),
-                  const SizedBox(width: 12),
+                if (collapsed)
+                  // Both texts are one line each, ellipsised: this row also
+                  // holds New template and the toggle, and text that wrapped
+                  // would grow the very bar that exists to stay short.
+                  //
+                  // One `Expanded` around both, with the texts `Flexible`
+                  // inside it. Side by side at the top level, a loose
+                  // `Flexible` and an `Expanded` split the free space and the
+                  // half the headline does not use is left at the row's end —
+                  // which parked New template and the toggle ~110 px short of
+                  // the card edge in the first golden of this bar.
                   Expanded(
-                    child: Text(
-                      summary ?? '',
-                      key: kAccessTemplatesSummaryKey,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                          color: theme.colorScheme.onSurfaceVariant),
+                    child: Row(
+                      children: [
+                        Flexible(
+                          child: Text(kAccessTemplatesHeadline,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: theme.textTheme.titleSmall),
+                        ),
+                        const SizedBox(width: 12),
+                        Flexible(
+                          child: Text(
+                            summary ?? '',
+                            key: kAccessTemplatesSummaryKey,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                                color: theme.colorScheme.onSurfaceVariant),
+                          ),
+                        ),
+                      ],
                     ),
-                  ),
-                ] else
+                  )
+                else
                   Expanded(
                     child: Text(kAccessTemplatesHeadline,
                         style: theme.textTheme.titleSmall),
