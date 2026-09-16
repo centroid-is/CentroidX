@@ -1,5 +1,6 @@
 import 'dart:ui' show PathMetric, Tangent;
 
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 import 'package:tfc/widgets/panes/standard_dialog.dart';
 import 'package:json_annotation/json_annotation.dart';
@@ -28,6 +29,8 @@ import 'package:tfc_dart/core/collector.dart';
 import '../../theme.dart';
 import '../page.dart';
 import 'conveyor_gate.dart';
+import 'wagon_station.dart';
+import 'wagon_station_docks.dart';
 
 part 'conveyor.g.dart';
 
@@ -1157,6 +1160,13 @@ class ConveyorConfig extends BaseAsset {
   String? safetyLeftKey;
   String? safetyRightKey;
 
+  /// Key of the wagon's `ARRAY [1..10] OF ST_WagonStation` — every station
+  /// the wagon serves, on one node. Bound, the box gives a band above and
+  /// below the track to docks placed at each station's distance along the
+  /// rail (see `wagon_station_docks.dart`), and the track narrows to the
+  /// middle. Only read while [railsActive].
+  String? stationsKey;
+
   /// The wagon's footprint along the rail run, as a fraction of the box
   /// width. The belt conveys across the rails, so this is the belt's width.
   /// Null falls back to [_defaultWagonLength].
@@ -1258,6 +1268,7 @@ class ConveyorConfig extends BaseAsset {
       this.beltAlongRails,
       this.safetyLeftKey,
       this.safetyRightKey,
+      this.stationsKey,
       this.wagonLength,
       this.beltThickness,
       List<ChildGateEntry>? gates,
@@ -1331,6 +1342,7 @@ class RollerConveyorConfig extends ConveyorConfig {
       super.beltAlongRails,
       super.safetyLeftKey,
       super.safetyRightKey,
+      super.stationsKey,
       super.wagonLength,
       super.beltThickness,
       super.gates,
@@ -1568,6 +1580,13 @@ class _ConveyorConfigContentState extends State<_ConveyorConfigContent> {
             onChanged: (val) =>
                 setState(() => widget.config.safetyRightKey = val),
             label: 'Safety edge key, right (BOOL or FB_Sensor)',
+          ),
+          const SizedBox(height: 8),
+          KeyField(
+            initialValue: widget.config.stationsKey,
+            onChanged: (val) =>
+                setState(() => widget.config.stationsKey = val),
+            label: 'Wagon stations key (ARRAY OF ST_WagonStation)',
           ),
           const SizedBox(height: 8),
           NumberSlider(
@@ -2108,6 +2127,11 @@ class _ConveyorState extends ConsumerState<Conveyor>
     for (final driveKey in _paneDriveKeys) {
       closeSidePane(id: _paneIdFor(driveKey), immediate: true);
     }
+    if (_bound(widget.config.stationsKey)) {
+      for (var index = 1; index <= _maxStations; index++) {
+        closeSidePane(id: _stationPaneId(index), immediate: true);
+      }
+    }
     _augerAnimationTimer?.cancel();
     _augerPhase.dispose();
     _simulateBatchesTimer?.cancel();
@@ -2233,6 +2257,8 @@ class _ConveyorState extends ConsumerState<Conveyor>
       if (widget.config.railsActive && _bound(widget.config.safetyRightKey))
         (label: 'safetyRight', key: widget.config.safetyRightKey!,
             optional: true),
+      if (_hasStations)
+        (label: 'stations', key: widget.config.stationsKey!, optional: true),
     ];
 
     // If no streams are configured, show error state
@@ -2352,10 +2378,16 @@ class _ConveyorState extends ConsumerState<Conveyor>
             widget.config.railsActive && _bound(widget.config.safetyRightKey)
                 ? widget.config.safetyRightKey
                 : null;
+        final stationsValue = dynValue['stations'];
         return _buildConveyorVisual(
           context,
           color,
           frequency: freq,
+          stations: _hasStations ? wagonStationsFromValue(stationsValue) : null,
+          stationRailLength: wagonRailLength(stationsValue),
+          onStationTap: _hasStations
+              ? (station) => _showStationPane(context, station)
+              : null,
           wagonPosition: wagonPosition,
           chassisColor: chassisColor,
           safetyLeftActive: readSafetyEdge(dynValue['safetyLeft']),
@@ -2381,6 +2413,9 @@ class _ConveyorState extends ConsumerState<Conveyor>
   }
 
   static bool _bound(String? key) => key != null && key.isNotEmpty;
+
+  bool get _hasStations =>
+      widget.config.railsActive && _bound(widget.config.stationsKey);
 
   /// Everything this conveyor reads, combined — built once and kept until the
   /// set of keys changes.
@@ -2503,6 +2538,9 @@ class _ConveyorState extends ConsumerState<Conveyor>
     Color? chassisColor,
     bool safetyLeftActive = false,
     bool safetyRightActive = false,
+    List<WagonStation>? stations,
+    double stationRailLength = 0,
+    ValueChanged<WagonStation>? onStationTap,
   }) {
     // Layering, outer → inner:
     //   LayoutRotatedBox → GestureDetector → LayoutBuilder → CustomPaint
@@ -2532,7 +2570,10 @@ class _ConveyorState extends ConsumerState<Conveyor>
             wagonPosition: wagonPosition,
             chassisColor: chassisColor,
             safetyLeftActive: safetyLeftActive,
-            safetyRightActive: safetyRightActive),
+            safetyRightActive: safetyRightActive,
+            stations: stations,
+            stationRailLength: stationRailLength,
+            onStationTap: onStationTap),
       ),
     );
   }
@@ -2552,17 +2593,30 @@ class _ConveyorState extends ConsumerState<Conveyor>
       {VoidCallback? onBeltTap,
       VoidCallback? onMotorTap,
       VoidCallback? onLeftEdgeTap,
-      VoidCallback? onRightEdgeTap}) {
+      VoidCallback? onRightEdgeTap,
+      ValueChanged<WagonStation>? onStationTap}) {
     if (onBeltTap == null &&
         onMotorTap == null &&
         onLeftEdgeTap == null &&
-        onRightEdgeTap == null) {
+        onRightEdgeTap == null &&
+        onStationTap == null) {
       return child;
     }
     final beltArea = painter.beltRect(size);
     return GestureDetector(
       onTapUp: (details) {
         final p = details.localPosition;
+        // Docks first: they sit outside the wagon, so nothing else claims
+        // the same point, and the wagon parked over one must not swallow it.
+        if (onStationTap != null) {
+          for (final dock in painter.docks(size)) {
+            if (dock.body.contains(p)) {
+              onStationTap(dock.station);
+              return;
+            }
+          }
+          if (!painter.wagonRect(size).contains(p)) return;
+        }
         if (onLeftEdgeTap != null &&
             (painter.safetyEdgeRect(size, left: true)?.contains(p) ??
                 false)) {
@@ -2599,6 +2653,9 @@ class _ConveyorState extends ConsumerState<Conveyor>
     Color? chassisColor,
     bool safetyLeftActive = false,
     bool safetyRightActive = false,
+    List<WagonStation>? stations,
+    double stationRailLength = 0,
+    ValueChanged<WagonStation>? onStationTap,
   }) {
     // The geometry must be built for the box the belt is actually painted
     // into. `AssetStack` lays assets out with tight constraints from the page
@@ -2676,6 +2733,11 @@ class _ConveyorState extends ConsumerState<Conveyor>
       safetyRightActive: safetyRightActive,
       safetyColor: HmiStateColors.of(context).red,
       wagonBeltAcross: !(widget.config.beltAlongRails ?? false),
+      // Bound stations reserve their bands even before the array arrives, or
+      // on an error frame, so the track keeps one height through all of it.
+      stations: stations ?? (_hasStations ? const [] : null),
+      stationRailLength: stationRailLength,
+      dockPalette: _hasStations ? WagonDockPalette.of(context) : null,
     );
     // The belt's own outline, published for the mark the plant view draws
     // while this conveyor's pane is open. Not a shape built to be drawn
@@ -2716,7 +2778,8 @@ class _ConveyorState extends ConsumerState<Conveyor>
         onBeltTap: onBeltTap,
         onMotorTap: onMotorTap,
         onLeftEdgeTap: onLeftEdgeTap,
-        onRightEdgeTap: onRightEdgeTap);
+        onRightEdgeTap: onRightEdgeTap,
+        onStationTap: onStationTap);
   }
 
   Widget _positionedChildGate(
@@ -2822,6 +2885,62 @@ class _ConveyorState extends ConsumerState<Conveyor>
         widget.config.safetyLeftKey,
         widget.config.safetyRightKey,
       ].whereType<String>().where((k) => k.isNotEmpty);
+
+  /// `FB_Wagon`'s station array is `ARRAY [1..10]`.
+  static const _maxStations = 10;
+
+  /// A station's pane is keyed by its slot in the array — the one handle on a
+  /// station that does not change when its flags do.
+  String _stationPaneId(int index) =>
+      _paneIdFor('${widget.config.stationsKey}#$index');
+
+  /// Opens the pane for one station the wagon serves. It follows the array
+  /// itself rather than holding the [WagonStation] it was opened from, so the
+  /// lamps keep moving while it is open.
+  void _showStationPane(BuildContext context, WagonStation opened) {
+    final stationsKey = widget.config.stationsKey!;
+    SidePane pane(WagonStation station, PaneStatus Function(BuildContext) status,
+            {Widget? body}) =>
+        SidePane(
+          title: station.name,
+          subtitle: 'Wagon station',
+          icon: Icons.pallet,
+          status: status(context),
+          child: body ?? WagonStationPaneBody(station: station),
+        );
+    showSidePane(
+      context: context,
+      id: _stationPaneId(opened.index),
+      builder: (paneContext) => StateManValueBuilder(
+        keyName: stationsKey,
+        waiting: (_) => pane(opened, (_) => const PaneStatus.unknown('Connecting')),
+        error: (_, error) => pane(opened, (_) => const PaneStatus.fault('Error'),
+            body: PaneBody(sections: [
+              PaneBodySection.status(
+                child: PaneDetailRow(label: 'Error', value: error.toString()),
+              ),
+            ])),
+        builder: (context, _, dynValue) {
+          final live = wagonStationsFromValue(dynValue)
+              .where((s) => s.index == opened.index)
+              .firstOrNull;
+          if (live == null) {
+            // Disabled or renamed away while the pane was open: say so rather
+            // than go on showing the last flags as if they were current.
+            return pane(opened, (_) => const PaneStatus.unknown('Not in use'),
+                body: const PaneBody(sections: [
+                  PaneBodySection.status(
+                    child: PaneDetailRow(
+                        label: 'Station', value: 'no longer commissioned'),
+                  ),
+                ]));
+          }
+          return pane(
+              live, (context) => wagonStationPaneStatus(context, live.state));
+        },
+      ),
+    );
+  }
 
   /// Opens the pane for one of the wagon's safety edges. An `FB_Sensor`
   /// struct gets the sensor asset's own FB pane — same rows, same
@@ -3602,6 +3721,20 @@ class ConveyorPainter extends CustomPainter {
   /// travel direction).
   final bool wagonBeltAcross;
 
+  /// The stations the wagon serves, or null when no stations key is bound.
+  ///
+  /// Null and empty are different on purpose. Null gives the track the whole
+  /// box, as before stations existed. Empty — bound, but nothing has arrived
+  /// or nothing is commissioned — still reserves the dock bands, so the
+  /// track does not jump between two heights as the stream comes and goes.
+  final List<WagonStation>? stations;
+
+  /// The rail length [stations] are placed against — see [wagonRailLength].
+  final double stationRailLength;
+
+  /// Colours for the docks. Only read while [stations] is non-null.
+  final WagonDockPalette? dockPalette;
+
   ConveyorPainter(
       {required this.color,
       this.showExclamation = false,
@@ -3627,7 +3760,42 @@ class ConveyorPainter extends CustomPainter {
       this.safetyLeftActive = false,
       this.safetyRightActive = false,
       this.safetyColor = const Color(0xFFD32F2F),
-      this.wagonBeltAcross = true});
+      this.wagonBeltAcross = true,
+      this.stations,
+      this.stationRailLength = 0,
+      this.dockPalette});
+
+  /// Whether the box is shared between the track and station docks.
+  bool get _hasDocks => onRails && geometry == null && stations != null;
+
+  /// The strip the track, wagon and belt are drawn in: the whole box, or its
+  /// middle when docks take the bands above and below.
+  Rect _railBand(Size size) =>
+      _hasDocks ? WagonDockGeometry.railBand(size) : Offset.zero & size;
+
+  List<WagonDock>? _docks;
+  Size? _docksSize;
+
+  /// The station docks laid out in [size], resolved once per size — the
+  /// painter draws them and the tap targets hit-test the same list.
+  List<WagonDock> docks(Size size) {
+    if (!_hasDocks) return const [];
+    if (_docks != null && _docksSize == size) return _docks!;
+    final span = _beltSpan(size);
+    _docksSize = size;
+    return _docks = WagonDockGeometry.layout(
+      size: size,
+      stations: stations!,
+      railLength: stationRailLength,
+      centreXAt: (f) => _beltSpan(size, position: f).x0 + span.width / 2,
+      laneWidth: span.width,
+      // `etLoc`'s front is where the rollers run when they run forward. Across
+      // the rails, forward is screen-down in the belt's rotated frame unless
+      // the belt is reversed; along them the rollers point down the track, so
+      // no side is "forward" and front simply takes the bottom.
+      frontOnBottom: !(wagonBeltAcross && reverseDirection),
+    );
+  }
 
   /// Extra canvas rotation in effect while overlays draw — π/2 while the
   /// wagon's belt is painted in its rotated frame, zero otherwise. The
@@ -3690,11 +3858,17 @@ class ConveyorPainter extends CustomPainter {
       final band = straightBeltWidth ?? (onRails ? size.height : null);
       if (band == null) return null;
       final rect = onRails ? wagonRect(size) : beltRect(size);
-      return Path()
+      final path = Path()
         ..addRRect(RRect.fromRectAndRadius(
           rect,
           Radius.circular(rect.shortestSide * _endRadiusFactor),
         ));
+      // Each dock answers a tap with its station's pane, so each is part of
+      // what this conveyor takes taps on. The names beside them are not.
+      for (final dock in docks(size)) {
+        path.addRect(dock.body);
+      }
+      return path;
     }
     return g.bandOutline(0, 1,
         width: g.beltWidth, radius: g.beltWidth * _endRadiusFactor);
@@ -3739,8 +3913,15 @@ class ConveyorPainter extends CustomPainter {
     // the asset: the box the user drew still bounds all of the ink.
     final span = _beltSpan(size);
     if (onRails) {
-      _paintTrack(canvas, size);
-      _paintChassis(canvas, size, span);
+      // With stations bound the track keeps to its band and the docks take
+      // the rest; everything on the rail is drawn in that band's own frame,
+      // exactly as it was drawn in the whole box before.
+      final railBand = _railBand(size);
+      final rail = railBand.size;
+      canvas.save();
+      canvas.translate(0, railBand.top);
+      _paintTrack(canvas, rail);
+      _paintChassis(canvas, rail, span);
       canvas.save();
       if (wagonBeltAcross) {
         // Rotate the belt's frame 90° so its band runs the box height at
@@ -3748,15 +3929,20 @@ class ConveyorPainter extends CustomPainter {
         canvas.translate(span.x0 + span.width, 0);
         canvas.rotate(pi / 2);
         _overlayExtraRotation = pi / 2;
-        _paintStraightBelt(canvas, Size(size.height, span.width));
+        _paintStraightBelt(canvas, Size(rail.height, span.width));
         _overlayExtraRotation = 0;
       } else {
         // Along the rails: an ordinary horizontal band riding the chassis.
-        final band = straightBeltWidth ?? size.height;
-        canvas.translate(span.x0, (size.height - band) / 2);
+        final band = straightBeltWidth ?? rail.height;
+        canvas.translate(span.x0, (rail.height - band) / 2);
         _paintStraightBelt(canvas, Size(span.width, band));
       }
       canvas.restore();
+      canvas.restore();
+      if (_hasDocks && dockPalette != null) {
+        paintWagonDocks(canvas, docks(size), dockPalette!,
+            angle: angle, mirrorX: mirrorX, mirrorY: mirrorY);
+      }
       return;
     }
     // An explicit belt width paints the belt as a band centred in the box
@@ -3779,7 +3965,7 @@ class ConveyorPainter extends CustomPainter {
   /// no position binding parks mid-rail. On rails the belt runs across the
   /// track, so this span is the belt's *width*: an explicit
   /// [straightBeltWidth] sets it, else [wagonFraction] of the box.
-  ({double x0, double width}) _beltSpan(Size size) {
+  ({double x0, double width}) _beltSpan(Size size, {double? position}) {
     if (!onRails) return (x0: 0.0, width: size.width);
     // An explicit belt width only shapes the footprint when the belt
     // stands across the rails; along them it is the band's cross
@@ -3791,7 +3977,7 @@ class ConveyorPainter extends CustomPainter {
     // of the wagon's ink at every position.
     final overhang = _chassisOverhang(size, w);
     final travel = max(size.width - w - 2 * overhang, 0.0);
-    final pos = (wagonPosition ?? 0.5).clamp(0.0, 1.0);
+    final pos = (position ?? wagonPosition ?? 0.5).clamp(0.0, 1.0);
     return (x0: overhang + pos * travel, width: w);
   }
 
@@ -3799,13 +3985,15 @@ class ConveyorPainter extends CustomPainter {
   /// mean the belt drive rather than the wagon motor. On rails the belt
   /// stands across the track: a vertical band the full box height.
   Rect beltRect(Size size) {
+    final railBand = _railBand(size);
+    final rail = railBand.size;
     final span = _beltSpan(size);
     if (onRails && wagonBeltAcross) {
-      return Rect.fromLTWH(span.x0, 0, span.width, size.height);
+      return Rect.fromLTWH(span.x0, railBand.top, span.width, rail.height);
     }
-    final band = straightBeltWidth ?? size.height;
-    return Rect.fromLTWH(
-        span.x0, (size.height - band) / 2, span.width, band);
+    final band = straightBeltWidth ?? rail.height;
+    return Rect.fromLTWH(span.x0,
+        railBand.top + (rail.height - band) / 2, span.width, band);
   }
 
   /// The whole wagon — belt plus chassis bumpers. This is the tap target
@@ -3822,6 +4010,13 @@ class ConveyorPainter extends CustomPainter {
   /// safety-edge tap zones so what is drawn and what answers a tap cannot
   /// come apart.
   Rect _chassisRect(Size size) {
+    final railBand = _railBand(size);
+    return _chassisRectIn(railBand.size).shift(railBand.topLeft);
+  }
+
+  /// [_chassisRect] in the rail band's own frame, which is the frame the
+  /// chassis is painted in.
+  Rect _chassisRectIn(Size size) {
     final span = _beltSpan(size);
     final overhang = _chassisOverhang(size, span.width);
     final chassisH = size.height * _chassisHeightFraction;
@@ -4240,7 +4435,7 @@ class ConveyorPainter extends CustomPainter {
       Canvas canvas, Size size, ({double x0, double width}) span) {
     final overhang = _chassisOverhang(size, span.width);
     if (overhang <= 0.5) return;
-    final rect = _chassisRect(size);
+    final rect = _chassisRectIn(size);
     final chassisH = rect.height;
     final rrect =
         RRect.fromRectAndRadius(rect, Radius.circular(chassisH * 0.15));
@@ -4571,6 +4766,9 @@ class ConveyorPainter extends CustomPainter {
       oldDelegate.safetyRightActive != safetyRightActive ||
       oldDelegate.safetyColor != safetyColor ||
       oldDelegate.wagonBeltAcross != wagonBeltAcross ||
+      !listEquals(oldDelegate.stations, stations) ||
+      oldDelegate.stationRailLength != stationRailLength ||
+      oldDelegate.dockPalette != dockPalette ||
       // Geometry is rebuilt each frame when turns are configured, so curved
       // conveyors repaint on every rebuild (needed for batch animation).
       !identical(oldDelegate.geometry, geometry);
