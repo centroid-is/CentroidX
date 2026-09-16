@@ -129,6 +129,13 @@ class AuditLogService {
   /// On failure: updates to [AuditStatus.failed] with the error message, then
   /// rethrows the exception so the caller can handle it.
   ///
+  /// The failure branch catches [Object], not [Exception]. An `Error` thrown
+  /// by a tool handler -- a failed cast, a null check -- used to slip past it
+  /// and leave the row `pending` forever, which is the one state that means
+  /// "the process died mid-call" and so the one state that must not be
+  /// reachable while the process is still answering. On a build with no
+  /// stderr sink this row is the only durable record that the call was made.
+  ///
   /// Audit logging is best-effort — if the DB is temporarily down, the tool
   /// handler still executes. The pg pool's built-in keepalive will restore
   /// the connection for subsequent calls.
@@ -152,7 +159,7 @@ class AuditLogService {
     } on ProposalDeclinedException catch (e) {
       await updateOutcome(auditId, AuditStatus.declined, error: e.message);
       rethrow;
-    } on Exception catch (e) {
+    } catch (e) {
       await updateOutcome(auditId, AuditStatus.failed, error: e.toString());
       rethrow;
     }

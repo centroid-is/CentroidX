@@ -137,6 +137,7 @@ class TfcMcpServer {
     final registry = ToolRegistry(
       mcpServer: _mcpServer,
       auditLogService: auditService,
+      logger: _logger,
     );
 
     // Create services
