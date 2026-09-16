@@ -685,32 +685,6 @@ def pallet_wagon():
     return _wagon_on_rails().add(deck)
 
 
-def pallet_wagon_loaded():
-    """The same wagon with the pallet stacked: box tops seen from above.
-
-    The load stops short of the pallet's ends so the deck still shows under
-    it -- that strip of pallet is what tells this apart from a plain crate.
-    """
-    px0, py0, px1, py1 = _PALLET
-    seam = 40
-    lip = 70
-    top, bottom = py0 + lip + seam, py1 - lip - seam
-    rows = 2
-    row_h = ((bottom - top) - (rows - 1) * seam) / rows
-    col_w = ((px1 - px0) - seam) / 2
-    cartons = []
-    for r in range(rows):
-        y = top + r * (row_h + seam)
-        for c in range(2):
-            x = px0 + c * (col_w + seam)
-            cartons.append(box(x, y, x + col_w, y + row_h, 16))
-    ends = merge(
-        box(px0, py0, px1, py0 + lip, 20),
-        box(px0, py1 - lip, px1, py1, 20),
-    )
-    return _wagon_on_rails().add(ends, *cartons)
-
-
 # --- The catalogue ---------------------------------------------------------
 #
 # Order here is the order the glyphs are offered in the picker, and the code
@@ -726,7 +700,7 @@ GROUPS = [
     ("Motors & drives", 6),
     ("Pumps & fluid handling", 8),
     ("I/O & control", 12),
-    ("Material handling", 2),
+    ("Material handling", 1),
 ]
 
 GLYPHS = [
@@ -771,7 +745,6 @@ GLYPHS = [
     ("cylinder_pneumatic", cylinder_pneumatic),
     # Material handling
     ("pallet_wagon", pallet_wagon),
-    ("pallet_wagon_loaded", pallet_wagon_loaded),
 ]
 
 

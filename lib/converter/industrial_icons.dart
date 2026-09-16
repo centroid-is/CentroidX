@@ -83,8 +83,6 @@ const Map<String, IconData> industrialIcons = <String, IconData>{
       fontFamily: 'TfcIcons', fontPackage: 'tfc'),
   'pallet_wagon': IconData(0xe82c,
       fontFamily: 'TfcIcons', fontPackage: 'tfc'),
-  'pallet_wagon_loaded': IconData(0xe82d,
-      fontFamily: 'TfcIcons', fontPackage: 'tfc'),
 };
 
 /// The picker's section headings, and which glyphs sit under each.
@@ -134,7 +132,6 @@ const Map<String, List<String>> industrialIconGroups = <String, List<String>>{
   ],
   'Material handling': <String>[
     'pallet_wagon',
-    'pallet_wagon_loaded',
   ],
 };
 
