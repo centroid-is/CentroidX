@@ -47,10 +47,10 @@ type pickerState struct {
 	notesCacheFor int
 
 	// The install wizard (Destination -> Certificate -> Install).
-	wizard wizardState
-	itemClicks     []widget.Clickable
-	installBtn     widget.Clickable
-	uninstallBtn   widget.Clickable
+	wizard       wizardState
+	itemClicks   []widget.Clickable
+	installBtn   widget.Clickable
+	uninstallBtn widget.Clickable
 
 	// Checked: the station's configuration -- key mappings, page layout,
 	// update channel -- is put aside and comes back on the next install.
@@ -58,16 +58,36 @@ type pickerState struct {
 	// uninstall from here is nearly always a step in a rollback or a version
 	// change Windows will not do in place, and losing the configuration is
 	// not what was being asked for.
-	keepSettings   widget.Bool
-	stableBtn      widget.Clickable
-	latestBtn      widget.Clickable
-	channel        string
-	loading        bool
-	err            error
-	installing     bool
-	progress       float32
-	statusMsg      string
-	isInstalled    bool
+	keepSettings widget.Bool
+	stableBtn    widget.Clickable
+	latestBtn    widget.Clickable
+	channel      string
+	loading      bool
+	err          error
+
+	// Re-checking GitHub for the current channel. Without it the list was
+	// fetched once when the picker opened, so a station left on the picker
+	// read "Up to date" long after a newer build was published.
+	refreshBtn widget.Clickable
+	// refreshing: a refresh is in flight while the previous list stays on
+	// screen (loading is the blank first load of a channel).
+	refreshing bool
+	// refreshErr: the last refresh failed; the list shown is the one before.
+	refreshErr error
+	// lastChecked: when a list last landed, shown as "Checked 09:30".
+	lastChecked time.Time
+	// lastAttempt: when the last load finished, successful or not — the
+	// auto-refresh clock, so a failing network is retried once an interval
+	// rather than on every frame.
+	lastAttempt time.Time
+	// loadGen numbers the loads; only the newest may land, so a slow
+	// response cannot overwrite a newer channel or a newer refresh.
+	loadGen int
+
+	installing  bool
+	progress    float32
+	statusMsg   string
+	isInstalled bool
 
 	// What Get-AppxPackage reports right now; shown beside "is installed"
 	// so a failed update reads as "still on 2026.8.22", not as success.
@@ -98,7 +118,7 @@ func runPickerMode(w *app.Window, th *material.Theme, eng *update.Engine, instal
 	state.listState.List.Axis = layout.Vertical
 	state.notesListState.List.Axis = layout.Vertical
 
-	loadReleases(state, eng, w)
+	loadReleases(state, eng, installer, w, false)
 
 	var ops op.Ops
 	for {
@@ -114,35 +134,119 @@ func runPickerMode(w *app.Window, th *material.Theme, eng *update.Engine, instal
 	}
 }
 
+// autoRefreshInterval is how often an open picker re-checks GitHub on its own.
+// Unauthenticated, the API allows 60 requests an hour; one every five minutes
+// leaves room for manual refreshes and channel switches.
+const autoRefreshInterval = 5 * time.Minute
+
 // loadReleases fetches the release list for the current channel in the
-// background and repaints when it lands. Selection and any previous error are
-// cleared, because they belong to the channel being replaced.
-func loadReleases(state *pickerState, eng *update.Engine, w *app.Window) {
-	state.loading = true
-	state.err = nil
-	state.selected = -1
-	state.releases = nil
-	state.itemClicks = nil
+// background and repaints when it lands.
+//
+// refresh=false is a new channel: the list, selection and any error are
+// cleared, because they belong to the channel being replaced. refresh=true
+// re-checks the channel on screen: the list stays while the request runs, and
+// what is installed is re-read too, in case it changed outside the manager.
+func loadReleases(state *pickerState, eng *update.Engine, installer PickerInstaller, w *app.Window, refresh bool) {
+	gen := state.beginLoad(refresh)
 	channel := state.channel
 
 	go func() {
 		releases, err := eng.ListAllReleases(context.Background(), channel)
-		// A slow response for a channel the user has since switched away from
-		// must not overwrite the current one.
-		if state.channel != channel {
-			return
+		if refresh && gen == state.loadGen {
+			state.isInstalled = installer.IsInstalled()
+			state.installedVersion = installer.InstalledVersion()
+			state.installRecord = loadInstallRecordOrNil()
 		}
-		if err != nil {
-			state.err = err
-			state.loading = false
-			w.Invalidate()
-			return
+		if state.landReleases(gen, releases, err, time.Now()) {
+			if err != nil {
+				log.Printf("warn: checking the %s channel for versions failed: %v", channel, err)
+			} else {
+				log.Printf("checked the %s channel: %d versions listed", channel, len(releases))
+			}
 		}
-		state.releases = releases
-		state.itemClicks = make([]widget.Clickable, len(releases))
-		state.loading = false
 		w.Invalidate()
 	}()
+}
+
+// beginLoad marks a load as started and returns its generation.
+func (s *pickerState) beginLoad(refresh bool) int {
+	s.loadGen++
+	if refresh {
+		s.refreshing = true
+		return s.loadGen
+	}
+	s.loading = true
+	s.refreshing = false
+	s.refreshErr = nil
+	s.err = nil
+	s.selected = -1
+	s.releases = nil
+	s.itemClicks = nil
+	s.notesCache = nil
+	s.notesCacheFor = -1
+	return s.loadGen
+}
+
+// landReleases applies a finished load, unless a newer one has started since.
+// Reports whether it was applied.
+//
+// The selection follows the selected version rather than the row, so a
+// release published on top does not move the operator onto a different one.
+// A refresh that fails keeps the list it already had and records refreshErr;
+// a first load that fails is the error screen.
+func (s *pickerState) landReleases(gen int, releases []update.ReleaseInfo, err error, now time.Time) bool {
+	if gen != s.loadGen {
+		return false
+	}
+	s.lastAttempt = now
+	s.loading = false
+	s.refreshing = false
+	if err != nil {
+		if len(s.releases) > 0 {
+			s.refreshErr = err
+		} else {
+			s.err = err
+		}
+		return true
+	}
+
+	previous := s.selectedVersion()
+	s.releases = releases
+	s.itemClicks = make([]widget.Clickable, len(releases))
+	s.notesCache = nil
+	s.notesCacheFor = -1
+	s.selected = -1
+	for i, r := range releases {
+		if previous != "" && r.Version == previous {
+			s.selected = i
+			break
+		}
+	}
+	s.err = nil
+	s.refreshErr = nil
+	s.lastChecked = now
+	return true
+}
+
+// nextAutoRefresh is when the picker next re-checks on its own; zero before
+// the first load has finished.
+func (s *pickerState) nextAutoRefresh() time.Time {
+	if s.lastAttempt.IsZero() {
+		return time.Time{}
+	}
+	return s.lastAttempt.Add(autoRefreshInterval)
+}
+
+// canRefresh: nothing is loading, and nothing depends on the list holding
+// still — the install wizard installs state.selected, so the list must not
+// change under it.
+func (s *pickerState) canRefresh() bool {
+	return !s.loading && !s.refreshing && !s.installing && s.wizard.step == stepNone
+}
+
+func (s *pickerState) autoRefreshDue(now time.Time) bool {
+	next := s.nextAutoRefresh()
+	return s.canRefresh() && !next.IsZero() && !now.Before(next)
 }
 
 // layoutPicker renders the channel switcher above the split list + detail view.
@@ -254,13 +358,30 @@ func layoutPicker(gtx layout.Context, th *material.Theme, state *pickerState, en
 	// Channel switching is handled before the loading/error/empty returns, and
 	// the switcher is drawn above them — a channel with nothing installable is
 	// exactly when the user needs to switch back.
-	if state.stableBtn.Clicked(gtx) && state.channel != update.ChannelStable && !state.installing {
-		state.channel = update.ChannelStable
-		loadReleases(state, eng, w)
+	// Clicking the channel already shown re-checks it, like Refresh.
+	for _, c := range []struct {
+		click   *widget.Clickable
+		channel string
+	}{{&state.stableBtn, update.ChannelStable}, {&state.latestBtn, update.ChannelLatest}} {
+		if !c.click.Clicked(gtx) {
+			continue
+		}
+		if state.channel != c.channel && !state.installing {
+			state.channel = c.channel
+			loadReleases(state, eng, installer, w, false)
+		} else if state.channel == c.channel && state.canRefresh() {
+			loadReleases(state, eng, installer, w, len(state.releases) > 0)
+		}
 	}
-	if state.latestBtn.Clicked(gtx) && state.channel != update.ChannelLatest && !state.installing {
-		state.channel = update.ChannelLatest
-		loadReleases(state, eng, w)
+	if state.refreshBtn.Clicked(gtx) && state.canRefresh() {
+		loadReleases(state, eng, installer, w, len(state.releases) > 0)
+	}
+	if state.autoRefreshDue(gtx.Now) {
+		loadReleases(state, eng, installer, w, len(state.releases) > 0)
+	} else if next := state.nextAutoRefresh(); !next.IsZero() {
+		// Wake the window when the next check is due; Gio draws no frames
+		// while nothing happens.
+		gtx.Execute(op.InvalidateCmd{At: next})
 	}
 
 	// Handle install button click: open the wizard rather than starting a
@@ -364,8 +485,48 @@ func layoutChannelBar(gtx layout.Context, th *material.Theme, state *pickerState
 				lbl.Color = ColorMuted()
 				return lbl.Layout(gtx)
 			}),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				text, failed := checkedCaption(state)
+				if text == "" {
+					return layout.Dimensions{}
+				}
+				lbl := material.Caption(th, text)
+				lbl.Color = ColorMuted()
+				if failed {
+					lbl.Color = ColorError()
+				}
+				return layout.Inset{Left: unit.Dp(10), Right: unit.Dp(10)}.Layout(gtx, lbl.Layout)
+			}),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				// The label stays put while a check runs — the caption says
+				// "Checking..." — so the bar does not reflow under the cursor.
+				if !state.canRefresh() {
+					gtx = gtx.Disabled()
+				}
+				btn := material.Button(th, &state.refreshBtn, "Refresh")
+				btn.Background = ColorSurface()
+				btn.Color = ColorMuted()
+				return btn.Layout(gtx)
+			}),
 		)
 	})
+}
+
+// checkedCaption says when the list on screen was fetched, and whether the
+// last attempt to re-check it failed — a list that cannot refresh must not
+// pass for a current one. failed=true when it should read as an error.
+func checkedCaption(s *pickerState) (text string, failed bool) {
+	if s.refreshing {
+		return "Checking...", false
+	}
+	if s.lastChecked.IsZero() {
+		return "", false
+	}
+	checked := s.lastChecked.Local().Format("15:04")
+	if s.refreshErr != nil {
+		return "Could not re-check — list from " + checked, true
+	}
+	return "Checked " + checked, false
 }
 
 // layoutPickerBody renders whatever the current channel has to show: a
