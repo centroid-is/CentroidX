@@ -72,7 +72,8 @@ class ConfigItemTable extends Table {
   /// The entity's own id, unique within its kind and scope.
   TextColumn get id => text()();
 
-  /// `'shared'` or `'station:<hostname>'`, and the column that carries
+  /// `'shared'` or `'station:local'` (`'station:<hostname>'` in files written
+  /// before the scope was fixed, adopted at boot), and the column that carries
   /// ownership: shared rows are Postgres-owned, station rows never leave the
   /// machine that wrote them. On Postgres a `CHECK` makes that structural —
   /// see the `from < 10` arm. Here it deliberately does not, because station

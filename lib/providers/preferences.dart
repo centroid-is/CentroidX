@@ -33,6 +33,22 @@ PreferencesApi? _deviceLocalStore;
 /// Opens this station's device-local configuration store and, once ever,
 /// imports whatever `shared_preferences` still holds into it.
 ///
+/// ## One scope, never the hostname
+///
+/// Every row this store reads and writes is at [ConfigScope.local]. The file
+/// is this station's local preferences and nothing else writes it, so the
+/// hostname has no say in which rows are this station's — it only names the
+/// station on change rows. It used to be the scope, and in a container the
+/// hostname is the container id: every image update came up on defaults with
+/// the commissioned settings still in the file under the old id.
+///
+/// Before the import, and once ever, rows an older build wrote under any
+/// hostname are adopted into [ConfigScope.local], newest write winning
+/// ([SqlitePreferences.adoptStationScopes]). Running first is what carries
+/// the old scope's import marker across, so the legacy import does not run a
+/// second time. A failed adoption is logged and the boot carries on with the
+/// store: nothing was moved, and the next boot tries again.
+///
 /// **Call this from `main()` before anything reads a preference.** The earliest
 /// read is `PageManager.load()` in `centroid-hmi/lib/main.dart`, before
 /// `runApp`; a station that gets there with an unopened or unimported store
@@ -56,8 +72,12 @@ PreferencesApi? _deviceLocalStore;
 /// hands it a resolver that throws and a directory holding a deliberately
 /// corrupt `config.sqlite`, and asserts a usable store comes back either way.
 /// Production passes nothing.
+///
+/// [hostnameForTest] replaces `Platform.localHostname`, so a test can show a
+/// hostname change hides nothing.
 Future<void> initDeviceLocalPreferences({
   Future<Directory> Function()? directoryForTest,
+  String Function()? hostnameForTest,
 }) async {
   if (_deviceLocalStore != null) return;
 
@@ -68,8 +88,10 @@ Future<void> initDeviceLocalPreferences({
     final db = AppDatabase.createLocal(dir);
     final store = SqlitePreferences(
       db,
-      scope: ConfigScope.forStation(_localHostname()),
+      scope: ConfigScope.local,
+      station: (hostnameForTest ?? _localHostname)(),
     );
+    await _adoptHostnameScopes(store, dir);
     // One shot, marked by a row inside the same transaction as the values it
     // describes. A station that has already imported does no work here.
     final imported = await store.importAll(
@@ -170,11 +192,41 @@ AppDatabase deviceLocalDatabase() {
   return _deviceLocalDb ??= AppDatabase.inMemoryForTest();
 }
 
-/// This station's hostname, for the scope every row is written at.
+/// Moves rows an older build wrote under a hostname scope into [store]'s,
+/// once, and says so in one line.
+///
+/// Never throws. The store is usable without it — the station comes up on
+/// defaults, which is what it did before this existed — and the move is one
+/// transaction, so a failure leaves nothing half-done for the next boot to
+/// retry. Falling back to the in-memory store over it would lose more than it
+/// protects. A database too broken to read fails the import right after, and
+/// that is contained as before.
+Future<void> _adoptHostnameScopes(SqlitePreferences store, Directory dir) async {
+  try {
+    final adoption = await store.adoptStationScopes(
+      markerId: stationScopeAdoptionMarkerId,
+    );
+    if (adoption != null && adoption.rowsTaken > 0) {
+      _logger.i('Adopted hostname-scoped preferences into ${store.scope} in '
+          '${dir.path}/config.sqlite: $adoption. This happens once per '
+          'station.');
+    }
+  } catch (e, stack) {
+    _logger.e(
+      'Could not adopt hostname-scoped preferences in '
+      '${dir.path}/config.sqlite. This station starts on whatever is already '
+      'at ${store.scope}; the adoption is retried on the next boot.',
+      error: e,
+      stackTrace: stack,
+    );
+  }
+}
+
+/// This station's hostname, for the station name change rows are stamped
+/// with. It plays no part in which rows are read.
 ///
 /// `'unknown'` rather than a throw if the platform will not say, matching
-/// `stationNameProvider`: a nameless station still has preferences, and a
-/// store under a vague scope beats no store at all.
+/// `stationNameProvider`: a nameless station still has preferences.
 String _localHostname() {
   try {
     return Platform.localHostname;

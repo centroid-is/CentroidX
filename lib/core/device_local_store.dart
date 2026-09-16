@@ -64,6 +64,15 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// own marker rather than reusing this one.
 const String sharedPreferencesImportMarkerId = '_import.shared_preferences_v1';
 
+/// The id of the row that records the one-shot adoption of hostname-scoped
+/// rows into `ConfigScope.local` has run.
+///
+/// Adoption runs before the import, so a station that imported under an old
+/// hostname carries [sharedPreferencesImportMarkerId] across with the rest of
+/// its rows and does not import a second time. See
+/// `SqlitePreferences.adoptStationScopes`.
+const String stationScopeAdoptionMarkerId = '_adopt.station_scopes_v1';
+
 /// The file `shared_preferences` writes on Windows and Linux — a flat JSON
 /// object. `shared_preferences_windows:17,52` and its Linux twin both name it
 /// `shared_preferences`, for the legacy and the async API alike.

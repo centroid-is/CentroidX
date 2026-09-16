@@ -79,7 +79,10 @@ final Logger _logger = Logger();
 final configStoreProvider = FutureProvider<GuardedConfigStore>((ref) async {
   final store = ConfigStore(
     local: deviceLocalDatabase(),
-    stationScope: ConfigScope.forStation(ref.read(stationNameProvider)),
+    // The watermark and the Phase-1 cache row live in `config.sqlite`, the
+    // same file the device-local preferences do, so they share its one fixed
+    // scope. The hostname only names the station on change and audit rows.
+    stationScope: ConfigScope.local,
     station: ref.read(stationNameProvider),
   );
   // Fills the snapshot from the local mirror, having first re-homed Phase 1's
