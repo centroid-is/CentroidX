@@ -289,10 +289,9 @@ class EpBoxPaneBody extends StatelessWidget {
         painter: LEDPainter(
           color: switch (value) {
             null => null,
-            // Outputs are the HMI's own side of the wire, so they take the
-            // yellow this repo gives commanded state; an input is the plant
-            // telling us something and stays green.
-            true => isOutput ? colors.yellow : colors.green,
+            // Lit is green in both directions, like [IoStateLamp]; the
+            // square says output. Yellow is manual mode in this app.
+            true => colors.green,
             false => Colors.white,
           },
           ledType: isOutput ? LEDType.square : LEDType.circle,
