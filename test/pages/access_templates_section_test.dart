@@ -267,7 +267,10 @@ void main() {
         overrides: o,
         child: const PromptedApp(
           home: Scaffold(
-            body: AccessTemplatesSection(),
+            // Open: these tests are about the list, its tiles and the dialogs
+            // behind them. The section starts closed on a real page, and that
+            // default has tests of its own below.
+            body: AccessTemplatesSection(initiallyExpanded: true),
           ),
         ),
       );

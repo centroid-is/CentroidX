@@ -69,6 +69,7 @@
 ///    gate.
 library;
 
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -77,6 +78,7 @@ import 'package:tfc_access/tfc_access.dart';
 
 import '../core/access_template_store.dart';
 import '../providers/access_templates.dart';
+import '../providers/preferences.dart' show localPreferencesProvider;
 import '../providers/proposal_state.dart';
 import '../providers/state_man.dart';
 import '../widgets/panes/pane_chrome.dart';
@@ -127,6 +129,17 @@ String kAccessTemplateSummary(int rules, int keys) =>
     '${_count(rules, 'rule')} · ${_count(keys, 'key')} bound';
 
 String _count(int n, String noun) => '$n $noun${n == 1 ? '' : 's'}';
+
+/// The collapsed section's one line: how many templates there are, and how
+/// many keys they govern between them.
+///
+/// The same shape as [kAccessTemplateSummary] on purpose, so the bar and the
+/// rows under it read as one vocabulary and a count on the bar is recognisably
+/// the sum of the counts beneath it. Neutral, like the unbound count on the
+/// key list above: a working figure, not a score, so no colour and no glyph
+/// ride on it.
+String kAccessTemplatesCollapsedSummary(int templates, int keys) =>
+    '${_count(templates, 'template')} · ${_count(keys, 'key')} bound';
 
 /// Shown in the create dialog. A template with no rules gates nothing, and
 /// saying so beats a person binding keys to it and wondering why the controls
@@ -274,6 +287,20 @@ const Key kAccessTemplatesUnavailableKey =
 /// The create control. Present and enabled for every session.
 const Key kAccessTemplatesCreateKey = Key('access-templates-create');
 
+/// The control that opens and closes the template list.
+const Key kAccessTemplatesToggleKey = Key('access-templates-toggle');
+
+/// The collapsed bar's summary line.
+const Key kAccessTemplatesSummaryKey = Key('access-templates-summary');
+
+/// Where this device remembers whether the list was left open.
+///
+/// Device-local, never the shared store: whether one panel shows the list is a
+/// fact about that panel, and a synced row would fold every station's last
+/// click into one value.
+const String kAccessTemplatesExpandedPreference =
+    'key_repository.access_templates.expanded';
+
 /// The name field, shared by the create and rename dialogs.
 const Key kAccessTemplateNameFieldKey = Key('access-template-name-field');
 
@@ -364,7 +391,27 @@ const double kAccessTemplatesSectionMaxHeight =
 /// (which keys name them), and every change it makes goes through the store
 /// and then invalidates the loader — the single refresh trigger 04-05 left.
 class AccessTemplatesSection extends ConsumerStatefulWidget {
-  const AccessTemplatesSection({super.key});
+  const AccessTemplatesSection({super.key, this.initiallyExpanded = false});
+
+  /// Whether the list starts open when this device has no remembered choice.
+  ///
+  /// **Closed by default**, because of where the section sits: below a key
+  /// list that is the page's `Expanded` child, so every pixel this section
+  /// holds is a pixel of key list. Open, it costs its header, the explanatory
+  /// line and up to [kAccessTemplatesListMaxHeight] of list; closed, it is one
+  /// bar that still says how many templates there are and how many keys they
+  /// bind, and still offers New template. Templates are set up at
+  /// commissioning and rarely touched after, so the list is the thing to put
+  /// away.
+  ///
+  /// A choice this device remembers wins over this. Only the state with
+  /// templates to list collapses: with no database, an unreadable table or no
+  /// templates yet there is no list, and the note that says so stays in view —
+  /// the key list's unbound count relies on this section to say it.
+  ///
+  /// Collapsing hides the list and never unmounts this State, which is what
+  /// publishes the proposal banner's callbacks.
+  final bool initiallyExpanded;
 
   @override
   ConsumerState<AccessTemplatesSection> createState() =>
@@ -378,6 +425,58 @@ class _AccessTemplatesSectionState
   /// [kAccessTemplatesListMaxHeight]) and a bounded list with no scrollbar
   /// reads as a list that ends where it was cut.
   final ScrollController _listController = ScrollController();
+
+  /// Whether the template list is showing. See
+  /// [AccessTemplatesSection.initiallyExpanded].
+  bool _expanded = false;
+
+  /// Set once the operator opens or closes the list, so a remembered choice
+  /// that arrives late cannot undo one they just made.
+  bool _toggledHere = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _expanded = widget.initiallyExpanded;
+    _restoreExpanded();
+  }
+
+  /// Picks up the choice this device last made, if it made one.
+  ///
+  /// Best effort, deliberately. This is a convenience about one panel's
+  /// layout, not a setting anything depends on, so a store that cannot answer
+  /// leaves [AccessTemplatesSection.initiallyExpanded] in place rather than
+  /// failing the section. And the store *does* throw where device-local
+  /// preferences were never initialised — every widget test that does not ask
+  /// for them — where a section that threw would take the whole key repository
+  /// page down with it.
+  Future<void> _restoreExpanded() async {
+    try {
+      final remembered = await ref
+          .read(localPreferencesProvider)
+          .getBool(kAccessTemplatesExpandedPreference);
+      if (remembered == null || !mounted || _toggledHere) return;
+      if (remembered != _expanded) setState(() => _expanded = remembered);
+    } catch (_) {
+      // No remembered choice is a valid answer; see above.
+    }
+  }
+
+  void _toggleExpanded() {
+    final next = !_expanded;
+    _toggledHere = true;
+    setState(() => _expanded = next);
+    try {
+      // `unawaited` attaches no handler, so a store that fails asynchronously
+      // is caught here rather than surfacing as an unhandled error.
+      unawaited(ref
+          .read(localPreferencesProvider)
+          .setBool(kAccessTemplatesExpandedPreference, next)
+          .catchError((Object _) {}));
+    } catch (_) {
+      // The layout already changed; only remembering it failed.
+    }
+  }
 
   // ---- The proposal batch (spec §7c) --------------------------------------
 
@@ -894,12 +993,37 @@ class _AccessTemplatesSectionState
     final names = [for (final t in templates) t.name];
     final resolver = ref.watch(tagBindingResolverProvider);
 
+    // No list, so nothing to put away: the empty note says what to do next
+    // and stays in view, with New template beside it.
+    if (templates.isEmpty) {
+      return _frame(
+        context,
+        onCreate: () => _create(context, ref, store, names),
+        child: _note(context, kAccessTemplatesEmptyNote),
+      );
+    }
+
+    if (!_expanded) {
+      // A union rather than a sum, so a key is never counted twice however
+      // the snapshot answers.
+      final boundKeys = <String>{
+        for (final t in templates) ...resolver.keysBoundTo(t.name),
+      };
+      return _frame(
+        context,
+        onCreate: () => _create(context, ref, store, names),
+        onToggle: _toggleExpanded,
+        expanded: false,
+        summary: kAccessTemplatesCollapsedSummary(
+            templates.length, boundKeys.length),
+      );
+    }
+
     return _frame(
       context,
       onCreate: () => _create(context, ref, store, names),
-      child: templates.isEmpty
-          ? _note(context, kAccessTemplatesEmptyNote)
-          : ConstrainedBox(
+      onToggle: _toggleExpanded,
+      child: ConstrainedBox(
               constraints: const BoxConstraints(
                   maxHeight: kAccessTemplatesListMaxHeight),
               child: Scrollbar(
@@ -933,16 +1057,28 @@ class _AccessTemplatesSectionState
   }
 
   /// The card, its header and the create control.
+  ///
+  /// [onToggle] adds the open/close control, for the one state that has a list
+  /// to put away. With [expanded] false the card is a single bar: the headline,
+  /// [summary] where the explanatory line would be, and no [child]. Without
+  /// [onToggle] the header is exactly what it always was, so the list-less
+  /// states — and the page goldens that capture them — do not move.
   Widget _frame(
     BuildContext context, {
-    required Widget child,
+    Widget? child,
     VoidCallback? onCreate,
+    VoidCallback? onToggle,
+    bool expanded = true,
+    String? summary,
   }) {
     final theme = Theme.of(context);
+    final collapsed = onToggle != null && !expanded;
     return Card(
       key: kAccessTemplatesSectionKey,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+        // The bar's bottom matches its top, so it reads as one row rather than
+        // as a card with nothing in it.
+        padding: EdgeInsets.fromLTRB(12, 8, 12, collapsed ? 8 : 12),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -952,10 +1088,33 @@ class _AccessTemplatesSectionState
                 Icon(Icons.shield_outlined,
                     size: 18, color: theme.colorScheme.onSurfaceVariant),
                 const SizedBox(width: 8),
-                Expanded(
-                  child: Text(kAccessTemplatesHeadline,
-                      style: theme.textTheme.titleSmall),
-                ),
+                if (collapsed) ...[
+                  // Both lines of text are one line each, ellipsised. This row
+                  // also holds New template and the toggle, and text that
+                  // wrapped would grow the very bar that exists to stay short
+                  // — the trap the key-mappings header above fell into.
+                  Flexible(
+                    child: Text(kAccessTemplatesHeadline,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.titleSmall),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      summary ?? '',
+                      key: kAccessTemplatesSummaryKey,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant),
+                    ),
+                  ),
+                ] else
+                  Expanded(
+                    child: Text(kAccessTemplatesHeadline,
+                        style: theme.textTheme.titleSmall),
+                  ),
                 if (onCreate != null)
                   OutlinedButton.icon(
                     key: kAccessTemplatesCreateKey,
@@ -963,12 +1122,26 @@ class _AccessTemplatesSectionState
                     label: const Text('New template'),
                     onPressed: onCreate,
                   ),
+                if (onToggle != null) ...[
+                  const SizedBox(width: 4),
+                  IconButton(
+                    key: kAccessTemplatesToggleKey,
+                    onPressed: onToggle,
+                    tooltip: expanded ? 'Hide templates' : 'Show templates',
+                    visualDensity: VisualDensity.compact,
+                    icon: Icon(
+                        expanded ? Icons.expand_less : Icons.expand_more,
+                        size: 20),
+                  ),
+                ],
               ],
             ),
-            const SizedBox(height: 4),
-            _note(context, kAccessTemplatesSubtitle),
-            const SizedBox(height: 8),
-            child,
+            if (!collapsed) ...[
+              const SizedBox(height: 4),
+              _note(context, kAccessTemplatesSubtitle),
+              const SizedBox(height: 8),
+              if (child != null) child,
+            ],
           ],
         ),
       ),

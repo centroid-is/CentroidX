@@ -236,7 +236,9 @@ void main() {
                 padding: EdgeInsets.all(16),
                 child: Align(
                   alignment: Alignment.topCenter,
-                  child: AccessTemplatesSection(),
+                  // Open, because this image is the list: both counts and a
+                  // rule. The closed bar is captured by its own golden.
+                  child: AccessTemplatesSection(initiallyExpanded: true),
                 ),
               ),
             ),
