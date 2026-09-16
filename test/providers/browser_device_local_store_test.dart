@@ -26,7 +26,8 @@ void main() {
   });
 
   Future<web.DeviceLocalStoreHandle> open() => web.openDeviceLocalStore(
-        scope: ConfigScope.forStation('a-browser'),
+        scope: ConfigScope.local,
+        station: 'a-browser',
         logger: Logger(level: Level.off),
       );
 

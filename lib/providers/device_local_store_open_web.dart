@@ -24,11 +24,13 @@ typedef DeviceLocalStoreHandle = ({AppDatabase? db, PreferencesApi store});
 /// what keeps the address typed into Server Config across a reload, which is
 /// the browser's "restart to apply".
 ///
-/// Nothing is imported: there is no legacy store on this platform. [scope],
-/// [logger] and [directoryForTest] are the station arm's concerns, accepted
-/// so the two arms share one signature.
+/// Nothing is imported and nothing is adopted: there is no legacy store on
+/// this platform, no hostname, and no rows an older build could have written
+/// under one. [scope], [station], [logger] and [directoryForTest] are the
+/// station arm's concerns, accepted so the two arms share one signature.
 Future<DeviceLocalStoreHandle> openDeviceLocalStore({
   required ConfigScope scope,
+  required String station,
   required Logger logger,
   Future<Directory> Function()? directoryForTest,
 }) async =>

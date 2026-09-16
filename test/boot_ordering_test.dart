@@ -18,9 +18,15 @@ library;
 
 import 'dart:io';
 
+import 'package:drift/drift.dart' show OrderingTerm;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/core/device_local_store.dart'
-    show legacySharedPreferencesFileName;
+    show
+        legacySharedPreferencesFileName,
+        sharedPreferencesImportMarkerId,
+        stationScopeAdoptionMarkerId;
+import 'package:tfc_dart/core/config/config_item.dart';
+import 'package:tfc_dart/core/database_drift.dart';
 import 'package:tfc_dart/core/preferences.dart';
 
 import 'package:tfc/providers/preferences.dart';
@@ -324,4 +330,158 @@ void main() {
       expect(createDeviceLocalPreferences(), isA<InMemoryPreferences>());
     }, testOn: '!windows');
   });
+
+  group('the scope does not follow the hostname', () {
+    // In a container with no `hostname:` in compose, the hostname is the
+    // container id and changes on every image update. The store used to be
+    // scoped by it, so an updated station opened its own file under a new,
+    // empty scope and came up on defaults. The container ids are made up.
+    const oldContainer = '0a1b2c3d4e5f';
+    const newContainer = 'f5e4d3c2b1a0';
+    late Directory folder;
+
+    setUp(() async {
+      folder = await Directory.systemTemp.createTemp('boot_scope_test');
+    });
+
+    tearDown(() async {
+      await resetDeviceLocalPreferencesForTest();
+      if (folder.existsSync()) await folder.delete(recursive: true);
+    });
+
+    Future<void> boot(String hostname) => initDeviceLocalPreferences(
+          directoryForTest: () async => folder,
+          hostnameForTest: () => hostname,
+        );
+
+    test('rows written under two container ids are adopted, newest winning, '
+        'and the legacy import does not run again', () async {
+      await _seedRows(folder, [
+        ('theme_mode', 'dark', 'station:$oldContainer', _commissioned),
+        ('startup_url', '/line1', 'station:$oldContainer', _commissioned),
+        ('last_route', '/overview', 'station:$oldContainer', _commissioned),
+        (sharedPreferencesImportMarkerId, '2026-09-01',
+            'station:$oldContainer', _commissioned),
+        ('last_route', '/alarms', 'station:$newContainer', _updated),
+        (sharedPreferencesImportMarkerId, '2026-09-14',
+            'station:$newContainer', _updated),
+      ]);
+      // Still on disk, as it is on a station: an import that ran again would
+      // write these over the commissioned values.
+      File('${folder.path}/$legacySharedPreferencesFileName')
+          .writeAsStringSync('{"theme_mode": "light", "startup_url": "/x"}');
+
+      await boot(newContainer);
+      final store = createDeviceLocalPreferences();
+
+      expect(store, isNot(isA<InMemoryPreferences>()));
+      expect(await store.getString('theme_mode'), 'dark');
+      expect(await store.getString('startup_url'), '/line1');
+      expect(await store.getString('last_route'), '/alarms');
+
+      await resetDeviceLocalPreferencesForTest();
+      final rows = await _rowsIn(folder);
+      expect(rows.map((r) => r.scope).toSet(), {ConfigScope.local.wireName});
+      expect(rows.map((r) => r.id),
+          containsAll([stationScopeAdoptionMarkerId,
+              sharedPreferencesImportMarkerId]));
+    });
+
+    test('a second boot is a no-op', () async {
+      await _seedRows(folder, [
+        ('theme_mode', 'dark', 'station:$oldContainer', _commissioned),
+      ]);
+      await boot(newContainer);
+      await resetDeviceLocalPreferencesForTest();
+      final afterFirst = await _rowsIn(folder);
+
+      await boot(newContainer);
+      await resetDeviceLocalPreferencesForTest();
+
+      expect(await _rowsIn(folder), afterFirst);
+    });
+
+    test('a hostname change after adoption hides nothing', () async {
+      await boot(oldContainer);
+      await createDeviceLocalPreferences().setString('startup_url', '/line1');
+      await resetDeviceLocalPreferencesForTest();
+
+      await boot(newContainer);
+
+      expect(await createDeviceLocalPreferences().getString('startup_url'),
+          '/line1');
+    });
+
+    test('a fresh database opens, imports once and stores', () async {
+      File('${folder.path}/$legacySharedPreferencesFileName')
+          .writeAsStringSync('{"theme_mode": "dark"}');
+
+      await boot(newContainer);
+      final store = createDeviceLocalPreferences();
+
+      expect(store, isNot(isA<InMemoryPreferences>()));
+      expect(await store.getString('theme_mode'), 'dark');
+      await store.setString('startup_url', '/line1');
+      expect(await store.getString('startup_url'), '/line1');
+    });
+
+    test('no store over config.sqlite is built with a hostname scope', () {
+      // Every construction site of a store that owns rows in the device-local
+      // file. A hostname scope in any one of them is this bug again, for the
+      // rows that store owns.
+      for (final path in [
+        'lib/providers/preferences.dart',
+        'lib/providers/config_store.dart',
+        'centroid-hmi/lib/main.dart',
+      ]) {
+        final code = File(path)
+            .readAsLinesSync()
+            .where((l) => !l.trimLeft().startsWith('//'))
+            .join('\n');
+        expect(code, isNot(contains('ConfigScope.forStation(')),
+            reason: '$path scopes device-local rows by hostname');
+        expect(code, contains('ConfigScope.local'), reason: path);
+      }
+    });
+  });
+}
+
+final DateTime _commissioned = DateTime.utc(2026, 9, 1, 8);
+final DateTime _updated = DateTime.utc(2026, 9, 14, 12);
+
+/// Writes String preference rows straight into `config.sqlite` in [folder],
+/// the way an older build left them.
+Future<void> _seedRows(
+  Directory folder,
+  List<(String id, String value, String scope, DateTime at)> rows,
+) async {
+  final db = AppDatabase.createLocal(folder);
+  try {
+    for (final (id, value, scope, at) in rows) {
+      await db.into(db.configItemTable).insert(
+            ConfigItemTableCompanion.insert(
+              kind: ConfigKind.preference.wireName,
+              id: id,
+              scope: scope,
+              payload: canonicalJson({'type': 'String', 'value': value}),
+              updatedAt: at,
+              updatedBy: 'anonymous',
+            ),
+          );
+    }
+  } finally {
+    await db.close();
+  }
+}
+
+/// Every `config_item` row in `config.sqlite` in [folder].
+Future<List<ConfigItemRow>> _rowsIn(Directory folder) async {
+  final db = AppDatabase.createLocal(folder);
+  try {
+    return await (db.select(db.configItemTable)
+          ..orderBy([(t) => OrderingTerm.asc(t.id)]))
+        .get();
+  } finally {
+    await db.close();
+  }
 }

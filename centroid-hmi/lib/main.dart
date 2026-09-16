@@ -361,20 +361,22 @@ Future<void> _startApp([bool debugMode = false]) async {
   // and loud, never blank.
   ConfigStore? configStore;
   try {
+    // The hostname names the station on change rows only; the rows this store
+    // owns in `config.sqlite` are at the file's one fixed scope, exactly as
+    // `configStoreProvider` and the device-local preferences read them.
     // `'unknown'` rather than a throw if the platform will not say, matching
-    // `stationNameProvider` and the preferences file: a nameless station
-    // still has a mirror, and losing the plant's pages over a hostname read
+    // `stationNameProvider`: losing the plant's pages over a hostname read
     // would be absurd.
     String station;
     try {
       station = Platform.localHostname;
     } on Object catch (e) {
-      logger.w('Could not read the local hostname for the config scope: $e');
+      logger.w('Could not read the local hostname for the change log: $e');
       station = 'unknown';
     }
     configStore = ConfigStore(
       local: deviceLocalDatabase(),
-      stationScope: ConfigScope.forStation(station),
+      stationScope: ConfigScope.local,
       station: station,
     );
     await configStore.open();

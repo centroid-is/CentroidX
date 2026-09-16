@@ -61,8 +61,19 @@ class EtherCatDeviceTableConfig extends BaseAsset {
   /// Open filtered to the rows that need attention.
   bool problemsOnly;
 
-  EtherCatDeviceTableConfig({List<EcPlcConfig>? plcs, this.problemsOnly = false})
-      : plcs = plcs ?? [] {
+  /// Open with every PLC and master shut, each showing only its summary line.
+  ///
+  /// Off by default: a station with a couple of masters reads best with
+  /// everything in view. One with many fills the page with rows before the
+  /// one that is wrong, and there the summaries are the better first look.
+  @JsonKey(defaultValue: false)
+  bool startCollapsed;
+
+  EtherCatDeviceTableConfig({
+    List<EcPlcConfig>? plcs,
+    this.problemsOnly = false,
+    this.startCollapsed = false,
+  }) : plcs = plcs ?? [] {
     // A table wants most of a page; the 3% default square is a dot.
     size = const RelativeSize(width: 0.62, height: 0.7);
   }
@@ -197,6 +208,7 @@ class _EtherCatDeviceTableState extends ConsumerState<EtherCatDeviceTable> {
         plcs: ecSamplePlcs(),
         caption: 'Sample — add a PLC in the editor',
         initialProblemsOnly: config.problemsOnly,
+        initialCollapsed: config.startCollapsed,
         // A picture of the table, not a working one: this is what the palette
         // tile shows, and a tile must not hold a focusable field.
         interactive: false,
@@ -235,6 +247,7 @@ class _EtherCatDeviceTableState extends ConsumerState<EtherCatDeviceTable> {
           plcs: live,
           busNotes: notes,
           initialProblemsOnly: config.problemsOnly,
+          initialCollapsed: config.startCollapsed,
           onOpen: (bus, subdevice) {
             final (plc, cfg) = configOf[bus]!;
             showSidePane(
@@ -291,6 +304,7 @@ class EcDeviceTableView extends StatefulWidget {
     required this.plcs,
     this.busNotes = const {},
     this.initialProblemsOnly = false,
+    this.initialCollapsed = false,
     this.onOpen,
     this.caption,
     this.interactive = true,
@@ -302,6 +316,9 @@ class EcDeviceTableView extends StatefulWidget {
   /// A word per master when its data is missing.
   final Map<EcBus, String> busNotes;
   final bool initialProblemsOnly;
+
+  /// Whether the PLC and master rows start shut rather than open.
+  final bool initialCollapsed;
   final void Function(EcBus bus, EcSubDevice subdevice)? onOpen;
 
   /// Shown in the toolbar in place of the search box's hint.
@@ -326,12 +343,24 @@ class _EcDeviceTableViewState extends State<EcDeviceTableView> {
   late bool _problemsOnly = widget.initialProblemsOnly;
   String _query = '';
 
-  /// The PLC and master rows somebody has closed.
+  /// The PLC and master rows somebody has turned from the way they started.
   ///
-  /// Everything starts open: the table is there to answer "is anything
-  /// wrong", and a closed group hides the answer. Kept as the closed set, not
-  /// the open one, so a master that turns up later arrives open.
-  final Set<String> _collapsed = {};
+  /// Everything starts open unless the asset says otherwise: the table is
+  /// there to answer "is anything wrong", and a closed group hides the
+  /// answer. Kept as the groups that differ from the start, not as the open
+  /// ones, so a master that turns up later arrives the way the rest did.
+  final Set<String> _flipped = {};
+
+  bool _isOpen(String key) =>
+      widget.initialCollapsed == _flipped.contains(key);
+
+  void _setOpen(String key, bool open) {
+    if (open == !widget.initialCollapsed) {
+      _flipped.remove(key);
+    } else {
+      _flipped.add(key);
+    }
+  }
 
   /// A PLC row is only worth drawing when it tells PLCs apart, or when the one
   /// PLC was given a name. A page from before PLCs existed stays a list of
@@ -365,17 +394,14 @@ class _EcDeviceTableViewState extends State<EcDeviceTableView> {
     for (final p in widget.plcs) {
       for (final b in p.buses) {
         if (b.subdevices.any(_matches)) {
-          _collapsed
-            ..remove(_plcKey(p))
-            ..remove(_busKey(p, b));
+          _setOpen(_plcKey(p), true);
+          _setOpen(_busKey(p, b), true);
         }
       }
     }
   }
 
-  void _toggle(String key) => setState(() {
-        if (!_collapsed.remove(key)) _collapsed.add(key);
-      });
+  void _toggle(String key) => setState(() => _setOpen(key, !_isOpen(key)));
 
   /// "1 fault, 2 warnings" or "all OK", in the colour of the worst of them.
   static (String, Color?) _health(int faults, int warns, HmiStateColors states) {
@@ -426,7 +452,7 @@ class _EcDeviceTableViewState extends State<EcDeviceTableView> {
     for (final plc in widget.plcs) {
       if (showPlcs) {
         final key = _plcKey(plc);
-        final open = !_collapsed.contains(key);
+        final open = _isOpen(key);
         final summary = _plcSummary(plc, states);
         rows.add((
           height: _Col.groupRowHeight,
@@ -444,7 +470,7 @@ class _EcDeviceTableViewState extends State<EcDeviceTableView> {
       }
       for (final bus in plc.buses) {
         final key = _busKey(plc, bus);
-        final open = !_collapsed.contains(key);
+        final open = _isOpen(key);
         final summary = _busSummary(bus, states);
         rows.add((
           height: _Col.groupRowHeight,
@@ -1170,6 +1196,14 @@ class _EtherCatDeviceTableEditorState
             title: const Text('Open showing problems only'),
             value: widget.config.problemsOnly,
             onChanged: (v) => setState(() => widget.config.problemsOnly = v),
+          ),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Open with groups collapsed'),
+            subtitle: const Text(
+                'Each PLC and master shows its summary until it is tapped'),
+            value: widget.config.startCollapsed,
+            onChanged: (v) => setState(() => widget.config.startCollapsed = v),
           ),
           const SizedBox(height: 16),
           // Every other asset's form carries these, and without them the only

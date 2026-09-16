@@ -39,6 +39,23 @@ PreferencesApi? _deviceLocalStore;
 /// Opens this station's device-local configuration store and, once ever,
 /// imports whatever `shared_preferences` still holds into it.
 ///
+/// ## One scope, never the hostname
+///
+/// Every row this store reads and writes is at [ConfigScope.local]. The file
+/// is this station's local preferences and nothing else writes it, so the
+/// hostname has no say in which rows are this station's — it only names the
+/// station on change rows. It used to be the scope, and in a container the
+/// hostname is the container id: every image update came up on defaults with
+/// the commissioned settings still in the file under the old id.
+///
+/// Before the import, and once ever, rows an older build wrote under any
+/// hostname are adopted into [ConfigScope.local], newest write winning
+/// (`SqlitePreferences.adoptStationScopes`, called from the seam's station
+/// arm). Running first is what carries
+/// the old scope's import marker across, so the legacy import does not run a
+/// second time. A failed adoption is logged and the boot carries on with the
+/// store: nothing was moved, and the next boot tries again.
+///
 /// **Call this from `main()` before anything reads a preference.** The earliest
 /// read is `PageManager.load()` in `centroid-hmi/lib/main.dart`, before
 /// `runApp`; a station that gets there with an unopened or unimported store
@@ -63,20 +80,27 @@ PreferencesApi? _deviceLocalStore;
 /// corrupt `config.sqlite`, and asserts a usable store comes back either way.
 /// Production passes nothing.
 ///
+/// [hostnameForTest] replaces `Platform.localHostname`, so a test can show a
+/// hostname change hides nothing.
+///
 /// **What "the store" is depends on the platform**, and that is the seam
-/// `device_local_store_open.dart` holds: `config.sqlite` on a station, the
-/// browser's own per-origin `localStorage` in a web build, which has no
-/// SQLite to open. The web entrypoint calls this exactly as `main.dart` does
-/// — it went for a while without, and every read of the store threw inside
-/// a provider, which is a white screen with nothing in the console.
+/// `device_local_store_open.dart` holds: `config.sqlite` on a station — the
+/// fixed-scope open and the hostname adoption above both live in its station
+/// arm — and the browser's own per-origin `localStorage` in a web build,
+/// which has no SQLite to open, no hostname and no rows to adopt. The web
+/// entrypoint calls this exactly as `main.dart` does — it went for a while
+/// without, and every read of the store threw inside a provider, which is a
+/// white screen with nothing in the console.
 Future<void> initDeviceLocalPreferences({
   Future<Directory> Function()? directoryForTest,
+  String Function()? hostnameForTest,
 }) async {
   if (_deviceLocalStore != null) return;
 
   try {
     final opened = await openDeviceLocalStore(
-      scope: ConfigScope.forStation(_localHostname()),
+      scope: ConfigScope.local,
+      station: (hostnameForTest ?? _localHostname)(),
       logger: _logger,
       directoryForTest: directoryForTest,
     );
@@ -181,11 +205,11 @@ AppDatabase deviceLocalDatabase() {
   return _deviceLocalDb ??= AppDatabase.inMemoryForTest();
 }
 
-/// This station's hostname, for the scope every row is written at.
+/// This station's hostname, for the station name change rows are stamped
+/// with. It plays no part in which rows are read.
 ///
 /// `'unknown'` rather than a throw if the platform will not say, matching
-/// `stationNameProvider`: a nameless station still has preferences, and a
-/// store under a vague scope beats no store at all.
+/// `stationNameProvider`: a nameless station still has preferences.
 String _localHostname() {
   try {
     return Platform.localHostname;

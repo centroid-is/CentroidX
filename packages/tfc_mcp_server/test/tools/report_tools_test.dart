@@ -315,6 +315,61 @@ void main() {
       expect(textOf(create), contains('whenever'));
       expect(textOf(create), contains('effective'));
     });
+
+    // The plant paired `update_report` with `propose_asset` as "the two tools
+    // that never return". It is the same defect in both: a call that does not
+    // satisfy the advertised schema used to raise a protocol error, and over
+    // Streamable HTTP a protocol error is never delivered. See
+    // test/server/tool_call_error_delivery_test.dart for the transport half.
+    test('update_report with a valid definition returns a proposal', () async {
+      final create = await client.callTool('create_report', {
+        'config': {
+          'id': 'daily',
+          'name': 'Daily',
+          'range': 'day',
+          'sections': [
+            {'type': 'text', 'title': 'Notes', 'text': 'first'}
+          ],
+        },
+      });
+      expect(create.isError, isNot(isTrue), reason: textOf(create));
+      await applyAsAperson(jsonDecode(textOf(create)) as Map<String, dynamic>);
+
+      final update = await client.callTool('update_report', {
+        'report_id': 'daily',
+        'config': {
+          'id': 'daily',
+          'name': 'Daily',
+          'range': 'day',
+          'sections': [
+            {'type': 'text', 'title': 'Notes', 'text': 'second'}
+          ],
+        },
+      });
+
+      expect(update.isError, isNot(isTrue), reason: textOf(update));
+      final wrapped = jsonDecode(textOf(update)) as Map<String, dynamic>;
+      expect(wrapped['_proposal_type'], 'report');
+      expect(wrapped['_op'], 'update');
+      expect(jsonEncode(wrapped), contains('second'));
+    });
+
+    test('update_report without report_id is answered, not left hanging',
+        () async {
+      final update = await client.callTool('update_report', {
+        'config': {
+          'id': 'daily',
+          'name': 'Daily',
+          'range': 'day',
+          'sections': <dynamic>[],
+        },
+      });
+
+      expect(update.isError, isTrue);
+      expect(textOf(update), contains('report_id'),
+          reason: 'the caller has to be told which field is missing');
+      expect(textOf(update), contains('update_report'));
+    });
   });
 }
 

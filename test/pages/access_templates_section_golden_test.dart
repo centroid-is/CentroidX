@@ -1,6 +1,15 @@
-/// One golden: the access-templates section, as an administrator holding
-/// `users` sees it, with two templates, their bound-key counts and one of them
-/// open on its member-to-group rules.
+/// Two goldens of the access-templates section, as an administrator holding
+/// `users` sees it.
+///
+/// `access_templates_section_closed.png` is what the key repository page shows
+/// with nothing remembered on the device: one bar reading
+/// `2 templates · 3 keys bound`, a live `New template`, and the toggle. The
+/// section starts closed because it sits below a key list that is the page's
+/// `Expanded` child, so every pixel it holds is a pixel of key list.
+///
+/// `access_templates_section.png`, below, is the section opened: two
+/// templates, their bound-key counts and one of them open on its
+/// member-to-group rules.
 ///
 /// `access_templates_section.png` — 04-07 built this section and reviewed it
 /// through throwaway frames that were deleted; the plan said a golden **of the
@@ -236,7 +245,9 @@ void main() {
                 padding: EdgeInsets.all(16),
                 child: Align(
                   alignment: Alignment.topCenter,
-                  child: AccessTemplatesSection(),
+                  // Open, because this image is the list: both counts and a
+                  // rule. The closed bar is captured by its own golden.
+                  child: AccessTemplatesSection(initiallyExpanded: true),
                 ),
               ),
             ),
@@ -282,6 +293,74 @@ void main() {
         await expectLater(
           find.byType(MaterialApp),
           matchesGoldenFile('goldens/access_templates_section.png'),
+        );
+      });
+    });
+
+    testWidgets('closed, as the key repository page mounts it',
+        (tester) async {
+      await withClock(Clock.fixed(_frozen), () async {
+        final view =
+            TestWidgetsFlutterBinding.instance.platformDispatcher.implicitView!;
+        view.devicePixelRatio = 1.0;
+        // The bar and a margin, not a panel. A tall surface would be mostly
+        // empty scaffold, and the tolerance would absorb a change to a 56 px
+        // bar in pixels that never move.
+        view.physicalSize = const Size(760, 112);
+
+        await tester.pumpWidget(ProviderScope(
+          overrides: [
+            accessTemplateStoreProvider.overrideWith((ref) async =>
+                AccessTemplateStore(
+                    db: db,
+                    session: _withUsers,
+                    audit: _NullSink(),
+                    station: _station)),
+            accessTemplatesProvider
+                .overrideWith((ref) async => [_conveyor(), _recipes()]),
+            tagBindingResolverProvider.overrideWith((ref) => _resolver()),
+            accessSessionProvider
+                .overrideWith(() => _FixedSession(_withUsers())),
+          ],
+          child: MaterialApp(
+            debugShowCheckedModeBanner: false,
+            theme: light,
+            home: const Scaffold(
+              body: Padding(
+                padding: EdgeInsets.all(16),
+                child: Align(
+                  alignment: Alignment.topCenter,
+                  // No `initiallyExpanded`, and no device-local store in this
+                  // test: exactly what a page with nothing remembered shows.
+                  child: AccessTemplatesSection(),
+                ),
+              ),
+            ),
+          ),
+        ));
+        await tester.pumpAndSettle();
+
+        // The claims the bar makes. Three keys across the two templates — two
+        // on conveyor, one on recipes — so the count here is visibly the sum
+        // of the counts the open image shows under each name.
+        expect(
+            tester.widget<Text>(find.byKey(kAccessTemplatesSummaryKey)).data,
+            kAccessTemplatesCollapsedSummary(2, 3));
+        expect(find.byKey(kAccessTemplateTileKey('conveyor')), findsNothing,
+            reason: 'closed means the list is not built');
+        expect(find.byKey(kAccessTemplatesToggleKey), findsOneWidget);
+        expect(
+            tester
+                .widget<OutlinedButton>(
+                    find.byKey(kAccessTemplatesCreateKey))
+                .onPressed,
+            isNotNull,
+            reason: 'closing the list greys nothing');
+        expect(tester.takeException(), isNull);
+
+        await expectLater(
+          find.byType(MaterialApp),
+          matchesGoldenFile('goldens/access_templates_section_closed.png'),
         );
       });
     });
