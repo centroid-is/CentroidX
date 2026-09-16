@@ -86,8 +86,12 @@ void main() {
       expect(atMid.center.dx, closeTo(size.width / 2, 0.01));
       expect(atEnd.right, closeTo(size.width, 0.01));
       expect(atStart.width, greaterThan(size.width * 0.4));
-      // The empty track beside the wagon does not take the tap.
-      expect(wagonAt(0).hitTest(const Offset(200, 50)), isFalse);
+      // The empty track beside the wagon DOES take the tap — it is the
+      // traverse drive's target, and the only one it has once both safety
+      // edges are bound (see conveyor_wagon_tap_regions_test.dart). The box
+      // clear of the rail band is still inert.
+      expect(wagonAt(0).hitTest(const Offset(200, 50)), isTrue);
+      expect(wagonAt(0).hitTest(const Offset(200, 4)), isFalse);
       expect(wagonAt(0).hitTest(const Offset(40, 50)), isTrue);
       // The band stays vertically centred — the track runs behind it, not
       // below it.
@@ -99,7 +103,9 @@ void main() {
       expect(parked.hasHitShape, isTrue);
       final bounds = parked.hitShape()!.getBounds();
       expect(bounds.center.dx, closeTo(size.width / 2, 0.01));
-      expect(parked.hitTest(const Offset(10, 50)), isFalse);
+      // On the rail: the traverse drive's zone. Off it: nothing.
+      expect(parked.hitTest(const Offset(10, 50)), isTrue);
+      expect(parked.hitTest(const Offset(10, 4)), isFalse);
       expect(parked.hitTest(Offset(size.width / 2, 50)), isTrue);
     });
 
@@ -205,6 +211,109 @@ void main() {
       expect(belt.width, closeTo(size.width * 0.5, 0.01));
       expect(belt.height, closeTo(40, 0.01));
       expect(belt.center.dy, closeTo(size.height / 2, 0.01));
+    });
+  });
+
+  group('normally-closed safety edges', () {
+    DynamicValue fb({required bool output, required bool fault}) =>
+        DynamicValue.fromMap(LinkedHashMap<String, dynamic>.from({
+          SensorFbFields.output: output,
+          SensorFbFields.fault: fault,
+        }));
+
+    test('the flag is off by default and off on a page saved without it', () {
+      expect(ConveyorConfig().invertSafetyPolarity, isFalse);
+      expect(RollerConveyorConfig().invertSafetyPolarity, isFalse);
+      expect(ConveyorConfig.preview().invertSafetyPolarity, isFalse);
+      final legacy = ConveyorConfig(onRails: true).toJson()
+        ..remove('invertSafetyPolarity');
+      expect(ConveyorConfig.fromJson(legacy).invertSafetyPolarity, isFalse);
+    });
+
+    test('round-trips through JSON on both conveyor types', () {
+      final box = ConveyorConfig(
+          onRails: true,
+          safetyLeftKey: 'line1.wagon1.edgeLeft',
+          invertSafetyPolarity: true);
+      expect(ConveyorConfig.fromJson(box.toJson()).invertSafetyPolarity,
+          isTrue);
+      // The roller belt is a subclass, so it inherits the field rather than
+      // declaring a second one — and its generated codec has to carry it.
+      final roller =
+          RollerConveyorConfig(onRails: true, invertSafetyPolarity: true);
+      final restored = AssetRegistry.parse({'assets': [roller.toJson()]}).single
+          as RollerConveyorConfig;
+      expect(restored.invertSafetyPolarity, isTrue);
+    });
+
+    test('the bulk editor offers the flag, and box and roller share the row',
+        () {
+      BulkProperty rowOf(ConveyorConfig c) => c.bulkProperties.singleWhere(
+          (p) => p.id == 'ConveyorConfig.invertSafetyPolarity');
+      final box = ConveyorConfig();
+      final roller = RollerConveyorConfig();
+      expect(rowOf(box).matches(rowOf(roller)), isTrue,
+          reason: 'a selection of box and roller wagons must merge into one '
+              'row, not two rows that write different fields');
+      expect(rowOf(box).value, isFalse);
+      rowOf(box).write(true);
+      expect(box.invertSafetyPolarity, isTrue);
+    });
+
+    test('healthy and pressed swap with the polarity', () {
+      // Normally open, the reading every page on disk was drawn with.
+      expect(readSafetyEdge(fb(output: true, fault: false)), isTrue);
+      expect(readSafetyEdge(fb(output: false, fault: false)), isFalse);
+      // Normally closed: true is the healthy loop, false is a press.
+      expect(readSafetyEdge(fb(output: true, fault: false), inverted: true),
+          isFalse);
+      expect(readSafetyEdge(fb(output: false, fault: false), inverted: true),
+          isTrue);
+    });
+
+    test('a faulted sensor reads as pressed under BOTH polarities', () {
+      // The whole point. `!(output || fault)` would answer "safe" here, which
+      // is the one answer a safety indicator must never give — worse than the
+      // permanently-red bumper the flag exists to fix.
+      expect(readSafetyEdge(fb(output: false, fault: true)), isTrue);
+      expect(readSafetyEdge(fb(output: false, fault: true), inverted: true),
+          isTrue);
+      expect(readSafetyEdge(fb(output: true, fault: true)), isTrue);
+      expect(readSafetyEdge(fb(output: true, fault: true), inverted: true),
+          isTrue);
+    });
+
+    test('a plain BOOL inverts too', () {
+      expect(readSafetyEdge(DynamicValue(value: true), inverted: true),
+          isFalse);
+      expect(readSafetyEdge(DynamicValue(value: false), inverted: true),
+          isTrue);
+    });
+
+    test('nothing to read is not a press, whichever way it is wired', () {
+      // An absent value is no sensor at all — still connecting, unbound, or
+      // the wrong node type. A broken sensor arrives as a struct with `fault`
+      // set and is covered above; a dead link is the comms alarm's job.
+      expect(readSafetyEdge(null, inverted: true), isFalse);
+      expect(readSafetyEdge(DynamicValue(value: 3.14), inverted: true),
+          isFalse);
+    });
+
+    test('the default argument is the old behaviour, term for term', () {
+      final cases = <DynamicValue?>[
+        fb(output: true, fault: false),
+        fb(output: false, fault: false),
+        fb(output: false, fault: true),
+        fb(output: true, fault: true),
+        DynamicValue(value: true),
+        DynamicValue(value: false),
+        DynamicValue(value: 3.14),
+        null,
+      ];
+      for (final value in cases) {
+        expect(readSafetyEdge(value), readSafetyEdge(value, inverted: false),
+            reason: 'omitting the flag must not change a single reading');
+      }
     });
   });
 }
