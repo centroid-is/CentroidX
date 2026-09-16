@@ -47,11 +47,19 @@ void main() {
       expect(find.byType(ExpansionTile), findsNWidgets(2));
     });
 
-    testWidgets('renders import/export section', (tester) async {
+    testWidgets('renders import and export in the key-mappings header',
+        (tester) async {
       await tester.pumpWidget(buildTestableKeyRepository());
       await tester.pumpAndSettle();
 
-      expect(find.text('Import / Export'), findsOneWidget);
+      // By key, not by label: these are icon buttons carrying their names in a
+      // tooltip, and matching the tooltip would assert the wording rather than
+      // the control. There is no longer a card of their own -- the old
+      // 'Import / Export' title went with it, and the chrome it cost came back
+      // to the key list.
+      expect(find.byKey(kKeyMappingsImportKey), findsOneWidget);
+      expect(find.byKey(kKeyMappingsExportKey), findsOneWidget);
+      expect(find.text('Import / Export'), findsNothing);
     });
   });
 

@@ -1724,6 +1724,12 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
                                 const SizedBox(width: 8),
                                 Expanded(
                                   child: Text('Key Mappings',
+                                      // One line here too: the narrow branch
+                                      // puts the import/export pair in this
+                                      // same row as the title and the unsaved
+                                      // badge, so it has the same trap.
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
                                       style: Theme.of(context)
                                           .textTheme
                                           .titleMedium),
@@ -1778,6 +1784,21 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
                               const SizedBox(width: 8),
                               Flexible(
                                 child: Text('Key Mappings',
+                                    // One line, always. This row carries the
+                                    // title, the unsaved badge, a 200 px search
+                                    // field, Add Key and the import/export
+                                    // pair; when the badge appears the fixed
+                                    // children can exceed the width, the
+                                    // `Spacer` goes to zero and an unbounded
+                                    // title wraps into a tall column of
+                                    // characters -- which cost the key list
+                                    // below it ~216 px. Ellipsis degrades the
+                                    // title instead of the list. Measured:
+                                    // without this the list collapsed from 368
+                                    // to 152 px the moment anything was
+                                    // unsaved.
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
                                     style: Theme.of(context)
                                         .textTheme
                                         .titleMedium),
@@ -2566,12 +2587,17 @@ class _ImportExportActions extends StatelessWidget {
           key: kKeyMappingsImportKey,
           onPressed: onImport,
           tooltip: 'Import key mappings',
+          // Compact because this row is width-bound: the title, the unsaved
+          // badge, a 200 px search field and Add Key are already in it. The
+          // default 48 px box spends width the title would otherwise have.
+          visualDensity: VisualDensity.compact,
           icon: const FaIcon(FontAwesomeIcons.fileImport, size: 16),
         ),
         IconButton(
           key: kKeyMappingsExportKey,
           onPressed: onExport,
           tooltip: 'Export key mappings',
+          visualDensity: VisualDensity.compact,
           icon: const FaIcon(FontAwesomeIcons.fileExport, size: 16),
         ),
       ],
