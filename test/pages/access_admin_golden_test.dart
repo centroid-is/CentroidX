@@ -92,6 +92,7 @@ import 'package:tfc/widgets/access_admin_notice.dart';
 import 'package:tfc/widgets/access_gate.dart';
 import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/access/access_repository.dart';
+import 'package:drift/drift.dart' show Value;
 import 'package:tfc_dart/core/database_drift.dart' show AppUserData;
 
 import '../helpers/golden_tolerance.dart';
@@ -162,6 +163,7 @@ AppUserData _user(
   required DateTime createdAt,
   DateTime? lastLoginAt,
   List<String> alsoHolds = const [],
+  String? homePage,
 }) =>
     AppUserData(
       username: username,
@@ -172,6 +174,7 @@ AppUserData _user(
       createdAt: createdAt,
       lastLoginAt: lastLoginAt,
       stationAccount: false,
+      homePage: homePage,
     );
 
 /// The roster, in the order the repository returns it: by username.
@@ -989,6 +992,65 @@ void main() {
         await expectLater(
           find.byType(MaterialApp),
           matchesGoldenFile('goldens/access_admin_anonymous_roles.png'),
+        );
+      });
+    });
+
+    testWidgets('the home page dialog, with the tag it leaves on the row',
+        (tester) async {
+      await withClock(Clock.fixed(_frozen), () async {
+        _sizeView(tester, const Size(900, 900));
+        // The pages a home page may name: two plain pages and a section.
+        final registry = RouteRegistry();
+        registry.menuItems.clear();
+        registry.addMenuItem(
+            const MenuItem(label: 'Home', path: '/', icon: Icons.home));
+        registry.addMenuItem(const MenuItem(
+            label: 'Packing', path: '/packing', icon: Icons.inventory));
+        registry.addMenuItem(const MenuItem(
+          label: 'Halls',
+          path: '/halls',
+          icon: Icons.folder,
+          isSection: true,
+          children: [
+            MenuItem(label: 'Freezer', path: '/halls/freezer', icon: Icons.ac_unit),
+            MenuItem(label: 'Roe', path: '/halls/roe', icon: Icons.egg),
+          ],
+        ));
+
+        final users = [
+          for (final u in _users())
+            u.username == 'linar' ? u.copyWith(homePage: const Value('/halls/freezer')) : u,
+        ];
+        await tester.pumpWidget(_dialogHost(
+          theme: light,
+          store: _AnsweringStore(roleRows: _roles(), userRows: users),
+          session: _withUsers(),
+        ));
+        await tester.pumpAndSettle();
+
+        // The row names the page by its menu name, beside the roles.
+        expect(find.byKey(kAccessUserHomePageTagKey('linar')), findsOneWidget);
+        expect(find.text(kAccessUserHomePageTag('Freezer')), findsOneWidget);
+
+        await tester.tap(find.byKey(kAccessUserHomePageKey('linar')));
+        await tester.pumpAndSettle();
+
+        // The state key: open on linar, the stored page chosen, sections as
+        // headings rather than choices.
+        expect(find.byKey(kAccessUserHomePageSaveKey), findsOneWidget);
+        expect(find.text(kAccessUserHomePageNote), findsOneWidget);
+        expect(find.byKey(kAccessUserHomePageOptionKey('/halls/freezer')),
+            findsOneWidget);
+        expect(find.byKey(kAccessUserHomePageOptionKey('/halls')), findsNothing);
+        final chosen = tester.widget<RadioGroup<String>>(
+            find.byType(RadioGroup<String>));
+        expect(chosen.groupValue, '/halls/freezer');
+        expect(tester.takeException(), isNull);
+
+        await expectLater(
+          find.byType(MaterialApp),
+          matchesGoldenFile('goldens/access_admin_home_page.png'),
         );
       });
     });

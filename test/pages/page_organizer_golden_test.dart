@@ -21,7 +21,6 @@ import 'package:shared_preferences_platform_interface/in_memory_shared_preferenc
 import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
 import 'package:tfc_dart/core/preferences.dart';
 
-import 'package:tfc/core/startup_url.dart';
 import 'package:tfc/models/menu_item.dart';
 import 'package:tfc/page_creator/page.dart';
 import 'package:tfc/pages/page_editor.dart';
@@ -214,7 +213,6 @@ void main() {
       skip: goldenSkip, () {
     _testGolden('renaming shows the address it is keeping', (tester) async {
       final localPrefs = _FakePreferences();
-      await localPrefs.setString(startupUrlPrefsKey, '/packing/weigher');
       await _pump(
         tester,
         PageManager(prefs: _FakePreferences(), pages: {
@@ -241,7 +239,6 @@ void main() {
     _testGolden('ticking the address box spells out what moves',
         (tester) async {
       final localPrefs = _FakePreferences();
-      await localPrefs.setString(startupUrlPrefsKey, '/packing/weigher');
       await _pump(
         tester,
         PageManager(prefs: _FakePreferences(), pages: {
@@ -269,7 +266,6 @@ void main() {
 
     _testGolden('deleting a section names what is inside it', (tester) async {
       final localPrefs = _FakePreferences();
-      await localPrefs.setString(startupUrlPrefsKey, '/packing');
       await _pump(
         tester,
         PageManager(prefs: _FakePreferences(), pages: {

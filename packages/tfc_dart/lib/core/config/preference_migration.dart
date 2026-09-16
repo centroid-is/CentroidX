@@ -317,8 +317,8 @@ const Map<String, String> kAbandonedPreferenceKeys = <String, String>{
       'migrated to page and asset rows by Phase 3; the blob is rollback '
           'insurance until 04-12 drops the table',
   'startup_url':
-      'device-local: which page a panel starts on is that panel\'s own, and '
-          'Phase 1 SC-2 already imported it',
+      'retired: home pages are per account (app_user.home_page) and the '
+          'preferences provider deletes this key, shared or local, on sight',
   'access.session':
       'device-local: a session belongs to the machine somebody signed in on',
   // Enumerated, not inferred — the rule above is what this entry is held to.

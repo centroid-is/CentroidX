@@ -85,8 +85,8 @@ typedef _RowBuilder = AuditRecord Function(
 ///
 /// Writes — [createRole], [updateRole], [deleteRole], [renameRole],
 /// [setRolePages], [setRoleOrder], [createUser], [deleteUser], [setUserRole],
-/// [setUserStationAccount], [setUserInactivityTimeout], [setUserPassword],
-/// [setUserPages], [setUserOrder] — all ask for
+/// [setUserStationAccount], [setUserInactivityTimeout], [setUserHomePage],
+/// [setUserPassword], [setUserPages], [setUserOrder] — all ask for
 /// [kAccessAdminGroup] and all leave a row, denials included. Reads — [roles]
 /// and [listUsers] — are ungated and unaudited: looking at the roster is not an
 /// authorization change, and a row per render would bury the writes that
@@ -711,6 +711,44 @@ class AccessAdminStore {
     await _recordAllowed(actionId, row);
   }
 
+  /// Sets the page [username]'s sessions open on, or clears it with null (or
+  /// `/`) so they open on Home. Requires [kAccessAdminGroup].
+  ///
+  /// Allowed for the reserved anonymous account: its home page is where every
+  /// logged-out panel opens. Not a permission, so no lockout guard.
+  ///
+  /// Throws [UserNotFoundException] when there is no such account, and
+  /// [ArgumentError] from the repository when [path] is not a route path.
+  Future<void> setUserHomePage(
+    String username,
+    String? path, {
+    String origin = _operatorOrigin,
+    String? reason,
+  }) async {
+    final existing = await _repository.user(username);
+    final stored = path == '/' ? null : path;
+
+    AuditRecord row(AccessSession session, String actionId, bool allowed) =>
+        AuditRecord.userHomePage(
+          who: _who(session),
+          station: _station,
+          roleName: session.roleLabel,
+          actionId: actionId,
+          subject: username,
+          oldPath: existing?.homePage,
+          newPath: stored,
+          allowed: allowed,
+          reason: reason,
+          origin: origin,
+        );
+
+    final actionId = await _requireUsers(itemKey: _userHomePage, row: row);
+
+    if (existing == null) throw UserNotFoundException(username);
+    await _repository.setHomePage(username, stored);
+    await _recordAllowed(actionId, row);
+  }
+
   /// Replaces [username]'s personal page whitelist. Requires
   /// [kAccessAdminGroup].
   ///
@@ -924,6 +962,7 @@ class AccessAdminStore {
   static const String _userPassword = 'user.password';
   static const String _userStationAccount = 'user.station_account';
   static const String _userInactivityTimeout = 'user.inactivity_timeout';
+  static const String _userHomePage = 'user.home_page';
   static const String _rolePages = 'role.pages';
   static const String _userPages = 'user.pages';
   static const String _roleOrder = 'role.order';

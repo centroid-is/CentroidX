@@ -611,6 +611,43 @@ class AuditRecord {
         reason: reason,
       );
 
+  /// The page one account's sessions open on was changed: `user.home_page`,
+  /// subject in `member`, route paths in the value columns.
+  ///
+  /// Both value columns are **nullable**, and null is meaningful — Home, "no
+  /// page of its own" — the convention the `*.pages` and
+  /// `user.inactivity_timeout` rows set. For the reserved anonymous account
+  /// this is where every logged-out panel opens, which is why it is a row.
+  factory AuditRecord.userHomePage({
+    required String who,
+    required String station,
+    required String roleName,
+    required String actionId,
+    required String subject,
+    required String? oldPath,
+    required String? newPath,
+    required bool allowed,
+    DateTime? at,
+    String? reason,
+    String origin = 'operator',
+  }) =>
+      AuditRecord(
+        at: at ?? clock.now(),
+        who: who,
+        station: station,
+        roleName: roleName,
+        surface: _adminSurface,
+        itemKey: 'user.home_page',
+        member: subject,
+        oldValue: oldPath,
+        newValue: newPath,
+        groupRequired: AccessGroup.users.name,
+        allowed: allowed,
+        origin: origin,
+        actionId: actionId,
+        reason: reason,
+      );
+
   /// One account's inactivity timeout was changed:
   /// `user.inactivity_timeout`, subject in `member`, minutes in the value
   /// columns.

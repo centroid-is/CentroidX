@@ -16,6 +16,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../providers/access.dart';
 import '../routes.dart';
+import 'home_page_navigation.dart';
 import 'panes/pane_chrome.dart';
 import 'panes/standard_dialog.dart';
 
@@ -108,6 +109,29 @@ Future<void> showAccessSignInDialog(BuildContext context, WidgetRef ref) async {
   if (target == null) return;
   if (!context.mounted) return;
   context.beamToNamed(target);
+}
+
+/// [showAccessSignInDialog], then — when somebody new signed in and their
+/// account has a home page of its own — beams there.
+///
+/// The app bar's opener. Signing in from the lock is starting work, so the
+/// panel opens where that person works from; an account with no page of its
+/// own stays where it is. The refusal prompts keep [showAccessSignInDialog]:
+/// somebody signing in there did it to open the page in front of them.
+Future<void> showAccessSignInDialogAndGoHome(
+    BuildContext context, WidgetRef ref) async {
+  final before = ref.read(accessSessionProvider).valueOrNull?.user?.username;
+  await showAccessSignInDialog(context, ref);
+  if (!context.mounted) return;
+  final after = ref.read(accessSessionProvider).valueOrNull;
+  if (after == null || !after.isElevated) return;
+  if (after.user!.username == before) return;
+  await goToHomePage(
+    context: context,
+    ref: ref,
+    session: after,
+    onlyIfSet: true,
+  );
 }
 
 /// The form itself. Public so a widget test can push it directly and read the

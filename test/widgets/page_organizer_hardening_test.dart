@@ -18,7 +18,6 @@ import 'package:shared_preferences_platform_interface/in_memory_shared_preferenc
 import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
 import 'package:tfc_dart/core/preferences.dart';
 
-import 'package:tfc/core/startup_url.dart';
 import 'package:tfc/models/menu_item.dart';
 import 'package:tfc/page_creator/assets/common.dart' show Asset;
 import 'package:tfc/page_creator/page.dart';
@@ -31,8 +30,7 @@ import 'package:tfc/route_registry.dart';
 import 'package:tfc/widgets/panes/standard_dialog.dart';
 
 /// Minimal in-memory [PreferencesApi]. Used twice over: once for the pages
-/// themselves, and once as this station's device-local store, which is where
-/// the startup URL lives.
+/// themselves, and once as this station's device-local store.
 class _FakePreferences implements PreferencesApi {
   final Map<String, Object> store = {};
 
@@ -115,8 +113,6 @@ Widget _buildEditor(PageManager manager, PreferencesApi localPrefs) {
   return ProviderScope(
     overrides: [
       pageManagerProvider.overrideWith((ref) async => manager),
-      // The startup page is device-local, not shared with the other stations
-      // on the same database, so it has its own store to assert against.
       localPreferencesProvider.overrideWithValue(localPrefs),
       databaseProvider.overrideWith((ref) async => null),
       alarmManProvider
@@ -277,29 +273,6 @@ void main() {
       expect(mgr.pages.containsKey('/weigher'), isFalse);
     });
 
-    testWidgets("takes this station's startup page with it", (tester) async {
-      sized(tester);
-      await localPrefs.setString(startupUrlPrefsKey, '/weigher');
-      final mgr = manager();
-      await tester.pumpWidget(_buildEditor(mgr, localPrefs));
-      await tester.pumpAndSettle();
-      await _openPagesDialog(tester);
-
-      await _openEditor(tester, 'Weigher');
-      await _typeName(tester, 'Scale');
-      await tester.tap(find.byKey(const ValueKey('page-address-change')));
-      await tester.pumpAndSettle();
-      // The warning names the startup page, because it is about to move.
-      expect(find.textContaining("startup page points here"), findsOneWidget);
-
-      await tester.tap(find.text('Update'));
-      await tester.pumpAndSettle();
-
-      expect(await readStartupUrl(localPrefs), '/scale',
-          reason: 'a moved page must take the startup setting with it, or '
-              'the station boots onto a route that no longer resolves');
-    });
-
     testWidgets('a refused address keeps the form open with the typing in it',
         (tester) async {
       sized(tester);
@@ -356,30 +329,6 @@ void main() {
       expect(message, contains('holds 1 page'));
       expect(message, contains('move to the top level'));
       expect(message, contains('Undo'));
-    });
-
-    testWidgets('resets the startup page when it was the one deleted',
-        (tester) async {
-      sized(tester);
-      await localPrefs.setString(startupUrlPrefsKey, '/weigher');
-      final mgr = PageManager(prefs: _FakePreferences(), pages: {
-        '/': _page('Home', '/', priority: 0),
-        '/weigher': _page('Weigher', '/weigher', priority: 1),
-      });
-      await tester.pumpWidget(_buildEditor(mgr, localPrefs));
-      await tester.pumpAndSettle();
-      await _openPagesDialog(tester);
-
-      await tester.tap(find.descendant(
-          of: _treeNode('Weigher'), matching: find.byIcon(Icons.delete)));
-      await tester.pumpAndSettle();
-      expect(_confirmMessage(tester), contains('This station starts on this'));
-
-      await tester.tap(find.text('Delete').last);
-      await tester.pumpAndSettle();
-
-      expect(await readStartupUrl(localPrefs), startupUrlDefault,
-          reason: 'a deleted startup page must not stay in the setting');
     });
 
     testWidgets("a section's landing page names that row, not its parent",

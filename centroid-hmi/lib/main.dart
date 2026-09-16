@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -15,7 +16,7 @@ import 'package:centroidx_upgrader/centroidx_upgrader.dart';
 import 'package:tfc/access_routes.dart';
 import 'package:tfc/core/last_route.dart';
 import 'package:tfc/core/runner_liveness.dart';
-import 'package:tfc/core/startup_url.dart';
+import 'package:tfc/core/home_page.dart';
 import 'package:tfc/core/update_channel.dart';
 import 'package:tfc/core/update_launch.dart';
 import 'package:tfc/route_registry.dart';
@@ -88,6 +89,7 @@ import 'package:tfc/widgets/panes/standard_dialog.dart';
 import 'marionette_init.dart';
 import 'navigation.dart';
 import 'package:tfc/providers/menu.dart';
+import 'package:tfc/providers/home_page.dart';
 import 'package:tfc/widgets/page_access_gate.dart';
 
 /// Enable with: --dart-define=MARIONETTE=true
@@ -436,32 +438,45 @@ Future<void> _startApp([bool debugMode = false]) async {
     pagePaths: pageManager.pages.keys,
   );
 
-  // Which page this station opens on, chosen per-station in the page
-  // editor's Pages dialog. Device-local — stations on one database front
-  // different equipment — and validated against the assembled menu so a
-  // startup page deleted or unpublished since it was picked falls back
-  // to '/'.
-  final storedStartupUrl = await readStartupUrl(prefs);
-  final startupPath = resolveStartupPath(
-    storedStartupUrl,
-    menuItems: topLevelMenuItems,
-  );
-  // One line that settles "why didn't it open on my page": whether the
-  // choice ever reached this device's store, and whether validation kept it.
-  logger.i(startupPath == storedStartupUrl
-      ? 'Startup page: $startupPath'
-      : 'Startup page: $storedStartupUrl is stored but no longer routable '
-          '— falling back to $startupPath');
+  // The router starts on Home. Where this panel actually opens is the home
+  // page of the account its session resolves to — the anonymous account, the
+  // panel's station account, or a restored person — and that needs the
+  // database, so `BaseScaffold` beams there once the session is known
+  // (`lib/providers/home_page.dart`).
+  const startupPath = homePageDefault;
 
   // A rebuilt engine -- the Windows runner recovering a lost render context,
   // which is a fresh isolate inside the same process -- returns the operator
-  // to the page they were on. A process start opens the startup page above.
+  // to the page they were on. A process start opens Home, and then the home
+  // page. A rebuild that resumed takes no boot navigation, even when the page
+  // it resumed is Home: the operator was there. One whose recorded page is
+  // gone opens like a start.
+  final lastRoute = await readLastRoute(prefs);
   final resumePath = resolveResumePath(
     epoch: _engineEpoch,
-    lastRoute: await readLastRoute(prefs),
+    lastRoute: lastRoute,
     startupPath: startupPath,
     isRoutable: locationBuilder.routes.containsKey,
   );
+  // The boot navigation to the session's home page, once it is known —
+  // see `bootHomePageOwed` for when it is not owed at all, and forgiven by
+  // the first touch anywhere on the screen.
+  final bootHomePage = BootHomePageDebt(
+    owed: bootHomePageOwed(
+      epoch: _engineEpoch,
+      lastRoute: lastRoute,
+      resumePath: resumePath,
+      platformRoute:
+          WidgetsBinding.instance.platformDispatcher.defaultRouteName,
+    ),
+  );
+  void forgiveBootHomePage(PointerEvent event) {
+    if (event is! PointerDownEvent) return;
+    bootHomePage.forgive();
+    GestureBinding.instance.pointerRouter
+        .removeGlobalRoute(forgiveBootHomePage);
+  }
+  GestureBinding.instance.pointerRouter.addGlobalRoute(forgiveBootHomePage);
   if (resumePath != startupPath) {
     logger.i('Resuming at $resumePath after an engine rebuild '
         '(${_engineEpoch.describe()})');
@@ -511,6 +526,7 @@ Future<void> _startApp([bool debugMode = false]) async {
       // is powered off or behind a cut link leaves the page blank for the ten
       // seconds the connection takes to give up.
       bootstrapPageManagerProvider.overrideWithValue(pageManager),
+      bootHomePageDebtProvider.overrideWithValue(bootHomePage),
       // How `menuTreeProvider` assembles the whole top-level menu. The
       // composition lives here in the shell because it knows the Advanced
       // entry list and the platform flags; the provider lives in the package
@@ -570,7 +586,7 @@ Future<void> _startApp([bool debugMode = false]) async {
         locationBuilder: locationBuilder,
         clearHistoryOn: topLevelPaths,
         initialPath: resumePath,
-        // Recorded for the next rebuild, device-locally, like the startup page.
+        // Recorded for the next rebuild, device-locally: where this panel was.
         onLocationChanged: (location) =>
             unawaited(writeLastRoute(prefs, location)),
       ),
@@ -1044,7 +1060,7 @@ class MyApp extends ConsumerWidget {
         // Beamer only swaps the incoming route for [initialPath] when that
         // route is exactly '/'. The eLinux embedder reports '' instead, so
         // without this normalization every station booted Home regardless
-        // of the chosen startup page. See normalizeInitialPlatformRoute.
+        // of the page it was asked to open. See normalizeInitialPlatformRoute.
         routeInformationProvider = PlatformRouteInformationProvider(
           initialRouteInformation: RouteInformation(
             uri: Uri.parse(normalizeInitialPlatformRoute(
