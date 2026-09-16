@@ -634,6 +634,83 @@ def cylinder_pneumatic():
     )
 
 
+# --- Material handling -----------------------------------------------------
+#
+# Drawn from above, the way the conveyor asset draws a wagon on rails: the
+# track runs left to right, the carriage rides it with a bumper sticking out
+# at each end, and the pallet stands across the rails on top of it.
+
+
+#: The pallet's footprint on the wagon. A EUR pallet is 1200 x 800, stood
+#: with its long side across the rails like the conveyor's transfer wagon.
+_PALLET = (340, 250, 660, 750)
+
+#: Clear space knocked out around each layer so the one underneath reads as
+#: a separate part instead of fusing into a blob at 24px.
+_GAP = 40
+
+
+def _wagon_on_rails():
+    """The track and carriage, cut clear of the pallet that stands on them."""
+    px0, py0, px1, py1 = _PALLET
+    chassis = box(206, 340, 794, 660, 30)
+    rails = merge(
+        box(60, 356, 940, 424),
+        box(60, 576, 940, 644),
+    )
+    rails = subtract(rails, box(206 - _GAP, 340 - _GAP, 794 + _GAP, 660 + _GAP))
+    chassis = subtract(
+        chassis, box(px0 - _GAP, py0 - _GAP, px1 + _GAP, py1 + _GAP)
+    )
+    return Ink().add(rails, chassis)
+
+
+def pallet_wagon():
+    """An empty pallet on a rail wagon: the deck boards run across the track.
+
+    Four boards over three cross boards -- one fewer than a EUR pallet, because
+    five do not survive 24px on a wagon this size.
+    """
+    px0, py0, px1, py1 = _PALLET
+    slot = 40
+    board = ((px1 - px0) - 3 * slot) / 4
+    cross = 64
+    mid = (py0 + py1) / 2
+    slots = []
+    for i in range(3):
+        x = px0 + (i + 1) * board + i * slot
+        slots.append(box(x, py0 + cross, x + slot, mid - cross / 2))
+        slots.append(box(x, mid + cross / 2, x + slot, py1 - cross))
+    deck = subtract(box(px0, py0, px1, py1, 20), merge(*slots))
+    return _wagon_on_rails().add(deck)
+
+
+def pallet_wagon_loaded():
+    """The same wagon with the pallet stacked: box tops seen from above.
+
+    The load stops short of the pallet's ends so the deck still shows under
+    it -- that strip of pallet is what tells this apart from a plain crate.
+    """
+    px0, py0, px1, py1 = _PALLET
+    seam = 40
+    lip = 70
+    top, bottom = py0 + lip + seam, py1 - lip - seam
+    rows = 2
+    row_h = ((bottom - top) - (rows - 1) * seam) / rows
+    col_w = ((px1 - px0) - seam) / 2
+    cartons = []
+    for r in range(rows):
+        y = top + r * (row_h + seam)
+        for c in range(2):
+            x = px0 + c * (col_w + seam)
+            cartons.append(box(x, y, x + col_w, y + row_h, 16))
+    ends = merge(
+        box(px0, py0, px1, py0 + lip, 20),
+        box(px0, py1 - lip, px1, py1, 20),
+    )
+    return _wagon_on_rails().add(ends, *cartons)
+
+
 # --- The catalogue ---------------------------------------------------------
 #
 # Order here is the order the glyphs are offered in the picker, and the code
@@ -649,6 +726,7 @@ GROUPS = [
     ("Motors & drives", 6),
     ("Pumps & fluid handling", 8),
     ("I/O & control", 12),
+    ("Material handling", 2),
 ]
 
 GLYPHS = [
@@ -691,6 +769,9 @@ GLYPHS = [
     ("light_curtain", light_curtain),
     ("terminal_block", terminal_block),
     ("cylinder_pneumatic", cylinder_pneumatic),
+    # Material handling
+    ("pallet_wagon", pallet_wagon),
+    ("pallet_wagon_loaded", pallet_wagon_loaded),
 ]
 
 
