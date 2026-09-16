@@ -191,7 +191,7 @@ void main() {
     });
   });
 
-  group('resolveStartupPath', () {
+  group('resolveHomePath', () {
     final menu = buildTopLevelMenuItems(
       isLinux: false,
       pageMenuItems: [
@@ -203,24 +203,24 @@ void main() {
     );
 
     test('the default stays the default', () {
-      expect(resolveStartupPath('/', menuItems: menu), '/');
+      expect(resolveHomePath('/', menuItems: menu), '/');
     });
 
     test('a routable page wins, nested pages included', () {
-      expect(resolveStartupPath('/lines/one', menuItems: menu), '/lines/one');
+      expect(resolveHomePath('/lines/one', menuItems: menu), '/lines/one');
     });
 
     test('a built-in destination wins', () {
-      expect(resolveStartupPath('/alarm-view', menuItems: menu), '/alarm-view');
+      expect(resolveHomePath('/alarm-view', menuItems: menu), '/alarm-view');
     });
 
     test('a deleted or unpublished page falls back to /', () {
-      expect(resolveStartupPath('/gone', menuItems: menu), '/');
+      expect(resolveHomePath('/gone', menuItems: menu), '/');
     });
 
     test('a section groups but does not route, so it falls back to /', () {
-      expect(resolveStartupPath('/lines', menuItems: menu), '/');
-      expect(resolveStartupPath('/advanced', menuItems: menu), '/');
+      expect(resolveHomePath('/lines', menuItems: menu), '/');
+      expect(resolveHomePath('/advanced', menuItems: menu), '/');
     });
   });
 

@@ -13,10 +13,10 @@
 ///  2. Beamer's `RoutesBeamLocation` stacks every sub-matching route, and `/`
 ///     sub-matches everything, so that stub is mounted *underneath every page
 ///     on the station* with its `State` alive for the life of the process.
-///  3. `BaseScaffold._returnToStartupPage` beams to `resolveStartupPath(...)`
-///     on every elevated-to-anonymous transition — a sign-out, or the
-///     fifteen-minute inactivity expiry. Nothing is stored in `startup_url` on
-///     this station, so that resolves to `/`.
+///  3. `BaseScaffold._returnHome` beams to `resolveHomePath(...)` on every
+///     elevated-to-anonymous transition — a sign-out, or the fifteen-minute
+///     inactivity expiry. The anonymous account on this station has no home
+///     page, so that resolves to `/`.
 ///  4. The stub's page is revealed rather than created: `initState` does not
 ///     run again. The one-shot redirect never fired, and the panel sat on
 ///     `Scaffold(body: SizedBox.shrink())` — white — until somebody restarted
@@ -32,6 +32,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/models/menu_item.dart';
 import 'package:tfc/providers/access.dart';
+import 'package:tfc/providers/home_page.dart';
 import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/route_registry.dart';
 import 'package:tfc/widgets/access_status_action.dart';
@@ -114,8 +115,8 @@ Future<(BeamerDelegate, _DrivenSession)> _boot(WidgetTester tester) async {
   final locationBuilder =
       createLocationBuilder(_pageMenuItems, pagePaths: _pagePaths);
 
-  // Nothing stored, exactly like the station: resolveStartupPath answers '/'.
-  final startupPath = resolveStartupPath('/', menuItems: topLevel);
+  // No home page, exactly like the station: resolveHomePath answers '/'.
+  final startupPath = resolveHomePath(null, menuItems: topLevel);
   expect(startupPath, '/');
 
   final topLevelPaths = <String>{
@@ -143,6 +144,8 @@ Future<(BeamerDelegate, _DrivenSession)> _boot(WidgetTester tester) async {
     overrides: [
       accessSessionProvider.overrideWith(() => session),
       localPreferencesProvider.overrideWithValue(_MemoryPrefs()),
+      homePageLookupProvider
+          .overrideWithValue((_) async => (known: true, page: null)),
     ],
     child: BeamerProvider(
       routerDelegate: delegate,
@@ -176,7 +179,7 @@ void main() {
     expect(delegate.configuration.uri.path, '/speedbatchers');
 
     // The sign-out / inactivity-expiry transition, through the real provider.
-    // BaseScaffold's listener beams to the resolved startup path.
+    // BaseScaffold's listener beams to the resolved home page.
     session.expire();
     await tester.pump();
     await tester.pump();

@@ -1,22 +1,29 @@
-/// The startup-URL boot seam, end to end: a stored URL resolved through
-/// [resolveStartupPath] and handed to a [BeamerDelegate] wired exactly the
-/// way `MyApp` wires it must actually be where the router lands on the
-/// first frame — including nested pages and built-ins, and whatever the
-/// platform reports as the initial route. Desktop embedders report `/`;
-/// the eLinux embedder reports `''`, which defeats Beamer's own
-/// `'/' -> initialPath` swap — the station bug behind #354 — so the router
-/// is wired through the same normalizing RouteInformationProvider MyApp
-/// uses, and every platform flavor is pinned here.
+/// The boot seam, end to end: where a starting panel actually lands.
+///
+/// The router starts on `/`, or on the recorded route after an engine rebuild
+/// ([resolveResumePath]). Then, once the session is known, `BaseScaffold`
+/// takes the boot navigation to the home page of the account it answers as —
+/// here the anonymous account — unless [bootHomePageOwed] says it is not owed.
+/// Everything below is wired the way `main()` and `MyApp` wire it, including
+/// whatever the platform reports as the initial route. Desktop embedders
+/// report `/`; the eLinux embedder reports `''`, which defeats Beamer's own
+/// `'/' -> initialPath` swap — the station bug behind #354 — so the router is
+/// wired through the same normalizing RouteInformationProvider MyApp uses, and
+/// every platform flavor is pinned here.
 library;
 
 import 'package:beamer/beamer.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:tfc/core/home_page.dart';
 import 'package:tfc/core/last_route.dart';
 import 'package:tfc/core/runner_liveness.dart';
 import 'package:tfc/models/menu_item.dart';
+import 'package:tfc/providers/access.dart';
+import 'package:tfc/providers/home_page.dart';
 import 'package:tfc/route_registry.dart';
+import 'package:tfc_access/tfc_access.dart';
 
 import 'package:centroidx/main.dart';
 import 'package:centroidx/navigation.dart';
@@ -33,19 +40,26 @@ final _pageMenuItems = <MenuItem>[
   ]),
 ];
 
-/// Boots a router the way `main()` does: stored URL -> resolveStartupPath
-/// against the assembled menu -> BeamerDelegate(initialPath), with the
-/// location builder built from the same menu items. Returns the delegate so
-/// the test can ask where the app actually ended up.
+class _Anonymous extends AccessSessionController {
+  @override
+  Future<AccessSession> build() async =>
+      AccessSession.anonymous(const {AccessGroup.operate});
+
+  @override
+  void poke() {}
+}
+
+/// Boots a router the way `main()` does, with [homePage] as the anonymous
+/// account's home page. Returns the delegate so the test can ask where the app
+/// actually ended up.
 Future<BeamerDelegate> _boot(
   WidgetTester tester,
-  String storedUrl, {
+  String? homePage, {
   // What the platform reports as the initial route: '/' on desktop
-  // embedders, '' on eLinux. The router must land on the stored page
-  // either way.
+  // embedders, '' on eLinux.
   String platformRoute = '/',
   // Which engine generation this is and where the previous one was, for
-  // the resume-after-rebuild seam main() adds on top of the startup URL.
+  // the resume-after-rebuild seam.
   EngineEpoch epoch = EngineEpoch.unknown,
   String? lastRoute,
 }) async {
@@ -66,17 +80,24 @@ Future<BeamerDelegate> _boot(
     _pageMenuItems,
     pagePaths: const ['/', '/line', '/halls', '/halls/packing'],
   );
-  final startupPath = resolveStartupPath(storedUrl, menuItems: topLevel);
   // Mirror main(): a rebuilt engine resumes the recorded route when it still
-  // routes; everything else opens the startup page.
+  // routes; everything else opens on Home.
   final initialPath = resolveResumePath(
     epoch: epoch,
     lastRoute: lastRoute,
-    startupPath: startupPath,
+    startupPath: homePageDefault,
     isRoutable: locationBuilder.routes.containsKey,
   );
+  final debt = BootHomePageDebt(
+    owed: bootHomePageOwed(
+      epoch: epoch,
+      lastRoute: lastRoute,
+      resumePath: initialPath,
+      platformRoute: platformRoute,
+    ),
+  );
   // Mirror main(): the top-level destinations clear beaming history, the
-  // Advanced section excluded — a nested startup page lives UNDER one of
+  // Advanced section excluded — a nested home page lives UNDER one of
   // these, so the set must not swallow it.
   final topLevelPaths = <String>{
     '/',
@@ -99,43 +120,51 @@ Future<BeamerDelegate> _boot(
   );
   addTearDown(routeInformationProvider.dispose);
   await tester.pumpWidget(ProviderScope(
+    overrides: [
+      accessSessionProvider.overrideWith(_Anonymous.new),
+      homePageLookupProvider
+          .overrideWithValue((_) async => (known: true, page: homePage)),
+      bootHomePageDebtProvider.overrideWithValue(debt),
+    ],
     child: MaterialApp.router(
       routerDelegate: delegate,
       routeInformationParser: BeamerParser(),
       routeInformationProvider: routeInformationProvider,
     ),
   ));
-  await tester.pump();
+  for (var i = 0; i < 5; i++) {
+    await tester.pump();
+  }
   return delegate;
 }
 
 void main() {
-  testWidgets('a stored top-level page is where the app boots', (tester) async {
+  testWidgets('a top-level home page is where the app opens', (tester) async {
     final delegate = await _boot(tester, '/line');
     expect(delegate.configuration.uri.path, '/line');
   });
 
-  testWidgets('a stored nested page is where the app boots', (tester) async {
+  testWidgets('a nested home page is where the app opens', (tester) async {
     final delegate = await _boot(tester, '/halls/packing');
     expect(delegate.configuration.uri.path, '/halls/packing');
   });
 
-  testWidgets('a stored built-in destination is where the app boots', (tester) async {
+  testWidgets('a built-in destination as home page is where the app opens', (tester) async {
     final delegate = await _boot(tester, '/alarm-view');
     expect(delegate.configuration.uri.path, '/alarm-view');
   });
 
-  testWidgets('nothing stored boots on /', (tester) async {
-    final delegate = await _boot(tester, '/');
+  testWidgets('no home page opens on /', (tester) async {
+    final delegate = await _boot(tester, null);
     expect(delegate.configuration.uri.path, '/');
   });
 
-  testWidgets('a page deleted since it was chosen falls back to /', (tester) async {
+  testWidgets('a home page deleted since it was chosen falls back to /', (tester) async {
     final delegate = await _boot(tester, '/gone');
     expect(delegate.configuration.uri.path, '/');
   });
 
-  testWidgets('eLinux: an empty platform route still boots the stored page', (tester) async {
+  testWidgets('eLinux: an empty platform route still opens the home page', (tester) async {
     final delegate = await _boot(tester, '/halls/packing', platformRoute: '');
     expect(delegate.configuration.uri.path, '/halls/packing');
   });
@@ -145,19 +174,19 @@ void main() {
     expect(delegate.configuration.uri.path, '/halls/packing');
   });
 
-  testWidgets('a real deep link from the platform wins over the stored page', (tester) async {
+  testWidgets('a real deep link from the platform wins over the home page', (tester) async {
     final delegate = await _boot(tester, '/halls/packing', platformRoute: '/line');
     expect(delegate.configuration.uri.path, '/line');
   });
 
-  testWidgets('eLinux: an empty platform route with nothing stored boots /', (tester) async {
-    final delegate = await _boot(tester, '/', platformRoute: '');
+  testWidgets('eLinux: an empty platform route with no home page opens /', (tester) async {
+    final delegate = await _boot(tester, null, platformRoute: '');
     expect(delegate.configuration.uri.path, '/');
   });
 
   // The Windows runner rebuilds the engine to recover a lost render context;
   // the new isolate is told its generation and puts the operator back where
-  // they were instead of on the startup page.
+  // they were instead of on the home page.
   const rebuilt = EngineEpoch(epoch: 2, reason: 'session change: remote connect');
 
   testWidgets('a rebuilt engine resumes the page the operator was on', (tester) async {
@@ -166,8 +195,13 @@ void main() {
   });
 
   testWidgets('a rebuilt engine resumes a built-in destination', (tester) async {
-    final delegate = await _boot(tester, '/', epoch: rebuilt, lastRoute: '/alarm-view');
+    final delegate = await _boot(tester, null, epoch: rebuilt, lastRoute: '/alarm-view');
     expect(delegate.configuration.uri.path, '/alarm-view');
+  });
+
+  testWidgets('a rebuilt engine that was on Home stays on Home', (tester) async {
+    final delegate = await _boot(tester, '/line', epoch: rebuilt, lastRoute: '/');
+    expect(delegate.configuration.uri.path, '/');
   });
 
   testWidgets('a process start ignores the recorded route', (tester) async {
@@ -176,13 +210,13 @@ void main() {
     expect(delegate.configuration.uri.path, '/line');
   });
 
-  testWidgets('a rebuilt engine whose recorded page is gone opens the startup page', (tester) async {
+  testWidgets('a rebuilt engine whose recorded page is gone opens the home page', (tester) async {
     final delegate = await _boot(tester, '/line', epoch: rebuilt, lastRoute: '/gone');
     expect(delegate.configuration.uri.path, '/line');
   });
 
   testWidgets('eLinux-style empty platform route still resumes after a rebuild', (tester) async {
-    final delegate = await _boot(tester, '/', platformRoute: '', epoch: rebuilt, lastRoute: '/halls/packing');
+    final delegate = await _boot(tester, null, platformRoute: '', epoch: rebuilt, lastRoute: '/halls/packing');
     expect(delegate.configuration.uri.path, '/halls/packing');
   });
 }

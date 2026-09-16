@@ -6976,6 +6976,12 @@ class $AppUserTable extends AppUser with TableInfo<$AppUserTable, AppUserData> {
   late final GeneratedColumn<int> sortOrder = GeneratedColumn<int>(
       'sort_order', aliasedName, true,
       type: DriftSqlType.int, requiredDuringInsert: false);
+  static const VerificationMeta _homePageMeta =
+      const VerificationMeta('homePage');
+  @override
+  late final GeneratedColumn<String> homePage = GeneratedColumn<String>(
+      'home_page', aliasedName, true,
+      type: DriftSqlType.string, requiredDuringInsert: false);
   @override
   List<GeneratedColumn> get $columns => [
         username,
@@ -6988,7 +6994,8 @@ class $AppUserTable extends AppUser with TableInfo<$AppUserTable, AppUserData> {
         stationAccount,
         allowedPages,
         inactivityTimeoutMinutes,
-        sortOrder
+        sortOrder,
+        homePage
       ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -7067,6 +7074,10 @@ class $AppUserTable extends AppUser with TableInfo<$AppUserTable, AppUserData> {
       context.handle(_sortOrderMeta,
           sortOrder.isAcceptableOrUnknown(data['sort_order']!, _sortOrderMeta));
     }
+    if (data.containsKey('home_page')) {
+      context.handle(_homePageMeta,
+          homePage.isAcceptableOrUnknown(data['home_page']!, _homePageMeta));
+    }
     return context;
   }
 
@@ -7099,6 +7110,8 @@ class $AppUserTable extends AppUser with TableInfo<$AppUserTable, AppUserData> {
           data['${effectivePrefix}inactivity_timeout_minutes']),
       sortOrder: attachedDatabase.typeMapping
           .read(DriftSqlType.int, data['${effectivePrefix}sort_order']),
+      homePage: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}home_page']),
     );
   }
 
@@ -7199,6 +7212,24 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
   /// Display order only, added on open with no schema version — see
   /// [AppRole.sortOrder].
   final int? sortOrder;
+
+  /// The page this account's sessions open on, as a route path such as
+  /// `/pages/packing`, or NULL for Home (`/`).
+  ///
+  /// Per account rather than per station: the page somebody works from is
+  /// theirs wherever they sign in. The reserved anonymous account's value is
+  /// where every logged-out panel opens, and a station account's is where
+  /// that panel opens — which is how two panels fronting different equipment
+  /// still open on different pages.
+  ///
+  /// Never validated against the pages here. A path that names no routable
+  /// page — renamed, deleted, unpublished, or not synced to this station yet —
+  /// falls back to Home where it is read (`resolveHomePath`), so a stale value
+  /// costs a landing page, never a boot.
+  ///
+  /// Added on open by `_ensureHomePageColumn` rather than by a schema arm, for
+  /// the reason [sortOrder] gives: every existing row is correct as NULL.
+  final String? homePage;
   const AppUserData(
       {required this.username,
       required this.roleName,
@@ -7210,7 +7241,8 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
       required this.stationAccount,
       this.allowedPages,
       this.inactivityTimeoutMinutes,
-      this.sortOrder});
+      this.sortOrder,
+      this.homePage});
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
     final map = <String, Expression>{};
@@ -7235,6 +7267,9 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
     }
     if (!nullToAbsent || sortOrder != null) {
       map['sort_order'] = Variable<int>(sortOrder);
+    }
+    if (!nullToAbsent || homePage != null) {
+      map['home_page'] = Variable<String>(homePage);
     }
     return map;
   }
@@ -7262,6 +7297,9 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
       sortOrder: sortOrder == null && nullToAbsent
           ? const Value.absent()
           : Value(sortOrder),
+      homePage: homePage == null && nullToAbsent
+          ? const Value.absent()
+          : Value(homePage),
     );
   }
 
@@ -7281,6 +7319,7 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
       inactivityTimeoutMinutes:
           serializer.fromJson<int?>(json['inactivityTimeoutMinutes']),
       sortOrder: serializer.fromJson<int?>(json['sortOrder']),
+      homePage: serializer.fromJson<String?>(json['homePage']),
     );
   }
   @override
@@ -7299,6 +7338,7 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
       'inactivityTimeoutMinutes':
           serializer.toJson<int?>(inactivityTimeoutMinutes),
       'sortOrder': serializer.toJson<int?>(sortOrder),
+      'homePage': serializer.toJson<String?>(homePage),
     };
   }
 
@@ -7313,7 +7353,8 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
           bool? stationAccount,
           Value<String?> allowedPages = const Value.absent(),
           Value<int?> inactivityTimeoutMinutes = const Value.absent(),
-          Value<int?> sortOrder = const Value.absent()}) =>
+          Value<int?> sortOrder = const Value.absent(),
+          Value<String?> homePage = const Value.absent()}) =>
       AppUserData(
         username: username ?? this.username,
         roleName: roleName ?? this.roleName,
@@ -7331,6 +7372,7 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
             ? inactivityTimeoutMinutes.value
             : this.inactivityTimeoutMinutes,
         sortOrder: sortOrder.present ? sortOrder.value : this.sortOrder,
+        homePage: homePage.present ? homePage.value : this.homePage,
       );
   AppUserData copyWithCompanion(AppUserCompanion data) {
     return AppUserData(
@@ -7356,6 +7398,7 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
           ? data.inactivityTimeoutMinutes.value
           : this.inactivityTimeoutMinutes,
       sortOrder: data.sortOrder.present ? data.sortOrder.value : this.sortOrder,
+      homePage: data.homePage.present ? data.homePage.value : this.homePage,
     );
   }
 
@@ -7372,7 +7415,8 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
           ..write('stationAccount: $stationAccount, ')
           ..write('allowedPages: $allowedPages, ')
           ..write('inactivityTimeoutMinutes: $inactivityTimeoutMinutes, ')
-          ..write('sortOrder: $sortOrder')
+          ..write('sortOrder: $sortOrder, ')
+          ..write('homePage: $homePage')
           ..write(')'))
         .toString();
   }
@@ -7389,7 +7433,8 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
       stationAccount,
       allowedPages,
       inactivityTimeoutMinutes,
-      sortOrder);
+      sortOrder,
+      homePage);
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
@@ -7404,7 +7449,8 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
           other.stationAccount == this.stationAccount &&
           other.allowedPages == this.allowedPages &&
           other.inactivityTimeoutMinutes == this.inactivityTimeoutMinutes &&
-          other.sortOrder == this.sortOrder);
+          other.sortOrder == this.sortOrder &&
+          other.homePage == this.homePage);
 }
 
 class AppUserCompanion extends UpdateCompanion<AppUserData> {
@@ -7419,6 +7465,7 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
   final Value<String?> allowedPages;
   final Value<int?> inactivityTimeoutMinutes;
   final Value<int?> sortOrder;
+  final Value<String?> homePage;
   final Value<int> rowid;
   const AppUserCompanion({
     this.username = const Value.absent(),
@@ -7432,6 +7479,7 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
     this.allowedPages = const Value.absent(),
     this.inactivityTimeoutMinutes = const Value.absent(),
     this.sortOrder = const Value.absent(),
+    this.homePage = const Value.absent(),
     this.rowid = const Value.absent(),
   });
   AppUserCompanion.insert({
@@ -7446,6 +7494,7 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
     this.allowedPages = const Value.absent(),
     this.inactivityTimeoutMinutes = const Value.absent(),
     this.sortOrder = const Value.absent(),
+    this.homePage = const Value.absent(),
     this.rowid = const Value.absent(),
   })  : username = Value(username),
         roleName = Value(roleName),
@@ -7464,6 +7513,7 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
     Expression<String>? allowedPages,
     Expression<int>? inactivityTimeoutMinutes,
     Expression<int>? sortOrder,
+    Expression<String>? homePage,
     Expression<int>? rowid,
   }) {
     return RawValuesInsertable({
@@ -7479,6 +7529,7 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
       if (inactivityTimeoutMinutes != null)
         'inactivity_timeout_minutes': inactivityTimeoutMinutes,
       if (sortOrder != null) 'sort_order': sortOrder,
+      if (homePage != null) 'home_page': homePage,
       if (rowid != null) 'rowid': rowid,
     });
   }
@@ -7495,6 +7546,7 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
       Value<String?>? allowedPages,
       Value<int?>? inactivityTimeoutMinutes,
       Value<int?>? sortOrder,
+      Value<String?>? homePage,
       Value<int>? rowid}) {
     return AppUserCompanion(
       username: username ?? this.username,
@@ -7509,6 +7561,7 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
       inactivityTimeoutMinutes:
           inactivityTimeoutMinutes ?? this.inactivityTimeoutMinutes,
       sortOrder: sortOrder ?? this.sortOrder,
+      homePage: homePage ?? this.homePage,
       rowid: rowid ?? this.rowid,
     );
   }
@@ -7550,6 +7603,9 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
     if (sortOrder.present) {
       map['sort_order'] = Variable<int>(sortOrder.value);
     }
+    if (homePage.present) {
+      map['home_page'] = Variable<String>(homePage.value);
+    }
     if (rowid.present) {
       map['rowid'] = Variable<int>(rowid.value);
     }
@@ -7570,6 +7626,7 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
           ..write('allowedPages: $allowedPages, ')
           ..write('inactivityTimeoutMinutes: $inactivityTimeoutMinutes, ')
           ..write('sortOrder: $sortOrder, ')
+          ..write('homePage: $homePage, ')
           ..write('rowid: $rowid')
           ..write(')'))
         .toString();
@@ -8974,14 +9031,15 @@ class ConfigItemRow extends DataClass implements Insertable<ConfigItemRow> {
   /// The entity's own id, unique within its kind and scope.
   final String id;
 
-  /// `'shared'` or `'station:<hostname>'`, and the column that carries
+  /// `'shared'` or `'station:local'` (`'station:<hostname>'` in files written
+  /// before the scope was fixed, adopted at boot), and the column that carries
   /// ownership: shared rows are Postgres-owned, station rows never leave the
   /// machine that wrote them. On Postgres a `CHECK` makes that structural —
-  /// see the `from < 7` arm. Here it deliberately does not, because station
+  /// see the `from < 10` arm. Here it deliberately does not, because station
   /// rows are the only rows a local SQLite file will ever hold.
   final String scope;
 
-  /// The entity this one belongs to — an asset's page path — or null when the
+  /// The entity this one belongs to — an asset's page id — or null when the
   /// kind has no parent. **No `REFERENCES`**, deliberately: see
   /// `ConfigItem.parentId`'s doc. An asset outlives its page during a move,
   /// and a constraint would turn a reorder into a delete and re-insert that
@@ -10059,7 +10117,8 @@ final class $$AlarmTableReferences
   static MultiTypedResultKey<$AlarmHistoryTable, List<AlarmHistoryData>>
       _alarmHistoryRefsTable(_$AppDatabase db) =>
           MultiTypedResultKey.fromTable(db.alarmHistory,
-              aliasName: 'alarm__uid__alarm_history__alarm_uid');
+              aliasName:
+                  $_aliasNameGenerator(db.alarm.uid, db.alarmHistory.alarmUid));
 
   $$AlarmHistoryTableProcessedTableManager get alarmHistoryRefs {
     final manager = $$AlarmHistoryTableTableManager($_db, $_db.alarmHistory)
@@ -10317,8 +10376,8 @@ final class $$AlarmHistoryTableReferences extends BaseReferences<_$AppDatabase,
     $AlarmHistoryTable, AlarmHistoryData> {
   $$AlarmHistoryTableReferences(super.$_db, super.$_table, super.$_typedResult);
 
-  static $AlarmTable _alarmUidTable(_$AppDatabase db) =>
-      db.alarm.createAlias('alarm_history__alarm_uid__alarm__uid');
+  static $AlarmTable _alarmUidTable(_$AppDatabase db) => db.alarm.createAlias(
+      $_aliasNameGenerator(db.alarmHistory.alarmUid, db.alarm.uid));
 
   $$AlarmTableProcessedTableManager get alarmUid {
     final $_column = $_itemColumn<String>('alarm_uid')!;
@@ -10814,7 +10873,8 @@ final class $$HistoryViewTableReferences
   static MultiTypedResultKey<$HistoryViewKeyTable, List<HistoryViewKeyData>>
       _historyViewKeyRefsTable(_$AppDatabase db) =>
           MultiTypedResultKey.fromTable(db.historyViewKey,
-              aliasName: 'history_view__id__history_view_key__view_id');
+              aliasName: $_aliasNameGenerator(
+                  db.historyView.id, db.historyViewKey.viewId));
 
   $$HistoryViewKeyTableProcessedTableManager get historyViewKeyRefs {
     final manager = $$HistoryViewKeyTableTableManager($_db, $_db.historyViewKey)
@@ -10828,7 +10888,8 @@ final class $$HistoryViewTableReferences
   static MultiTypedResultKey<$HistoryViewGraphTable, List<HistoryViewGraphData>>
       _historyViewGraphRefsTable(_$AppDatabase db) =>
           MultiTypedResultKey.fromTable(db.historyViewGraph,
-              aliasName: 'history_view__id__history_view_graph__view_id');
+              aliasName: $_aliasNameGenerator(
+                  db.historyView.id, db.historyViewGraph.viewId));
 
   $$HistoryViewGraphTableProcessedTableManager get historyViewGraphRefs {
     final manager =
@@ -10845,7 +10906,8 @@ final class $$HistoryViewTableReferences
       List<HistoryViewPeriodData>> _historyViewPeriodRefsTable(
           _$AppDatabase db) =>
       MultiTypedResultKey.fromTable(db.historyViewPeriod,
-          aliasName: 'history_view__id__history_view_period__view_id');
+          aliasName: $_aliasNameGenerator(
+              db.historyView.id, db.historyViewPeriod.viewId));
 
   $$HistoryViewPeriodTableProcessedTableManager get historyViewPeriodRefs {
     final manager =
@@ -11207,7 +11269,8 @@ final class $$HistoryViewKeyTableReferences extends BaseReferences<
       super.$_db, super.$_table, super.$_typedResult);
 
   static $HistoryViewTable _viewIdTable(_$AppDatabase db) =>
-      db.historyView.createAlias('history_view_key__view_id__history_view__id');
+      db.historyView.createAlias(
+          $_aliasNameGenerator(db.historyViewKey.viewId, db.historyView.id));
 
   $$HistoryViewTableProcessedTableManager get viewId {
     final $_column = $_itemColumn<int>('view_id')!;
@@ -11493,8 +11556,9 @@ final class $$HistoryViewGraphTableReferences extends BaseReferences<
   $$HistoryViewGraphTableReferences(
       super.$_db, super.$_table, super.$_typedResult);
 
-  static $HistoryViewTable _viewIdTable(_$AppDatabase db) => db.historyView
-      .createAlias('history_view_graph__view_id__history_view__id');
+  static $HistoryViewTable _viewIdTable(_$AppDatabase db) =>
+      db.historyView.createAlias(
+          $_aliasNameGenerator(db.historyViewGraph.viewId, db.historyView.id));
 
   $$HistoryViewTableProcessedTableManager get viewId {
     final $_column = $_itemColumn<int>('view_id')!;
@@ -11778,8 +11842,9 @@ final class $$HistoryViewPeriodTableReferences extends BaseReferences<
   $$HistoryViewPeriodTableReferences(
       super.$_db, super.$_table, super.$_typedResult);
 
-  static $HistoryViewTable _viewIdTable(_$AppDatabase db) => db.historyView
-      .createAlias('history_view_period__view_id__history_view__id');
+  static $HistoryViewTable _viewIdTable(_$AppDatabase db) =>
+      db.historyView.createAlias(
+          $_aliasNameGenerator(db.historyViewPeriod.viewId, db.historyView.id));
 
   $$HistoryViewTableProcessedTableManager get viewId {
     final $_column = $_itemColumn<int>('view_id')!;
@@ -12298,7 +12363,8 @@ final class $$PlcCodeBlockTableTableReferences extends BaseReferences<
   static MultiTypedResultKey<$PlcVariableTableTable, List<PlcVariableTableData>>
       _plcVariableTableRefsTable(_$AppDatabase db) =>
           MultiTypedResultKey.fromTable(db.plcVariableTable,
-              aliasName: 'plc_code_block__id__plc_variable__block_id');
+              aliasName: $_aliasNameGenerator(
+                  db.plcCodeBlockTable.id, db.plcVariableTable.blockId));
 
   $$PlcVariableTableTableProcessedTableManager get plcVariableTableRefs {
     final manager =
@@ -12314,7 +12380,8 @@ final class $$PlcCodeBlockTableTableReferences extends BaseReferences<
   static MultiTypedResultKey<$PlcVarRefTableTable, List<PlcVarRefTableData>>
       _plcVarRefTableRefsTable(_$AppDatabase db) =>
           MultiTypedResultKey.fromTable(db.plcVarRefTable,
-              aliasName: 'plc_code_block__id__plc_var_ref__block_id');
+              aliasName: $_aliasNameGenerator(
+                  db.plcCodeBlockTable.id, db.plcVarRefTable.blockId));
 
   $$PlcVarRefTableTableProcessedTableManager get plcVarRefTableRefs {
     final manager = $$PlcVarRefTableTableTableManager($_db, $_db.plcVarRefTable)
@@ -12329,7 +12396,8 @@ final class $$PlcCodeBlockTableTableReferences extends BaseReferences<
       List<PlcFbInstanceTableData>> _plcFbInstanceTableRefsTable(
           _$AppDatabase db) =>
       MultiTypedResultKey.fromTable(db.plcFbInstanceTable,
-          aliasName: 'plc_code_block__id__plc_fb_instance__declaring_block_id');
+          aliasName: $_aliasNameGenerator(
+              db.plcCodeBlockTable.id, db.plcFbInstanceTable.declaringBlockId));
 
   $$PlcFbInstanceTableTableProcessedTableManager get plcFbInstanceTableRefs {
     final manager = $$PlcFbInstanceTableTableTableManager(
@@ -12347,7 +12415,8 @@ final class $$PlcCodeBlockTableTableReferences extends BaseReferences<
       List<PlcBlockCallTableData>> _plcBlockCallTableRefsTable(
           _$AppDatabase db) =>
       MultiTypedResultKey.fromTable(db.plcBlockCallTable,
-          aliasName: 'plc_code_block__id__plc_block_call__caller_block_id');
+          aliasName: $_aliasNameGenerator(
+              db.plcCodeBlockTable.id, db.plcBlockCallTable.callerBlockId));
 
   $$PlcBlockCallTableTableProcessedTableManager get plcBlockCallTableRefs {
     final manager = $$PlcBlockCallTableTableTableManager(
@@ -12880,8 +12949,8 @@ final class $$PlcVariableTableTableReferences extends BaseReferences<
       super.$_db, super.$_table, super.$_typedResult);
 
   static $PlcCodeBlockTableTable _blockIdTable(_$AppDatabase db) =>
-      db.plcCodeBlockTable
-          .createAlias('plc_variable__block_id__plc_code_block__id');
+      db.plcCodeBlockTable.createAlias($_aliasNameGenerator(
+          db.plcVariableTable.blockId, db.plcCodeBlockTable.id));
 
   $$PlcCodeBlockTableTableProcessedTableManager get blockId {
     final $_column = $_itemColumn<int>('block_id')!;
@@ -13188,7 +13257,8 @@ final class $$DrawingTableTableReferences extends BaseReferences<_$AppDatabase,
       List<DrawingComponentTableData>> _drawingComponentTableRefsTable(
           _$AppDatabase db) =>
       MultiTypedResultKey.fromTable(db.drawingComponentTable,
-          aliasName: 'drawing__id__drawing_component__drawing_id');
+          aliasName: $_aliasNameGenerator(
+              db.drawingTable.id, db.drawingComponentTable.drawingId));
 
   $$DrawingComponentTableTableProcessedTableManager
       get drawingComponentTableRefs {
@@ -13468,7 +13538,8 @@ final class $$DrawingComponentTableTableReferences extends BaseReferences<
       super.$_db, super.$_table, super.$_typedResult);
 
   static $DrawingTableTable _drawingIdTable(_$AppDatabase db) =>
-      db.drawingTable.createAlias('drawing_component__drawing_id__drawing__id');
+      db.drawingTable.createAlias($_aliasNameGenerator(
+          db.drawingComponentTable.drawingId, db.drawingTable.id));
 
   $$DrawingTableTableProcessedTableManager get drawingId {
     final $_column = $_itemColumn<int>('drawing_id')!;
@@ -13735,7 +13806,8 @@ final class $$TechDocTableTableReferences extends BaseReferences<_$AppDatabase,
       List<TechDocSectionTableData>> _techDocSectionTableRefsTable(
           _$AppDatabase db) =>
       MultiTypedResultKey.fromTable(db.techDocSectionTable,
-          aliasName: 'tech_doc__id__tech_doc_section__doc_id');
+          aliasName: $_aliasNameGenerator(
+              db.techDocTable.id, db.techDocSectionTable.docId));
 
   $$TechDocSectionTableTableProcessedTableManager get techDocSectionTableRefs {
     final manager =
@@ -14010,7 +14082,8 @@ final class $$TechDocSectionTableTableReferences extends BaseReferences<
       super.$_db, super.$_table, super.$_typedResult);
 
   static $TechDocTableTable _docIdTable(_$AppDatabase db) =>
-      db.techDocTable.createAlias('tech_doc_section__doc_id__tech_doc__id');
+      db.techDocTable.createAlias($_aliasNameGenerator(
+          db.techDocSectionTable.docId, db.techDocTable.id));
 
   $$TechDocTableTableProcessedTableManager get docId {
     final $_column = $_itemColumn<int>('doc_id')!;
@@ -14538,8 +14611,8 @@ final class $$PlcVarRefTableTableReferences extends BaseReferences<
       super.$_db, super.$_table, super.$_typedResult);
 
   static $PlcCodeBlockTableTable _blockIdTable(_$AppDatabase db) =>
-      db.plcCodeBlockTable
-          .createAlias('plc_var_ref__block_id__plc_code_block__id');
+      db.plcCodeBlockTable.createAlias($_aliasNameGenerator(
+          db.plcVarRefTable.blockId, db.plcCodeBlockTable.id));
 
   $$PlcCodeBlockTableTableProcessedTableManager get blockId {
     final $_column = $_itemColumn<int>('block_id')!;
@@ -14822,9 +14895,9 @@ final class $$PlcFbInstanceTableTableReferences extends BaseReferences<
   $$PlcFbInstanceTableTableReferences(
       super.$_db, super.$_table, super.$_typedResult);
 
-  static $PlcCodeBlockTableTable _declaringBlockIdTable(_$AppDatabase db) => db
-      .plcCodeBlockTable
-      .createAlias('plc_fb_instance__declaring_block_id__plc_code_block__id');
+  static $PlcCodeBlockTableTable _declaringBlockIdTable(_$AppDatabase db) =>
+      db.plcCodeBlockTable.createAlias($_aliasNameGenerator(
+          db.plcFbInstanceTable.declaringBlockId, db.plcCodeBlockTable.id));
 
   $$PlcCodeBlockTableTableProcessedTableManager get declaringBlockId {
     final $_column = $_itemColumn<int>('declaring_block_id')!;
@@ -15084,8 +15157,8 @@ final class $$PlcBlockCallTableTableReferences extends BaseReferences<
       super.$_db, super.$_table, super.$_typedResult);
 
   static $PlcCodeBlockTableTable _callerBlockIdTable(_$AppDatabase db) =>
-      db.plcCodeBlockTable
-          .createAlias('plc_block_call__caller_block_id__plc_code_block__id');
+      db.plcCodeBlockTable.createAlias($_aliasNameGenerator(
+          db.plcBlockCallTable.callerBlockId, db.plcCodeBlockTable.id));
 
   $$PlcCodeBlockTableTableProcessedTableManager get callerBlockId {
     final $_column = $_itemColumn<int>('caller_block_id')!;
@@ -15349,7 +15422,8 @@ final class $$AppRoleTableReferences
   static MultiTypedResultKey<$AppUserTable, List<AppUserData>>
       _appUserRefsTable(_$AppDatabase db) =>
           MultiTypedResultKey.fromTable(db.appUser,
-              aliasName: 'app_role__name__app_user__role_name');
+              aliasName:
+                  $_aliasNameGenerator(db.appRole.name, db.appUser.roleName));
 
   $$AppUserTableProcessedTableManager get appUserRefs {
     final manager = $$AppUserTableTableManager($_db, $_db.appUser).filter(
@@ -15587,6 +15661,7 @@ typedef $$AppUserTableCreateCompanionBuilder = AppUserCompanion Function({
   Value<String?> allowedPages,
   Value<int?> inactivityTimeoutMinutes,
   Value<int?> sortOrder,
+  Value<String?> homePage,
   Value<int> rowid,
 });
 typedef $$AppUserTableUpdateCompanionBuilder = AppUserCompanion Function({
@@ -15601,6 +15676,7 @@ typedef $$AppUserTableUpdateCompanionBuilder = AppUserCompanion Function({
   Value<String?> allowedPages,
   Value<int?> inactivityTimeoutMinutes,
   Value<int?> sortOrder,
+  Value<String?> homePage,
   Value<int> rowid,
 });
 
@@ -15608,8 +15684,8 @@ final class $$AppUserTableReferences
     extends BaseReferences<_$AppDatabase, $AppUserTable, AppUserData> {
   $$AppUserTableReferences(super.$_db, super.$_table, super.$_typedResult);
 
-  static $AppRoleTable _roleNameTable(_$AppDatabase db) =>
-      db.appRole.createAlias('app_user__role_name__app_role__name');
+  static $AppRoleTable _roleNameTable(_$AppDatabase db) => db.appRole
+      .createAlias($_aliasNameGenerator(db.appUser.roleName, db.appRole.name));
 
   $$AppRoleTableProcessedTableManager get roleName {
     final $_column = $_itemColumn<String>('role_name')!;
@@ -15664,6 +15740,9 @@ class $$AppUserTableFilterComposer
 
   ColumnFilters<int> get sortOrder => $composableBuilder(
       column: $table.sortOrder, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get homePage => $composableBuilder(
+      column: $table.homePage, builder: (column) => ColumnFilters(column));
 
   $$AppRoleTableFilterComposer get roleName {
     final $$AppRoleTableFilterComposer composer = $composerBuilder(
@@ -15730,6 +15809,9 @@ class $$AppUserTableOrderingComposer
   ColumnOrderings<int> get sortOrder => $composableBuilder(
       column: $table.sortOrder, builder: (column) => ColumnOrderings(column));
 
+  ColumnOrderings<String> get homePage => $composableBuilder(
+      column: $table.homePage, builder: (column) => ColumnOrderings(column));
+
   $$AppRoleTableOrderingComposer get roleName {
     final $$AppRoleTableOrderingComposer composer = $composerBuilder(
         composer: this,
@@ -15790,6 +15872,9 @@ class $$AppUserTableAnnotationComposer
   GeneratedColumn<int> get sortOrder =>
       $composableBuilder(column: $table.sortOrder, builder: (column) => column);
 
+  GeneratedColumn<String> get homePage =>
+      $composableBuilder(column: $table.homePage, builder: (column) => column);
+
   $$AppRoleTableAnnotationComposer get roleName {
     final $$AppRoleTableAnnotationComposer composer = $composerBuilder(
         composer: this,
@@ -15845,6 +15930,7 @@ class $$AppUserTableTableManager extends RootTableManager<
             Value<String?> allowedPages = const Value.absent(),
             Value<int?> inactivityTimeoutMinutes = const Value.absent(),
             Value<int?> sortOrder = const Value.absent(),
+            Value<String?> homePage = const Value.absent(),
             Value<int> rowid = const Value.absent(),
           }) =>
               AppUserCompanion(
@@ -15859,6 +15945,7 @@ class $$AppUserTableTableManager extends RootTableManager<
             allowedPages: allowedPages,
             inactivityTimeoutMinutes: inactivityTimeoutMinutes,
             sortOrder: sortOrder,
+            homePage: homePage,
             rowid: rowid,
           ),
           createCompanionCallback: ({
@@ -15873,6 +15960,7 @@ class $$AppUserTableTableManager extends RootTableManager<
             Value<String?> allowedPages = const Value.absent(),
             Value<int?> inactivityTimeoutMinutes = const Value.absent(),
             Value<int?> sortOrder = const Value.absent(),
+            Value<String?> homePage = const Value.absent(),
             Value<int> rowid = const Value.absent(),
           }) =>
               AppUserCompanion.insert(
@@ -15887,6 +15975,7 @@ class $$AppUserTableTableManager extends RootTableManager<
             allowedPages: allowedPages,
             inactivityTimeoutMinutes: inactivityTimeoutMinutes,
             sortOrder: sortOrder,
+            homePage: homePage,
             rowid: rowid,
           ),
           withReferenceMapper: (p0) => p0

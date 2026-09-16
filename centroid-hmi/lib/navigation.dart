@@ -8,8 +8,11 @@ import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 
 import 'package:tfc/core/feature_flags.dart';
+import 'package:tfc/core/home_page.dart' show homePageDefault;
+import 'package:tfc/core/last_route.dart' show isEngineRebuild;
+import 'package:tfc/core/runner_liveness.dart' show EngineEpoch;
 
-export 'package:tfc/core/startup_url.dart' show resolveStartupPath;
+export 'package:tfc/core/home_page.dart' show resolveHomePath;
 import 'package:tfc/models/menu_item.dart';
 import 'package:tfc/routes.dart';
 
@@ -123,13 +126,6 @@ List<MenuItem> buildTopLevelMenuItems({
   ];
 }
 
-/// Resolves this station's stored startup URL against the assembled menu.
-///
-/// The stored path only wins while it is still a routable destination:
-/// sections group pages but do not route, and a page that has been deleted
-/// or unpublished since the operator picked it must not strand the app on
-/// "not found" at boot. Everything else falls back to `/`, which always
-/// routes — Home, or the RouteRedirect stub standing in for a deleted Home.
 /// Depth-first first path in [items] — where `/` and refused pages fall back
 /// to when the Home page itself is gone. Null when no page is reachable at
 /// all.
@@ -149,7 +145,7 @@ String? firstMenuPath(List<MenuItem> items) {
 /// Beamer replaces the incoming route with `initialPath` only when that
 /// route is exactly `/`. Desktop embedders report `/`, but the eLinux
 /// embedder reports an empty string, which sails past that check unchanged
-/// and paints Home no matter what startup page the operator picked — the
+/// and ignores the page the app asked to open on — the
 /// station bug behind #354. Anything that is not an absolute path (empty,
 /// or a bare name like `main`) counts as "the platform had no opinion" and
 /// becomes `/`; a genuine deep link starting with `/` passes through.
@@ -157,4 +153,22 @@ String normalizeInitialPlatformRoute(String defaultRouteName) {
   final name = defaultRouteName.trim();
   if (name.isEmpty || !name.startsWith('/')) return '/';
   return name;
+}
+
+/// Whether a panel starting now still owes its operator the navigation to the
+/// session's home page (`BootHomePageDebt`).
+///
+/// Not after an engine rebuild that resumed [lastRoute] — that put the
+/// operator back where they were, even when it was Home — and not over a deep
+/// link: [platformRoute] is what the embedder reported, and anything it names
+/// beyond "no opinion" is where the panel was asked to open.
+bool bootHomePageOwed({
+  required EngineEpoch epoch,
+  required String? lastRoute,
+  required String resumePath,
+  required String platformRoute,
+}) {
+  final resumed = isEngineRebuild(epoch) && resumePath == lastRoute;
+  return !resumed &&
+      normalizeInitialPlatformRoute(platformRoute) == homePageDefault;
 }

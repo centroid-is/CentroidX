@@ -13,7 +13,7 @@ import 'package:riverpod/riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../core/device_local_store.dart';
-import '../core/startup_url.dart';
+import '../core/home_page.dart';
 import 'config_store.dart';
 import 'database.dart';
 
@@ -304,31 +304,20 @@ Future<Preferences> preferences(Ref ref) async {
         _logger.w('the shared preference store did not close cleanly: $e'));
   });
 
-  // A startup_url row in the shared database would overwrite every station's
-  // local choice on each sync; delete it the moment it is seen. Runs on every
-  // (re)connect because this provider is rebuilt then — idempotent.
+  // The retired per-station startup page (`startup_url`). A row of it in the
+  // shared database would be copied over the local store on every sync, so
+  // it is deleted the moment it is seen. Runs on every (re)connect because
+  // this provider is rebuilt then — idempotent.
   //
   // Through `systemWrites`, not the checked path: this is the app deleting a
   // row on its own behalf at boot, with nobody signed in, so a session check
-  // would refuse it and the per-station startup page would silently stop
-  // working again — the exact bug #354 fixed. It still produces one audit row,
-  // marked `origin: 'system'`, which is how the mcp.config migration is
-  // recorded too.
-  //
-  // It can now also be refused outright: a shared write with no Postgres
-  // throws rather than returning false. That is not a station that may fail to
-  // boot, so it is caught and logged — the stale row is deleted on the next
-  // connect, and until then the local choice still wins because the read is
-  // device-local.
-  try {
-    await migrateStartupUrlToDeviceLocal(
-      shared: prefs.systemWrites,
-      local: localCache,
-    );
-  } on Object catch (e) {
-    _logger.w('the shared startup_url row was not cleaned up this time; the '
-        'next reconnect retries it: $e');
-  }
+  // would refuse it. It still produces one audit row, marked
+  // `origin: 'system'`, which is how the mcp.config migration is recorded too.
+  // `dropRetiredStartupUrl` never throws — a shared write with no Postgres is
+  // logged and retried on the next connect.
+  // Then this station's own copy, which is the one a panel actually used.
+  await dropRetiredStartupUrl(prefs.systemWrites, logger: _logger);
+  await dropRetiredStartupUrl(localCache, logger: _logger);
 
   return prefs;
 }

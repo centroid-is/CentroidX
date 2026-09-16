@@ -35,8 +35,6 @@ import '../widgets/leave_guard.dart';
 import '../widgets/panes/side_pane.dart';
 import '../widgets/bulk_property_editor.dart';
 import '../page_creator/page.dart';
-import '../core/startup_url.dart';
-import '../providers/preferences.dart' show localPreferencesProvider;
 import '../models/menu_item.dart';
 import 'package:tfc_access/tfc_access.dart' show AccessGroup, AccessGroupInfo;
 import '../route_registry.dart';
@@ -840,12 +838,6 @@ class _PageEditorState extends ConsumerState<PageEditor> {
   /// from [_hasUnsavedChanges]'s JSON compare because app-registered items are
   /// not part of the pages JSON at all.
   bool _navOrderDirty = false;
-
-  /// The URL this station opens on at startup, as shown in the Pages dialog.
-  /// Device-local (see [localPreferencesProvider]) and written the moment it
-  /// is toggled — it is not part of the shared pages JSON, so the editor's
-  /// save/undo machinery has no say over it.
-  String _startupUrl = startupUrlDefault;
 
   /// Backs the palette's search box. A controller rather than a bare string:
   /// the palette is torn down whenever it is closed, and a controller-less
@@ -4764,10 +4756,6 @@ class _PageEditorState extends ConsumerState<PageEditor> {
   }
 
   Future<void> _showPageManagerDialog() async {
-    // Fetch this station's startup URL before the dialog builds, so the
-    // rocket lights up on the right row from the first frame.
-    _startupUrl = await readStartupUrl(ref.read(localPreferencesProvider));
-    if (!mounted) return;
     showDialog(
       context: context,
       builder: (dialogContext) => StatefulBuilder(
@@ -4864,72 +4852,13 @@ class _PageEditorState extends ConsumerState<PageEditor> {
   Widget? _treeNodeSubtitle({
     required bool isSection,
     required bool isDraft,
-    bool isStartup = false,
   }) {
     final parts = [
       if (isSection) 'Section',
       if (isDraft) 'Draft — not published',
-      if (isStartup) 'Startup page — this station',
     ];
     if (parts.isEmpty) return null;
     return Text(parts.join(' · '));
-  }
-
-  /// Makes [path] this station's startup URL — or, when it already is,
-  /// resets to the default. Takes effect on the next app start, like every
-  /// other change made in this dialog.
-  void _setStartupUrl(String path, StateSetter dialogSetState) {
-    final previous = _startupUrl;
-    _startupUrl = _startupUrl == path ? startupUrlDefault : path;
-    _writeStartupUrl(revertTo: previous);
-    dialogSetState(() {});
-  }
-
-  /// Points this station's startup setting at [path] without asking, because
-  /// the page it named has just been renamed or deleted out from under it.
-  void _retargetStartupUrl(String path) {
-    final previous = _startupUrl;
-    _startupUrl = path;
-    _writeStartupUrl(revertTo: previous);
-  }
-
-  /// Persists [_startupUrl]. The write is not awaited — the rocket has to
-  /// light the moment it is tapped — but a failure is no longer swallowed:
-  /// the field goes back to [revertTo] so the icon stops claiming something
-  /// that never reached the disk, and the operator is told.
-  void _writeStartupUrl({required String revertTo}) {
-    unawaited(
-      writeStartupUrl(ref.read(localPreferencesProvider), _startupUrl)
-          .catchError((Object e) {
-        debugPrint('startup URL write failed: $e');
-        if (!mounted) return;
-        setState(() => _startupUrl = revertTo);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Could not save the startup page on this station: '
-                '$e'),
-          ),
-        );
-      }),
-    );
-  }
-
-  /// The per-row toggle marking [path] as this station's startup page.
-  Widget _startupToggle(
-      String path, StateSetter dialogSetState, BuildContext dialogContext) {
-    final isStartup = _startupUrl == path;
-    return IconButton(
-      key: ValueKey('startup-$path'),
-      icon: Icon(
-        isStartup ? Icons.rocket_launch : Icons.rocket_launch_outlined,
-        size: 18,
-        color: isStartup ? Theme.of(dialogContext).colorScheme.primary : null,
-      ),
-      onPressed: () => _setStartupUrl(path, dialogSetState),
-      tooltip: isStartup
-          ? 'This station starts here — tap to reset to the default (/)'
-          : 'Start this station on this page',
-    );
   }
 
   /// Publishes or unpublishes [pagePath].
@@ -5029,18 +4958,11 @@ class _PageEditorState extends ConsumerState<PageEditor> {
       subtitle: _treeNodeSubtitle(
         isSection: isSection,
         isDraft: isDraft,
-        // The default gets no subtitle: with nothing chosen the lit rocket
-        // on `/` says enough, and the common case stays one line tall.
-        isStartup: !isSection &&
-            _startupUrl == pageName &&
-            _startupUrl != startupUrlDefault,
       ),
       selected: isSelected && !isSection,
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (!isSection)
-            _startupToggle(pageName, dialogSetState, dialogContext),
           if (isSection && depth < 3)
             PopupMenuButton<String>(
               icon: const Icon(Icons.add, size: 18),
@@ -5423,7 +5345,6 @@ class _PageEditorState extends ConsumerState<PageEditor> {
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            _startupToggle(mapKey, dialogSetState, dialogContext),
             if (page != null)
               IconButton(
                 icon: const Icon(Icons.edit, size: 18),
@@ -5463,9 +5384,7 @@ class _PageEditorState extends ConsumerState<PageEditor> {
   }
 
   /// A top-level destination the app registered itself. It has no page to
-  /// select, edit or publish here — the row exists to be dragged into order
-  /// (and, for routable destinations, to be picked as this station's startup
-  /// page).
+  /// select, edit or publish here — the row exists to be dragged into order.
   Widget _buildAppItemNode(MenuItem item,
       {required int reorderIndex,
       StateSetter? dialogSetState,
@@ -5473,13 +5392,6 @@ class _PageEditorState extends ConsumerState<PageEditor> {
     final movable =
         item.path != null && movableBuiltinPaths.contains(item.path);
     final trailing = <Widget>[
-      // Built-in sections (Advanced) group but do not route, so they cannot
-      // be a startup destination.
-      if (!item.isNavigationSection &&
-          item.path != null &&
-          dialogSetState != null &&
-          dialogContext != null)
-        _startupToggle(item.path!, dialogSetState, dialogContext),
       if (movable && dialogSetState != null)
         IconButton(
           key: ValueKey('demote-builtin-${item.path}'),
@@ -5503,9 +5415,7 @@ class _PageEditorState extends ConsumerState<PageEditor> {
         ],
       ),
       title: Text(item.label),
-      subtitle: Text(item.path == _startupUrl
-          ? 'Built-in — Startup page — this station'
-          : 'Built-in — drag to reorder'),
+      subtitle: const Text('Built-in — drag to reorder'),
       trailing: trailing.isEmpty
           ? null
           : Row(mainAxisSize: MainAxisSize.min, children: trailing),
@@ -6139,10 +6049,6 @@ class _PageEditorState extends ConsumerState<PageEditor> {
             initialPage: page,
             isSection: isSection,
             basePath: _buildBasePath(_findParentOf(pagePath)),
-            addressChangeNote: _startupUrl == pagePath
-                ? "This station's startup page points here and will follow the "
-                    'move.'
-                : null,
             onSave: (updatedPage) {
               final newPath = updatedPage.menuItem.path ?? '';
               if (newPath != pagePath && _temporaryPages.containsKey(newPath)) {
@@ -6163,12 +6069,6 @@ class _PageEditorState extends ConsumerState<PageEditor> {
                       pagePath, newPath, updatedPage.menuItem);
                   if (_currentPage == pagePath) {
                     _currentPage = newPath;
-                  }
-                  // The station's startup page is stored as an address, so a
-                  // page that moves has to take the setting with it or the
-                  // next boot lands on a route that no longer exists.
-                  if (_startupUrl == pagePath) {
-                    _retargetStartupUrl(newPath);
                   }
                 }
                 _temporaryPages[newPath] = updatedPage;
@@ -6245,8 +6145,8 @@ class _PageEditorState extends ConsumerState<PageEditor> {
   }
 
   /// Spells out what pressing Delete costs, so nothing goes without warning:
-  /// how many assets are on the page, what happens to a section's contents,
-  /// and whether this station's startup setting is about to be reset.
+  /// how many assets are on the page and what happens to a section's
+  /// contents.
   String _deleteWarning(String pagePath, AssetPage page) {
     final lines = <String>[];
     final isSection = page.menuItem.isNavigationSection;
@@ -6262,11 +6162,6 @@ class _PageEditorState extends ConsumerState<PageEditor> {
     if (assets > 0) {
       lines.add('$assets ${assets == 1 ? 'asset' : 'assets'} on it '
           '${assets == 1 ? 'is' : 'are'} deleted with it.');
-    }
-
-    if (_startupUrl == pagePath) {
-      lines.add("This station starts on this page; the setting resets to "
-          '$startupUrlDefault.');
     }
 
     lines.add('Undo (Ctrl+Z) brings it back until you save.');
@@ -6296,7 +6191,6 @@ class _PageEditorState extends ConsumerState<PageEditor> {
       destructive: true,
     ).then((confirmed) {
       if (!confirmed) return;
-      final startupWasHere = _startupUrl == pagePath;
       _saveToHistory();
       setState(() {
         _temporaryPages.remove(pagePath);
@@ -6305,20 +6199,9 @@ class _PageEditorState extends ConsumerState<PageEditor> {
         if (_currentPage == pagePath) {
           _currentPage = _temporaryPages.keys.firstOrNull;
         }
-        // Leaving the setting pointed at a deleted address boots the station
-        // onto a route that no longer resolves.
-        if (startupWasHere) _retargetStartupUrl(startupUrlDefault);
         _updateCurrentJson();
       });
       dialogSetState(() {});
-      if (startupWasHere && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Deleted "$displayName". This station\'s startup '
-                'page reset to $startupUrlDefault.'),
-          ),
-        );
-      }
     });
   }
 
