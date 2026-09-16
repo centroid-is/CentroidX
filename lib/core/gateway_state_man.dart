@@ -347,6 +347,26 @@ class GatewayStateMan implements StateMan {
   /// The live re-point direct mode performs is a re-point of an OPC UA monitored
   /// item this process does not own. The key set is also fixed for the life of
   /// the client, so a mapping edit genuinely needs a new one.
+  /// Takes a new key set in place — no reload, no reconnect, no sign-out.
+  ///
+  /// For the client with no mirror. It is built before it can read the
+  /// plant's key mappings (`relayed_config_items.dart` explains the ring),
+  /// so it starts on whatever it cached — nothing, on a first visit — and
+  /// takes the real set the moment a signed-in session can fetch it. Going
+  /// through [updateKeyMappings] would answer "reload", and a reload here is
+  /// a new socket and therefore a new session: the person who just signed
+  /// in to get the mappings would be signed out by their arrival. The relay
+  /// client can re-subscribe at runtime (`RemoteStateMan.setKeys`, the same
+  /// establishment path a server-announced resync takes), so the set is
+  /// swapped under the live socket instead.
+  ///
+  /// A station with a mirror keeps [updateKeyMappings] and its reload; that
+  /// path is untouched.
+  Future<void> adoptKeyMappings(KeyMappings next) async {
+    _keyMappings = next;
+    await _remote.setKeys(subscriptionKeys(next));
+  }
+
   @override
   KeyMappingsUpdateResult updateKeyMappings(KeyMappings newKeyMappings,
       {ConfigDiff? diff}) {

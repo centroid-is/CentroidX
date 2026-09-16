@@ -466,6 +466,9 @@ final class ServedStateMan {
     _on(HarnessMethods.configWrite, _cfgWrite);
     _on(HarnessMethods.configPrevious, _cfgPrevious);
     _on(HarnessMethods.configRestorePrevious, _cfgRestorePrevious);
+
+    _on(HarnessMethods.configItemsItems, _cfgItemsItems);
+    _on(HarnessMethods.configItemsFingerprint, _cfgItemsFingerprint);
   }
 
   /// Answers an access method, mapping the refusal shapes as D-09 requires.
@@ -728,6 +731,21 @@ final class ServedStateMan {
             reason: params['reason'].valueOr(null) as String?);
         return null;
       });
+
+  // config items
+
+  Future<Object?> _cfgItemsItems(rpc.Parameters params) =>
+      _access(HarnessMethods.configItemsItems, () async => [
+            for (final record
+                in await api.configItems.items(params['kind'].asString))
+              record.toJson(),
+          ]);
+
+  Future<Object?> _cfgItemsFingerprint(rpc.Parameters params) =>
+      _access(HarnessMethods.configItemsFingerprint, () async =>
+          (await api.configItems
+                  .fingerprint(params['kinds'].asList.cast<String>()))
+              .toJson());
 
   /// One subscription, however many clients are listening on the far side.
   ///

@@ -271,6 +271,9 @@ final class _NoPreferences implements StateManApi {
   BackendConfigApi get backendConfig => _source.backendConfig;
 
   @override
+  ConfigItemsApi get configItems => _source.configItems;
+
+  @override
   Future<void> dispose() => _source.dispose();
 }
 

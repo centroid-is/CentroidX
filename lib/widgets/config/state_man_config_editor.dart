@@ -22,6 +22,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -112,7 +114,12 @@ class _CertificateGeneratorState extends State<CertificateGenerator> {
   }
 
   void _initializeControllers() {
-    final locale = Platform.localeName;
+    // `Platform.localeName` throws under dart2js; the engine's own locale is
+    // the same answer a browser can give. The station side is untouched, so
+    // the country the certificate defaults to does not change on a panel.
+    final locale = kIsWeb
+        ? WidgetsBinding.instance.platformDispatcher.locale.toString()
+        : Platform.localeName;
     final countryCode = locale.split('_').last;
 
     _commonNameController = TextEditingController(text: 'example.com');

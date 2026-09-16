@@ -40,6 +40,7 @@ import '../core/gateway_config.dart';
 import '../core/gateway_link_status.dart';
 import '../core/gateway_state_man.dart';
 import '../core/relayed_access_stores.dart';
+import '../core/relayed_config_items.dart';
 import 'database.dart';
 import 'gateway.dart';
 import 'gateway_link.dart';
@@ -482,6 +483,17 @@ class AccessSessionController extends _$AccessSessionController {
   /// this flag.
   bool _isGateway = false;
 
+  /// Whether this gateway client presents a station credential at `hello`.
+  ///
+  /// Decides which floor [_anonymousSession] lands on in gateway mode. With a
+  /// token the server admits the socket as the station's own account, so the
+  /// panel *is* somebody even with no human signed in; without one the server
+  /// admits it as anonymous-awaiting-sign-in, which may do nothing but wait
+  /// (`session_login_validator.dart`, `identity.dart`). A browser is always
+  /// the second kind: `GatewayConfig.validationError` refuses a token path
+  /// there by name.
+  bool _gatewayCredentialPresented = false;
+
   @override
   Future<AccessSession> build() async {
     // Registered synchronously, before the first await: Riverpod fires
@@ -517,7 +529,9 @@ class AccessSessionController extends _$AccessSessionController {
 
     _station = ref.watch(stationNameProvider);
     _local = ref.watch(localPreferencesProvider);
-    _isGateway = (await ref.watch(gatewayConfigProvider.future)).isGateway;
+    final gateway = await ref.watch(gatewayConfigProvider.future);
+    _isGateway = gateway.isGateway;
+    _gatewayCredentialPresented = gateway.tokenPath != null;
     _resolveTimeout = ref.watch(inactivityTimeoutResolverProvider);
     await _dropLegacyTimeoutPrefs();
     // Before `_restoreOrFloor`, which writes a row when the stored session
@@ -797,6 +811,37 @@ class AccessSessionController extends _$AccessSessionController {
   /// cannot come from two reads of a row somebody is editing.
   Future<AccessSession> _anonymousSession(AccessRepository? repo) async {
     if (repo == null) {
+      // A gateway client that presented no credential. The server admitted
+      // this socket as anonymous-awaiting-sign-in — an identity with the
+      // groups the plant's `anonymous` row grants, which on the plant this
+      // was measured on is none, and which this client has no way to read:
+      // the hello answer carries no identity, and every read a session
+      // nobody signed in on makes is refused. So the client-side floor
+      // mirrors what it can prove, which is nothing: no groups, and a
+      // whitelist that admits no page. Every plant page then refuses with a
+      // sign-in in front of it, which is what the server would have made of
+      // the page's reads anyway. The alternative — the seeded Operator floor
+      // below — was the client inventing groups the server never granted,
+      // and it showed a browser an app shell full of pages the gateway would
+      // not fill: navigation into empty rooms, with the sign-in a padlock in
+      // the corner. That was the browser being MORE open than the station,
+      // visibly, while being granted nothing — the honest screen is the lock.
+      //
+      // Narrower than the server may be: a plant whose `anonymous` row does
+      // hold groups and pages would show them at a walk-up station and hide
+      // them in a browser. Closing that needs the wire to carry the admitted
+      // identity (a `hello` result with the session's groups and pages, the
+      // way `session.login` already answers), and until it does, failing
+      // closed is the side to be wrong on.
+      //
+      // A client that DID present a token is not this case: the server
+      // admitted it as the station's own account, and the floor below stands
+      // as it always has — an imprecision in the other direction (the client
+      // cannot read that account's whitelist either) that the same wire
+      // addition would close.
+      if (_isGateway && !_gatewayCredentialPresented) {
+        return AccessSession.anonymous(const {}, allowedPages: const {});
+      }
       // No database. The seeded Operator role — and, deliberately, **no**
       // whitelist: see [_effectivePages] for why this window fails open.
       return AccessSession.anonymous({
@@ -1078,6 +1123,9 @@ class AccessSessionController extends _$AccessSessionController {
     // it changes nothing if the panel is already current, and nothing here
     // waits on it.
     ref.read(gatewayPreferencesSlotProvider).requestReconcile();
+    // And the plant's configuration rows, for a client with no mirror —
+    // the same first moment, the same hint (`relayed_config_items.dart`).
+    ref.read(gatewayConfigItemsSlotProvider).requestRefresh();
     return AccessSignInResult.ok;
   }
 

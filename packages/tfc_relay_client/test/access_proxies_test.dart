@@ -608,6 +608,9 @@ final class _RemoteAccessLeg implements StateManApi, StateManAccessHarness {
   BackendConfigApi get backendConfig => _client.backendConfig;
 
   @override
+  ConfigItemsApi get configItems => _client.configItems;
+
+  @override
   ValueListenable<DynamicValue> listen(String key) => _client.listen(key);
 
   @override
@@ -933,6 +936,7 @@ void main() {
       expect(client.accessAdmin, isA<AccessAdminApi>());
       expect(client.audit, isA<AuditApi>());
       expect(client.backendConfig, isA<BackendConfigApi>());
+      expect(client.configItems, isA<ConfigItemsApi>());
     });
 
     test('each getter answers the same instance every time', () {
@@ -940,6 +944,7 @@ void main() {
       expect(identical(client.accessTemplates, client.accessTemplates), isTrue);
       expect(identical(client.accessAdmin, client.accessAdmin), isTrue);
       expect(identical(client.audit, client.audit), isTrue);
+      expect(identical(client.configItems, client.configItems), isTrue);
       expect(identical(client.backendConfig, client.backendConfig), isTrue,
           reason: 'the history-view proxies are built once and kept '
               '(remote_state_man.dart\'s sub-API block); a fresh proxy per '

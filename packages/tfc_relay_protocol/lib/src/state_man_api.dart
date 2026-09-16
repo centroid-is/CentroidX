@@ -64,6 +64,7 @@ library;
 
 import 'access_api.dart';
 import 'browse.dart';
+import 'config_items_api.dart';
 import 'dynamic_value.dart';
 import 'history_view.dart';
 import 'hold_handle.dart';
@@ -253,6 +254,14 @@ abstract interface class StateManApi {
   /// section is readable and refused on write, because a config screen that
   /// can cut itself off is a trap.
   BackendConfigApi get backendConfig;
+
+  /// The plant's configuration rows — pages, assets, key mappings — for a
+  /// client that holds no mirror of them.
+  ///
+  /// Reads only, graded `operate` and refused to a session nobody has
+  /// signed in on; see [ConfigItemsApi] for the size bound and why
+  /// freshness rides `preferences.changed`.
+  ConfigItemsApi get configItems;
 
   /// Releases the subscription, the store and the transport.
   ///

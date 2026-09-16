@@ -569,6 +569,10 @@ final class PolicyStateMan implements StateManApi {
       () => source.backendConfig, identityOf, _ledger,
       groupFor: master.groupForBackendConfig);
 
+  @override
+  ConfigItemsApi get configItems =>
+      _PolicyConfigItems(() => source.configItems, identityOf, _ledger);
+
   /// Delegates, and owns nothing of its own to release.
   ///
   /// The source is **one instance shared by every session** on this gateway
@@ -1767,6 +1771,73 @@ final class _PolicyAudit with _GroupGate implements AuditApi {
 /// The `relay` section's write refusal — you do not edit the socket over the
 /// socket — is the far end's, by name, per the interface doc; this decorator
 /// answers only who may ask at all.
+/// The gate on the plant's configuration rows: signed in, and `operate`.
+///
+/// **Signed in first, by name.** Every other family here grades by group
+/// alone, and an anonymous identity fails those grades because it holds no
+/// group — on the plant this was measured on. It is customer data whether
+/// it does (`StationIdentity.anonymous`), and a plant whose `anonymous` row
+/// granted `operate` would otherwise serve its every page and key mapping
+/// to whoever opened the address in a browser. The rows are the plant's
+/// mimics and its routing, so they go to sessions somebody signed in on and
+/// to nobody else, and the refusal carries the same marker the rest of the
+/// sign-in vocabulary uses so a client can name it.
+///
+/// **Then `operate`, per kind.** Pages and assets are what an operator
+/// looks at; key mappings are what the client subscribes through, and a
+/// session that may not read a tag (`operate` is the tag floor) has no
+/// use for the map that names it. The preference kind carries the page
+/// order and nothing a browser is not already served through
+/// `preferences.*`. The write half of these rows — `configure` — is not
+/// on this wire at all; `config_items_api.dart` says why.
+final class _PolicyConfigItems with _GroupGate implements ConfigItemsApi {
+  const _PolicyConfigItems(this._source, this.identityOf, this.ledger);
+
+  final ConfigItemsApi Function() _source;
+
+  @override
+  final StationIdentity? Function() identityOf;
+
+  @override
+  final _DecisionLedger ledger;
+
+  // The rows are the shared configuration, which is the `pref` surface's
+  // domain; a sixth surface would be a name for the same thing.
+  @override
+  String get gateSurface => AccessSurface.pref.wireName;
+
+  void _requireSignedIn(String method) {
+    final identity = identityOf();
+    if (identity == null || identity.isAnonymous) {
+      throw rpc.RpcException(
+          ServerErrorCodes.forbidden,
+          '$method refused: ${SessionAuthMarkers.awaitingSignIn} — nobody '
+          'has signed in on this session, and the plant\'s configuration '
+          'rows are served to signed-in sessions only. Sign in first.');
+    }
+  }
+
+  @override
+  Future<List<ConfigItemRecord>> items(String kind) {
+    _requireSignedIn(AccessMethods.configItemsItems);
+    _requireGroup(AccessGroup.operate, AccessMethods.configItemsItems,
+        'no rows were read',
+        itemKey: 'config_item.$kind', member: kind);
+    return _source().items(kind);
+  }
+
+  @override
+  Future<ConfigItemsFingerprint> fingerprint(List<String> kinds) {
+    _requireSignedIn(AccessMethods.configItemsFingerprint);
+    for (final kind in kinds) {
+      _requireGroup(AccessGroup.operate, AccessMethods.configItemsFingerprint,
+          'no rows were counted',
+          itemKey: 'config_item.$kind', member: kind);
+    }
+    return _source().fingerprint(kinds);
+  }
+}
+
 final class _PolicyBackendConfig with _GroupGate implements BackendConfigApi {
   const _PolicyBackendConfig(this._source, this.identityOf, this.ledger,
       {required AccessGroup Function(String section) groupFor})

@@ -1248,6 +1248,10 @@ class PlantPageView extends ConsumerStatefulWidget {
   /// Identifies the "not confirmed with the server yet" strip.
   static const Key unverifiedBannerKey = Key('unverified-page-banner');
 
+  /// Identifies the body shown when the layout could not be loaded at all
+  /// and there is no cached copy to fall back on.
+  static const Key loadFailureKey = Key('plant-page-load-failure');
+
   @override
   ConsumerState<PlantPageView> createState() => _PlantPageViewState();
 }
@@ -1308,12 +1312,20 @@ class _PlantPageViewState extends ConsumerState<PlantPageView> {
     // another station. So it is rendered under a standing mark for as long as
     // it is unconfirmed, in the theme's "unreadable state" violet. The mark
     // clears by itself the instant the database copy lands.
-    final fromDatabase = ref.watch(pageManagerProvider).valueOrNull;
+    final loaded = ref.watch(pageManagerProvider);
+    final fromDatabase = loaded.valueOrNull;
     final pageManager = fromDatabase ?? ref.watch(bootstrapPageManagerProvider);
     final unverified = fromDatabase == null && pageManager != null;
 
     if (pageManager == null) {
-      // Nothing cached and nothing loaded — as blank as it ever was.
+      // Nothing cached and nothing loaded. While the load is still running
+      // this is as blank as it ever was; a load that has *failed* is not the
+      // same state and must not look the same. Loading resolves, a failure
+      // does not, and a panel that renders one as an empty page is a panel
+      // that reads as frozen — in a browser build, which has no cached copy
+      // to fall back on, it was the whole screen, white, with the cause held
+      // inside a provider and nothing on the console.
+      if (loaded.hasError) return _PageLoadFailure(error: loaded.error!);
       return const SizedBox.shrink();
     }
 
@@ -1386,6 +1398,52 @@ class _PlantPageViewState extends ConsumerState<PlantPageView> {
           const SizedBox.shrink(),
         Expanded(child: content),
       ],
+    );
+  }
+}
+
+/// Says that the layout could not be loaded, and what stopped it.
+///
+/// The cause is printed rather than paraphrased: the reader is whoever is
+/// commissioning this screen, and "could not be loaded" alone would send them
+/// to the log for the sentence that is already in hand. Not a red surface —
+/// red is the plant's fault colour and nothing in the plant is at fault.
+class _PageLoadFailure extends StatelessWidget {
+  const _PageLoadFailure({required this.error});
+
+  final Object error;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Center(
+      key: PlantPageView.loadFailureKey,
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 560),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.cloud_off,
+                  size: 40, color: theme.colorScheme.onSurfaceVariant),
+              const SizedBox(height: 16),
+              Text(
+                'The plant pages could not be loaded',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.headlineSmall,
+              ),
+              const SizedBox(height: 16),
+              Text(
+                '$error',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodyMedium
+                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

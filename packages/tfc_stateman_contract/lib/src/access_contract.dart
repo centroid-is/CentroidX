@@ -673,6 +673,59 @@ Future<String> _acceptableConfigEdit(StateManApi api) async {
       RegExp(r'"sources":\{[^}]*\}'), '"sources":{"ST101":"opc.tcp://changed"}');
 }
 
+// -----------------------------------------------------------------------------
+// Config items — the plant's rows for a client with no mirror
+// -----------------------------------------------------------------------------
+
+/// `configItems.items` is graded `operate` per kind, and answers one kind per
+/// call. `configureSession` holds no `operate` and is the refused neighbour;
+/// `usersSession` holds it.
+Future<void> checkConfigItemsListRefusesWithoutOperatePermitsWithIt(
+    StateManApi api) async {
+  final h = accessHarnessOf(api);
+  h.actAs(configureSession);
+  final refusal = await within(
+      _thrown(() => api.configItems.items('page')), 'listing config items');
+  expect(refusal, isA<AccessDenied>(),
+      reason: 'configItems.items is graded operate and a session without it '
+          'read the plant\'s pages anyway ($refusal)');
+
+  h.actAs(usersSession);
+  final pages = await within(api.configItems.items('page'), 'listing pages');
+  expect(pages, isNotEmpty, reason: 'the fake serves one page');
+  expect(pages.map((r) => r.kind).toSet(), {'page'},
+      reason: 'one kind per call: an answer that mixed kinds would be the '
+          'size bound the protocol chose over paging quietly undone');
+  final assets = await within(api.configItems.items('asset'), 'listing assets');
+  expect(assets.map((r) => r.kind).toSet(), {'asset'});
+  expect(assets.single.parentId, pages.single.id,
+      reason: 'parentId crosses the wire, or a page cannot find its assets');
+}
+
+/// The fingerprint is graded exactly as the list is, and it counts what the
+/// lists it stands for would return.
+Future<void> checkConfigItemsFingerprintFollowsListGatingAndCounts(
+    StateManApi api) async {
+  final h = accessHarnessOf(api);
+  h.actAs(configureSession);
+  final refusal = await within(
+      _thrown(() => api.configItems.fingerprint(const ['page', 'asset'])),
+      'fingerprinting config items');
+  expect(refusal, isA<AccessDenied>());
+
+  h.actAs(usersSession);
+  final fingerprint = await within(
+      api.configItems.fingerprint(const ['page', 'asset']),
+      'fingerprinting pages and assets');
+  final pages = await within(api.configItems.items('page'), 'listing pages');
+  final assets = await within(api.configItems.items('asset'), 'listing assets');
+  expect(fingerprint.count, pages.length + assets.length,
+      reason: 'a fingerprint that counted something other than the rows '
+          'the lists return would make a client refetch forever, or never');
+  expect(fingerprint.revSum,
+      [...pages, ...assets].fold<int>(0, (sum, r) => sum + r.rev));
+}
+
 Future<void> checkConfigReadRefusesConfigurePermitsAdminister(
     StateManApi api) async {
   final h = accessHarnessOf(api);
@@ -875,6 +928,13 @@ const accessChecks = <String, Check<StateManApi>>{
   'a relay-section edit is refused by name': checkConfigWriteRefusesRelaySectionEdit,
   'previous and restorePrevious follow write\'s gating':
       checkConfigPreviousAndRestoreFollowWriteGating,
+  // config items
+  'listing config items refuses a session without operate and permits one '
+          'with it, one kind per call':
+      checkConfigItemsListRefusesWithoutOperatePermitsWithIt,
+  'the config-item fingerprint follows list\'s gating and counts what list '
+          'returns':
+      checkConfigItemsFingerprintFollowsListGatingAndCounts,
 };
 
 /// Registers the access contract against implementations from [make].

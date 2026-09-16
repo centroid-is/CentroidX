@@ -93,6 +93,46 @@ void main() {
     });
   });
 
+  group('the boot order in centroid-hmi/lib/main_web.dart', () {
+    // The browser entrypoint went without this call for a while, and the
+    // result was a white screen with an empty console: every read of the
+    // store threw the StateError `createDeviceLocalPreferences` reserves
+    // for "init has not run", Riverpod held the throw inside each provider
+    // on the boot path, and the home route rendered the blank it renders
+    // when there are no pages. Same ordering, same reason, second entrypoint.
+    late String code;
+
+    setUpAll(() => code = File('centroid-hmi/lib/main_web.dart')
+        .readAsLinesSync()
+        .where((line) => !line.trimLeft().startsWith('//'))
+        .join('\n'));
+
+    test('the browser store is opened before runApp', () {
+      final init = code.indexOf('await initDeviceLocalPreferences();');
+      final run = code.indexOf('runApp(');
+
+      expect(init, isNot(-1),
+          reason: 'main_web.dart no longer opens the device-local store; '
+              'every provider on the boot path throws a StateError and '
+              'the browser paints nothing');
+      expect(run, isNot(-1));
+      expect(init, lessThan(run),
+          reason: 'the first read of the store is inside the first frame');
+    });
+
+    test('the keychain is named before runApp', () {
+      // `Preferences.create` asks `SecureStorage.getInstance()`, and the
+      // default it answers when nothing was set asks `Platform`, which a
+      // browser cannot answer.
+      final secrets = code.indexOf('SecureStorage.setInstance(');
+      final run = code.indexOf('runApp(');
+      expect(secrets, isNot(-1),
+          reason: 'without an instance the first preference store built on '
+              'the boot path throws UnsupportedError out of dart:io');
+      expect(secrets, lessThan(run));
+    });
+  });
+
   group('the boot order in centroid-hmi/lib/main.dart', () {
     late String code;
 

@@ -8,11 +8,9 @@ import 'package:tfc_dart/core/config/shared_row_preferences.dart';
 import 'package:tfc_dart/core/database_drift.dart';
 import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc_dart/core/secure_storage/secure_storage.dart';
-import 'package:tfc_dart/core/sqlite_preferences.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
-import '../core/device_local_store.dart';
 import '../core/gateway_config.dart';
 import '../core/relayed_preferences.dart';
 import '../core/startup_url.dart';
@@ -20,6 +18,7 @@ import 'access.dart';
 import 'access_policy.dart';
 import 'config_store.dart';
 import 'database.dart';
+import 'device_local_store_open.dart';
 import 'gateway.dart';
 import 'gateway_preferences_slot.dart';
 import '../core/gateway_default.dart';
@@ -63,38 +62,29 @@ PreferencesApi? _deviceLocalStore;
 /// hands it a resolver that throws and a directory holding a deliberately
 /// corrupt `config.sqlite`, and asserts a usable store comes back either way.
 /// Production passes nothing.
+///
+/// **What "the store" is depends on the platform**, and that is the seam
+/// `device_local_store_open.dart` holds: `config.sqlite` on a station, the
+/// browser's own per-origin `localStorage` in a web build, which has no
+/// SQLite to open. The web entrypoint calls this exactly as `main.dart` does
+/// — it went for a while without, and every read of the store threw inside
+/// a provider, which is a white screen with nothing in the console.
 Future<void> initDeviceLocalPreferences({
   Future<Directory> Function()? directoryForTest,
 }) async {
   if (_deviceLocalStore != null) return;
 
-  var directory = '<unresolved>';
   try {
-    final dir = await (directoryForTest ?? deviceLocalStoreDirectory)();
-    directory = dir.path;
-    final db = AppDatabase.createLocal(dir);
-    final store = SqlitePreferences(
-      db,
+    final opened = await openDeviceLocalStore(
       scope: ConfigScope.forStation(_localHostname()),
+      logger: _logger,
+      directoryForTest: directoryForTest,
     );
-    // One shot, marked by a row inside the same transaction as the values it
-    // describes. A station that has already imported does no work here.
-    final imported = await store.importAll(
-      normalizeLegacyKeys(
-        await readLegacySharedPreferences(dir, logger: _logger),
-        logger: _logger,
-      ),
-      markerId: sharedPreferencesImportMarkerId,
-    );
-    if (imported) {
-      _logger.i('Imported the legacy shared_preferences store into '
-          '${dir.path}/config.sqlite. This happens once per station.');
-    }
-    _deviceLocalDb = db;
-    _deviceLocalStore = store;
+    _deviceLocalDb = opened.db;
+    _deviceLocalStore = opened.store;
   } catch (e, stack) {
     _logger.e(
-      'Could not open the device-local configuration store in $directory. '
+      'Could not open the device-local configuration store. '
       'This station is starting with an IN-MEMORY store: it will show the '
       'built-in default pages, nobody is signed in, and nothing it changes '
       'will survive a restart. Fix the store rather than the symptoms.',
@@ -161,7 +151,21 @@ PreferencesApi createDeviceLocalPreferences() {
 /// screen. So it gets an in-memory database: the mirror is empty, the remote
 /// path still works, and a station that reaches Postgres comes up with the
 /// plant's real wiring even though its local cache is gone.
+///
+/// **A browser gets none, by name.** There is no SQLite there at all, so the
+/// in-memory fallback below cannot be built either (`sqlite_executor_web.dart`
+/// refuses it). The readers that matter — `stateManProvider` and
+/// `pageManagerProvider` — branch on `kHasDeviceLocalMirror` and never call
+/// this on that platform; anything else that does is told what is missing
+/// rather than handed a database that throws on its first query.
 AppDatabase deviceLocalDatabase() {
+  if (!kHasDeviceLocalMirror) {
+    throw UnsupportedError(
+      'This platform has no device-local database: a browser holds no '
+      'SQLite mirror of the plant\'s configuration rows. Read the shared '
+      'configuration over the relay instead of through configStoreProvider.',
+    );
+  }
   if (_deviceLocalStore == null) {
     throw StateError(
       'initDeviceLocalPreferences() must run before deviceLocalDatabase(). '
@@ -287,12 +291,14 @@ Future<Preferences> preferences(Ref ref) async {
   // property `database_transport_test.dart`'s `h.touched()` pins, and it
   // caught this exact line during the merge.
   //
-  // **What this merge does not close**: `ConfigStore` itself has no relay
-  // route. Preferences reach the backend over the pipe by name, as before, but
-  // the key mappings and pages that main moved out of the preference blob and
-  // into `config_item` rows do not. A gateway panel therefore reads those from
-  // its local mirror. That is new work, not a conflict resolution, and it is
-  // recorded rather than papered over here.
+  // **What this merge did not close, and what has since**: `ConfigStore`
+  // itself has no relay route. Preferences reach the backend over the pipe by
+  // name, as before; the key mappings and pages that main moved out of the
+  // preference blob and into `config_item` rows reach a gateway *panel*
+  // through its local mirror, still. A client with no mirror — the browser
+  // build — reads those rows over the relay's `configItems.*` family instead
+  // (`core/relayed_config_items.dart`), reads only; the mirror's write path
+  // stays station work.
   final Preferences prefs;
   if (gateway.isGateway) {
     final local = await Preferences.create(db: null, localCache: localCache);

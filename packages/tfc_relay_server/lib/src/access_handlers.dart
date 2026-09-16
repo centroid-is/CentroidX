@@ -323,4 +323,17 @@ final class AccessHandlers {
     await source.backendConfig.restorePrevious(reason: _reason(params));
     return null;
   }
+
+  // ------------------------------------------------------- config items
+
+  Future<Object?> configItemsItems(rpc.Parameters params) async => [
+        for (final record
+            in await source.configItems.items(params['kind'].asString))
+          record.toJson(),
+      ];
+
+  Future<Object?> configItemsFingerprint(rpc.Parameters params) async =>
+      (await source.configItems.fingerprint(
+              params['kinds'].asList.cast<String>()))
+          .toJson();
 }

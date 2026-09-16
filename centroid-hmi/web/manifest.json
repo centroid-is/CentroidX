@@ -1,12 +1,12 @@
 {
-    "name": "centroidx",
-    "short_name": "centroidx",
+    "name": "CentroidX",
+    "short_name": "CentroidX",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
-    "orientation": "portrait-primary",
+    "background_color": "#232628",
+    "theme_color": "#232628",
+    "description": "Centroid HMI \u2014 plant pages, alarms and access, over one gateway socket.",
+    "orientation": "landscape",
     "prefer_related_applications": false,
     "icons": [
         {

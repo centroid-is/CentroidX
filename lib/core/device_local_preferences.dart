@@ -49,6 +49,12 @@ import 'startup_url.dart';
 import 'system_clock.dart';
 import 'update_channel.dart';
 
+/// This client's cached copy of the plant's configuration rows — what a
+/// browser holds instead of a SQLite mirror (`relayed_config_items.dart`).
+/// Declared here, beside the other device-local keys, so the routing rule
+/// and the store that writes it name one constant.
+const String kConfigItemsCachePrefsKey = 'config_items_cache';
+
 /// Key *prefixes* that are device-local, for the two families whose members
 /// are not a fixed list.
 ///
@@ -112,6 +118,10 @@ final Set<String> kDeviceLocalPreferenceKeys = Set.unmodifiable({
   'username',
   'autoLogin',
   'sshPrivateKeyPath',
+  // This client's cached copy of the plant's configuration rows — what a
+  // browser holds instead of a SQLite mirror (`relayed_config_items.dart`).
+  // A copy of the shared rows is, by definition, not a shared row.
+  kConfigItemsCachePrefsKey,
 });
 
 /// True when [key] is this station's own setting and must not travel.

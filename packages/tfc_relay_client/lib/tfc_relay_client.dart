@@ -51,6 +51,13 @@
 library;
 
 export 'src/client_config.dart';
+// Whether this platform can choose what it trusts. The app's `GatewayConfig`
+// asks it to decide whether a `wss` row needs the plant CA pinned before it
+// is dialled — a station does; a browser cannot pin at all and dials on the
+// machine's own store — and that answer has to be the one `checkDialable`
+// enforces, so it is this package's constant and not a second spelling of
+// the same fact in the app.
+export 'src/dial/trust_capability.dart' show kCanPinTrustRoot;
 export 'src/connection_supervisor.dart' show LinkState;
 // The "no link" answer every call resolves to when the barrier times out —
 // exported because a consumer that drives `sessionLogin` must be able to tell

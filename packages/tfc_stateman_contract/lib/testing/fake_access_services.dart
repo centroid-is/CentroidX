@@ -101,7 +101,8 @@ class FakeAccessServices
         AccessTemplateApi,
         AccessAdminApi,
         AuditApi,
-        BackendConfigApi {
+        BackendConfigApi,
+        ConfigItemsApi {
   FakeAccessServices({
     AccessSession? session,
     String backendConfigJson = _defaultConfigJson,
@@ -159,6 +160,24 @@ class FakeAccessServices
   final _audit = <AuditRecord>[];
   String _configJson;
   String? _previousConfigJson;
+
+  /// The plant's configuration rows this fake serves: one page, one asset
+  /// on it, one key mapping. Enough for a check to tell one kind from
+  /// another and a count from a guess.
+  final List<ConfigItemRecord> configItems = [
+    const ConfigItemRecord(
+        kind: 'page',
+        id: 'home',
+        payload: '{"menu_item":{"label":"Home","path":"/"}}',
+        rev: 1),
+    const ConfigItemRecord(
+        kind: 'asset', id: 'a1', parentId: 'home', payload: '{}', rev: 2),
+    const ConfigItemRecord(
+        kind: 'key_mapping',
+        id: 'tank.level',
+        payload: '{"opcua_node":{"namespace":2,"identifier":"tank"}}',
+        rev: 3),
+  ];
 
   /// The one gate. Throws [AccessDenied] before any store touch when the current
   /// session lacks [required]; records the decision either way.
@@ -571,6 +590,28 @@ class FakeAccessServices
         ? null
         : BackendConfigDocument(
             configJson: prev, readOnlySections: const ['relay']);
+  }
+
+  // ------------------------------------------------------ config items
+
+  @override
+  Future<List<ConfigItemRecord>> items(String kind) async {
+    requireGroup(AccessGroup.operate, 'config_item.$kind', 'configItems.items');
+    if (!configItemKinds.contains(kind)) {
+      throw ArgumentError.value(kind, 'kind', 'not a configuration kind');
+    }
+    return [for (final r in configItems) if (r.kind == kind) r];
+  }
+
+  @override
+  Future<ConfigItemsFingerprint> fingerprint(List<String> kinds) async {
+    for (final kind in kinds) {
+      requireGroup(
+          AccessGroup.operate, 'config_item.$kind', 'configItems.fingerprint');
+    }
+    final rows = [for (final r in configItems) if (kinds.contains(r.kind)) r];
+    return ConfigItemsFingerprint(
+        count: rows.length, revSum: rows.fold(0, (sum, r) => sum + r.rev));
   }
 
   @override

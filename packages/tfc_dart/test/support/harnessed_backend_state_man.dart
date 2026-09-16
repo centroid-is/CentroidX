@@ -775,6 +775,9 @@ final class HarnessedBackendStateMan
   relay.BackendConfigApi get backendConfig => _api.backendConfig;
 
   @override
+  relay.ConfigItemsApi get configItems => _api.configItems;
+
+  @override
   Future<void> dispose() => _api.dispose();
 }
 

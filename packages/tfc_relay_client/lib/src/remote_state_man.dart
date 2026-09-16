@@ -763,6 +763,10 @@ final class RemoteStateMan implements StateManApi {
   late final BackendConfigApi backendConfig =
       ClientBackendConfigApi(_dataServiceCall);
 
+  @override
+  late final ConfigItemsApi configItems =
+      ClientConfigItemsApi(_dataServiceCall);
+
   /// The request the sub-APIs are handed: the same barrier, the same deadline
   /// and the same peer-at-call-time capture as every other call this client
   /// makes.

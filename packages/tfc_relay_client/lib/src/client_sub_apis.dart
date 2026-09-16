@@ -819,3 +819,28 @@ final class ClientBackendConfigApi implements BackendConfigApi {
   Future<void> restorePrevious({String? reason}) async =>
       await _send(AccessMethods.configRestorePrevious, {'reason': reason});
 }
+
+/// [ConfigItemsApi] over the wire — the browser's mirror of the plant's
+/// configuration rows, one kind per call. Same error mapping as the other
+/// access families: a refusal arrives as [AccessDenied], everything else
+/// verbatim.
+final class ClientConfigItemsApi implements ConfigItemsApi {
+  ClientConfigItemsApi(this._call);
+
+  final RemoteCall _call;
+
+  Future<Object?> _send(String method, Map<String, Object?> params) =>
+      withAccessErrors(() => _call(method, params));
+
+  @override
+  Future<List<ConfigItemRecord>> items(String kind) async => [
+        for (final raw in jsonArray(
+            await _send(AccessMethods.configItemsItems, {'kind': kind})))
+          ConfigItemRecord.fromJson(jsonObject(raw)),
+      ];
+
+  @override
+  Future<ConfigItemsFingerprint> fingerprint(List<String> kinds) async =>
+      ConfigItemsFingerprint.fromJson(jsonObject(await _send(
+          AccessMethods.configItemsFingerprint, {'kinds': kinds})));
+}

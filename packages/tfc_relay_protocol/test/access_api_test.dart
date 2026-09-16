@@ -158,6 +158,11 @@ void main() {
       AccessMethods.configMethods,
       'backendConfig'
     ),
+    'ConfigItemsApi': (
+      ConfigItemsApi,
+      AccessMethods.configItemsMethods,
+      'configItems'
+    ),
   };
 
   group('the access method table', () {
@@ -211,7 +216,7 @@ void main() {
       });
     });
 
-    test('arm 2: all is the union of the four families and nothing else', () {
+    test('arm 2: all is the union of the five families and nothing else', () {
       expect(
           AccessMethods.all,
           {
@@ -219,18 +224,20 @@ void main() {
             ...AccessMethods.adminMethods,
             ...AccessMethods.auditMethods,
             ...AccessMethods.configMethods,
+            ...AccessMethods.configItemsMethods,
           },
-          reason: 'all is spelled from the four family sets, so a name in one '
+          reason: 'all is spelled from the five family sets, so a name in one '
               'of them that never reaches all is a method the closure test '
               'would never demand a handler for');
     });
 
-    test('arm 2b: the four families are pairwise disjoint', () {
+    test('arm 2b: the five families are pairwise disjoint', () {
       final sets = <String, Set<String>>{
         'templateMethods': AccessMethods.templateMethods,
         'adminMethods': AccessMethods.adminMethods,
         'auditMethods': AccessMethods.auditMethods,
         'configMethods': AccessMethods.configMethods,
+        'configItemsMethods': AccessMethods.configItemsMethods,
       };
 
       final names = sets.keys.toList();
@@ -248,8 +255,9 @@ void main() {
           hasLength(AccessMethods.templateMethods.length +
               AccessMethods.adminMethods.length +
               AccessMethods.auditMethods.length +
-              AccessMethods.configMethods.length),
-          reason: 'the union is exactly as long as the four parts added up, '
+              AccessMethods.configMethods.length +
+              AccessMethods.configItemsMethods.length),
+          reason: 'the union is exactly as long as the five parts added up, '
               'which is the same disjointness said as arithmetic — a set that '
               'swallowed a duplicate would be shorter and nothing above would '
               'notice');

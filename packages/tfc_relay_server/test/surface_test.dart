@@ -236,6 +236,12 @@ const Set<String> expectedHandlerTable = {
   'audit.entries',
   'audit.memberCountsByAction',
   'audit.distinctWho',
+  // The fifth access family: the plant's `config_item` rows for a client
+  // with no mirror (the browser build). Two reads, no write; graded
+  // `operate` and refused to a session nobody signed in on
+  // (`_PolicyConfigItems`).
+  'configItems.items',
+  'configItems.fingerprint',
   'backendConfig.read',
   'backendConfig.validate',
   'backendConfig.write',

@@ -645,7 +645,7 @@ void main() {
 
   group('gateway mode has no LOCAL auth path — sign-in moved to the relay',
       () {
-    test('arm 10: authProvider null and the station is the Operator floor '
+    test('arm 10: authProvider null and a credential-less client is nobody '
         'until a relay sign-in elevates it', () async {
       final gateway = await _gateway(_servedFamilies());
       final container =
@@ -658,11 +658,20 @@ void main() {
 
       final session = await container.read(accessSessionProvider.future);
       expect(session.isElevated, isFalse);
-      expect(
-          session.groups,
-          kSeedRoles.firstWhere((r) => r.name == kOperatorRoleName).groups,
-          reason: 'an unelevated station is an Operator — the seeded floor, '
-              'not a guess (access.dart)');
+      // This harness presents no station token, so the server admitted the
+      // socket as anonymous-awaiting-sign-in — an identity that may do
+      // nothing but wait. The client's floor says the same rather than
+      // inventing the seeded Operator groups the server never granted, which
+      // is what showed a browser navigation into pages the gateway would not
+      // fill (access.dart, `_anonymousSession`).
+      expect(session.groups, isEmpty,
+          reason: 'no credential presented, so nothing the server did not '
+              'grant — the seeded Operator floor is a direct station\'s');
+      expect(session.allowedPages, isEmpty,
+          reason: 'and no page: every plant page refuses with the sign-in '
+              'in front of it, which is what the server would have made of '
+              'the page\'s reads anyway');
+      expect(session.pageVisible('/'), isFalse);
     });
   });
 }

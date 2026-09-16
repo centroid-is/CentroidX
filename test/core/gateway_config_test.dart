@@ -5,6 +5,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/core/gateway_config.dart';
 import 'package:tfc/core/gateway_link_status.dart' show isIpLiteralHost;
 import 'package:tfc_dart/core/preferences.dart';
+import 'package:tfc_relay_client/tfc_relay_client.dart'
+    show kCanPinTrustRoot;
 
 /// Stands in for the plant CA. Not a parseable certificate — nothing in
 /// `GatewayConfig` parses it; parsing happens where the pin is consumed
@@ -768,6 +770,82 @@ void main() {
       expect(text, contains('backend owns the database'),
           reason: 'and must say who does own it, or the reader is left to '
               'guess where preferences and sign-in come from');
+    });
+  });
+
+  group('trust on a platform that cannot pin — the browser arm', () {
+    // A `wss` row with nothing pinned: the state every fresh browser tab is in
+    // once its default transport points at the origin that served it.
+    const trustless = GatewayConfig(
+      mode: TransportMode.gateway,
+      url: 'wss://10.50.10.11:9443',
+    );
+
+    test('the VM is a station: the constant the getters read is true', () {
+      // The parameterised forms below exist because this is a compile-time
+      // constant and one test run only ever sees one side of it. Pinning the
+      // side it sees keeps the unparameterised getters honest about which arm
+      // they are exercising here.
+      expect(kCanPinTrustRoot, isTrue);
+      expect(trustless.undialable, trustless.undialableWhen(canPinTrust: true));
+      expect(trustless.validationError,
+          trustless.validationErrorWhen(canPinTrust: true));
+      expect(trustless.needsTrustAcquisition,
+          trustless.needsTrustAcquisitionWhen(canPinTrust: true));
+    });
+
+    test('a station will not dial wss without the plant CA pinned', () {
+      expect(trustless.undialableWhen(canPinTrust: true), contains('pinned'));
+      expect(trustless.needsTrustAcquisitionWhen(canPinTrust: true), isTrue);
+    });
+
+    test('a browser dials the same row: it cannot pin, so nothing is missing',
+        () {
+      expect(trustless.validationErrorWhen(canPinTrust: false), isNull);
+      expect(trustless.undialableWhen(canPinTrust: false), isNull,
+          reason: 'a trustless wss row is the one dial a browser can make; '
+              'refusing it would refuse every browser there is');
+      expect(trustless.needsTrustAcquisitionWhen(canPinTrust: false), isFalse,
+          reason: 'Save must not run the fetch-and-approve ceremony in a '
+              'browser: the fetch is dart:io and the pin could not be '
+              'honoured by the dialler');
+    });
+
+    test('a browser refuses a plaintext dial by name, where a bench station '
+        'may make one', () {
+      const bench = GatewayConfig(
+        mode: TransportMode.gateway,
+        url: 'ws://bench:9443',
+      );
+      expect(bench.validationErrorWhen(canPinTrust: true), isNull);
+      expect(bench.validationErrorWhen(canPinTrust: false), contains('wss'));
+      expect(bench.undialableWhen(canPinTrust: false), contains('wss'),
+          reason: 'the boot path consults undialable, and a browser must be '
+              'refused there by name rather than by the dialler\'s '
+              'ArgumentError after the row was saved');
+    });
+
+    test('a browser refuses a pinned root and a credential file it cannot use',
+        () {
+      final pinned = trustless.copyWith(caPem: _fakePem);
+      expect(pinned.undialableWhen(canPinTrust: true), isNull,
+          reason: 'on a station a pinned wss row is the configured state');
+      expect(pinned.validationErrorWhen(canPinTrust: false), contains('pin'));
+
+      final token =
+          trustless.copyWith(tokenPath: '/etc/centroid/station.token');
+      expect(token.validationErrorWhen(canPinTrust: true), isNull);
+      expect(token.validationErrorWhen(canPinTrust: false),
+          contains('credential file'));
+    });
+
+    test('the browser arm leaves direct mode and the URL checks alone', () {
+      expect(GatewayConfig.defaults.validationErrorWhen(canPinTrust: false),
+          isNull);
+      const empty = GatewayConfig(mode: TransportMode.gateway, url: '');
+      expect(empty.validationErrorWhen(canPinTrust: false),
+          contains('Enter the gateway address'),
+          reason: 'one complaint at a time, and the empty field comes first');
     });
   });
 }

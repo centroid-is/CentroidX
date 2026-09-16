@@ -63,6 +63,7 @@ final class BackendStateMan implements relay.StateManApi {
     relay.AccessAdminApi? accessAdmin,
     relay.AuditApi? audit,
     relay.BackendConfigApi? backendConfig,
+    relay.ConfigItemsApi? configItems,
   })  : _browse = browse,
         _timeseries = timeseries,
         _historyViews = historyViews,
@@ -70,7 +71,8 @@ final class BackendStateMan implements relay.StateManApi {
         _accessTemplates = accessTemplates,
         _accessAdmin = accessAdmin,
         _audit = audit,
-        _backendConfig = backendConfig;
+        _backendConfig = backendConfig,
+        _configItems = configItems;
 
   /// The live half: the pipe's cache and its refcounted subscriptions.
   final BackendValueSource? values;
@@ -94,6 +96,7 @@ final class BackendStateMan implements relay.StateManApi {
   final relay.AccessAdminApi? _accessAdmin;
   final relay.AuditApi? _audit;
   final relay.BackendConfigApi? _backendConfig;
+  final relay.ConfigItemsApi? _configItems;
 
   /// The one shape every refusal in this class takes.
   ///
@@ -315,6 +318,18 @@ final class BackendStateMan implements relay.StateManApi {
               'show a reviewer an empty trail for a plant that has been '
               'writing rows all shift — and an empty trail reads as a clean '
               'one.');
+
+  @override
+  @override
+  relay.ConfigItemsApi get configItems =>
+      _configItems ??
+      _missing(
+          'configItems',
+          'ConfigItemsApi',
+          'The plant\'s configuration rows were not handed to the '
+              'composition root, so a client with no mirror — a browser — '
+              'has no pages and no key mappings to show; wire '
+              'BackendConfigItems in the relay block.');
 
   @override
   relay.BackendConfigApi get backendConfig =>

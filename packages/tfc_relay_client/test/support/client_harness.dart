@@ -282,6 +282,9 @@ final class _PlantAddressSpace implements StateManApi {
   BackendConfigApi get backendConfig => _plant.backendConfig;
 
   @override
+  ConfigItemsApi get configItems => _plant.configItems;
+
+  @override
   Future<void> dispose() => _plant.dispose();
 }
 
@@ -645,6 +648,9 @@ final class RelayServedFake
 
   @override
   BackendConfigApi get backendConfig => _client.backendConfig;
+
+  @override
+  ConfigItemsApi get configItems => _client.configItems;
 
   /// Releases the whole fixture, not merely the client.
   ///

@@ -101,7 +101,6 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show stderr;
 
 import 'package:collection/collection.dart';
 // No `package:drift` import, and its absence is the point: since history moved
@@ -109,6 +108,11 @@ import 'package:collection/collection.dart';
 // database cannot be asked one. The old import was `OrderingMode` and
 // `OrderingTerm` for a `select(db.alarmHistory)` whose only reachable branch
 // on a gateway panel was `return []`.
+// `Logger`, not `dart:io`'s `stderr`: this source runs in the browser build
+// (gateway mode is the browser's only mode) and `stderr` throws there — from
+// inside a stream's error handler, which is an unhandled asynchronous error
+// on top of the one being reported. Same lines, same visibility on a station.
+import 'package:logger/logger.dart';
 import 'package:rxdart/rxdart.dart';
 import 'package:tfc_dart/core/alarm.dart';
 // A prefixed second import of the same library, for one reason: the
@@ -120,6 +124,10 @@ import 'package:tfc_dart/core/boolean_expression.dart';
 import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc_relay_client/tfc_relay_client.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as rp;
+
+/// Only ever used off the happy path: a refused payload, a closed stream, a
+/// history read that failed.
+final Logger _log = Logger();
 
 /// The three things a gateway-mode alarm source needs from the relay client.
 ///
@@ -282,12 +290,12 @@ class RelayAlarmSource implements AlarmSource {
         // The previous set stands. A decode or transport error must not clear
         // the banner: "we cannot read the alarm list" and "there are no
         // alarms" are opposite facts and look identical on a blank screen.
-        stderr.writeln('ALARM.active could not be read: $error');
+        _log.w('ALARM.active could not be read: $error');
       },
       onDone: () {
         if (_closing) return;
         _activeStreamClosed = true;
-        stderr.writeln(
+        _log.e(
             'ALARM.active ENDED: the relay client behind this alarm source is '
             'gone, so no further active set will ever arrive and the list on '
             'screen is frozen at whatever it last showed. This is not an '
@@ -305,7 +313,7 @@ class RelayAlarmSource implements AlarmSource {
     } catch (error) {
       // `AlarmActiveEntry.fromJson` refuses an unknown `tsSource` by name
       // (T-14-36). Refused, logged, and the previous set left standing.
-      stderr.writeln('ALARM.active payload refused: $error');
+      _log.w('ALARM.active payload refused: $error');
       return;
     }
 
@@ -313,7 +321,7 @@ class RelayAlarmSource implements AlarmSource {
     _omitted = decoded.omitted;
     if (_truncated && !_reportedTruncation) {
       _reportedTruncation = true;
-      stderr.writeln('ALARM.active was truncated by the backend: '
+      _log.w('ALARM.active was truncated by the backend: '
           '$_omitted further active alarms are not in this list.');
     }
 
@@ -536,7 +544,7 @@ class RelayAlarmSource implements AlarmSource {
       rows = await getRecentAlarms();
     } catch (error) {
       _historyError = '$error';
-      stderr.writeln(
+      _log.w(
           'Alarm history could not be read from the backend: $error. The list '
           'on the history page is whatever it last showed and is NOT this '
           'plant\'s history. Nothing here says the plant has had no alarms.');

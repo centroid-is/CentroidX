@@ -69,6 +69,7 @@ import '../state_man.dart' show KeyMappings;
 import 'backend_access.dart';
 import 'backend_alarm_ack.dart';
 import 'backend_alarm_history_source.dart';
+import 'backend_config_items.dart';
 import 'backend_config_store.dart';
 import 'backend_alarms.dart' show GatewayAlarmEngine;
 import 'backend_browse.dart';
@@ -625,6 +626,10 @@ BackendRelayComposition composeBackendRelay({
     historyViews: historyViews,
     preferences: preferences,
     audit: audit,
+    // Composition-wide like `audit`, not per identity like the three
+    // scoped families: it reads and never attributes, and the session
+    // gate is the policy layer's (`_PolicyConfigItems`).
+    configItems: BackendConfigItems(database: database.db),
   );
 
   final chosenPolicy = policy ?? backendRelayPolicy;

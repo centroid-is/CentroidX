@@ -19,6 +19,7 @@ import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc_relay_client/tfc_relay_client.dart'
     show ClientConfig, RemoteStateMan;
 import '../core/gateway_state_man.dart';
+import '../core/relayed_config_items.dart';
 import '../core/relay_alarm_source.dart';
 import '../core/value_freshness.dart';
 import 'access.dart';
@@ -27,6 +28,7 @@ import 'gateway.dart';
 import 'gateway_preferences_slot.dart';
 import 'access_policy.dart';
 import 'config_store.dart';
+import 'device_local_store_open.dart';
 import 'preferences.dart';
 import 'value_freshness.dart';
 
@@ -137,7 +139,28 @@ Future<StateMan> stateMan(Ref ref) async {
   // The configuration store is deliberately safe to read this way: its object
   // identity never changes for the life of the process, and the Postgres half
   // is attached underneath it. See `config_store.dart`.
-  final store = (await ref.read(configStoreProvider.future)).inner;
+  //
+  // **On a platform that has one.** A browser has no SQLite, so it has no
+  // mirror of the plant's `config_item` rows and `configStoreProvider`
+  // cannot be built there. Its key mappings come from the rows fetched over
+  // the relay and cached device-locally — `relayed`, below — which on a
+  // first visit is nothing: the client subscribes to the alarm set alone
+  // until a signed-in session fetches the rows, and then takes the real set
+  // in place. The check is a compile-time constant, so the station build
+  // keeps exactly one read of the store and no branch — and a browser never
+  // reaches the throw a missing mirror would be, which was the first of the
+  // two places its boot used to stop before dialling.
+  final store = kHasDeviceLocalMirror
+      ? (await ref.read(configStoreProvider.future)).inner
+      : null;
+  // What stands in for the mirror where there is none: the rows fetched
+  // over the relay and cached device-locally (`relayed_config_items.dart`).
+  // Read here so the client below is built from the cached key mappings —
+  // it cannot be built from the live ones, because the live ones arrive
+  // over the client — and handed the client once it exists, below.
+  final relayed = kHasDeviceLocalMirror
+      ? null
+      : await ref.read(relayedConfigItemsProvider.future);
   // The app's own default `state_man_config`, written on a station that has
   // never been configured, with nobody signed in, against a key the policy
   // classes as `administer` — so on the guarded object it would be a denial at
@@ -151,7 +174,8 @@ Future<StateMan> stateMan(Ref ref) async {
   // mirror boots on empty mappings, which is the honest answer: it has no
   // shared configuration, and inventing an example key here would put one key
   // of nonsense into a plant the moment the database came back.
-  final keyMappings = store.keyMappings;
+  final keyMappings =
+      store?.keyMappings ?? relayed?.keyMappings ?? KeyMappings(nodes: {});
 
   // Read here, not in `onDispose`. When the whole container goes down the
   // container refuses reads before it runs the dispose callbacks
@@ -165,6 +189,7 @@ Future<StateMan> stateMan(Ref ref) async {
   // that left the slot empty would park the panel's whole shared
   // configuration surface forever.
   final prefsSlot = ref.read(gatewayPreferencesSlotProvider);
+  final itemsSlot = ref.read(gatewayConfigItemsSlotProvider);
 
   // Watch for changes in specific preferences.
   //
@@ -191,31 +216,34 @@ Future<StateMan> stateMan(Ref ref) async {
   // Applications are serialized through [pendingApply] so two rapid saves
   // cannot interleave their diffs out of order.
   var pendingApply = Future<void>.value();
-  final listener = store.keyMappingChanges.listen(
-    (diff) {
-      pendingApply = pendingApply.then((_) async {
-        try {
-          final stateMan = await ref.read(stateManProvider.future);
-          final result =
-              stateMan.updateKeyMappings(store.keyMappings, diff: diff);
-          if (result.requiresReload) {
-            _log.i('key_mappings: full reload required '
-                '(${result.reloadReasons.join('; ')})');
-            ref.invalidateSelf();
+  StreamSubscription<void>? listener;
+  if (store != null) {
+    listener = store.keyMappingChanges.listen(
+      (diff) {
+        pendingApply = pendingApply.then((_) async {
+          try {
+            final stateMan = await ref.read(stateManProvider.future);
+            final result =
+                stateMan.updateKeyMappings(store.keyMappings, diff: diff);
+            if (result.requiresReload) {
+              _log.i('key_mappings: full reload required '
+                  '(${result.reloadReasons.join('; ')})');
+              ref.invalidateSelf();
+            }
+          } catch (error, stack) {
+            // A key mapping that fails to apply is the direct cause of a dead
+            // key on a page, and this is the only record that it happened.
+            _log.e('Failed to apply key_mappings change: $error',
+                error: error, stackTrace: stack);
           }
-        } catch (error, stack) {
-          // A key mapping that fails to apply is the direct cause of a dead
-          // key on a page, and this is the only record that it happened.
-          _log.e('Failed to apply key_mappings change: $error',
-              error: error, stackTrace: stack);
-        }
-      });
-    },
-    onError: (Object error, StackTrace stack) {
-      _log.e('Error in the key mapping change listener: $error',
-          error: error, stackTrace: stack);
-    },
-  );
+        });
+      },
+      onError: (Object error, StackTrace stack) {
+        _log.e('Error in the key mapping change listener: $error',
+            error: error, stackTrace: stack);
+      },
+    );
+  }
 
   // Which pipe this station runs on. Device-local, read once here, and
   // deliberately `ref.read` rather than `ref.watch` for the same reason the
@@ -268,6 +296,22 @@ Future<StateMan> stateMan(Ref ref) async {
       // same reason. Everything that has been parked on `preferencesProvider`
       // since this build started is released here.
       prefsSlot.fill(gatewayStateMan.remote.preferences);
+      if (relayed != null) {
+        // The row reader, through the SAME client, plus the notification
+        // stream that says the rows may have moved. From here on the
+        // relayed rows refresh themselves; what this provider owes them is
+        // to take each new key set in place — never a reload, which on
+        // this socket is a sign-out (`GatewayStateMan.adoptKeyMappings`).
+        itemsSlot.fill(gatewayStateMan.remote.configItems,
+            gatewayStateMan.remote.preferences.onPreferencesChanged);
+        final adopt = relayed.changed.listen((_) {
+          gatewayStateMan.adoptKeyMappings(relayed.keyMappings).catchError(
+              (Object e) => _log.w('The new key mappings could not be '
+                  'subscribed on the live link; the next reconnect '
+                  'takes them: $e'));
+        });
+        ref.onDispose(() => unawaited(adopt.cancel()));
+      }
       stateMan = gatewayStateMan;
     } else {
       // The panel's own sessions, and the collector that historises them.
@@ -282,7 +326,7 @@ Future<StateMan> stateMan(Ref ref) async {
     // would forward to the same call and add nothing but a second path to get
     // it wrong.
     ref.onDispose(() async {
-      listener.cancel();
+      listener?.cancel();
       // Cleared before the close, so nothing can pick a disposed client out of
       // the slot while the socket is going down.
       alarmSlot.transport = null;
@@ -290,6 +334,7 @@ Future<StateMan> stateMan(Ref ref) async {
       // a caller arriving in the gap should park for the next client rather
       // than be told the panel has no gateway.
       prefsSlot.clear();
+      itemsSlot.clear();
       await stateMan.close();
     });
 
@@ -311,7 +356,7 @@ Future<StateMan> stateMan(Ref ref) async {
       onDenied: (denial) => reportAccessDenial(ref, denial),
     );
   } catch (e, stack) {
-    listener.cancel();
+    listener?.cancel();
     // No client is coming. Anything parked on the shared configuration store
     // has to learn that from this error rather than wait for a build that has
     // already failed — an undialable gateway would otherwise present as a

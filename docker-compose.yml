@@ -429,6 +429,38 @@ services:
     labels:
       - hmi-update.watch=true
 
+  # The browser client: the same eight routes a panel in gateway mode shows,
+  # served to any browser on the plant network. Static files and nothing else —
+  # it holds no PLC session, no database and no secrets, and everything it
+  # displays arrives over the same `wss://` socket a panel uses.
+  #
+  # `CENTROIDX_GATEWAY_URL` is the whole of its configuration, and it is what
+  # makes one deployment differ from another: the image is generic, and the
+  # entrypoint stamps this address into the page so a browser that opens the
+  # address connects with nobody typing a URL into Server Config. It must be
+  # the address a BROWSER can reach — the station's own IP, not the compose
+  # service name, which resolves only inside this network — and `wss://`,
+  # because a browser cannot pin a private CA and refuses `ws://` by name.
+  #
+  # Leave it unset and the container still serves: every browser then comes up
+  # reporting "misconfigured", with Server Config reachable so an address can
+  # be typed in per browser. That is a worse deployment, not a broken one.
+  #
+  # Port 8090 because 80 and 443 are noVNC's and 8080/8443 are docker-update's.
+  # The relay refuses any origin not named in its `relay.allowed_origins`, so
+  # `http://<station>:8090` has to be in that list in `tfc_config/stateman.json`
+  # or every browser is turned away at the WebSocket handshake with a 403.
+  centroidx-web:
+    image: ghcr.io/centroid-is/centroid-web:latest
+    container_name: centroidx-web
+    restart: unless-stopped
+    environment:
+      CENTROIDX_GATEWAY_URL: ${CENTROIDX_GATEWAY_URL:-}
+    ports:
+      - 8090:80
+    labels:
+      - hmi-update.watch=true
+
   timescaledb:
     image: timescale/timescaledb:latest-pg17
     container_name: timescaledb

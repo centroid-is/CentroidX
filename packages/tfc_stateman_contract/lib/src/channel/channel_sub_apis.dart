@@ -714,3 +714,26 @@ final class ChannelBackendConfigApi implements BackendConfigApi {
   Future<void> restorePrevious({String? reason}) async =>
       await _send(HarnessMethods.configRestorePrevious, {'reason': reason});
 }
+
+/// [ConfigItemsApi] over the harness channel.
+final class ChannelConfigItemsApi implements ConfigItemsApi {
+  ChannelConfigItemsApi(this._call);
+
+  final ChannelCall _call;
+
+  Future<Object?> _send(String method, Map<String, Object?> params) =>
+      _withAccessErrors(() => _call(method, params));
+
+  @override
+  Future<List<ConfigItemRecord>> items(String kind) async => [
+        for (final raw
+            in (await _send(HarnessMethods.configItemsItems, {'kind': kind})
+                as List))
+          ConfigItemRecord.fromJson(jsonObject(raw)),
+      ];
+
+  @override
+  Future<ConfigItemsFingerprint> fingerprint(List<String> kinds) async =>
+      ConfigItemsFingerprint.fromJson(jsonObject(await _send(
+          HarnessMethods.configItemsFingerprint, {'kinds': kinds})));
+}

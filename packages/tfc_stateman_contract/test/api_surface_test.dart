@@ -100,6 +100,7 @@ const Set<String> expectedStateManApi = {
   'accessAdmin',
   'audit',
   'backendConfig',
+  'configItems',
   'dispose',
 };
 
@@ -257,6 +258,10 @@ const Set<String> expectedBackendConfigApi = {
 };
 
 /// Every type that is reachable from the wire, and its agreed table.
+const Set<String> expectedConfigItemsApi = {
+  'list',
+  'fingerprint',
+};
 const Map<String, Set<String>> wireSurface = {
   'StateManApi': expectedStateManApi,
   'BrowseApi': expectedBrowseApi,
@@ -267,6 +272,7 @@ const Map<String, Set<String>> wireSurface = {
   'AccessAdminApi': expectedAccessAdminApi,
   'AuditApi': expectedAuditApi,
   'BackendConfigApi': expectedBackendConfigApi,
+  'ConfigItemsApi': expectedConfigItemsApi,
 };
 
 /// The types behind [wireSurface], in the same order.
@@ -280,6 +286,7 @@ const List<Type> wireTypes = [
   AccessAdminApi,
   AuditApi,
   BackendConfigApi,
+  ConfigItemsApi,
 ];
 
 /// Every method, getter and setter reachable on [type], including inherited

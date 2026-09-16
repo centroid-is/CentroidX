@@ -535,6 +535,9 @@ final class SessionHealthStateMan implements StateManApi {
   @override
   BackendConfigApi get backendConfig => source.backendConfig;
 
+  @override
+  ConfigItemsApi get configItems => source.configItems;
+
   /// Releases this overlay's own store, then delegates — but **only** from the
   /// server-mode instance.
   ///

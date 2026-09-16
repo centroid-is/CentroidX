@@ -480,12 +480,22 @@ abstract final class HarnessMethods {
     configRestorePrevious,
   };
 
-  /// Every request name belonging to the four access sub-APIs.
+  // config items — the fifth access family
+  static const configItemsItems = '${prefix}access.configItems.items';
+  static const configItemsFingerprint =
+      '${prefix}access.configItems.fingerprint';
+  static const configItemsMethods = <String>{
+    configItemsItems,
+    configItemsFingerprint,
+  };
+
+  /// Every request name belonging to the five access sub-APIs.
   static const accessMethods = <String>{
     ...templateMethods,
     ...adminMethods,
     ...auditMethods,
     ...configMethods,
+    ...configItemsMethods,
   };
 
   // There is deliberately no name here for `upstreamWriteAttempts` or

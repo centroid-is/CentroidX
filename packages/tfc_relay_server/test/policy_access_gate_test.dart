@@ -515,6 +515,42 @@ void main() {
       expect(allowed.plant.templates.reached, ['bind']);
     });
 
+    test('configItems is refused to a session nobody signed in on, by name, '
+        'and served to operate', () async {
+      // The browser's case: a credential-less hello is admitted as anonymous,
+      // and the rows are the plant's mimics and routing — served to nobody
+      // who has not signed in, whatever groups the anonymous row grants.
+      final anonymous = _seenBy(StationIdentity.anonymous(
+          groups: {AccessGroup.operate}, station: 'browser'));
+      final refusal = await _refused(
+          () => anonymous.served.configItems.items('page'),
+          'a config-item read from a session nobody signed in on');
+      expect(refusal.message, contains(SessionAuthMarkers.awaitingSignIn),
+          reason: 'the client names the refusal from the marker, so an '
+              'anonymous session that happens to hold operate is told to '
+              'sign in rather than that a permission is missing');
+      await _refused(
+          () => anonymous.served.configItems.fingerprint(const ['page']),
+          'a fingerprint from a session nobody signed in on');
+
+      // Signed in without operate: refused as a permission.
+      final noOperate = _seenBy(stationHolding(const {AccessGroup.users},
+          station: 'HQ-01', username: 'hq-admin-panel', roleName: 'User Admin'));
+      final denied = await _refused(
+          () => noOperate.served.configItems.items('asset'),
+          'a config-item read from a session without operate');
+      expect(denied.code, ServerErrorCodes.forbidden);
+
+      // Signed in with operate: served, and a read records nothing.
+      final allowed = _seenBy(stationHolding(const {AccessGroup.operate},
+          station: 'ST101', username: 'ST101-panel', roleName: 'Line Panel'));
+      expect(await allowed.served.configItems.items('page'), isEmpty,
+          reason: 'the fake plant holds no rows; what matters is that the '
+              'call reached it');
+      expect(allowed.sink.rows, isEmpty,
+          reason: 'a read, like every read, records nothing');
+    });
+
     test('every backendConfig member takes administer — read included, '
         'because the document is the plant\'s addresses', () async {
       final refused = _seenBy(_userAdmin); // users, deliberately: not enough

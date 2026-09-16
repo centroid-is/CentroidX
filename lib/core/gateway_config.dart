@@ -24,6 +24,7 @@ library;
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:meta/meta.dart' show visibleForTesting;
 import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc_relay_client/tfc_relay_client.dart';
 
@@ -163,8 +164,28 @@ final class GatewayConfig {
   /// parse has no host to fetch from, and one complaint at a time is this
   /// class's standing rule about a string somebody is halfway through typing.
   bool get needsTrustAcquisition =>
+      needsTrustAcquisitionWhen(canPinTrust: kCanPinTrustRoot);
+
+  /// [needsTrustAcquisition] with the platform's trust capability injected.
+  ///
+  /// **Never in a browser.** There is no API to pin a root there, the fetch
+  /// behind the ceremony is `dart:io`, and `ClientConfig.checkDialable`
+  /// refuses a configured root on that platform by name — so Save in a
+  /// browser writes the row and the dial runs on the machine's own trust
+  /// store, which is the one dial a browser can make. The station arm is
+  /// unchanged.
+  ///
+  /// The capability is a compile-time constant — `kCanPinTrustRoot`, the
+  /// client package's own, the same one `checkDialable` enforces, so the two
+  /// cannot disagree about what a platform can honour. That is why the
+  /// getters read the constant and these `…When` forms take it as a
+  /// parameter: one test run only ever sees one side of a constant, and the
+  /// browser side of this rule is the side that was never exercised.
+  @visibleForTesting
+  bool needsTrustAcquisitionWhen({required bool canPinTrust}) =>
+      canPinTrust &&
       isGateway &&
-      validationError == null &&
+      validationErrorWhen(canPinTrust: canPinTrust) == null &&
       uri.scheme == 'wss' &&
       !hasPinnedTrust;
 
@@ -183,7 +204,13 @@ final class GatewayConfig {
   /// arm, and `stateManProvider` consults *that*, so a hand-edited trustless
   /// row still lands on `GatewayLinkKind.notBuilt` and the chip still says
   /// "Panel misconfigured".
-  String? get validationError {
+  String? get validationError =>
+      validationErrorWhen(canPinTrust: kCanPinTrustRoot);
+
+  /// [validationError] with the platform's trust capability injected — see
+  /// [needsTrustAcquisitionWhen] for why the parameter exists.
+  @visibleForTesting
+  String? validationErrorWhen({required bool canPinTrust}) {
     if (!isGateway) return null;
     final trimmed = url.trim();
     if (trimmed.isEmpty) return 'Enter the gateway address, e.g. wss://10.50.10.11:9443';
@@ -214,6 +241,30 @@ final class GatewayConfig {
       return 'Not an address: "$trimmed" is not a host name or an IP address '
           'and a port. Type it like 10.50.10.11:9443';
     }
+    // A browser. `ClientConfig.checkDialable` refuses all three of these at
+    // construction, by name; this is the same refusal one screen earlier —
+    // at the field, where it can be corrected — rather than at boot, where it
+    // lands as GatewayLinkKind.notBuilt with the row already saved. Each
+    // sentence says what a browser does instead, because each of the three
+    // has an answer a station does not need.
+    if (!canPinTrust) {
+      if (uri.scheme != 'wss') {
+        return 'A browser dials wss:// only: a plaintext socket would carry '
+            'the sign-in and every plant write in the clear, and whether the '
+            'browser stops it depends on how this page was served. Serve the '
+            'page over https and dial wss';
+      }
+      if (hasPinnedTrust) {
+        return 'A browser cannot pin a CA root — there is no API for it — so '
+            'the gateway has to be trusted by this machine\'s own certificate '
+            'store. Clear the pinned trust';
+      }
+      if (tokenPath != null) {
+        return 'A browser cannot read a station credential file. Leave the '
+            'token path empty and sign in instead';
+      }
+      return null;
+    }
     if (uri.scheme == 'ws' && hasPinnedTrust) {
       return 'A CA root on a ws:// dial is never consulted — the config would '
           'read as encrypted while the traffic is not';
@@ -233,10 +284,17 @@ final class GatewayConfig {
   /// as it always was — and refusing it by name here is what keeps the
   /// refusal readable instead of the `CERTIFICATE_VERIFY_FAILED` a genuine
   /// impostor also produces.
-  String? get undialable {
-    final refusal = validationError;
+  String? get undialable => undialableWhen(canPinTrust: kCanPinTrustRoot);
+
+  /// [undialable] with the platform's trust capability injected — see
+  /// [needsTrustAcquisitionWhen]. The missing-trust arm is a station's: a
+  /// browser cannot pin, so on that platform a trustless `wss` row is the one
+  /// dial it can make, and refusing it would refuse every browser there is.
+  @visibleForTesting
+  String? undialableWhen({required bool canPinTrust}) {
+    final refusal = validationErrorWhen(canPinTrust: canPinTrust);
     if (refusal != null) return refusal;
-    if (isGateway && uri.scheme == 'wss' && !hasPinnedTrust) {
+    if (canPinTrust && isGateway && uri.scheme == 'wss' && !hasPinnedTrust) {
       return 'wss needs the plant CA pinned first: without it every handshake '
           'fails with the same error a real impostor produces. Save on the '
           'Server Config page fetches the gateway\'s identity for approval';
@@ -406,25 +464,37 @@ String normalizeGatewayAddress(String raw) {
   return 'wss://$trimmed';
 }
 
-/// Reads the station's transport choice, falling back to direct mode.
+/// Reads the station's transport choice, falling back to the platform's
+/// default.
 ///
-/// A corrupt row reads as [GatewayConfig.defaults] rather than throwing. The
-/// alternative is a panel that will not boot because somebody hand-edited a
-/// preferences row, and direct mode is the configuration the plant already
-/// runs.
-Future<GatewayConfig> readGatewayConfig(PreferencesApi prefs) async {
+/// A corrupt row reads as the default rather than throwing. The alternative is
+/// a panel that will not boot because somebody hand-edited a preferences row,
+/// and on a station the default is direct mode, the configuration the plant
+/// already runs.
+///
+/// **The row wins, and it is returned before [fallback] is so much as
+/// called.** That order is the first rule of `gateway_declaration.dart`: a
+/// browser's serving host may *declare* a gateway, and the declaration is a
+/// default, not a pin — a person's saved choice survives every redeploy of
+/// the bundle because nothing that could displace it runs while a row exists.
+/// [fallback] is a parameter so that a VM test can hand in a declaration and
+/// watch it lose; production passes nothing and gets [defaultGatewayConfig].
+Future<GatewayConfig> readGatewayConfig(
+  PreferencesApi prefs, {
+  GatewayConfig Function() fallback = defaultGatewayConfig,
+}) async {
   final raw = await prefs.getString(GatewayConfig.prefsKey);
   // [defaultGatewayConfig], not [GatewayConfig.defaults]: a station with no row
-  // still gets `direct`, and a browser gets the gateway it was served from,
-  // because `direct` is the one mode a page can never satisfy. Both the absent
-  // row and the corrupt one land here — a client that cannot read its transport
-  // choice must still come up on a transport it could possibly have.
-  final fallback = defaultGatewayConfig();
-  if (raw == null) return fallback;
+  // still gets `direct`, and a browser gets the gateway its serving host
+  // declared or, failing that, the one it was served from, because `direct` is
+  // the one mode a page can never satisfy. Both the absent row and the corrupt
+  // one land here — a client that cannot read its transport choice must still
+  // come up on a transport it could possibly have.
+  if (raw == null) return fallback();
   try {
     return GatewayConfig.fromJson(jsonDecode(raw) as Map<String, dynamic>);
   } catch (_) {
-    return fallback;
+    return fallback();
   }
 }
 

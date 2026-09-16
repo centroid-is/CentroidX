@@ -126,6 +126,9 @@ class NeverResponds extends FakeStateMan {
   @override
   BackendConfigApi get backendConfig => _dead ??= _DeadServices();
 
+  @override
+  ConfigItemsApi get configItems => _dead ??= _DeadServices();
+
   /// Releases what this object holds, out of band.
   ///
   /// Not `dispose`: that is part of the surface under test and must stay hung.
@@ -162,7 +165,8 @@ class _DeadServices
         AccessTemplateApi,
         AccessAdminApi,
         AuditApi,
-        BackendConfigApi {
+        BackendConfigApi,
+        ConfigItemsApi {
   /// Open and empty, never closed while the source lives: a listener waits
   /// rather than being told the news is over. A closed stream is an event, and
   /// events are the one thing this class does not produce.

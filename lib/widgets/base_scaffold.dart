@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:async';
 import 'dart:math' as math;
 import 'package:clock/clock.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
 import 'panes/side_pane.dart';
@@ -656,7 +657,13 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
                           ),
                           globalLeftProvider?.buildAppBarLeftWidgets(context) ??
                               const SizedBox.shrink(),
-                          if (Platform.isAndroid || Platform.isIOS)
+                          // `kIsWeb` first, and it is not decoration: `Platform`
+                          // *throws* under dart2js (`Platform._operatingSystem`),
+                          // and this line sat on the browser's first frame the
+                          // moment the web `/` route got the app shell. The const
+                          // short-circuits, so the browser build never reaches
+                          // `dart:io` here and a station reads exactly as before.
+                          if (!kIsWeb && (Platform.isAndroid || Platform.isIOS))
                             IconButton(
                               icon: const Icon(Icons.fullscreen),
                               onPressed: _toggleFullscreen,
@@ -685,7 +692,10 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
                               padding: const EdgeInsets.only(right: 16.0),
                               child: GestureDetector(
                                 onDoubleTap: () {
-                                  exit(0);
+                                  // A browser has no process to end — the tab
+                                  // is the operator's to close — and `exit` throws
+                                  // there rather than doing nothing.
+                                  if (!kIsWeb) exit(0);
                                 },
                                 child: SvgPicture.asset(
                                   'assets/centroid.svg',

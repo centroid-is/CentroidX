@@ -354,6 +354,112 @@ class PageNotAvailableBody extends ConsumerWidget {
   }
 }
 
+/// Whether [session] is nobody, shown nothing: anonymous, with a whitelist that
+/// admits no page at all.
+///
+/// The one case where the whitelist refusal should lead with the sign-in
+/// rather than with "this page is not available". That sentence is written
+/// for a page somebody was not given; when *no* page was given and nobody has
+/// signed in, the page is not the point — the panel shows nothing to anyone
+/// who is not signed in, and the one thing worth doing is signing in. A
+/// gateway client that presented no credential lands here on every boot
+/// (`access.dart`, `_anonymousSession`), and a browser is always such a
+/// client, so this is a browser's first frame.
+///
+/// Not a grant and not a widening: the gate has already refused, and this
+/// only chooses which refusal to show. An elevated session with an empty
+/// whitelist is *not* this case — somebody did sign in, and telling them to
+/// sign in is the confusion [kPageNotAvailableRoleNote] exists to avoid.
+bool anonymousSeesNothing(AccessSession? session) =>
+    session != null &&
+    !session.isElevated &&
+    session.allowedPages != null &&
+    session.allowedPages!.isEmpty;
+
+/// The headline over a panel that shows nothing until somebody signs in.
+///
+/// The same words as [kAccessCheckingHeadline], deliberately: both screens
+/// ask for the same act. What differs is the line under it — that one says
+/// the panel has not finished deciding, this one says it has.
+const String kAccessSignInFirstHeadline = 'Sign in to this panel';
+
+/// Why the sign-in comes first: not a missing permission, not an unpublished
+/// page — nobody is signed in, and this panel shows no pages to anyone who is
+/// not. True at a walk-up station whose `anonymous` row lists no pages, and
+/// true in a browser, which the gateway admits as nobody until it signs in.
+const String kAccessSignInFirstNote =
+    'Nobody is signed in, and this panel shows no pages until somebody is.';
+
+/// The body's key, so a test can tell this refusal from the other two.
+const Key kAccessSignInFirstBodyKey = Key('access-sign-in-first-body');
+
+/// The Sign in action on it.
+const Key kAccessSignInFirstSignInKey = Key('access-sign-in-first-sign-in');
+
+/// The refusal a panel shows when nobody is signed in and nothing is shown to
+/// nobody: the sign-in, first and alone.
+///
+/// No destinations — there are none, by definition of the case — and no fix
+/// note naming the access screen: the person in front of this is an operator
+/// about to sign in, or a browser that just opened, and neither is the
+/// administrator that sentence addresses.
+class AccessSignInFirstBody extends ConsumerWidget {
+  const AccessSignInFirstBody({
+    super.key,
+    this.openSignIn = showAccessSignInDialog,
+  });
+
+  /// How the sign-in prompt is opened. Injectable for tests, the
+  /// `AccessStatusAction` idiom.
+  final AccessSignInOpener openSignIn;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Center(
+      key: kAccessSignInFirstBodyKey,
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: kAccessLockedMaxWidth),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // The sign-in glyph, as on the checking body, and for the same
+              // reason: it is what the headline asks for. Not the padlock —
+              // nothing has been refused *to this person*; there is no person
+              // yet.
+              Icon(Icons.login, size: 40, color: scheme.onSurfaceVariant),
+              const SizedBox(height: 16),
+              Text(
+                kAccessSignInFirstHeadline,
+                textAlign: TextAlign.center,
+                style: theme.textTheme.headlineSmall,
+              ),
+              const SizedBox(height: 16),
+              Text(
+                kAccessSignInFirstNote,
+                textAlign: TextAlign.center,
+                maxLines: null,
+                overflow: TextOverflow.visible,
+                style: theme.textTheme.bodyLarge,
+              ),
+              const SizedBox(height: 24),
+              ElevatedButton(
+                key: kAccessSignInFirstSignInKey,
+                onPressed: () => openSignIn(context, ref),
+                child: const Text('Sign in'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// Stands in front of a page-manager route and decides whether to show it.
 ///
 /// Built for every page route, including the ones nothing has ever restricted.
@@ -423,12 +529,20 @@ class PageAccessGate extends ConsumerWidget {
           allowWhenNobodyCanSignIn: routeAllowedWhenNobodyCanSignIn(path),
           relayCanAuthenticate: relayCanAuthenticate,
         );
-        return BaseScaffold(
-          title: title,
-          body: byGroup == AccessGateState.denied
-              ? AccessLockedBody(group: group, openSignIn: openSignIn)
-              : PageNotAvailableBody(openSignIn: openSignIn),
-        );
+        //
+        // And the whitelist refusal itself has two voices. "Not available"
+        // is for a page this audience was not given; when nobody is signed in
+        // and no page was given, the sign-in leads — see
+        // [anonymousSeesNothing]. Same refusal, different first sentence.
+        final Widget refusal;
+        if (byGroup == AccessGateState.denied) {
+          refusal = AccessLockedBody(group: group, openSignIn: openSignIn);
+        } else if (anonymousSeesNothing(session.valueOrNull)) {
+          refusal = AccessSignInFirstBody(openSignIn: openSignIn);
+        } else {
+          refusal = PageNotAvailableBody(openSignIn: openSignIn);
+        }
+        return BaseScaffold(title: title, body: refusal);
       case AccessGateState.waiting:
         // The same body `AccessGate` shows, for the same reason: this is the
         // screen a restricted panel now boots on, so it must be one an

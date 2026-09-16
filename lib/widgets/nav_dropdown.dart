@@ -1,4 +1,3 @@
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:tfc/widgets/panes/side_pane.dart';
@@ -323,7 +322,10 @@ void _beamKids(BuildContext context, MenuItem item) {
   if (item.path != null) {
     context.beamToNamed(item.path.toString());
   } else {
-    stderr.writeln('Item pressed and navigated does not have a page $item');
+    // `debugPrint`, not `stderr`: this widget is on the browser's boot path
+    // and `dart:io`'s `stderr` throws there. Same line, same visibility on a
+    // station.
+    debugPrint('Item pressed and navigated does not have a page $item');
     showStandardDialog<void>(
       context: context,
       title: 'Page does not exist',

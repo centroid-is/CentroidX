@@ -518,6 +518,64 @@ void main() {
       expect(taps, 1);
     });
 
+    testWidgets('nobody signed in and nothing shown to nobody: the sign-in '
+        'leads', (tester) async {
+      // The browser's first frame, and a walk-up station whose `anonymous`
+      // row lists no pages. "This page is not available" is written for a
+      // page somebody was not given; here no page was given to anyone, and
+      // the honest first sentence is the one act that changes it.
+      await tester.pumpWidget(host(
+        path: '/fillet',
+        session: _session(groups: const {}, pages: const <String>{}),
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(kAccessSignInFirstBodyKey), findsOneWidget);
+      expect(find.text(kAccessSignInFirstHeadline), findsOneWidget);
+      expect(find.byKey(kAccessSignInFirstSignInKey), findsOneWidget);
+      expect(find.byKey(kPageNotAvailableBodyKey), findsNothing);
+      expect(find.byKey(kAccessLockedBodyKey), findsNothing);
+      expect(find.text('the page itself'), findsNothing,
+          reason: 'a different first sentence, the same refusal: the page '
+              'behind it is still never built');
+    });
+
+    testWidgets('the sign-in-first body calls the injected opener',
+        (tester) async {
+      var opened = 0;
+      await tester.pumpWidget(host(
+        path: '/fillet',
+        session: _session(groups: const {}, pages: const <String>{}),
+        openSignIn: (context, ref) async {
+          opened++;
+        },
+      ));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(kAccessSignInFirstSignInKey));
+      await tester.pump();
+      expect(opened, 1);
+    });
+
+    test('anonymousSeesNothing is exactly anonymous with an empty whitelist',
+        () {
+      AccessSession session({Set<String>? pages, bool elevated = false}) =>
+          _session(pages: pages, elevated: elevated).requireValue;
+      expect(anonymousSeesNothing(session(pages: const <String>{})), isTrue);
+      expect(anonymousSeesNothing(session(pages: null)), isFalse,
+          reason: 'no whitelist admits every page — there is nothing to '
+              'lead with a sign-in about');
+      expect(anonymousSeesNothing(session(pages: const {'/packing'})), isFalse,
+          reason: 'some pages were given; a page outside them is not '
+              'available, which is the other body\'s sentence');
+      expect(
+          anonymousSeesNothing(
+              session(pages: const <String>{}, elevated: true)),
+          isFalse,
+          reason: 'somebody DID sign in; telling them to is the confusion '
+              'kPageNotAvailableRoleNote exists to avoid');
+      expect(anonymousSeesNothing(null), isFalse);
+    });
+
     testWidgets('the not-available body names who is signed in', (tester) async {
       await tester.pumpWidget(host(
         path: '/fillet',

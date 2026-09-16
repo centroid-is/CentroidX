@@ -90,6 +90,37 @@ Future<List<ConfigItem>> readSharedKeyMappingItems(GeneratedDatabase db) async {
 /// other's hole.
 ///
 /// Three integers over the wire, whatever the configuration weighs.
+/// The shared rows of one [kind], ordered by id.
+///
+/// [readSharedKeyMappingItems] for any kind: the relay's `configItems.items`
+/// serves a client with no mirror one family at a time, and the query is
+/// the same one with the kind as a parameter. Ordered by id for the reason
+/// that function gives.
+Future<List<ConfigItem>> readSharedConfigItemsOfKind(
+    GeneratedDatabase db, ConfigKind kind) async {
+  final table = _configItems(db);
+  final rows = await (db.select(table)
+        ..where((t) =>
+            t.kind.equals(kind.wireName) &
+            t.scope.equals(ConfigScope.shared.wireName))
+        ..orderBy([(t) => OrderingTerm.asc(t.id)]))
+      .get();
+  return [
+    for (final row in rows)
+      ConfigItem(
+        kind: kind,
+        id: row.id,
+        scope: ConfigScope.shared,
+        parentId: row.parentId,
+        sortIndex: row.sortIndex,
+        payload: row.payload,
+        rev: row.rev,
+        updatedAt: row.updatedAt,
+        updatedBy: row.updatedBy,
+      ),
+  ];
+}
+
 Future<KeyMappingFingerprint> readSharedKeyMappingFingerprint(
         GeneratedDatabase db) =>
     readSharedConfigFingerprint(db, const {ConfigKind.keyMapping});

@@ -1383,6 +1383,8 @@ final class RelaySession {
     _on(AccessMethods.configWrite, access.configWrite);
     _on(AccessMethods.configPrevious, access.configPrevious);
     _on(AccessMethods.configRestorePrevious, access.configRestorePrevious);
+    _on(AccessMethods.configItemsItems, access.configItemsItems);
+    _on(AccessMethods.configItemsFingerprint, access.configItemsFingerprint);
   }
 
   /// The client's end vanished — a graceful close, a reset, a yanked cable.
@@ -2246,6 +2248,11 @@ final class _IdentityScopedSource implements StateManApi {
   @override
   BackendConfigApi get backendConfig =>
       _scopedOf()?.backendConfig ?? _inner.backendConfig;
+
+  // Composition-wide like `audit`: the family reads and attributes nothing,
+  // so it has no per-identity slot; the session gate is the policy layer's.
+  @override
+  ConfigItemsApi get configItems => _inner.configItems;
 
   @override
   ValueListenable<DynamicValue> listen(String key) => _inner.listen(key);

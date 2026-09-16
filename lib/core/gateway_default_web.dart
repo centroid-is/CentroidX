@@ -1,34 +1,38 @@
-import 'gateway_config.dart';
+import 'package:web/web.dart' as web;
 
-/// Gateway mode, pointed at the origin the page was served from.
+import 'gateway_config.dart';
+import 'gateway_declaration.dart';
+
+/// Gateway mode, pointed at what the serving host declared — or, failing that,
+/// at the origin the page was served from.
 ///
-/// A browser did not appear from nowhere — it loaded this application over the
-/// network, and the host that served it is, in the ordinary case, the gateway
-/// itself. So the default needs no configuration at all: open the page and it
-/// dials back to where it came from, over `wss` if the page came over `https`.
+/// The decision is `gateway_declaration.dart`'s, and its library doc holds the
+/// reasoning: the precedence, what counts as no declaration, and why a
+/// malformed one is refused by name rather than dropped. This arm only fetches
+/// the two inputs a browser has — its own URL and the `<meta>` tag — and
+/// hands them over, so that everything decidable without a DOM is decided in a
+/// file the VM can test.
 ///
-/// Deriving the scheme from the page rather than hardcoding `wss` is
-/// deliberate. A page served over `https` cannot open a plain `ws` socket —
-/// browsers refuse mixed content — so anything but `wss` there is a dial that
-/// could never connect. A bench gateway served over `http` gets `ws`, which is
-/// the same latitude `checkDialable` already grants a bench station.
-///
-/// Only a *default*. A row in the device-local store wins, so Server Config can
-/// still point a browser at a different gateway and that choice survives a
-/// reload — it is stored in this browser, not on the gateway, exactly as a
+/// Only a *default*. A row in the device-local store wins, so Server Config
+/// can still point a browser at a different gateway and that choice survives
+/// a reload — it is stored in this browser, not on the gateway, exactly as a
 /// station's transport row is stored on the station.
-GatewayConfig defaultGatewayConfig() {
-  final page = Uri.base;
-  final scheme = page.scheme == 'http' ? 'ws' : 'wss';
-  final authority = page.hasPort && page.port != 0
-      ? '${page.host}:${page.port}'
-      : page.host;
-  return GatewayConfig(
-    mode: TransportMode.gateway,
-    // An empty host would mean the page came from something with no origin —
-    // a `file://` URL. There is no gateway to guess at there, so leave the URL
-    // empty and let the link report that it cannot dial, rather than inventing
-    // `wss://` and failing somewhere less legible.
-    url: page.host.isEmpty ? '' : '$scheme://$authority',
-  );
-}
+///
+/// [page] and [declared] default to the document's own; both are parameters
+/// only so a caller that already holds them can pass them through. The
+/// station arm accepts and ignores them — the two arms share one signature.
+GatewayConfig defaultGatewayConfig({Uri? page, String? declared}) =>
+    gatewayDefaultFor(
+      page: page ?? Uri.base,
+      declared: declared ?? readGatewayDeclaration(),
+    );
+
+/// The `content` of the page's [kGatewayDeclarationMetaName] tag, or null when
+/// the page carries none.
+///
+/// The attribute, not the element's typed `content` property, so an element
+/// that is somehow not a `<meta>` (a hand-edited page) reads as its attribute
+/// or as nothing rather than as a cast failure at boot.
+String? readGatewayDeclaration() => web.document
+    .querySelector('meta[name="$kGatewayDeclarationMetaName"]')
+    ?.getAttribute('content');

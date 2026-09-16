@@ -276,8 +276,12 @@ void main() {
     await tester.pumpWidget(_navHost(container));
     await tester.pumpAndSettle();
 
-    // The boot state: anonymous, with an empty group set beyond the operate
-    // floor. This is what the panel does now on every start.
+    // The boot state: anonymous, and — this harness presents no station
+    // token — nobody: no groups, and a whitelist that admits no page, because
+    // the server admitted the socket as awaiting-sign-in and the client's
+    // floor mirrors that rather than inventing the seeded Operator groups
+    // (access.dart, `_anonymousSession`). This is what the panel does now on
+    // every start.
     final booted = await container.read(accessSessionProvider.future);
     expect(booted.isElevated, isFalse,
         reason: 'a gateway panel restores nothing — it boots anonymous');
@@ -288,8 +292,10 @@ void main() {
     await _openAdvanced(tester);
     expect(_row('Page Editor'), findsNothing,
         reason: 'nobody is signed in yet');
-    expect(_row('Dashboard'), findsOneWidget,
-        reason: 'an unraised page is unaffected in every arm of this test');
+    expect(_row('Dashboard'), findsNothing,
+        reason: 'a credential-less gateway client is shown no page until '
+            'somebody signs in; it used to be offered every unraised page '
+            'and find each one empty');
     await _closeMenu(tester);
 
     // The transition: the server verifies and answers, and the panel's session

@@ -1620,6 +1620,9 @@ final class LocalStateMan implements StateManApi {
   @override
   BackendConfigApi get backendConfig => _noAccessStore('backendConfig');
 
+  @override
+  ConfigItemsApi get configItems => _noAccessStore('configItems');
+
   // ---------------------------------------------------------------- internals
 
   /// Establishes what the gateway can say about [key] before it is read.

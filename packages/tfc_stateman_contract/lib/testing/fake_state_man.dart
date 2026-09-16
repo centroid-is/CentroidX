@@ -1184,6 +1184,9 @@ class FakeStateMan
   @override
   BackendConfigApi get backendConfig => _access;
 
+  @override
+  ConfigItemsApi get configItems => _access;
+
   // -------------------------------------------------- the access control lever
 
   @override

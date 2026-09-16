@@ -18,18 +18,41 @@
 
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="A new Flutter project.">
+  <meta name="description" content="Centroid HMI — plant pages, alarms and access, over one gateway socket.">
 
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="centroidx">
+  <meta name="apple-mobile-web-app-title" content="CentroidX">
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
 
-  <!-- Favicon -->
+  <!--
+    The gateway this deployment's browsers should dial, stamped in by whatever
+    serves the bundle: `docker/web`'s entrypoint from `CENTROIDX_GATEWAY_URL`,
+    or the local server in `tool/web_e2e`. Empty here on purpose — an
+    un-stamped bundle must behave exactly as it did before there was a
+    declaration, falling back to the origin the page came from, which is what
+    a browser served BY the gateway wants. A row saved from Server Config
+    still wins over both.
+  -->
+  <meta name="centroidx-gateway" content="$CENTROIDX_GATEWAY">
+
+  <!--
+    The Centroid mark, generated from `assets/icon.png` — the same mark the
+    installed app and the noVNC tab carry. An operator with a browser full of
+    tabs finds the plant by its icon, and the stock Flutter logo that ships in
+    this template is indistinguishable from any other Flutter page they have
+    open.
+  -->
   <link rel="icon" type="image/png" href="favicon.png"/>
 
-  <title>centroidx</title>
+  <!--
+    The tab's name before the app has routed anywhere. Beamer replaces it with
+    the page's own title once the router runs, so this is what a loading or a
+    failed-to-boot tab reads — which is exactly when knowing which system it is
+    matters most.
+  -->
+  <title>CentroidX</title>
   <link rel="manifest" href="manifest.json">
 </head>
 <body>

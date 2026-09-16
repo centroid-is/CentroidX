@@ -392,18 +392,33 @@ abstract final class AccessMethods {
     configRestorePrevious,
   };
 
-  /// Every access **request** name: twenty-eight, and the whole wire surface
+  /// The fifth family: the plant's `config_item` rows — pages, assets, key
+  /// mappings — for a client with no mirror of them (a browser). Two reads
+  /// and no write; `config_items_api.dart` says why that is a boundary and
+  /// why there is no `configItems.changed` beside `preferences.changed`.
+  static const configItemsItems = 'configItems.items';
+  static const configItemsFingerprint = 'configItems.fingerprint';
+
+  static const configItemsMethods = <String>{
+    configItemsItems,
+    configItemsFingerprint,
+  };
+
+  /// Every access **request** name: thirty — twenty-eight, and the whole wire surface
   /// Phase 17 adds to the gateway. (Twenty-nine originally; the access audit
   /// cut `accessTemplates.template` — no caller anywhere, including its own
   /// store; remote implementations derive it from `list()`.)
   ///
-  /// Spelled from the four sets above rather than as a second copy of the
+  /// Plus the two `configItems.*` reads the browser build added.
+  ///
+  /// Spelled from the five sets above rather than as a second copy of the
   /// strings, so a name can only be in one place.
   static const all = <String>{
     ...templateMethods,
     ...adminMethods,
     ...auditMethods,
     ...configMethods,
+    ...configItemsMethods,
   };
 }
 
