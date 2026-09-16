@@ -239,6 +239,97 @@ void main() {
     expect(find.byKey(const ValueKey('ec-row-m:PLC 2/Device 2')), findsNothing);
   });
 
+  testWidgets('set to start collapsed, every group opens shut', (tester) async {
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: SizedBox(
+          width: 900,
+          height: 600,
+          child: EcDeviceTableView(
+            plcs: ecSamplePlcs(),
+            initialCollapsed: true,
+          ),
+        ),
+      ),
+    ));
+    expect(find.byKey(const ValueKey('ec-row-p:PLC 1')), findsOneWidget);
+    expect(find.byKey(const ValueKey('ec-row-p:PLC 2')), findsOneWidget);
+    expect(find.byKey(const ValueKey('ec-row-m:PLC 1/Device 1')), findsNothing);
+    expect(find.text('EL6070'), findsNothing);
+
+    // Opening a PLC shows its masters, still shut.
+    await tester.tap(find.byKey(const ValueKey('ec-row-p:PLC 1')));
+    await tester.pump();
+    expect(
+        find.byKey(const ValueKey('ec-row-m:PLC 1/Device 1')), findsOneWidget);
+    expect(find.text('EL6070'), findsNothing);
+
+    await tester.tap(find.byKey(const ValueKey('ec-row-m:PLC 1/Device 1')));
+    await tester.pump();
+    expect(find.text('EL6070'), findsOneWidget);
+
+    // And a tap shuts it again.
+    await tester.tap(find.byKey(const ValueKey('ec-row-m:PLC 1/Device 1')));
+    await tester.pump();
+    expect(find.text('EL6070'), findsNothing);
+  });
+
+  testWidgets('a search opens the collapsed groups that hold a match',
+      (tester) async {
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: SizedBox(
+          width: 900,
+          height: 600,
+          child: EcDeviceTableView(
+            plcs: ecSamplePlcs(),
+            initialCollapsed: true,
+          ),
+        ),
+      ),
+    ));
+    await tester.enterText(find.byType(TextField), 'EL607');
+    await tester.pump();
+    expect(find.text('EL6070'), findsOneWidget);
+    // Nothing under PLC 2 matched, so it stays shut.
+    expect(find.byKey(const ValueKey('ec-row-m:PLC 2/Device 2')), findsNothing);
+  });
+
+  testWidgets('the asset hands its start-collapsed setting to the table',
+      (tester) async {
+    final sm = _FakeStateMan()
+      ..push('d1', _diag())
+      ..push('i1', _info());
+    await tester.pumpWidget(wrap(
+      EtherCatDeviceTable(
+        config: EtherCatDeviceTableConfig(
+          plcs: [
+            EcPlcConfig(masters: [
+              EcBusConfig(label: 'Device 1', diagKey: 'd1', infoKey: 'i1'),
+            ]),
+          ],
+          startCollapsed: true,
+        ),
+      ),
+      sm,
+    ));
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('ec-row-m:/Device 1')), findsOneWidget);
+    expect(find.text('ST101.A1.01'), findsNothing);
+  });
+
+  test('start collapsed is saved, and a page without it opens expanded', () {
+    final old = EtherCatDeviceTableConfig().toJson()..remove('startCollapsed');
+    expect(EtherCatDeviceTableConfig.fromJson(old).startCollapsed, isFalse);
+
+    final json = jsonDecode(jsonEncode(
+            EtherCatDeviceTableConfig(startCollapsed: true).toJson()))
+        as Map<String, dynamic>;
+    expect(EtherCatDeviceTableConfig.fromJson(json).startCollapsed, isTrue);
+  });
+
   test('a page saved with a flat list of masters opens as one unnamed PLC', () {
     final saved = EtherCatDeviceTableConfig().toJson()
       ..remove('plcs')
@@ -303,6 +394,14 @@ void main() {
     await gesture.up();
     await tester.pumpAndSettle();
   }
+
+  testWidgets('the config form switches start collapsed', (tester) async {
+    final config = EtherCatDeviceTableConfig();
+    await pumpForm(tester, config);
+    await tester.tap(find.text('Open with groups collapsed'));
+    await tester.pump();
+    expect(config.startCollapsed, isTrue);
+  });
 
   testWidgets('the config form drags a PLC above another', (tester) async {
     final a = EcPlcConfig(label: 'PLC 1', masters: [EcBusConfig()]);

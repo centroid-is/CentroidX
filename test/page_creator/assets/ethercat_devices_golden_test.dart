@@ -112,6 +112,20 @@ void main() {
           matchesGoldenFile('goldens/ethercat_devices_collapsed.png'));
     });
 
+    testWidgets('started collapsed: each PLC a summary, one opened by a tap',
+        (tester) async {
+      await loadGoldenFonts();
+      await tester.pumpWidget(frame(EcDeviceTableView(
+        plcs: ecSamplePlcs(),
+        initialCollapsed: true,
+      )));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('ec-row-p:PLC 2')));
+      await tester.pumpAndSettle();
+      await expectLater(find.byKey(_key),
+          matchesGoldenFile('goldens/ethercat_devices_start_collapsed.png'));
+    });
+
     testWidgets('config form: PLCs and their masters, each with a drag handle',
         (tester) async {
       // Taller than the default test window, or the frame is cut off.
