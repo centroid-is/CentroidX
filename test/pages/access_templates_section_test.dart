@@ -37,10 +37,13 @@ import 'package:tfc/core/access_template_store.dart';
 import 'package:tfc/pages/access_templates_section.dart';
 import 'package:tfc/providers/access_policy.dart';
 import 'package:tfc/providers/access_templates.dart';
+import 'package:tfc/providers/preferences.dart'
+    show setDeviceLocalPreferencesForTest, resetDeviceLocalPreferencesForTest;
 import 'package:tfc/providers/state_man.dart';
 import 'package:tfc/widgets/access_denied_prompt.dart';
 import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/database_drift.dart';
+import 'package:tfc_dart/core/preferences.dart' show InMemoryPreferences;
 import 'package:tfc_dart/core/state_man.dart';
 
 import '../helpers/test_helpers.dart';
@@ -133,6 +136,23 @@ class _RacingStore extends _RecordingStore {
   }
 }
 
+/// Device-local preferences whose remembered open/closed choice arrives only
+/// when the test says so — for the race between that answer and a toggle the
+/// operator makes first.
+///
+/// Only that one key is held back. Everything else answers at once, so the
+/// session provider, which reads its own state from this same store, is not
+/// left waiting on a future meant for the section.
+class _SlowPreferences extends InMemoryPreferences {
+  final Completer<bool?> _answer = Completer<bool?>();
+
+  void answer(bool? value) => _answer.complete(value);
+
+  @override
+  Future<bool?> getBool(String key) => key == kAccessTemplatesExpandedPreference
+      ? _answer.future
+      : super.getBool(key);
+}
 
 /// A `StateMan` that answers one fixed value per key and counts the reads.
 ///
@@ -282,6 +302,159 @@ void main() {
         audit: sink,
         station: 'SVN-NES-OT-CL02',
       );
+
+  // -------------------------------------------------------------------------
+  // Closed by default
+  // -------------------------------------------------------------------------
+
+  /// The section the way a real page mounts it: no `initiallyExpanded`, so
+  /// closed unless this device remembers otherwise.
+  Widget closedHost(List<Override> o) => ProviderScope(
+        overrides: o,
+        child: const PromptedApp(
+          home: Scaffold(body: AccessTemplatesSection()),
+        ),
+      );
+
+  group('closed by default', () {
+    // Device-local preferences are one process-wide store. Every test here
+    // starts and ends with none, so a choice one test remembers can never open
+    // the section in the next.
+    setUp(resetDeviceLocalPreferencesForTest);
+    tearDown(resetDeviceLocalPreferencesForTest);
+
+    testWidgets('is one bar that says what is there, and hides the list',
+        (tester) async {
+      final seed = seeder();
+      await seed.create(_conveyor());
+      await seed.create(_recipes());
+      await seed.bind(_conveyorKeyA, 'conveyor');
+      await seed.bind(_conveyorKeyB, 'conveyor');
+
+      await tester.pumpWidget(closedHost(overrides()));
+      await tester.pumpAndSettle();
+
+      expect(find.text(kAccessTemplatesHeadline), findsOneWidget);
+      expect(tester.widget<Text>(find.byKey(kAccessTemplatesSummaryKey)).data,
+          kAccessTemplatesCollapsedSummary(2, 2),
+          reason: 'two templates, and the two keys bound to conveyor — read '
+              'from the same snapshot the rows count from');
+      expect(find.byKey(kAccessTemplateTileKey('conveyor')), findsNothing,
+          reason: 'the list is the thing closing puts away');
+      expect(find.byKey(kAccessTemplateTileKey('recipes')), findsNothing);
+      expect(find.text(kAccessTemplatesSubtitle), findsNothing,
+          reason: 'the explanatory line goes with the list; the summary takes '
+              'its place on the bar');
+    });
+
+    testWidgets('still offers New template, enabled, while closed',
+        (tester) async {
+      await seeder().create(_conveyor());
+
+      await tester.pumpWidget(closedHost(overrides()));
+      await tester.pumpAndSettle();
+
+      final create = find.byKey(kAccessTemplatesCreateKey);
+      expect(create, findsOneWidget);
+      expect(tester.widget<OutlinedButton>(create).onPressed, isNotNull,
+          reason: 'closing the list is layout, not a permission decision — '
+              'the create control is never greyed');
+    });
+
+    testWidgets('the toggle opens the list in place, and closes it again',
+        (tester) async {
+      await seeder().create(_conveyor());
+
+      await tester.pumpWidget(closedHost(overrides()));
+      await tester.pumpAndSettle();
+      expect(find.byKey(kAccessTemplateTileKey('conveyor')), findsNothing);
+
+      await tester.tap(find.byKey(kAccessTemplatesToggleKey));
+      await tester.pumpAndSettle();
+      expect(find.byKey(kAccessTemplateTileKey('conveyor')), findsOneWidget);
+      expect(find.text(kAccessTemplatesSubtitle), findsOneWidget);
+      expect(find.byKey(kAccessTemplatesSummaryKey), findsNothing,
+          reason: 'open, each row carries its own summary');
+
+      await tester.tap(find.byKey(kAccessTemplatesToggleKey));
+      await tester.pumpAndSettle();
+      expect(find.byKey(kAccessTemplateTileKey('conveyor')), findsNothing);
+      expect(find.byKey(kAccessTemplatesSummaryKey), findsOneWidget);
+    });
+
+    testWidgets('with no database there is no list to put away, and the note '
+        'stays in view', (tester) async {
+      await tester.pumpWidget(closedHost(overrides(noDatabase: true)));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(kAccessTemplatesNoDatabaseKey), findsOneWidget,
+          reason: 'the key list says nothing about unbound keys without a '
+              'database, because this section already says why');
+      expect(find.byKey(kAccessTemplatesToggleKey), findsNothing);
+    });
+
+    testWidgets('with no templates yet the empty note stays in view, with no '
+        'toggle', (tester) async {
+      await tester.pumpWidget(closedHost(overrides()));
+      await tester.pumpAndSettle();
+
+      expect(find.text(kAccessTemplatesEmptyNote), findsOneWidget);
+      expect(find.byKey(kAccessTemplatesToggleKey), findsNothing);
+    });
+
+    testWidgets('a choice this device remembers opens it', (tester) async {
+      final prefs = InMemoryPreferences();
+      await prefs.setBool(kAccessTemplatesExpandedPreference, true);
+      setDeviceLocalPreferencesForTest(prefs);
+      await seeder().create(_conveyor());
+
+      await tester.pumpWidget(closedHost(overrides()));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(kAccessTemplateTileKey('conveyor')), findsOneWidget);
+    });
+
+    testWidgets('opening and closing it is remembered on this device',
+        (tester) async {
+      final prefs = InMemoryPreferences();
+      setDeviceLocalPreferencesForTest(prefs);
+      await seeder().create(_conveyor());
+
+      await tester.pumpWidget(closedHost(overrides()));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(kAccessTemplatesToggleKey));
+      await tester.pumpAndSettle();
+      expect(await prefs.getBool(kAccessTemplatesExpandedPreference), isTrue);
+
+      await tester.tap(find.byKey(kAccessTemplatesToggleKey));
+      await tester.pumpAndSettle();
+      expect(await prefs.getBool(kAccessTemplatesExpandedPreference), isFalse);
+    });
+
+    testWidgets('a remembered choice that arrives late does not undo a toggle '
+        'just made', (tester) async {
+      final prefs = _SlowPreferences();
+      setDeviceLocalPreferencesForTest(prefs);
+      await seeder().create(_conveyor());
+
+      await tester.pumpWidget(closedHost(overrides()));
+      await tester.pumpAndSettle();
+
+      // The operator opens it while the stored answer is still on its way.
+      await tester.tap(find.byKey(kAccessTemplatesToggleKey));
+      await tester.pumpAndSettle();
+      expect(find.byKey(kAccessTemplateTileKey('conveyor')), findsOneWidget);
+
+      // Then the store answers "closed" — a choice from before they touched it.
+      prefs.answer(false);
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(kAccessTemplateTileKey('conveyor')), findsOneWidget,
+          reason: 'a stale remembered choice must not close a list the '
+              'operator just opened');
+    });
+  });
 
   // -------------------------------------------------------------------------
   // The list
