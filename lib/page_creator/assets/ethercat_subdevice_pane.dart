@@ -16,6 +16,7 @@ import '../../providers/state_man.dart';
 import '../../theme.dart' show HmiStateColors;
 import '../../widgets/panes/pane_chrome.dart';
 import '../../widgets/panes/side_pane.dart';
+import '../../widgets/panes/standard_dialog.dart';
 import 'ethercat_command.dart';
 import 'ethercat_ports.dart';
 import 'ethercat_subdevice.dart';
@@ -96,7 +97,7 @@ String ecSubDeviceSummary(EcSubDeviceDiag d) {
   }
   if (d.linkLostSum > 0) {
     final n = d.linkLostSum;
-    return 'In OP. The link has dropped $n time${n == 1 ? '' : 's'} since '
+    return 'In OP. The link has been lost $n time${n == 1 ? '' : 's'} since '
         'the counters were cleared.';
   }
   return 'In OP, no recent errors.';
@@ -215,37 +216,203 @@ class EcSubDeviceLivePane extends ConsumerWidget {
       builder: (context, values, errors) {
         final b = EcBus.fromValues(bus.label,
             info: values[bus.infoKey], diag: values[bus.diagKey]);
-        final subdevice = b.at(position);
-        final model = subdevice?.info?.model ?? '';
-        return SidePane(
-          title: subdevice?.label ?? '#$position',
-          subtitle: [
-            if (plcLabel.isNotEmpty) plcLabel,
-            bus.label,
-            '#$position',
-            if (model.isNotEmpty) model,
-          ].join(' · '),
-          icon: Icons.settings_ethernet,
-          status: ecSubDevicePaneStatus(subdevice),
-          child: subdevice == null
-              ? const Padding(
-                  padding: EdgeInsets.all(16),
-                  child: Text('This subdevice is not in the array any more.'),
-                )
-              : EcSubDevicePaneBody(
-                  bus: b,
-                  subdevice: subdevice,
-                  onReset: bus.diagKey.isEmpty
-                      ? null
-                      : (member) => ref
-                          .read(ecCommandWriterProvider)
-                          .setCommand(ref,
-                              diagKey: bus.diagKey,
-                              position: position,
-                              member: member),
-                ),
+        return EcSubDevicePaneView(
+          bus: b,
+          subdevice: b.at(position),
+          position: position,
+          plcLabel: plcLabel,
+          onReset: bus.diagKey.isEmpty
+              ? null
+              : (member) => ref.read(ecCommandWriterProvider).setCommand(ref,
+                  diagKey: bus.diagKey, position: position, member: member),
         );
       },
+    );
+  }
+}
+
+/// The whole pane — chrome and body — fed values, so it can be goldened
+/// without a server.
+///
+/// [subdevice] is nullable because the array can shrink under an open pane:
+/// the header still names what was being watched, and the body says it is
+/// gone.
+class EcSubDevicePaneView extends StatelessWidget {
+  const EcSubDevicePaneView({
+    super.key,
+    required this.bus,
+    required this.subdevice,
+    required this.position,
+    this.plcLabel = '',
+    this.onReset,
+  });
+
+  final EcBus bus;
+  final EcSubDevice? subdevice;
+  final int position;
+
+  /// The PLC [bus] belongs to, when it has a name.
+  final String plcLabel;
+
+  /// Sets one of [EcDiagFields.resetCrc] / [EcDiagFields.resetLinkLost].
+  final Future<void> Function(String member)? onReset;
+
+  @override
+  Widget build(BuildContext context) {
+    final device = subdevice;
+    final model = device?.info?.model ?? '';
+    return SidePane(
+      title: device?.label ?? '#$position',
+      subtitle: [
+        if (plcLabel.isNotEmpty) plcLabel,
+        bus.label,
+        '#$position',
+        if (model.isNotEmpty) model,
+      ].join(' · '),
+      icon: Icons.settings_ethernet,
+      status: ecSubDevicePaneStatus(device),
+      // The header's own slot, left of the close button. The two counters are
+      // what the pane is opened for and they are easy to mix up, so the
+      // explanation sits in the corner rather than as a fourth tile pushing
+      // the figures down the pane.
+      headerTrailing: const EcCounterHelpButton(),
+      child: device == null
+          ? const Padding(
+              padding: EdgeInsets.all(16),
+              child: Text('This subdevice is not in the array any more.'),
+            )
+          : EcSubDevicePaneBody(
+              bus: bus,
+              subdevice: device,
+              onReset: onReset,
+            ),
+    );
+  }
+}
+
+/// Finds the [EcCounterHelpButton] in a widget test.
+const Key kEcCounterHelpKey = ValueKey<String>('ec-counter-help');
+
+/// Finds the explanation that button opens.
+const Key kEcCounterHelpBodyKey = ValueKey<String>('ec-counter-help-body');
+
+/// The header button that explains CRC and link loss.
+///
+/// An [IconButton] rather than a bare [InkWell] or a [GestureDetector]: it
+/// joins the focus traversal for free, Material draws it a focus highlight on
+/// the way through, and Enter or Space fires it. That matters on a panel
+/// driven from a keyboard as often as from the glass.
+class EcCounterHelpButton extends StatelessWidget {
+  const EcCounterHelpButton({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final accent = theme.colorScheme.primary;
+    return IconButton(
+      key: kEcCounterHelpKey,
+      icon: const Icon(Icons.info_outline, size: 20),
+      iconSize: 20,
+      // Smaller than the close button beside it, and short enough not to make
+      // the header taller than the two lines of text set it.
+      padding: const EdgeInsets.all(8),
+      constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+      tooltip: 'What CRC and link loss mean',
+      // Material's stock focus overlay is a low-alpha wash of onSurface, and
+      // on the header's own container colour it is invisible — a golden of
+      // the focused button came out pixel-identical to the unfocused one. A
+      // ring in the accent colour is legible on either theme, and the tint
+      // under it keeps the hover and pressed states from vanishing with it.
+      style: ButtonStyle(
+        shape: WidgetStatePropertyAll(
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        ),
+        side: WidgetStateProperty.resolveWith((states) =>
+            states.contains(WidgetState.focused)
+                ? BorderSide(color: accent, width: 2)
+                : null),
+        overlayColor: WidgetStateProperty.resolveWith((states) {
+          if (states.contains(WidgetState.pressed)) {
+            return accent.withValues(alpha: 0.20);
+          }
+          if (states.contains(WidgetState.focused)) {
+            return accent.withValues(alpha: 0.12);
+          }
+          if (states.contains(WidgetState.hovered)) {
+            return accent.withValues(alpha: 0.08);
+          }
+          return null;
+        }),
+      ),
+      onPressed: () => showEcCounterHelp(context),
+    );
+  }
+}
+
+/// Opens the explanation of the two counters.
+Future<void> showEcCounterHelp(BuildContext context) =>
+    showStandardDialog<void>(
+      context: context,
+      title: 'CRC and link loss',
+      subtitle: 'What the two counters are telling you',
+      icon: Icons.info_outline,
+      width: 440,
+      builder: (context) => const EcCounterHelpText(),
+    );
+
+/// The words themselves, so the dialog and a golden share one copy.
+class EcCounterHelpText extends StatelessWidget {
+  const EcCounterHelpText({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final body = theme.textTheme.bodyMedium;
+    final bold = body?.copyWith(fontWeight: FontWeight.w700);
+
+    Widget para(List<InlineSpan> spans) => Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: Text.rich(TextSpan(style: body, children: spans)),
+        );
+
+    // No outer padding of its own: [StandardDialog] already insets and scrolls
+    // whatever it is handed, and a second inset here would double it.
+    return Column(
+      key: kEcCounterHelpBodyKey,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        para([
+          TextSpan(text: 'CRC', style: bold),
+          const TextSpan(
+            text: ' counts broken frames on a link that is still up. It '
+                'rises when a cable is marginal: damaged, too long, badly '
+                'terminated, or picking up electrical noise.',
+          ),
+        ]),
+        para([
+          TextSpan(text: 'Link loss', style: bold),
+          const TextSpan(
+            text: ' counts how many times the link went down and came back. '
+                'It rises from a loose or dirty connector, a cable pulled or '
+                'crushed, or a device losing power.',
+          ),
+        ]),
+        para([
+          const TextSpan(
+            text: 'So a marginal cable ticks CRC up while staying linked; a '
+                'loose plug, or a device switched off and on again, ticks '
+                'link loss.',
+          ),
+        ]),
+        Text(
+          'Both are running totals since the last reset, not rates. Link '
+          'loss stops counting at 255, and a break too short to fall between '
+          'two readings never shows at all — so a zero does not prove the '
+          'link has never flickered.',
+          style: theme.textTheme.bodySmall,
+        ),
+      ],
     );
   }
 }
@@ -307,7 +474,7 @@ class EcSubDevicePaneBody extends StatelessWidget {
                       ),
                       PaneMetricTile(
                         width: 104,
-                        label: 'Drops',
+                        label: 'Link loss',
                         value: '${d.linkLostSum}',
                         icon: Icons.link_off,
                         valueColor: d.linkLostSum > 0 ? states.yellow : null,
@@ -371,7 +538,7 @@ class EcSubDevicePaneBody extends StatelessWidget {
               ),
               const SizedBox(height: 8),
               _ResetButton(
-                label: 'Clear link drops',
+                label: 'Clear link loss',
                 onReset: () => onReset!(EcDiagFields.resetLinkLost),
               ),
               const SizedBox(height: 8),
@@ -446,7 +613,7 @@ class _PortRow extends StatelessWidget {
           Text(
             neighbour == null && crc == 0 && lost == 0
                 ? '—'
-                : 'CRC $crc · drops $lost',
+                : 'CRC $crc · link loss $lost',
             style: small?.copyWith(
               fontFeatures: const [FontFeature.tabularFigures()],
               color: crc > 0 || lost > 0 ? states.yellow : null,

@@ -234,7 +234,7 @@ class EcSubDeviceDiag {
   final List<int> crcPort;
 
   /// Per-port link losses, A to D, counted by the PLC from `linkState`
-  /// transitions. Saturates at 255 and misses drops shorter than its poll.
+  /// transitions. Saturates at 255 and misses losses shorter than its poll.
   final List<int> linkLostPort;
 
   /// The PLC's own `bOk`. Kept for reference only — see [health] for why the
@@ -292,7 +292,7 @@ class EcSubDeviceDiag {
   /// including "extra link", which is a documentation problem and not a
   /// stopped machine. A fault here is what an operator has to go and fix:
   /// out of OP, the error flag, or a link that is actually missing.
-  /// Recent CRC errors and link drops since the last reset are a warning.
+  /// Recent CRC errors and link losses since the last reset are a warning.
   EcHealth get health {
     final fault = linkFault;
     if (state != EcSubDeviceState.op || error) return EcHealth.fault;
