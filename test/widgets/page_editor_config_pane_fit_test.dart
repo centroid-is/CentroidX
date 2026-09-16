@@ -19,6 +19,8 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/page_creator/assets/common.dart';
+import 'package:tfc/page_creator/assets/ethercat_link.dart';
+import 'package:tfc/page_creator/assets/link_geometry.dart';
 import 'package:tfc/page_creator/assets/registry.dart';
 import 'package:tfc/widgets/panes/side_pane.dart';
 
@@ -36,7 +38,23 @@ void main() {
       await pumpEditorWith(tester, [asset]);
       // Right-click, then "Edit": the editor has one mode now, so a plain tap
       // selects rather than opening the configuration.
-      await chooseFromAssetMenu(tester, 0.3, 0.4, 'Edit');
+      //
+      // A cable only answers on its ink, and the palette's one is bent, so the
+      // middle of its box is empty page: aim a little way along its first leg.
+      var (fx, fy) = (0.3, 0.4);
+      if (asset is EtherCatLinkConfig) {
+        final frame = asset.run.frameIn(LinkAnchors.none);
+        final bend = asset.run.boundsIn(LinkAnchors.none);
+        final start = frame.start;
+        final towards = asset.run.waypoints.isEmpty
+            ? frame.end
+            : frame.place(
+                asset.run.waypoints.first.t!, asset.run.waypoints.first.n!);
+        final at = start * 0.7 + towards * 0.3;
+        expect(bend.contains(at), isTrue);
+        (fx, fy) = (at.dx, at.dy);
+      }
+      await chooseFromAssetMenu(tester, fx, fy, 'Edit');
 
       expect(find.byType(SidePane), findsOneWidget,
           reason: '${entry.key} should open a config pane');
