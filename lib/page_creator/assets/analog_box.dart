@@ -218,7 +218,10 @@ class AnalogBoxConfig extends BaseAsset {
         ),
         BoolBulkProperty(
           id: 'AnalogBoxConfig.showName',
-          label: 'Show name on page',
+          // Short enough for the bulk pane's label column: "Show name on
+          // page" ellipsised there, and the group heading already says which
+          // asset's name is meant.
+          label: 'Show name',
           group: _bulkGroup,
           read: () => showName,
           apply: (value) => showName = value,
