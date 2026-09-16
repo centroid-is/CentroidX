@@ -86,8 +86,12 @@ void main() {
       expect(atMid.center.dx, closeTo(size.width / 2, 0.01));
       expect(atEnd.right, closeTo(size.width, 0.01));
       expect(atStart.width, greaterThan(size.width * 0.4));
-      // The empty track beside the wagon does not take the tap.
-      expect(wagonAt(0).hitTest(const Offset(200, 50)), isFalse);
+      // The empty track beside the wagon DOES take the tap — it is the
+      // traverse drive's target, and the only one it has once both safety
+      // edges are bound (see conveyor_wagon_tap_regions_test.dart). The box
+      // clear of the rail band is still inert.
+      expect(wagonAt(0).hitTest(const Offset(200, 50)), isTrue);
+      expect(wagonAt(0).hitTest(const Offset(200, 4)), isFalse);
       expect(wagonAt(0).hitTest(const Offset(40, 50)), isTrue);
       // The band stays vertically centred — the track runs behind it, not
       // below it.
@@ -99,7 +103,9 @@ void main() {
       expect(parked.hasHitShape, isTrue);
       final bounds = parked.hitShape()!.getBounds();
       expect(bounds.center.dx, closeTo(size.width / 2, 0.01));
-      expect(parked.hitTest(const Offset(10, 50)), isFalse);
+      // On the rail: the traverse drive's zone. Off it: nothing.
+      expect(parked.hitTest(const Offset(10, 50)), isTrue);
+      expect(parked.hitTest(const Offset(10, 4)), isFalse);
       expect(parked.hitTest(Offset(size.width / 2, 50)), isTrue);
     });
 

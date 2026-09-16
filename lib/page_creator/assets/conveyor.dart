@@ -2714,8 +2714,34 @@ class _ConveyorState extends ConsumerState<Conveyor>
           onRightEdgeTap();
           return;
         }
-        if (onMotorTap != null && !beltArea.contains(p)) {
-          onMotorTap();
+        // A wagon answers by painted region. Off the rails there is only
+        // one region — the belt — and a turned belt's band is a path rather
+        // than a rectangle, so the old catch-all still decides there.
+        if (painter.onRails) {
+          if (beltArea.contains(p)) {
+            (onBeltTap ?? onMotorTap)?.call();
+            return;
+          }
+          // Everything else the wagon paints — a bumper strip whose edge is
+          // not bound, the carriage frame — plus the rail it runs on, is
+          // the traverse drive's.
+          //
+          // The rail is what makes this work. Subtract the belt from the
+          // wagon and what is left is exactly the two bumper strips, which
+          // are exactly the two safety-edge zones tested above: with both
+          // edges bound there was no pixel left that could reach the motor,
+          // so the traverse drive's pane could not be opened at all. The
+          // rail band is painted ink the length of the whole run, and it
+          // does not shrink as the bumpers are used for what they are.
+          if (onMotorTap != null &&
+              (painter.wagonRect(size).contains(p) ||
+                  (painter.railBandRect(size)?.contains(p) ?? false))) {
+            onMotorTap();
+            return;
+          }
+          // Off the wagon and off the rail: the empty box above and below
+          // the track. Inert, so assets behind the conveyor stay reachable
+          // — the same rule `hitTest` states for a turned belt's corners.
           return;
         }
         (onBeltTap ?? onMotorTap)?.call();
@@ -3969,6 +3995,15 @@ class ConveyorPainter extends CustomPainter {
   /// reachable.
   @override
   bool hitTest(Offset position) {
+    // The rail is painted ink running the whole box width, and it is the
+    // traverse drive's tap target — so it has to get past the hit test even
+    // though it is outside the wagon. Deliberately NOT folded into
+    // [hitShape]: that outline is also the open-pane mark, which should
+    // trace the wagon rather than stripe the whole asset.
+    final size = paintSize;
+    if (size != null && (railBandRect(size)?.contains(position) ?? false)) {
+      return true;
+    }
     final shape = hitShape();
     if (shape != null) return shape.contains(position);
     final g = geometry;
@@ -4108,6 +4143,29 @@ class ConveyorPainter extends CustomPainter {
     final chassisH = size.height * _chassisHeightFraction;
     return Rect.fromLTWH(span.x0 - overhang, (size.height - chassisH) / 2,
         span.width + 2 * overhang, chassisH);
+  }
+
+  /// The track's gauge — the distance between the two painted rails.
+  double _railGauge(Size size) =>
+      size.height * _chassisHeightFraction * _railGaugeFactor;
+
+  /// Stroke width of one rail.
+  double _railStrokeWidth(Size size) =>
+      max(size.height * _chassisHeightFraction * 0.07, 1.5);
+
+  /// The rail band: the strip of painted track ink running the full box
+  /// width, from the outside of one rail to the outside of the other.
+  ///
+  /// Shared with [_paintTrack] for the same reason [_chassisRect] is shared
+  /// with the chassis painter — this is the traverse drive's tap target, and
+  /// a tap target derived from its own copy of the numbers drifts away from
+  /// the ink the operator is aiming at. Null off the rails, and on a box too
+  /// short to draw a track in.
+  Rect? railBandRect(Size size) {
+    if (!onRails || size.width <= 0 || size.height <= 2) return null;
+    final cy = size.height / 2;
+    final half = _railGauge(size) / 2 + _railStrokeWidth(size) / 2;
+    return Rect.fromLTRB(0, cy - half, size.width, cy + half);
   }
 
   /// The tap zone of one safety edge: the outer bumper strip of the
@@ -4512,6 +4570,9 @@ class ConveyorPainter extends CustomPainter {
   /// to reach both rails and stick out as bumpers along them.
   static const _chassisHeightFraction = 0.45;
 
+  /// The track's gauge as a fraction of the carriage height.
+  static const _railGaugeFactor = 0.6;
+
   /// The wagon's chassis: the carriage the belt is mounted on, riding the
   /// rails under the belt's middle and sticking out as bumpers on both
   /// sides along the track. Carries the traverse drive's state colour —
@@ -4577,13 +4638,14 @@ class ConveyorPainter extends CustomPainter {
   void _paintTrack(Canvas canvas, Size size) {
     if (size.width <= 0 || size.height <= 2) return;
     final cy = size.height / 2;
-    final chassisH = size.height * _chassisHeightFraction;
-    // Gauge inside the carriage's reach, so the rails visibly carry it.
-    final gauge = chassisH * 0.6;
+    // Gauge inside the carriage's reach, so the rails visibly carry it —
+    // and read from [_railGauge], because [railBandRect] answers the
+    // traverse drive's taps off the same two numbers.
+    final gauge = _railGauge(size);
     final rail = Paint()
       ..color = railInk
       ..style = PaintingStyle.stroke
-      ..strokeWidth = max(chassisH * 0.07, 1.5);
+      ..strokeWidth = _railStrokeWidth(size);
     for (final y in [cy - gauge / 2, cy + gauge / 2]) {
       canvas.drawLine(Offset(0, y), Offset(size.width, y), rail);
     }
