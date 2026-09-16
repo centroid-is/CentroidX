@@ -354,7 +354,7 @@ void main() {
             TestWidgetsFlutterBinding.instance.platformDispatcher.implicitView!;
         view.devicePixelRatio = 1.0;
         // Above `kKeyRepositoryChromeHeight + kKeyRepositoryMinKeyListHeight`
-        // (780), so the page lays out directly rather than through its
+        // (676), so the page lays out directly rather than through its
         // whole-page scroll fallback — which is what a 1080p panel does and
         // what this image should therefore show.
         view.physicalSize = const Size(900, 1000);

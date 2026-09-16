@@ -758,9 +758,9 @@ void main() {
         ..writeAsStringSync(jsonEncode(_keys(['ST301.NEW']).toJson()));
       (FilePicker.platform as _FakePicker).pickPath = file.path;
 
-      await tester.ensureVisible(find.text('Import'));
+      await tester.ensureVisible(find.byKey(kKeyMappingsImportKey));
       await tester.pumpAndSettle();
-      await tapWithIo(tester, find.text('Import'));
+      await tapWithIo(tester, find.byKey(kKeyMappingsImportKey));
       await tapWithIo(
           tester, find.widgetWithText(TextButton, 'Import').hitTestable());
 
@@ -856,9 +856,9 @@ void main() {
         ..writeAsStringSync(jsonEncode(_keys(['ST301.NEW']).toJson()));
       (FilePicker.platform as _FakePicker).pickPath = file.path;
 
-      await tester.ensureVisible(find.text('Import'));
+      await tester.ensureVisible(find.byKey(kKeyMappingsImportKey));
       await tester.pumpAndSettle();
-      await tapWithIo(tester, find.text('Import'));
+      await tapWithIo(tester, find.byKey(kKeyMappingsImportKey));
 
       final body = find.textContaining(kKeyMappingsImportBindingsNote);
       expect(body, findsOneWidget,
@@ -877,9 +877,9 @@ void main() {
       await tester.pumpAndSettle();
       (FilePicker.platform as _FakePicker).savePath = '${tmp.path}/out.json';
 
-      await tester.ensureVisible(find.text('Export'));
+      await tester.ensureVisible(find.byKey(kKeyMappingsExportKey));
       await tester.pumpAndSettle();
-      await tapWithIo(tester, find.text('Export'));
+      await tapWithIo(tester, find.byKey(kKeyMappingsExportKey));
 
       final line = find.text(kKeyMappingsExportBindingsNote);
       expect(line, findsOneWidget);
@@ -898,9 +898,9 @@ void main() {
       final out = '${tmp.path}/out.json';
       (FilePicker.platform as _FakePicker).savePath = out;
 
-      await tester.ensureVisible(find.text('Export'));
+      await tester.ensureVisible(find.byKey(kKeyMappingsExportKey));
       await tester.pumpAndSettle();
-      await tapWithIo(tester, find.text('Export'));
+      await tapWithIo(tester, find.byKey(kKeyMappingsExportKey));
 
       final written =
           jsonDecode(File(out).readAsStringSync()) as Map<String, dynamic>;
@@ -929,9 +929,9 @@ void main() {
             _keys(['ST301.A', 'ST301.B', 'ST301.C']).toJson()));
       (FilePicker.platform as _FakePicker).pickPath = file.path;
 
-      await tester.ensureVisible(find.text('Import'));
+      await tester.ensureVisible(find.byKey(kKeyMappingsImportKey));
       await tester.pumpAndSettle();
-      await tapWithIo(tester, find.text('Import'));
+      await tapWithIo(tester, find.byKey(kKeyMappingsImportKey));
       await tapWithIo(
           tester, find.widgetWithText(TextButton, 'Import').hitTestable());
 

@@ -54,21 +54,40 @@ enum _KeyStatus { ok, error, serverDisconnected, serverDisabled }
 ///
 /// | State | Chrome |
 /// |---|---|
-/// | no database (this constant) | 516 |
-/// | database, one template | 592 |
-/// | database, templates list at its 168 px cap | 696 |
+/// | no database (this constant) | 412 |
+/// | database, templates closed (the default) | 308 |
+/// | database, templates open, list at its 168 px cap | 524 |
 ///
-/// The unbound count row is ~30 px of that, and it renders only when there is
-/// a database — so the no-database figure is unchanged by 04-08 and the
-/// goldens do not move. The worst case, 696, is still **below**
-/// `minContentHeight` (516 + 264 = 780), so the fallback gives the column
-/// enough room and the key list is squeezed to one card rather than
-/// overflowing. Verified by measurement at 800x600 with ten templates.
+/// **Re-measured when import/export moved into the key-mappings header.** The
+/// no-database figure was 516, and the separate import/export card plus the
+/// 16 px gap above it were 104 px of that. Taken the same way as before: in the
+/// whole-page fallback at 800x600 with no database the content box is
+/// `minContentHeight` tall, so the chrome is that box minus the key list's
+/// rendered height. On the old layout that gives 780 - 264 = 516, reproducing
+/// the recorded figure exactly; on this one it gives 780 - 368 = 412.
 ///
-/// Raising the constant to cover 696 would push `minContentHeight` to ~960 and
-/// engage the whole-page fallback on panels that lay out directly today, which
-/// is a worse trade than a short list on a window nobody runs the plant from.
-const double kKeyRepositoryChromeHeight = 516;
+/// **The database rows were measured when the templates section learned to
+/// close**, with nine templates so the open list reaches its cap, and taken two
+/// independent ways: in the fallback at 800x600 (box minus list, as above) and
+/// laid out directly at 900x1000 (page minus list). Closed, both give 308 — the
+/// bar is one ellipsised line, so its height does not depend on the width.
+/// Open, they differ: 524 at 800 wide and 508 at 900, because the explanatory
+/// line under the section's headline wraps once more on the narrower panel.
+/// The table records the 800x600 figure, the condition every row here names.
+///
+/// The default database state is now **below** the no-database one. The
+/// closed bar is 72 px, where the no-database section still carries its
+/// explanatory line and a note several lines long. The unbound count row is
+/// ~30 px of the database figures and renders only when there is a database.
+///
+/// The worst case, open at the cap, is 524 — still below `minContentHeight`
+/// (412 + 264 = 676), so the fallback gives the column room and the key list
+/// is squeezed to about two cards rather than overflowing. Raising the
+/// constant to cover it would engage the whole-page fallback on panels that
+/// lay out directly today, which is a worse trade than a short list on a
+/// window nobody runs the plant from — and one the operator can undo by
+/// closing the section.
+const double kKeyRepositoryChromeHeight = 412;
 
 /// Three key cards. Below this the list is not worth showing and the page
 /// scrolls as a whole instead.
@@ -117,6 +136,17 @@ const Key kUnboundKeysCountKey = Key('key-repository-unbound-count');
 
 /// The filter chip.
 const Key kUnboundKeysFilterKey = Key('key-repository-unbound-filter');
+
+/// Import, in the key-mappings card header.
+///
+/// Keyed rather than found by its label: these are icon buttons carrying their
+/// names in a tooltip, and a test that matched the tooltip string would be
+/// asserting the wording rather than the control. The confirm dialog's own
+/// `Import` button is still found by text, and is a different widget.
+const Key kKeyMappingsImportKey = Key('key-repository-import');
+
+/// Export, beside it.
+const Key kKeyMappingsExportKey = Key('key-repository-export');
 
 // ---------------------------------------------------------------------------
 // What a key-mapping file does not carry.
@@ -200,15 +230,15 @@ class KeyRepositoryContent extends ConsumerWidget {
         Expanded(child: _KeyMappingsSection(proposalData: proposalData)),
         const SizedBox(height: 16),
         const AccessTemplatesSection(),
-        const SizedBox(height: 16),
-        _KeyMappingsImportExportCard(),
       ],
     );
 
-    // Header, save button, the access-templates section and import/export are
-    // fixed height; below this the key list has no room left and the column
-    // would overflow. Fall back to scrolling the page as a whole (the key list
-    // itself stays lazy).
+    // Header, save button and the access-templates section are fixed height;
+    // below this the key list has no room left and the column would overflow.
+    // Fall back to scrolling the page as a whole (the key list itself stays
+    // lazy). Import/export no longer has a card of its own here -- it sits in
+    // the key-mappings header -- see [kKeyRepositoryChromeHeight] for what that
+    // changed.
     //
     // **Re-derived when the templates section landed, not nudged.** The old
     // value was 320, and it was never a height at which this column fitted:
@@ -316,6 +346,181 @@ class _KeyRow {
 }
 
 class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
+  // Import/export live in this card's header rather than in a card of their
+  // own. The separate card cost a full card's chrome plus a 16 px gap to hold
+  // two buttons, and every pixel of it came out of the key list directly above
+  // it -- the list is the `Expanded` child, so fixed chrome below it is
+  // subtracted from the one thing on this page that wants to be tall.
+  //
+  // Nothing about what the file carries changed: both disclosures live on the
+  // confirm dialog and the export snackbar below, not on the card body, so
+  // moving the trigger loses no part of the 2026-08-30 ruling's copy.
+
+  Future<void> _onExport() async {
+    // ---------------------------------------------------------------------
+    // Decided, 04-08: this file carries **no** access bindings, and there is
+    // no "also export bindings" option, no second file and no bindings section
+    // in the JSON. Written here because the omission looks like one.
+    //
+    // The reason is the 2026-08-30 ruling itself. An export/import pair that
+    // carried bindings would put an authorization write behind this control —
+    // which is `configure`-gated, on a `configure`-gated route — and then make
+    // it portable between stations. That is precisely the path the ruling
+    // closed, re-opened in file form. A binding has to be written by something
+    // that checks `users` and leaves an audit row naming a person; a JSON file
+    // dropped through a file picker is neither.
+    //
+    // The supported way to move bindings between stations is the MCP sweep:
+    // `list_access_templates` and `bind_key_access_template`, which propose,
+    // are approved by somebody holding `users`, and land in the trail with
+    // `origin: 'mcp'`. That is named in the copy below, not only here.
+    // ---------------------------------------------------------------------
+    try {
+      final store = await ref.read(configStoreProvider.future);
+      final keyMappings = store.inner.keyMappings;
+      final jsonString =
+          const JsonEncoder.withIndent('  ').convert(keyMappings.toJson());
+
+      String? savePath;
+      if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+        savePath = await FilePicker.platform.saveFile(
+          dialogTitle: 'Export Key Mappings',
+          fileName: 'key_mappings.json',
+          type: FileType.custom,
+          allowedExtensions: ['json'],
+        );
+      } else {
+        final dir = await getApplicationDocumentsDirectory();
+        final ts = DateTime.now().toIso8601String().replaceAll(':', '-');
+        savePath = path.join(dir.path, 'key_mappings_$ts.json');
+      }
+      if (savePath == null) return;
+
+      final file = File(savePath);
+      await file.writeAsString(jsonString);
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Key mappings exported to ${file.path}',
+                // The path is the one line here that may be elided: it can be
+                // arbitrarily long, and letting it wrap without limit would
+                // push the disclosure below off the strip — which is the line
+                // that matters.
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+              const SizedBox(height: 4),
+              Text(
+                kKeyMappingsExportBindingsNote,
+                // Pinned rather than left to the default so a later change to
+                // the copy fails the height assertion instead of silently
+                // ellipsising the sentence that says what the file does not
+                // contain.
+                maxLines: 6,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
+          ),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text('Export failed: $e'),
+            backgroundColor: Theme.of(context).colorScheme.error),
+      );
+    }
+  }
+
+  Future<void> _onImport() async {
+    try {
+      final pick = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+        dialogTitle: 'Import Key Mappings',
+      );
+      if (pick == null || pick.files.single.path == null) return;
+
+      final file = File(pick.files.single.path!);
+      final jsonMap =
+          jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+      final imported = KeyMappings.fromJson(jsonMap);
+
+      if (!mounted) return;
+
+      // Confirm overwrite — and say, before it runs, what the file does not
+      // carry. The bindings are untouched by everything below: this path holds
+      // `configure`, a binding needs `users`, and clearing them "to stay
+      // consistent" would be the silent unbind spec §7d forbids on a delete.
+      // A row whose key the import removes is left orphaned on purpose; the
+      // unbound count above is where it shows up.
+      final confirm = await showConfirmDialog(
+        context: context,
+        title: 'Import key mappings',
+        message: 'This will overwrite all existing key mappings with '
+            '${imported.nodes.length} imported keys. Continue?'
+            '\n\n$kKeyMappingsImportBindingsNote',
+        confirmLabel: 'Import',
+        destructive: true,
+      );
+      if (!confirm) return;
+
+      final store = await ref.read(configStoreProvider.future);
+      // A replace, and the store's diff does the delete accounting: a key the
+      // file does not carry becomes a removal row rather than disappearing
+      // inside a rewritten blob. This is the first import that is legible in
+      // the change log.
+      //
+      // No baseline, on purpose: the dialog above said "overwrite all
+      // existing key mappings", and a replace is what the operator confirmed.
+      // The merge is for a screen that loaded a layout and edited part of
+      // it; a file has no such history to merge against.
+      await store.saveKeyMappings(imported);
+      // Applied incrementally by the stateManProvider store listener; it
+      // self-invalidates only if the import touches Modbus/M2400 keys.
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+              'Imported ${imported.nodes.length} key mappings successfully!'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } on ConfigStoreOfflineException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text('Not imported — the database is unreachable. '
+                'Nothing was written: ${e.attempted}.'),
+            backgroundColor: Theme.of(context).colorScheme.error),
+      );
+    } on ConfigConflict catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text('Not imported — "${e.key}" was changed on another '
+                'station. Reload the page and import again.'),
+            backgroundColor: Theme.of(context).colorScheme.error),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text('Import failed: $e'),
+            backgroundColor: Theme.of(context).colorScheme.error),
+      );
+    }
+  }
+
   KeyMappings? _keyMappings;
 
   /// The store's key mapping items as this page loaded them — what a save is
@@ -1540,6 +1745,12 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
                                 const SizedBox(width: 8),
                                 Expanded(
                                   child: Text('Key Mappings',
+                                      // One line here too: the narrow branch
+                                      // puts the import/export pair in this
+                                      // same row as the title and the unsaved
+                                      // badge, so it has the same trap.
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
                                       style: Theme.of(context)
                                           .textTheme
                                           .titleMedium),
@@ -1560,6 +1771,10 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
                                             fontWeight: FontWeight.bold)),
                                   ),
                                 ],
+                                _ImportExportActions(
+                                  onImport: _onImport,
+                                  onExport: _onExport,
+                                ),
                               ],
                             ),
                             const SizedBox(height: 8),
@@ -1588,28 +1803,56 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
                             children: [
                               const FaIcon(FontAwesomeIcons.key, size: 20),
                               const SizedBox(width: 8),
-                              Flexible(
-                                child: Text('Key Mappings',
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .titleMedium),
-                              ),
-                              if (_hasUnsavedChanges) ...[
-                                const SizedBox(width: 8),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 8, vertical: 4),
-                                  decoration: BoxDecoration(
-                                      color: Colors.orange,
-                                      borderRadius: BorderRadius.circular(12)),
-                                  child: const Text('Unsaved Changes',
-                                      style: TextStyle(
-                                          color: Colors.white,
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.bold)),
+                              // The title and the unsaved badge share one
+                              // `Expanded`, and the free space in this row is
+                              // all of it -- so search, Add Key and the
+                              // import/export pair sit flush against the card's
+                              // right edge. The title beside a `Spacer` at this
+                              // level was a loose `Flexible` splitting the free
+                              // space with it, and the share the title did not
+                              // use was left at the row's end: the import/export
+                              // pair's first golden had it ~130 px short of the
+                              // corner it was moved to.
+                              Expanded(
+                                child: Row(
+                                  children: [
+                                    Flexible(
+                                      child: Text('Key Mappings',
+                                          // One line, always. When the badge
+                                          // appears the fixed children can
+                                          // exceed the width, and an unbounded
+                                          // title wraps into a tall column of
+                                          // characters -- which cost the key
+                                          // list below it ~216 px. Ellipsis
+                                          // degrades the title instead of the
+                                          // list. Measured: without this the
+                                          // list collapsed from 368 to 152 px
+                                          // the moment anything was unsaved.
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .titleMedium),
+                                    ),
+                                    if (_hasUnsavedChanges) ...[
+                                      const SizedBox(width: 8),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 8, vertical: 4),
+                                        decoration: BoxDecoration(
+                                            color: Colors.orange,
+                                            borderRadius:
+                                                BorderRadius.circular(12)),
+                                        child: const Text('Unsaved Changes',
+                                            style: TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 12,
+                                                fontWeight: FontWeight.bold)),
+                                      ),
+                                    ],
+                                  ],
                                 ),
-                              ],
-                              const Spacer(),
+                              ),
                               SizedBox(
                                 width: 200,
                                 child: TextField(
@@ -1628,6 +1871,10 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
                                 icon: const FaIcon(FontAwesomeIcons.plus,
                                     size: 16),
                                 label: const Text('Add Key'),
+                              ),
+                              _ImportExportActions(
+                                onImport: _onImport,
+                                onExport: _onExport,
                               ),
                             ],
                           ),
@@ -2348,232 +2595,46 @@ class _KeyMappingCardState extends State<_KeyMappingCard> {
 
 // ===================== Import/Export Card =====================
 
-class _KeyMappingsImportExportCard extends ConsumerWidget {
-  const _KeyMappingsImportExportCard();
+
+/// Import and export, in the key-mappings card header instead of a card of
+/// their own.
+///
+/// Icon buttons rather than the labelled Filled/Outlined pair the old card
+/// used. In the header they sit beside `Add Key`, which is the action an
+/// operator actually comes to this page for; two more labelled buttons there
+/// would read as three equal choices and crowd the search field into the
+/// title. These two are the rare ones -- a station is commissioned once, and
+/// exported when somebody is standing up another one -- so they take the quiet
+/// form and carry their names in the tooltip.
+class _ImportExportActions extends StatelessWidget {
+  final VoidCallback onImport;
+  final VoidCallback onExport;
+
+  const _ImportExportActions({required this.onImport, required this.onExport});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final isNarrow = constraints.maxWidth < 500;
-            if (isNarrow) {
-              return Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Row(
-                    children: [
-                      const Icon(Icons.sync_alt, size: 20),
-                      const SizedBox(width: 8),
-                      Text('Import / Export',
-                          style: Theme.of(context).textTheme.titleMedium),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  FilledButton.icon(
-                    onPressed: () => _onImport(context, ref),
-                    icon: const FaIcon(FontAwesomeIcons.fileImport, size: 16),
-                    label: const Text('Import'),
-                  ),
-                  const SizedBox(height: 8),
-                  OutlinedButton.icon(
-                    onPressed: () => _onExport(context, ref),
-                    icon: const FaIcon(FontAwesomeIcons.fileExport, size: 16),
-                    label: const Text('Export'),
-                  ),
-                ],
-              );
-            }
-            return Row(
-              children: [
-                const Icon(Icons.sync_alt, size: 20),
-                const SizedBox(width: 8),
-                Text('Import / Export',
-                    style: Theme.of(context).textTheme.titleMedium),
-                const Spacer(),
-                FilledButton.icon(
-                  onPressed: () => _onImport(context, ref),
-                  icon: const FaIcon(FontAwesomeIcons.fileImport, size: 16),
-                  label: const Text('Import'),
-                ),
-                const SizedBox(width: 8),
-                OutlinedButton.icon(
-                  onPressed: () => _onExport(context, ref),
-                  icon: const FaIcon(FontAwesomeIcons.fileExport, size: 16),
-                  label: const Text('Export'),
-                ),
-              ],
-            );
-          },
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        IconButton(
+          key: kKeyMappingsImportKey,
+          onPressed: onImport,
+          tooltip: 'Import key mappings',
+          // Compact because this row is width-bound: the title, the unsaved
+          // badge, a 200 px search field and Add Key are already in it. The
+          // default 48 px box spends width the title would otherwise have.
+          visualDensity: VisualDensity.compact,
+          icon: const FaIcon(FontAwesomeIcons.fileImport, size: 16),
         ),
-      ),
+        IconButton(
+          key: kKeyMappingsExportKey,
+          onPressed: onExport,
+          tooltip: 'Export key mappings',
+          visualDensity: VisualDensity.compact,
+          icon: const FaIcon(FontAwesomeIcons.fileExport, size: 16),
+        ),
+      ],
     );
-  }
-
-  Future<void> _onExport(BuildContext context, WidgetRef ref) async {
-    // ---------------------------------------------------------------------
-    // Decided, 04-08: this file carries **no** access bindings, and there is
-    // no "also export bindings" option, no second file and no bindings section
-    // in the JSON. Written here because the omission looks like one.
-    //
-    // The reason is the 2026-08-30 ruling itself. An export/import pair that
-    // carried bindings would put an authorization write behind this card —
-    // which is `configure`-gated, on a `configure`-gated route — and then make
-    // it portable between stations. That is precisely the path the ruling
-    // closed, re-opened in file form. A binding has to be written by something
-    // that checks `users` and leaves an audit row naming a person; a JSON file
-    // dropped through a file picker is neither.
-    //
-    // The supported way to move bindings between stations is the MCP sweep:
-    // `list_access_templates` and `bind_key_access_template`, which propose,
-    // are approved by somebody holding `users`, and land in the trail with
-    // `origin: 'mcp'`. That is named in the copy below, not only here.
-    // ---------------------------------------------------------------------
-    try {
-      final store = await ref.read(configStoreProvider.future);
-      final keyMappings = store.inner.keyMappings;
-      final jsonString =
-          const JsonEncoder.withIndent('  ').convert(keyMappings.toJson());
-
-      String? savePath;
-      if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
-        savePath = await FilePicker.platform.saveFile(
-          dialogTitle: 'Export Key Mappings',
-          fileName: 'key_mappings.json',
-          type: FileType.custom,
-          allowedExtensions: ['json'],
-        );
-      } else {
-        final dir = await getApplicationDocumentsDirectory();
-        final ts = DateTime.now().toIso8601String().replaceAll(':', '-');
-        savePath = path.join(dir.path, 'key_mappings_$ts.json');
-      }
-      if (savePath == null) return;
-
-      final file = File(savePath);
-      await file.writeAsString(jsonString);
-
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Key mappings exported to ${file.path}',
-                // The path is the one line here that may be elided: it can be
-                // arbitrarily long, and letting it wrap without limit would
-                // push the disclosure below off the strip — which is the line
-                // that matters.
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-              ),
-              const SizedBox(height: 4),
-              Text(
-                kKeyMappingsExportBindingsNote,
-                // Pinned rather than left to the default so a later change to
-                // the copy fails the height assertion instead of silently
-                // ellipsising the sentence that says what the file does not
-                // contain.
-                maxLines: 6,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ],
-          ),
-          backgroundColor: Colors.green,
-        ),
-      );
-    } catch (e) {
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-            content: Text('Export failed: $e'),
-            backgroundColor: Theme.of(context).colorScheme.error),
-      );
-    }
-  }
-
-  Future<void> _onImport(BuildContext context, WidgetRef ref) async {
-    try {
-      final pick = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: ['json'],
-        dialogTitle: 'Import Key Mappings',
-      );
-      if (pick == null || pick.files.single.path == null) return;
-
-      final file = File(pick.files.single.path!);
-      final jsonMap =
-          jsonDecode(await file.readAsString()) as Map<String, dynamic>;
-      final imported = KeyMappings.fromJson(jsonMap);
-
-      if (!context.mounted) return;
-
-      // Confirm overwrite — and say, before it runs, what the file does not
-      // carry. The bindings are untouched by everything below: this path holds
-      // `configure`, a binding needs `users`, and clearing them "to stay
-      // consistent" would be the silent unbind spec §7d forbids on a delete.
-      // A row whose key the import removes is left orphaned on purpose; the
-      // unbound count above is where it shows up.
-      final confirm = await showConfirmDialog(
-        context: context,
-        title: 'Import key mappings',
-        message: 'This will overwrite all existing key mappings with '
-            '${imported.nodes.length} imported keys. Continue?'
-            '\n\n$kKeyMappingsImportBindingsNote',
-        confirmLabel: 'Import',
-        destructive: true,
-      );
-      if (!confirm) return;
-
-      final store = await ref.read(configStoreProvider.future);
-      // A replace, and the store's diff does the delete accounting: a key the
-      // file does not carry becomes a removal row rather than disappearing
-      // inside a rewritten blob. This is the first import that is legible in
-      // the change log.
-      //
-      // No baseline, on purpose: the dialog above said "overwrite all
-      // existing key mappings", and a replace is what the operator confirmed.
-      // The merge is for a screen that loaded a layout and edited part of
-      // it; a file has no such history to merge against.
-      await store.saveKeyMappings(imported);
-      // Applied incrementally by the stateManProvider store listener; it
-      // self-invalidates only if the import touches Modbus/M2400 keys.
-
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-              'Imported ${imported.nodes.length} key mappings successfully!'),
-          backgroundColor: Colors.green,
-        ),
-      );
-    } on ConfigStoreOfflineException catch (e) {
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-            content: Text('Not imported — the database is unreachable. '
-                'Nothing was written: ${e.attempted}.'),
-            backgroundColor: Theme.of(context).colorScheme.error),
-      );
-    } on ConfigConflict catch (e) {
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-            content: Text('Not imported — "${e.key}" was changed on another '
-                'station. Reload the page and import again.'),
-            backgroundColor: Theme.of(context).colorScheme.error),
-      );
-    } catch (e) {
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-            content: Text('Import failed: $e'),
-            backgroundColor: Theme.of(context).colorScheme.error),
-      );
-    }
   }
 }
