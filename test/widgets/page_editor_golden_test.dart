@@ -43,6 +43,10 @@ import 'package:tfc/models/menu_item.dart';
 import 'package:tfc/page_creator/assets/beckhoff.dart';
 import 'package:tfc/page_creator/assets/drawn_box.dart';
 import 'package:tfc/page_creator/assets/common.dart';
+import 'package:tfc/page_creator/assets/ethercat_link.dart';
+import 'package:tfc/page_creator/assets/link_anchors.dart';
+import 'package:tfc/page_creator/assets/link_geometry.dart';
+import 'package:tfc/pages/page_view.dart' show AssetStack;
 import 'package:tfc/page_creator/assets/text.dart';
 import 'package:tfc/page_creator/page.dart';
 import 'package:tfc/theme.dart';
@@ -412,6 +416,86 @@ void main() {
       // Dismiss, so no route outlives the test.
       await tester.tapAt(const Offset(20, 20));
       await tester.pumpAndSettle();
+    });
+  });
+
+  group('cables', () {
+    /// A point on the first leg of the editor's cable, on screen. Read off the
+    /// editor's own copy, which is not the one handed to it.
+    Offset onCable(WidgetTester tester) {
+      final stack = tester.widget<AssetStack>(find.byType(AssetStack));
+      final r = tester.getRect(find.byType(AssetStack));
+      final cable = stack.assets.whereType<EtherCatLinkConfig>().single;
+      final pts =
+          cable.run.resolve(r.size, PageLinkAnchors(stack.assets, r.size)).points;
+      return r.topLeft + pts[0] * 0.75 + pts[1] * 0.25;
+    }
+
+    /// Many small moves: the editor's double-tap recognizer holds the arena
+    /// and swallows the first moves of a drag.
+    Future<void> drag(WidgetTester tester, Offset from, Offset to) async {
+      final g = await tester.startGesture(from);
+      await tester.pump();
+      for (var i = 1; i <= 10; i++) {
+        await g.moveTo(Offset.lerp(from, to, i / 10)!);
+        await tester.pump();
+      }
+      await g.up();
+      await tester.pumpAndSettle();
+    }
+
+    testGoldenWidgets('an unplugged cable, dragged and grown — handles on it',
+        (tester) async {
+      // Its handles used to stay where the stored ends were while the line
+      // moved and scaled with its box. Every handle has to sit on the ink.
+      await _pumpEditor(tester,
+          theme: dark,
+          pages: _onePage([
+            _labelledBox(0.16, 0.62, 'EK1100'),
+            EtherCatLinkConfig(
+              run: LinkRun(waypoints: [LinkWaypoint.onRun(0.5, -0.3)]),
+            )..coordinates = Coordinates(x: 0.25, y: 0.3),
+          ]));
+      await tester.tapAt(onCable(tester));
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pumpAndSettle();
+      final from = onCable(tester);
+      await drag(tester, from, from + const Offset(380, 110));
+      await tester.tap(find.byTooltip('Grow selection'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Grow selection'));
+      await tester.pumpAndSettle();
+
+      await expectLater(
+        find.byType(MaterialApp),
+        matchesGoldenFile('goldens/page_editor_cable_unplugged_dark.png'),
+      );
+    });
+
+    testGoldenWidgets('a cable between two devices, selected', (tester) async {
+      final a = _labelledBox(0.16, 0.30, 'EK1100')..ensureId();
+      final b = _labelledBox(0.56, 0.62, 'EP2338')..ensureId();
+      await _pumpEditor(tester,
+          theme: dark,
+          pages: _onePage([
+            a,
+            b,
+            EtherCatLinkConfig(
+              run: LinkRun(
+                from: LinkEnd(assetId: a.id, port: 'X2'),
+                to: LinkEnd(assetId: b.id, port: 'X1'),
+                waypoints: [LinkWaypoint.onRun(0.5, -0.25)],
+              ),
+            ),
+          ]));
+      await tester.tapAt(onCable(tester));
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pumpAndSettle();
+
+      await expectLater(
+        find.byType(MaterialApp),
+        matchesGoldenFile('goldens/page_editor_cable_plugged_dark.png'),
+      );
     });
   });
 }
