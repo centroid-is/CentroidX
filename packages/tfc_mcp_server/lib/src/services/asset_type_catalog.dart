@@ -322,9 +322,7 @@ class AssetTypeCatalog {
                 '"key" (the ST_Section_HMI struct, carrying p_cmd_Start / '
                 'p_cmd_StartClean / p_cmd_Stop and p_stat_xEnabled / '
                 'p_stat_xCleanEnabled / p_stat_xPermissive), an optional '
-                '"label" naming it in the pane list (e.g. ST101), and an '
-                'optional "hold_reason" shown behind "Allowed to start" '
-                'saying what holds that section, in operator words. The same '
+                '"label" naming it in the pane list (e.g. Station 1). The same '
                 'line on several PLCs belongs behind one button.',
             required: true),
         AssetPropertyInfo(

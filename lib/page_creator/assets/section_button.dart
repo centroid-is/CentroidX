@@ -96,9 +96,7 @@ enum SectionMode {
   /// What the pane calls this state.
   ///
   /// Plain words, not PLC words. An operator standing at the machine reads
-  /// "Can't start", not "permissive not satisfied" — the term of art lives in
-  /// the explanation behind [SectionPane]'s permit row, where it is defined
-  /// rather than assumed.
+  /// "Can't start", not "permissive not satisfied".
   final String label;
 }
 
@@ -111,8 +109,7 @@ enum SectionMode {
 /// Running and cleaning outrank a lost go-ahead deliberately. The PLC drops
 /// the outputs the same scan the permissive goes away, so the combination is
 /// transient at worst; painting a moving line as idle for those scans is the
-/// one wrong answer that could get somebody hurt. The lost go-ahead is never
-/// hidden — the pane always carries it as its own row.
+/// one wrong answer that could get somebody hurt.
 SectionMode resolveSectionMode({
   required bool? enabled,
   required bool? cleanEnabled,
@@ -464,30 +461,6 @@ List<SectionMode> resolveFaceModes(
   return out;
 }
 
-/// Whether the section at [index] is held off by an alternative that has the
-/// line — the ordinary, working case of the interlock.
-///
-/// Only auto counts, because auto is the only thing the ladder negates. A
-/// section held while its twin is merely cleaning is held by something else,
-/// and the pane must go on reporting that as an anomaly.
-bool heldByAlternative(
-  int index,
-  List<SectionMode> modes,
-  List<ExclusiveSet> sets,
-) {
-  if (index >= modes.length || modes[index] != SectionMode.blocked) {
-    return false;
-  }
-  for (final set in sets) {
-    if (!set.members.contains(index)) continue;
-    for (final other in set.members) {
-      if (other == index || other >= modes.length) continue;
-      if (modes[other] == SectionMode.running) return true;
-    }
-  }
-  return false;
-}
-
 /// Whether the section at [index] is one alternative of a declared set.
 bool inExclusiveSet(int index, List<ExclusiveSet> sets) =>
     sets.any((s) => s.members.contains(index));
@@ -634,15 +607,6 @@ class SectionRef {
   /// Falls back to the tail of [key].
   String? label;
 
-  /// What holds this section back, in the operator's words.
-  ///
-  /// Per section because the answer is: `boxPackingFilm` is held by
-  /// `boxPackingVacuum` and vice versa, while the freezer sections are wired
-  /// to have the go-ahead permanently so losing it means something upstream
-  /// broke. Text inside a generic asset cannot know which of those it is, and
-  /// a confident wrong instruction on a machine pane is worse than none.
-  String? holdReason;
-
   /// Names a set of sections that are ALTERNATIVES rather than peers: only one
   /// of them can run at a time, and the PLC is what enforces it.
   ///
@@ -666,7 +630,6 @@ class SectionRef {
   SectionRef({
     required this.key,
     this.label,
-    this.holdReason,
     this.exclusiveGroup,
   });
 
@@ -1007,21 +970,6 @@ class _SectionRefEditor extends StatelessWidget {
                 helperText: 'Name in the pane list, e.g. ST101',
               ),
               onChanged: (v) => entry.label = v,
-            ),
-            const SizedBox(height: 12),
-            TextFormField(
-              initialValue: entry.holdReason,
-              maxLines: 3,
-              minLines: 2,
-              decoration: const InputDecoration(
-                labelText: "Why it can't start",
-                alignLabelWithHint: true,
-                helperMaxLines: 3,
-                helperText: 'Shown behind "Allowed to start". Name what holds '
-                    'this section, in operator words — e.g. "The vacuum mode '
-                    'has the line. Stop it and this one is free."',
-              ),
-              onChanged: (v) => entry.holdReason = v,
             ),
             const SizedBox(height: 12),
             TextFormField(
@@ -1845,26 +1793,6 @@ class SectionPane extends StatelessWidget {
     final group = SectionGroup(resolveFaceModes(modes, exclusiveSets));
     final single = refs.length == 1;
 
-    // A section held off by the alternative that has the line is the interlock
-    // working, not an anomaly, and counting it here is what turned "Allowed to
-    // start" into a permanent `No for 2 of 7` — a row that is always red is a
-    // row nobody reads. Where it IS the answer is the choice below, which
-    // shows which mode has the line.
-    final held = [
-      for (var i = 0; i < refs.length; i++)
-        if (_modeAt(i) == SectionMode.blocked &&
-            !heldByAlternative(i, modes, exclusiveSets))
-          i,
-    ];
-    final unreadable = raw.count(SectionMode.unknown);
-    final allowed = refs.isEmpty || unreadable == refs.length
-        ? '—'
-        : held.isEmpty
-            ? 'Yes'
-            : held.length == refs.length
-                ? 'No'
-                : 'No for ${held.length} of ${refs.length}';
-
     final runnable = groupStartable(modes, exclusiveSets);
     // `Run all` never writes to a member of an exclusive set, so on a button
     // where every section IS one it can never fire — in any state, forever.
@@ -1905,29 +1833,6 @@ class SectionPane extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               mainAxisSize: MainAxisSize.min,
               children: [
-                // No "for how long" tile beside it. `ST_Section_HMI` carries
-                // three status bits and no transition timestamp, so the only
-                // clock available was the HMI's own: it started when this
-                // widget was built and went back to zero the moment the
-                // operator navigated away and came back. A counter that
-                // restarts on navigation is worse than no counter, because it
-                // reads as the section having just changed mode. If the PLC
-                // ever publishes the transition time, that is the number that
-                // belongs here.
-                PaneTileRow(
-                  children: [
-                    PaneMetricTile(
-                      label: 'State',
-                      value: group.label,
-                      valueColor: sectionModeColor(context, group.busiest),
-                      icon: Icons.bolt,
-                      // Wider than the 108 px default: at 108 the longest
-                      // state word was cut short.
-                      width: 170,
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
                 // A single section shows its two mode bits directly; a group
                 // shows a count, because four sections' worth of Yes/No rows is
                 // exactly the "more information than a normal screen" the pane
@@ -1954,27 +1859,6 @@ class SectionPane extends StatelessWidget {
                         ? null
                         : sectionModeColor(context, group.busiest),
                   ),
-                // The one term of art on this pane, and the one an operator is
-                // most likely to be stuck on: a section that will not start and
-                // gives no reason. So it is an explain row rather than a detail
-                // row, and it opens itself when it is the answer to "why is
-                // nothing happening" — the same treatment `conveyor.dart` gives
-                // a live drive fault.
-                PaneExplainRow(
-                  label: 'Allowed to start',
-                  value: allowed,
-                  valueColor: held.isEmpty ? null : states.yellow,
-                  initiallyExpanded: held.isNotEmpty,
-                  explanationBuilder: (context) => _PermitExplainer(
-                    reasons: [
-                      for (final i in held)
-                        (
-                          label: single ? null : refs[i].displayLabel,
-                          reason: refs[i].holdReason,
-                        ),
-                    ],
-                  ),
-                ),
               ],
             ),
           ),
@@ -2073,20 +1957,9 @@ class SectionPane extends StatelessWidget {
                         'at once would stop the line. Choose a mode above.',
                   ),
                 ],
-                if (!runnable && !cleanable && held.isNotEmpty) ...[
-                  const SizedBox(height: 10),
-                  // No cross-reference to the row above: it opens itself in
-                  // this state, so the explanation is already on screen.
-                  _Note(
-                    icon: Icons.lock_outline,
-                    color: states.yellow,
-                    text: single
-                        ? 'Run and Clean will do nothing until this section is '
-                            'allowed to start.'
-                        : 'Run and Clean will do nothing until one of these '
-                            'sections is allowed to start.',
-                  ),
-                ] else if (!runnable && !cleanable) ...[
+                if (!runnable &&
+                    !cleanable &&
+                    raw.count(SectionMode.unknown) == refs.length) ...[
                   const SizedBox(height: 10),
                   _Note(
                     icon: Icons.help_outline,
@@ -2352,12 +2225,6 @@ class _ExclusiveSetRow extends StatelessWidget {
     }
 
     final active = _active;
-    // Whether a hand-over is possible but switched off, and whether anything
-    // could be picked at all — the two reasons a mode button is dead, and
-    // both of them have to be sayable or the button is dead for no visible
-    // reason.
-    var handoverWithheld = false;
-    var anyPickable = false;
     final shortNames = _shortNames;
     final modeButtons = <Widget>[];
     for (final i in set.members) {
@@ -2366,8 +2233,6 @@ class _ExclusiveSetRow extends StatelessWidget {
       final plan =
           isActive ? null : planModeSwitch(modes: modes, set: set, target: i);
       final blocked = plan != null && plan.isHandover && !allowModeSwitch;
-      if (blocked) handoverWithheld = true;
-      if (plan != null && !blocked) anyPickable = true;
       modeButtons.add(Expanded(
         child: _MemberButton(
           buttonKey: Key('section-choice-$setIndex-$i'),
@@ -2464,10 +2329,9 @@ class _ExclusiveSetRow extends StatelessWidget {
               ),
             ],
           ),
-          // At most one line, and only when something is dead or wrong. The
-          // note that used to explain the hand-over in the ordinary case was
-          // the only one that appeared when nothing was the matter, which is
-          // exactly the noise this asset is trying not to make.
+          // Only when the interlock itself has failed. A dead mode button
+          // gets no note: the filled one beside it already shows which mode
+          // has the line, and the PLC never says what else holds a section.
           if (violated) ...[
             const SizedBox(height: 8),
             _Note(
@@ -2476,26 +2340,6 @@ class _ExclusiveSetRow extends StatelessWidget {
               text: 'Both of these are running. Only one is supposed to be '
                   'able to — the interlock in the PLC is not holding. '
                   'Report it.',
-            ),
-          ] else if (handoverWithheld && active != null) ...[
-            const SizedBox(height: 8),
-            _Note(
-              icon: Icons.lock_outline,
-              color: states.yellow,
-              text: '${_nameOf(active)} has the line. Stop it, then the other '
-                  'mode can be started.',
-            ),
-          ] else if (active != null && !anyPickable) ...[
-            const SizedBox(height: 8),
-            // The exclusion is not what holds the alternative: the permissive
-            // keys off `q_xEnabled` only, so a member held while this one
-            // merely CLEANS is held by something else entirely.
-            _Note(
-              icon: Icons.lock_outline,
-              color: states.yellow,
-              text: '${_nameOf(active)} has the line, but the other mode is '
-                  'not free to take it either — something outside this choice '
-                  'is holding it.',
             ),
           ],
         ],
@@ -2520,7 +2364,8 @@ class _ExclusiveSetRow extends StatelessWidget {
 ///
 /// Each button is guarded exactly as the group's is, per section: `p_cmd_Start`
 /// toggles, so `Run` on a section already running would stop it and is dead
-/// there instead.
+/// there instead — filled, like the mode that has the line in an exclusive
+/// set, so the button still says what the section is doing.
 class _SectionRow extends StatelessWidget {
   final int index;
   final String name;
@@ -2588,6 +2433,7 @@ class _SectionRow extends StatelessWidget {
                     semantic: 'Run $name',
                     icon: Icons.play_arrow,
                     tint: HmiStateColors.of(context).green,
+                    filled: mode == SectionMode.running,
                     onPressed: action(kSectionCmdStart),
                   ),
                 ),
@@ -2600,6 +2446,7 @@ class _SectionRow extends StatelessWidget {
                   semantic: 'Clean $name',
                   icon: Icons.water_drop_outlined,
                   tint: HmiStateColors.of(context).blue,
+                  filled: mode == SectionMode.cleaning,
                   onPressed: action(kSectionCmdStartClean),
                 ),
               ),
@@ -2636,8 +2483,8 @@ class _MemberButton extends StatelessWidget {
   final Color tint;
   final VoidCallback? onPressed;
 
-  /// Paints the button in [tint] rather than outlining it — the mode of an
-  /// exclusive set that has the line. Kept on the same compact metrics as the
+  /// Paints the button in [tint] rather than outlining it — the mode the
+  /// section, or the exclusive set, is in. Kept on the same compact metrics as the
   /// outlined ones so it sits in a row beside them without changing its
   /// height, and it keeps the colour while disabled: a filled button that
   /// faded to the theme's disabled grey would hide the very thing it is
@@ -2698,52 +2545,6 @@ class _MemberButton extends StatelessWidget {
         // rather than as a quieter shade of its own colour.
         foregroundColor: onPressed == null ? null : tint,
       ),
-    );
-  }
-}
-
-/// What "allowed to start" means, in the words of somebody who has to act on
-/// it rather than wire it.
-///
-/// One sentence is generic and always shown: it is true of every section and
-/// it is the fact an operator needs first — pressing the buttons will not
-/// help. Everything beyond that is per-section and comes from the asset's
-/// [SectionRef.holdReason], because what actually holds a section is a
-/// property of that section's wiring, not of this widget. An asset that
-/// guessed would eventually guess wrong, and a confident wrong instruction on
-/// a machine pane is worse than no instruction.
-class _PermitExplainer extends StatelessWidget {
-  /// The held sections and their configured reasons. [label] is null when
-  /// there is only one section, where naming it adds nothing.
-  final List<({String? label, String? reason})> reasons;
-
-  const _PermitExplainer({this.reasons = const []});
-
-  @override
-  Widget build(BuildContext context) {
-    final style = Theme.of(context).textTheme.bodySmall;
-    final written = [
-      for (final r in reasons)
-        if ((r.reason?.trim() ?? '').isNotEmpty)
-          (label: r.label, reason: r.reason!.trim()),
-    ];
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text(
-          'The rest of the plant has to give a section a go-ahead before it '
-          'will run. Until it does, Run and Clean are ignored.',
-          style: style,
-        ),
-        for (final r in written) ...[
-          const SizedBox(height: 8),
-          Text(
-            r.label == null ? r.reason : '${r.label}: ${r.reason}',
-            style: style,
-          ),
-        ],
-      ],
     );
   }
 }

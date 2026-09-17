@@ -327,7 +327,6 @@ void main() {
         () {
       expect(reduceExclusiveSet(const [blocked, cleaning]), cleaning,
           reason: 'the cleaning member has the line, so this reduces');
-      // ...but heldByAlternative below must not call that one explained.
     });
 
     test('two in auto still reads Running, because they both are', () {
@@ -413,47 +412,6 @@ void main() {
         SectionMode.blocked,
       ], sets);
       expect(face, [SectionMode.stopped, SectionMode.running]);
-    });
-  });
-
-  group('heldByAlternative — which holds are the interlock working', () {
-    const sets = [ExclusiveSet(name: 'Line 2 packing', members: [0, 1])];
-
-    test('held while the twin runs is explained', () {
-      expect(
-          heldByAlternative(
-              0, const [SectionMode.blocked, SectionMode.running], sets),
-          isTrue);
-    });
-
-    test('held while the twin only cleans is NOT explained', () {
-      // The ladder negates q_xEnabled, not q_xCleanEnabled. Something else is
-      // holding this section, and the pane has to keep saying so.
-      expect(
-          heldByAlternative(
-              0, const [SectionMode.blocked, SectionMode.cleaning], sets),
-          isFalse);
-    });
-
-    test('held with the twin idle is not explained', () {
-      expect(
-          heldByAlternative(
-              0, const [SectionMode.blocked, SectionMode.stopped], sets),
-          isFalse);
-    });
-
-    test('a peer is never explained away', () {
-      expect(
-          heldByAlternative(
-              0, const [SectionMode.blocked, SectionMode.running], const []),
-          isFalse);
-    });
-
-    test('a section that is not held is not held', () {
-      expect(
-          heldByAlternative(
-              1, const [SectionMode.blocked, SectionMode.running], sets),
-          isFalse);
     });
   });
 
