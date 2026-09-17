@@ -320,19 +320,38 @@ void _paintName(
 }
 
 /// The header chip a station's pane shows, in the same colours as its dock.
-PaneStatus wagonStationPaneStatus(BuildContext context, WagonStationState state) {
+///
+/// Coloured by [WagonStation.state], so the chip and the dock never disagree,
+/// but worded per role: "Delivering" means loading the wagon at a station
+/// that sends pallets and receiving at one that takes them, and a blocked
+/// station says which of its two stop signals is on.
+PaneStatus wagonStationPaneStatus(BuildContext context, WagonStation station) {
   final states = HmiStateColors.of(context);
-  return switch (state) {
-    WagonStationState.blocked =>
-      PaneStatus(label: state.label, color: states.yellow, icon: Icons.block),
+  final sends = station.role == WagonStationRole.source;
+  return switch (station.state) {
+    WagonStationState.blocked => station.waitingForInterlock
+        ? PaneStatus(
+            label: 'Wagon waiting',
+            color: states.yellow,
+            icon: Icons.hourglass_top)
+        : PaneStatus(
+            label: 'Wagon kept out', color: states.yellow, icon: Icons.block),
     WagonStationState.delivering => PaneStatus(
-        label: state.label, color: states.green, icon: Icons.play_circle_fill),
+        label: sends ? 'Loading' : 'Receiving',
+        color: states.green,
+        icon: Icons.play_circle_fill),
     WagonStationState.ready => PaneStatus(
-        label: state.label, color: states.green, icon: Icons.check_circle),
+        label: sends ? 'Pallet ready' : 'Ready for pallet',
+        color: states.green,
+        icon: Icons.check_circle),
     WagonStationState.asking => PaneStatus(
-        label: state.label, color: states.green, icon: Icons.radio_button_unchecked),
+        label: sends ? 'Pallet coming' : 'Needs pallet',
+        color: states.green,
+        icon: Icons.radio_button_unchecked),
     WagonStationState.idle => PaneStatus(
-        label: state.label, color: states.grey, icon: Icons.pause_circle_filled),
+        label: sends ? 'Nothing to send' : 'Idle',
+        color: states.grey,
+        icon: Icons.pause_circle_filled),
   };
 }
 
@@ -380,39 +399,104 @@ List<WagonHandshakeBit> wagonStationHandshake(WagonStation s) {
   ];
 }
 
-/// The body of a station's side pane: what the station is, then its
-/// handshake as lamps.
+/// The body of a station's side pane, written for the operator.
+///
+/// What is happening comes first, as a sentence ([wagonStationStory]), with
+/// either stop signal explained right under it. Then the station's pallet,
+/// the wagon and the rollers in words, then what the station is. The raw
+/// signals are still there for a technician, folded shut under "Advanced"
+/// the way the sensor pane folds its adjustments: they are how the PLC runs
+/// the exchange, which is not the question an operator comes with.
+///
+/// [stations] is the whole row this wagon serves, so the sentence can name
+/// the other stations involved; without it the sentence is about this
+/// station alone. [wagon] is what the sentences call the wagon, and
+/// [lockHelp] is the installation's own line on what a station keeping the
+/// wagon out usually means (both from the conveyor's config).
 class WagonStationPaneBody extends StatelessWidget {
-  const WagonStationPaneBody({super.key, required this.station});
+  const WagonStationPaneBody({
+    super.key,
+    required this.station,
+    this.stations = const [],
+    this.wagon = 'the wagon',
+    this.lockHelp,
+  });
 
   final WagonStation station;
+  final List<WagonStation> stations;
+  final String wagon;
+  final String? lockHelp;
 
   @override
   Widget build(BuildContext context) {
-    final states = HmiStateColors.of(context);
+    final theme = Theme.of(context);
+    final green = HmiStateColors.of(context).green;
+    final story = wagonStationStory(
+        station, stations.isEmpty ? [station] : stations,
+        wagon: wagon);
+    final name = station.name;
+    final startWagon = capitalizeFirst(wagon);
+    final help = lockHelp?.trim();
     return PaneBody(
       sections: [
         PaneBodySection.status(
-          title: 'Handshake',
+          title: 'Now',
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                story.headline,
+                style: theme.textTheme.titleMedium
+                    ?.copyWith(fontWeight: FontWeight.w600, height: 1.3),
+              ),
+              for (final note in story.notes) ...[
+                const SizedBox(height: 6),
+                Text(note, style: theme.textTheme.bodyMedium),
+              ],
+              // Two boxes, never merged: they are two different situations.
+              // One is the wagon standing still outside this station; the
+              // other is the station refusing it, whether or not the wagon
+              // has anywhere to be.
+              if (station.waitingForInterlock) ...[
+                const SizedBox(height: 10),
+                WagonStopReason(
+                  icon: Icons.hourglass_top,
+                  title: '$startWagon is waiting for $name',
+                  body: '$startWagon wants to drive to $name, but the '
+                      'station has not let it in yet. It is standing still, '
+                      'and moves on by itself as soon as $name lets it in.',
+                ),
+              ],
+              if (station.interlock) ...[
+                const SizedBox(height: 10),
+                WagonStopReason(
+                  icon: Icons.block,
+                  title: '$name is keeping $wagon out',
+                  body: 'While this is on, $wagon will not drive to $name, '
+                      'even when it has a pallet for it. It clears by itself '
+                      'when the station is ready again. If it stays on, check '
+                      'the station.',
+                  help: help == null || help.isEmpty ? null : help,
+                ),
+              ],
+            ],
+          ),
+        ),
+        PaneBodySection.details(
+          title: 'At the station',
           child: Column(
             children: [
-              for (final bit in wagonStationHandshake(station))
-                PaneDetailRow(
-                  crossAxisAlignment: CrossAxisAlignment.center,
-                  label: bit.label,
-                  child: SizedBox(
-                    width: 22,
-                    height: 22,
-                    child: CustomPaint(
-                      painter: LEDPainter(
-                        color: bit.on
-                            ? (bit.isWait ? states.yellow : states.green)
-                            : Colors.white,
-                        ledType: LEDType.circle,
-                      ),
-                    ),
-                  ),
-                ),
+              PaneDetailRow(label: 'Pallet', value: station.palletLabel),
+              PaneDetailRow(
+                label: 'Wagon',
+                value: station.atStation ? 'Here' : 'Not here',
+                valueColor: station.atStation ? green : null,
+              ),
+              PaneDetailRow(
+                label: 'Rollers',
+                value: station.outfeed ? 'Running' : 'Stopped',
+                valueColor: station.outfeed ? green : null,
+              ),
             ],
           ),
         ),
@@ -420,18 +504,120 @@ class WagonStationPaneBody extends StatelessWidget {
           title: 'Station',
           child: Column(
             children: [
-              PaneDetailRow(label: 'Role', value: station.role.label),
-              PaneDetailRow(
-                label: 'Side',
-                value: station.side == WagonStationSide.inFront
-                    ? 'In front of the wagon'
-                    : 'Behind the wagon',
+              PaneDetailRow(label: 'Job', value: station.jobLabel),
+              PaneDetailRow(label: 'On the rail', value: station.positionLabel),
+              ExpansionTile(
+                key: const Key('wagon_station_advanced'),
+                title: Text('Advanced', style: theme.textTheme.bodyMedium),
+                tilePadding: EdgeInsets.zero,
+                childrenPadding: const EdgeInsets.only(bottom: 4),
+                // No divider lines when open, as on the sensor pane: the
+                // section already scopes the fold.
+                shape: const Border(),
+                collapsedShape: const Border(),
+                children: [WagonStationSignals(station: station)],
               ),
-              PaneDetailRow(
-                  label: 'Along the rail', value: station.positionLabel),
             ],
           ),
         ),
+      ],
+    );
+  }
+}
+
+/// One reason the wagon is not moving, in the station pane's yellow.
+///
+/// Yellow, not red: a station holding the wagon off is not a fault, and red
+/// stays reserved for the ones that are. [help] is an installation's own
+/// line on top of the generic explanation, set apart so it reads as the
+/// local answer rather than more of the same.
+class WagonStopReason extends StatelessWidget {
+  const WagonStopReason({
+    super.key,
+    required this.icon,
+    required this.title,
+    required this.body,
+    this.help,
+  });
+
+  final IconData icon;
+  final String title;
+  final String body;
+  final String? help;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final yellow = HmiStateColors.of(context).yellow;
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: yellow.withValues(alpha: 0.12),
+        border: Border.all(color: yellow),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: yellow, size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: theme.textTheme.bodyMedium
+                      ?.copyWith(fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 4),
+                Text(body, style: theme.textTheme.bodySmall),
+                if (help != null) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    help!,
+                    style: theme.textTheme.bodySmall
+                        ?.copyWith(fontWeight: FontWeight.w600),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The station's raw signals as lamps, in the order the exchange happens:
+/// what the "Advanced" fold opens to.
+class WagonStationSignals extends StatelessWidget {
+  const WagonStationSignals({super.key, required this.station});
+
+  final WagonStation station;
+
+  @override
+  Widget build(BuildContext context) {
+    final states = HmiStateColors.of(context);
+    return Column(
+      children: [
+        for (final bit in wagonStationHandshake(station))
+          PaneDetailRow(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            label: bit.label,
+            child: SizedBox(
+              width: 22,
+              height: 22,
+              child: CustomPaint(
+                painter: LEDPainter(
+                  color: bit.on
+                      ? (bit.isWait ? states.yellow : states.green)
+                      : Colors.white,
+                  ledType: LEDType.circle,
+                ),
+              ),
+            ),
+          ),
       ],
     );
   }

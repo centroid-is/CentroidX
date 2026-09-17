@@ -188,6 +188,23 @@ void main() {
       expect(ConveyorConfig.fromJson(ConveyorConfig().toJson()..remove('stationsKey'))
           .stationsKey, isNull);
     });
+
+    test('the wagon name and lock help round-trip, and the name falls back',
+        () {
+      final config = ConveyorConfig(
+          onRails: true,
+          wagonName: 'Pallet wagon',
+          stationLockHelp: 'The other wagon is usually at the station.');
+      final back = ConveyorConfig.fromJson(config.toJson());
+      expect(back.wagonName, 'Pallet wagon');
+      expect(back.stationLockHelp, 'The other wagon is usually at the station.');
+      expect(back.wagonDisplayName, 'Pallet wagon');
+
+      final labelled = ConveyorConfig(onRails: true)..text = 'Wagon 2';
+      expect(labelled.wagonDisplayName, 'Wagon 2');
+      expect(ConveyorConfig(onRails: true, wagonName: '  ').wagonDisplayName,
+          'the wagon');
+    });
   });
 
   group('on the page', () {
@@ -255,10 +272,43 @@ void main() {
 
       expect(find.byType(SidePane), findsOneWidget);
       expect(find.text('Wagon station'), findsOneWidget);
-      expect(find.text('Asking'), findsOneWidget);
+      expect(find.text('Needs pallet'), findsOneWidget);
+      // The sentence sees the whole row, not just the tapped station.
+      expect(find.text('Line 1 needs a pallet. Magazine has one ready.'),
+          findsOneWidget);
+      expect(find.text('Takes pallets from the wagon'), findsOneWidget);
+      expect(find.text('10.4 m'), findsOneWidget);
+
+      // The raw signals are folded shut until asked for.
+      expect(find.text('Needs a pallet'), findsNothing);
+      await tester.ensureVisible(find.text('Advanced'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Advanced'));
+      await tester.pumpAndSettle();
       expect(find.text('Needs a pallet'), findsOneWidget);
-      expect(find.text('Behind the wagon'), findsOneWidget);
-      expect(find.text('10380 mm'), findsOneWidget);
+    });
+
+    testWidgets('each stop signal gets its own explanation', (tester) async {
+      await pumpRail(
+          tester,
+          stationArray([
+            station('Magazine', position: 4960),
+            station('Line 1',
+                position: 10380,
+                type: 1,
+                loc: 1,
+                order: true,
+                interlock: true,
+                waitingForInterlock: true),
+          ]));
+
+      await tester.tapAt(dockCentre(tester, 'Line 1'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+
+      expect(find.text('Wagon waiting'), findsOneWidget);
+      expect(find.text('The wagon is waiting for Line 1'), findsOneWidget);
+      expect(find.text('Line 1 is keeping the wagon out'), findsOneWidget);
     });
 
     testWidgets('with stations bound, the rail still opens the traverse drive',

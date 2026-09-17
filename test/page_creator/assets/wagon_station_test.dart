@@ -160,7 +160,7 @@ void main() {
       });
       final row = wagonStationsFromValue(stationArray([partial]));
       expect(row.single.state, WagonStationState.idle);
-      expect(row.single.positionLabel, '0 mm');
+      expect(row.single.positionLabel, '0.0 m');
     });
 
     test('two decodes of the same array are equal', () {
@@ -195,6 +195,99 @@ void main() {
       expect(labels(WagonStationRole.source), isNot(contains('Has the pallet')));
       expect(labels(WagonStationRole.destination),
           isNot(contains('Pallet taken onto the wagon')));
+    });
+  });
+  group('what the pane says', () {
+    const source = WagonStationRole.source;
+    const destination = WagonStationRole.destination;
+
+    WagonStation s(int index, String name, WagonStationRole role,
+            {bool atStation = false,
+            bool order = false,
+            bool ready = false,
+            bool outfeed = false,
+            bool outfeedComplete = false,
+            bool waitingForInterlock = false}) =>
+        WagonStation(
+          index: index,
+          name: name,
+          role: role,
+          side: WagonStationSide.inFront,
+          position: index * 1000.0,
+          enabled: true,
+          atStation: atStation,
+          order: order,
+          ready: ready,
+          outfeed: outfeed,
+          outfeedComplete: outfeedComplete,
+          waitingForInterlock: waitingForInterlock,
+        );
+
+    // One moment on a line: the wagon loading at Infeed 1, Infeed 2 queued
+    // with a pallet ready, Buffer the only station asking for one.
+    final loading = s(1, 'Infeed 1', source,
+        atStation: true, order: true, ready: true, outfeed: true);
+    final queued = s(2, 'Infeed 2', source, order: true, ready: true);
+    final buffer = s(3, 'Buffer', destination, order: true, ready: true);
+    final row = [loading, queued, buffer];
+
+    test('a loading source names where the pallet goes and who is next', () {
+      final story = wagonStationStory(loading, row);
+      expect(story.headline,
+          'Infeed 1 is loading a pallet onto the wagon for Buffer.');
+      expect(story.notes,
+          ['Infeed 2 is next. It has a pallet ready and is waiting.']);
+    });
+
+    test('a queued source says what the wagon is busy with', () {
+      final story = wagonStationStory(queued, row);
+      expect(story.headline, 'Infeed 2 has a pallet ready for Buffer.');
+      expect(story.notes,
+          ['Waiting for the wagon. It is busy at Infeed 1 first.']);
+    });
+
+    test('a destination says where its pallet is coming from', () {
+      final story = wagonStationStory(buffer, row);
+      expect(story.headline,
+          'Buffer needs a pallet. Infeed 1 is loading one onto the wagon for it now.');
+      expect(story.notes, ['Infeed 2 also has a pallet waiting.']);
+    });
+
+    test('with two stations asking, no destination is guessed', () {
+      final second = s(4, 'Stacker', destination, order: true);
+      final story = wagonStationStory(loading, [...row, second]);
+      expect(story.headline, 'Infeed 1 is loading a pallet onto the wagon.');
+    });
+
+    test('a destination with nothing coming speaks for this wagon only', () {
+      // Another wagon on the same rail may well have one: the sentence must
+      // not claim the whole rail is empty.
+      final idleRow = [
+        s(1, 'Infeed 1', source),
+        s(3, 'Buffer', destination, order: true),
+      ];
+      expect(
+          wagonStationStory(idleRow[1], idleRow, wagon: 'pallet wagon')
+              .headline,
+          "Buffer needs a pallet. None of pallet wagon's stations has one ready yet.");
+    });
+
+    test('the configured wagon name is used, capitalised to start a sentence',
+        () {
+      final here = s(1, 'Infeed 1', source, atStation: true, order: true);
+      expect(wagonStationStory(here, [here], wagon: 'pallet wagon').headline,
+          'Pallet wagon is at Infeed 1, about to take the pallet.');
+    });
+
+    test('pallet, job and position read in words', () {
+      expect(loading.palletLabel, 'Going onto the wagon');
+      expect(queued.palletLabel, 'Ready to send');
+      expect(s(9, 'A', source).palletLabel, 'None');
+      expect(buffer.palletLabel, 'Needed, ready for it');
+      expect(s(9, 'A', destination).palletLabel, 'Not needed');
+      expect(loading.jobLabel, 'Sends pallets to the wagon');
+      expect(buffer.jobLabel, 'Takes pallets from the wagon');
+      expect(buffer.positionLabel, '3.0 m');
     });
   });
 }

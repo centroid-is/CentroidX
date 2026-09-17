@@ -17,6 +17,7 @@ import 'package:tfc/page_creator/assets/wagon_station_docks.dart';
 import 'package:tfc/providers/collector.dart';
 import 'package:tfc/providers/state_man.dart';
 import 'package:tfc/theme.dart';
+import 'package:tfc/widgets/panes/pane_chrome.dart';
 import 'package:tfc/widgets/panes/side_pane.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
@@ -134,6 +135,85 @@ Widget _rails(ThemeData theme) {
   );
 }
 
+/// A station's pane on its own, at the docked width, the way the side pane
+/// frames it: header, divider, body.
+Widget _stationPane(ThemeData theme, WagonStation station,
+    {required List<WagonStation> row, String? wagon, String? lockHelp}) {
+  return MaterialApp(
+    theme: theme,
+    debugShowCheckedModeBanner: false,
+    home: Scaffold(
+      body: Align(
+        alignment: Alignment.topLeft,
+        child: RepaintBoundary(
+          key: _frameKey,
+          child: Container(
+            color: theme.colorScheme.surface,
+            padding: const EdgeInsets.all(12),
+            child: Material(
+              color: theme.colorScheme.surface,
+              shape: RoundedRectangleBorder(
+                side: BorderSide(color: theme.colorScheme.onSurface),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: SizedBox(
+                width: 380,
+                child: Builder(
+                  builder: (context) => Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      PaneHeader(
+                        title: station.name,
+                        subtitle: 'Wagon station',
+                        icon: Icons.pallet,
+                        status: wagonStationPaneStatus(context, station),
+                        onClose: () {},
+                      ),
+                      const Divider(height: 1),
+                      WagonStationPaneBody(
+                        station: station,
+                        stations: row,
+                        wagon: wagon ?? 'the wagon',
+                        lockHelp: lockHelp,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+WagonStation _st(int index, String name, WagonStationRole role, double position,
+        {bool atStation = false,
+        bool order = false,
+        bool ready = false,
+        bool outfeed = false,
+        bool interlock = false,
+        bool waitingForInterlock = false}) =>
+    WagonStation(
+      index: index,
+      name: name,
+      role: role,
+      side: role == WagonStationRole.source
+          ? WagonStationSide.inFront
+          : WagonStationSide.behind,
+      position: position,
+      enabled: true,
+      atStation: atStation,
+      order: order,
+      ready: ready,
+      outfeed: outfeed,
+      interlock: interlock,
+      waitingForInterlock: waitingForInterlock,
+    );
+
 class _RailStateMan extends Fake implements StateMan {
   _RailStateMan(this.values);
 
@@ -169,6 +249,64 @@ void main() {
         );
       });
     }
+
+
+    group('station pane', () {
+      const source = WagonStationRole.source;
+      const destination = WagonStationRole.destination;
+
+      Future<void> shoot(WidgetTester tester, Widget frame, String name,
+          {bool openAdvanced = false}) async {
+        tester.view.physicalSize = const Size(420, 1100);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.reset);
+        await tester.pumpWidget(frame);
+        if (openAdvanced) {
+          await tester.tap(find.text('Advanced'));
+          await tester.pumpAndSettle();
+        }
+        await expectLater(
+            find.byKey(_frameKey), matchesGoldenFile('goldens/$name.png'));
+      }
+
+      testWidgets('loading, with the next station queued', (tester) async {
+        final row = [
+          _st(1, 'Infeed 1', source, 0,
+              atStation: true, order: true, ready: true, outfeed: true),
+          _st(2, 'Infeed 2', source, 2400, order: true, ready: true),
+          _st(3, 'Buffer', destination, 9000, order: true, ready: true),
+        ];
+        await shoot(tester, _stationPane(solarized().$1, row[0], row: row),
+            'wagon_station_pane_loading');
+      });
+
+      testWidgets('both stop reasons, with the configured help line',
+          (tester) async {
+        final row = [
+          _st(1, 'Infeed 1', source, 0),
+          _st(2, 'Infeed 2', source, 2400, order: true, ready: true),
+          _st(3, 'Buffer', destination, 9000,
+              order: true, interlock: true, waitingForInterlock: true),
+        ];
+        await shoot(
+            tester,
+            _stationPane(solarized().$1, row[2],
+                row: row,
+                wagon: 'Pallet wagon',
+                lockHelp: 'The other wagon is usually at the station.'),
+            'wagon_station_pane_stopped');
+      });
+
+      testWidgets('the Advanced fold opened', (tester) async {
+        final row = [
+          _st(1, 'Infeed 1', source, 0),
+          _st(3, 'Buffer', destination, 9000, order: true, interlock: true),
+        ];
+        await shoot(tester, _stationPane(solarized().$1, row[1], row: row),
+            'wagon_station_pane_advanced',
+            openAdvanced: true);
+      });
+    });
 
     testWidgets('tapping a dock opens its station pane', (tester) async {
       tester.view.physicalSize = const Size(1280, 800);
