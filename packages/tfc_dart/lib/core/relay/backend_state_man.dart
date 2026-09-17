@@ -89,6 +89,11 @@ final class BackendStateMan
   final relay.TypeDescriptions? _types;
 
   @override
+
+  int get typesVersion => _types?.typesVersion ?? 0;
+
+
+  @override
   String? typeIdOf(String key) => _types?.typeIdOf(key);
 
   @override

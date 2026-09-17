@@ -553,6 +553,14 @@ final class PolicyStateMan implements StateManApi, TypeDescriptions {
     return source is TypeDescriptions ? source as TypeDescriptions : null;
   }
 
+  /// Forwarded unfiltered, and that is not a leak: the number says only THAT
+  /// the dictionary moved, never what it learned or for which key. Filtering
+  /// it by visibility would mean a session that may not see the key whose
+  /// type just landed never re-sweeps, and so never receives the types it IS
+  /// allowed to have — [typeIdOf] above is where visibility is enforced, once.
+  @override
+  int get typesVersion => _types?.typesVersion ?? 0;
+
   @override
   String? typeIdOf(String key) {
     if (!canSee(key)) return null;

@@ -171,6 +171,13 @@ class PipeMainEndpoint implements relay.TypeDescriptions {
       <String, relay.TypeDescriptor>{};
   final Map<String, String> _typeOfKey = <String, String>{};
 
+  /// See [relay.TypeDescriptions.typesVersion]. Bumped by the three events
+  /// that can change what this dictionary answers.
+  int _typesVersion = 0;
+
+  @override
+  int get typesVersion => _typesVersion;
+
   @override
   String? typeIdOf(String key) => _typeOfKey[key];
 
@@ -574,8 +581,10 @@ class PipeMainEndpoint implements relay.TypeDescriptions {
         onLinkAlive?.call(index, alias);
       case PipeTypeDescribed(typeId: final typeId, descriptor: final json):
         _types[typeId] = relay.TypeDescriptor.fromJson(json);
+        _typesVersion++;
       case PipeKeyType(key: final key, typeId: final typeId):
         _typeOfKey[key] = typeId;
+        _typesVersion++;
       case PipeKeyError(key: final key, quality: final quality):
         // No payload under a bad badge: `translateOpcUaSample`'s rule, for the
         // same reason — a number nobody measured, greyed out, is still a
@@ -585,6 +594,7 @@ class PipeMainEndpoint implements relay.TypeDescriptions {
         // Affirmatively gone, which is a different fact from "not yet known"
         // and from "the link is sick": errorConfig says waiting will not help.
         _typeOfKey.remove(key);
+        _typesVersion++;
         _markBad(<String>[key], relay.Quality.errorConfig);
         // THEN the hook (IN-02). Order matters: a consumer that unsubscribes
         // before the value lands would race the reading it is supposed to see

@@ -145,6 +145,11 @@ final class SessionHealthStateMan implements StateManApi, TypeDescriptions {
   }
 
   @override
+
+  int get typesVersion => _typeSource?.typesVersion ?? 0;
+
+
+  @override
   String? typeIdOf(String key) => _typeSource?.typeIdOf(key);
 
   @override

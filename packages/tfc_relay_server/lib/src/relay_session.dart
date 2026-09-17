@@ -531,6 +531,18 @@ final class RelaySession {
   /// Typed as the concrete decorator rather than as `StateManApi` so [_start]
   /// can build the write predicate from its `canWrite`, which keeps the
   /// null-identity decision in exactly one place.
+  /// The dictionary this session reads types through — its own policy view,
+  /// so a key it may not see has no type here either. Null only for a source
+  /// that describes nothing.
+  TypeDescriptions? get typeSource => api;
+
+  /// The [TypeDescriptions.typesVersion] this session has already swept for.
+  ///
+  /// Lives on the session rather than the subscription: the gateway has one
+  /// dictionary, so one comparison per tick answers for every subscription
+  /// this session holds.
+  int typesVersionSeen = 0;
+
   late final PolicyStateMan api = PolicyStateMan(
     // The one divergence from handing [_source] straight in, and it is three
     // getters wide: the scoping view answers the session's per-identity
@@ -2253,6 +2265,9 @@ final class _IdentityScopedSource implements StateManApi, TypeDescriptions {
     final inner = _inner;
     return inner is TypeDescriptions ? inner as TypeDescriptions : null;
   }
+
+  @override
+  int get typesVersion => _types?.typesVersion ?? 0;
 
   @override
   String? typeIdOf(String key) => _types?.typeIdOf(key);

@@ -127,6 +127,21 @@ abstract final class Methods {
   static const holdTick = 'h';
 
   static const update = 'u'; // hot path — one character on purpose
+
+  /// A type learned after a subscription was established (`typesLearned`).
+  ///
+  /// Spelled out rather than shortened: this is not the hot path. It is sent
+  /// only when the gateway's dictionary actually moves, which on a settled
+  /// plant is never — the traffic is a burst in the first seconds after a
+  /// backend start and silence afterwards.
+  ///
+  /// It exists because a dictionary cannot be complete when a panel
+  /// subscribes: a type is learned from the first sample of it, and that
+  /// sample arrives BECAUSE somebody subscribed. The first client after a
+  /// restart is the one whose subscription causes the learning and the one
+  /// guaranteed to miss it — measured on the plant (2026-09-17) as every
+  /// conveyor drawing violet for "mode unknown" until the page was reloaded.
+  static const typesLearned = 'typesLearned';
   static const tick = 'tick';
   static const resync = 'resync';
   static const status = 'status';

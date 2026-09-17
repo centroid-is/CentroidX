@@ -131,6 +131,28 @@ final class SubscriptionState {
   String? _literal;
 
   /// handle → key, for everything this subscription watches.
+  /// Type ids already delivered to this subscription, and the type each
+  /// handle was last told it carries.
+  ///
+  /// Both, not one: a descriptor is sent once per type, but the handle→type
+  /// mapping is per key, and a key that learns its type after two others of
+  /// the same type must still be told which type it carries even though the
+  /// descriptor itself has already crossed.
+  final Set<String> _typesSent = <String>{};
+  final Map<int, String> _typeToldFor = <int, String>{};
+
+  /// Whether [typeId]'s descriptor has already been delivered here.
+  bool typeSent(String typeId) => _typesSent.contains(typeId);
+
+  /// The type [handle] was last told it carries, or null.
+  String? typeToldFor(int handle) => _typeToldFor[handle];
+
+  /// Records what a subscribe result or a `typesLearned` frame just carried.
+  void noteTypesSent(Iterable<String> types, Map<int, String> keys) {
+    _typesSent.addAll(types);
+    _typeToldFor.addAll(keys);
+  }
+
   Map<int, String> get keysByHandle => Map.unmodifiable(_keysByHandle);
   final _keysByHandle = <int, String>{};
 

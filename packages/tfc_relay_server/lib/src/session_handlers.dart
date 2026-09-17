@@ -238,6 +238,9 @@ final class SessionHandlers {
     // the accepted keys, once, keyed by the `ty` its keys' meta names
     // (`type_descriptor.dart`).
     final types = <String, Object?>{};
+    // handle → type id, for the subscription's own record of what it was told
+    // at establishment. See the note beside the assignment below.
+    final toldTypes = <String, int>{};
 
     // **Everything from here to `put` rolls back as one** (03-REVIEW WR-08).
     // The per-key `try` below is the deliberate degradation — one typo costs
@@ -262,6 +265,12 @@ final class SessionHandlers {
           final typeId = this.types?.typeIdOf(key);
           if (typeId != null) {
             keyMeta['ty'] = typeId;
+            // Remembered as well as sent: the tick engine's sweep
+            // (`_announceLearnedTypes`) sends a subscription only the types it
+            // does NOT already have, and this result is the first thing it
+            // has. Without the record every later sweep would re-send the
+            // whole book on the first type the gateway learns.
+            toldTypes[typeId] = handle;
             if (!types.containsKey(typeId)) {
               final descriptor = this.types!.describe(typeId);
               if (descriptor != null) types[typeId] = descriptor.toJson();
@@ -309,6 +318,9 @@ final class SessionHandlers {
       state.detach();
       rethrow;
     }
+
+    state.noteTypesSent(
+        types.keys, {for (final e in toldTypes.entries) e.value: e.key});
 
     return SubscribeResult(
       sub: state.sub,

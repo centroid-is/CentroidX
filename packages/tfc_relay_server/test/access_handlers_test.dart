@@ -358,6 +358,14 @@ const Map<String, Map<String, Object?>> _validParams = {
   AccessMethods.configWrite: {'configJson': '{}'},
   AccessMethods.configPrevious: {},
   AccessMethods.configRestorePrevious: {},
+  // The fifth family, from main's relational config. Both take a REQUIRED
+  // argument, which is why their absence from this table read as "the
+  // handshake gate refuses them" — the gate was fine and the request was
+  // malformed, two failures that look identical from the client end.
+  AccessMethods.configItemsItems: {'kind': 'page'},
+  AccessMethods.configItemsFingerprint: {
+    'kinds': ['page', 'asset']
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -437,14 +445,16 @@ void main() {
             'with no params row cannot have its post-hello half exercised, '
             'and a row naming nothing on the wire is a claim about surface '
             'that does not exist');
-    expect(AccessMethods.all, hasLength(32),
+    expect(AccessMethods.all, hasLength(34),
         reason: 'twenty-eight was the count the audit cut settled on '
             '(accessTemplates.template removed, no caller anywhere); thirty '
             'since the page-visibility whitelist added setRolePages and '
             'setUserPages, and thirty-two since multi-role accounts added '
-            'setUserRoles and setUserInactivityTimeout. A thirty-third is an '
-            'access-control decision, not a convenience — grow this literal '
-            'deliberately');
+            'setUserRoles and setUserInactivityTimeout. Thirty-four since '
+            'main\'s relational config put the plant\'s own pages and key '
+            'mappings on the wire as configItems.items and '
+            'configItems.fingerprint. A thirty-fifth is an access-control '
+            'decision, not a convenience — grow this literal deliberately');
   });
 
   group('the handshake gate covers every access method', () {

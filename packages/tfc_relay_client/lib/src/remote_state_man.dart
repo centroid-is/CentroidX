@@ -193,6 +193,9 @@ final class RemoteStateMan implements StateManApi {
       onPreferenceChanged: (key) => preferences.announce(key),
       // The type dictionary each establishment carries, kept for [typeOf].
       onEstablished: _adoptTypes,
+      // And the types learned AFTER this client subscribed, which on a
+      // freshly started gateway is most of them — see [adoptLearnedTypes].
+      onTypesLearned: adoptLearnedTypes,
       // In production this is [_dialGateway]: `connect` with this panel's one
       // pinned client and its dial ceiling closed over. A harness supplies its
       // own so a contract leg can be built synchronously against a server
@@ -1651,6 +1654,27 @@ final class RemoteStateMan implements StateManApi {
         if (id is String && id.isNotEmpty) _typeIdByKey[entry.key] = id;
       }
     }
+  }
+
+  /// A type the gateway learned after this client subscribed.
+  ///
+  /// The other half of [_adoptTypes], and it exists because a dictionary
+  /// cannot be complete at subscribe time: a type is learned from the first
+  /// sample of it, and that sample arrives because somebody subscribed. The
+  /// first panel to connect after a gateway starts is the one whose own
+  /// subscription causes the learning, and the one that would otherwise never
+  /// hear the answer — measured on the plant (2026-09-17) as every conveyor
+  /// drawing violet after a sign-in until the page was reloaded.
+  ///
+  /// Merged, never replaced: a type this client was told about earlier is
+  /// still true, and the gateway sends only what it has not sent before.
+  /// [keyToType] is already resolved from handles by the supervisor, which is
+  /// the only thing holding the handle table — the same division the snapshot
+  /// already uses.
+  void adoptLearnedTypes(
+      Map<String, TypeDescriptor> types, Map<String, String> keyToType) {
+    _types.addAll(types);
+    _typeIdByKey.addAll(keyToType);
   }
 
   /// What the gateway said [key]'s value is, or null when it said nothing.

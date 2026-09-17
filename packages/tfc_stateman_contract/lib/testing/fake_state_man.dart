@@ -65,11 +65,39 @@ import 'fake_data_services.dart';
 class FakeStateMan
     implements
         StateManApi,
+        TypeDescriptions,
         StateManHarness,
         StateManWriteHarness,
         StateManHoldHarness,
         StateManDataHarness,
         StateManAccessHarness {
+  // ------------------------------------------------------ the type dictionary
+  //
+  // A real gateway learns a type from the first SAMPLE of it, which arrives
+  // because somebody subscribed — so a dictionary is incomplete at subscribe
+  // time and fills in afterwards. [learnType] is that moment, made explicit,
+  // so a test can order it against a subscribe instead of hoping.
+
+  final Map<String, TypeDescriptor> _types = <String, TypeDescriptor>{};
+  final Map<String, String> _typeOfKey = <String, String>{};
+  int _typesVersion = 0;
+
+  /// Learns [typeId] for [key], as a first sample would.
+  void learnType(String key, String typeId, TypeDescriptor descriptor) {
+    _types[typeId] = descriptor;
+    _typeOfKey[key] = typeId;
+    _typesVersion++;
+  }
+
+  @override
+  int get typesVersion => _typesVersion;
+
+  @override
+  String? typeIdOf(String key) => _typeOfKey[key];
+
+  @override
+  TypeDescriptor? describe(String typeId) => _types[typeId];
+
   FakeStateMan({
     this.staleAfter = const Duration(milliseconds: 300),
     Set<String> readOnlyKeys = const {},

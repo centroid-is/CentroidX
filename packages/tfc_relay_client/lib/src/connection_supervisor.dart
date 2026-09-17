@@ -146,6 +146,9 @@ final class ConnectionSupervisor {
     void Function(String reason)? onBye,
     void Function(String key)? onPreferenceChanged,
     void Function(DecodedSubscribeResult result)? onEstablished,
+    void Function(Map<String, TypeDescriptor> types,
+            Map<String, String> keyToType)?
+        onTypesLearned,
     int Function()? now,
     Future<ConnectAttempt> Function(Uri uri)? dial,
   })  : _onStatus = onStatus,
@@ -157,6 +160,7 @@ final class ConnectionSupervisor {
     // *does* about an expiry is wired here, where the peer and the schedule
     // are (04-REVIEW CR-06).
     watchdog.onQuiet = _linkWentQuiet;
+    _onTypesLearned = onTypesLearned;
     _resync = ResyncEngine(
       storeFor: storeFor,
       subscribe: _subscribe,
@@ -235,6 +239,11 @@ final class ConnectionSupervisor {
 
   /// How many scheduled waits [debugScheduledWaits] keeps.
   static const int _waitHistory = 64;
+
+  /// Where a `typesLearned` frame goes once its handles are resolved. Null
+  /// for a client that does not care about enum names.
+  void Function(Map<String, TypeDescriptor> types,
+      Map<String, String> keyToType)? _onTypesLearned;
 
   late final ResyncEngine _resync;
 
@@ -663,6 +672,13 @@ final class ConnectionSupervisor {
 
     peer.registerMethod(Methods.update,
         (rpc.Parameters p) => _armored(Methods.update, () => _update(p)));
+    // The dictionary the gateway learned after this client subscribed. Rare
+    // by construction, so it takes the ordinary decode rather than the update
+    // frame's hand-rolled one.
+    peer.registerMethod(
+        Methods.typesLearned,
+        (rpc.Parameters p) =>
+            _armored(Methods.typesLearned, () => _typesLearned(p)));
     peer.registerMethod(Methods.tick,
         (rpc.Parameters p) => _armored(Methods.tick, () => _tick(p)));
     peer.registerMethod(Methods.resync,
@@ -1012,6 +1028,33 @@ final class ConnectionSupervisor {
   /// applies one batch and the sequence advances once. Three lanes reaching the
   /// store by three routes is three chances to disagree about ordering, and the
   /// store is the only thing entitled to judge the sequence.
+  /// A dictionary update for a subscription that is already established.
+  ///
+  /// Handles are resolved here and nowhere else: the handle table belongs to
+  /// the subscription state this class owns, and `RemoteStateMan` is given
+  /// keys, exactly as it is for a snapshot. A handle this client does not
+  /// know is skipped rather than guessed — a type filed under the wrong key
+  /// would name an enum for a value that is not of that type.
+  void _typesLearned(rpc.Parameters params) {
+    final frame = TypesLearnedParams.fromJson(
+        (sanitize(params.asMap).value as Map).cast<String, Object?>());
+    final state = subscriptions[frame.sub];
+    if (state == null) return;
+    final types = <String, TypeDescriptor>{};
+    frame.types.forEach((typeId, json) {
+      if (json is Map) {
+        types[typeId] = TypeDescriptor.fromJson(json.cast<String, Object?>());
+      }
+    });
+    final keyToType = <String, String>{};
+    frame.keys.forEach((handle, typeId) {
+      final key = state.handles[handle];
+      if (key != null) keyToType[key] = typeId;
+    });
+    if (types.isEmpty && keyToType.isEmpty) return;
+    _onTypesLearned?.call(types, keyToType);
+  }
+
   Future<void> _update(rpc.Parameters params) async {
     watchdog.sawFrame(InboundFrame.update);
     final update = UpdateParams.fromJson(_asJson(sanitize(params.asMap).value));

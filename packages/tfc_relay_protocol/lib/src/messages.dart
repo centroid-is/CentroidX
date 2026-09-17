@@ -391,6 +391,43 @@ final class SubscribeResult {
       };
 }
 
+/// A dictionary update for a subscription that is already established.
+///
+/// Carries only what the client does not have: the descriptors themselves,
+/// and which handle now carries which type. A client merges both into what it
+/// adopted at subscribe — it never replaces, because a type it was told about
+/// earlier is still true.
+final class TypesLearnedParams {
+  const TypesLearnedParams({
+    required this.sub,
+    this.types = const {},
+    this.keys = const {},
+  });
+
+  /// The subscription this belongs to. A client holding several must not
+  /// merge one subscription's dictionary into another's.
+  final String sub;
+
+  /// type id → descriptor JSON, the same shape `SubscribeResult.types` uses.
+  final Map<String, Object?> types;
+
+  /// handle → type id, for handles whose type has become known.
+  final Map<int, String> keys;
+
+  factory TypesLearnedParams.fromJson(Map<String, Object?> json) =>
+      TypesLearnedParams(
+        sub: json['sub'] as String,
+        types: (json['types'] as Map? ?? const {}).cast<String, Object?>(),
+        keys: _intKeyed(json['keys'], (v) => v as String),
+      );
+
+  Map<String, Object?> toJson() => {
+        'sub': sub,
+        if (types.isNotEmpty) 'types': types,
+        if (keys.isNotEmpty) 'keys': _stringKeyed(keys, (v) => v),
+      };
+}
+
 /// The hot-path notification (`u`). Single-character field names here and
 /// only here.
 final class UpdateParams {

@@ -512,6 +512,11 @@ final class TickEngine {
         break;
     }
 
+    // Into the same lane, for the same reason, and before the drain so it
+    // leaves on this tick: a type the gateway learned after this client
+    // subscribed. See [_announceLearnedTypes].
+    _announceLearnedTypes(session);
+
     final frame = buffer.drain();
     for (final message in frame.priority) {
       // Already-encoded frames pass through verbatim — re-encoding a string
@@ -585,6 +590,62 @@ final class TickEngine {
   /// for 400 ms", a statement about the plant, where the excess over the tick
   /// period is a statement about a number the client does not have.
   ///
+  /// Sends each subscription the types it did not have when it subscribed.
+  ///
+  /// **A dictionary cannot be complete at subscribe time.** A type is learned
+  /// from the first sample of it, and that sample arrives because somebody
+  /// subscribed — so the first client after a backend start is the one whose
+  /// own subscription causes the learning, and the one certain to miss it. On
+  /// the plant (2026-09-17) that read as every conveyor drawing violet for
+  /// "mode unknown" after a sign-in, cured only by reloading the page, while
+  /// a probe connecting a minute later saw a complete dictionary and could
+  /// not reproduce it.
+  ///
+  /// **Costs one integer comparison per session per tick.** The gateway's
+  /// dictionary carries a version that its three mutating events bump
+  /// ([TypeDescriptions.typesVersion]); a session that has already seen that
+  /// number does nothing at all. The sweep below runs only on the ticks where
+  /// it moved — a burst in the first seconds after a start, then never again
+  /// on a settled plant.
+  ///
+  /// **Only what this client does not have.** `_typesSent` per subscription
+  /// remembers the type ids already delivered, at subscribe and here, so a
+  /// dictionary that grows by one type sends one descriptor rather than the
+  /// whole book. Visibility is `typeIdOf`'s, once: a key this session may not
+  /// see answers null and is simply not in the sweep.
+  void _announceLearnedTypes(RelaySession session) {
+    final source = session.typeSource;
+    if (source == null) return;
+    final version = source.typesVersion;
+    if (version == session.typesVersionSeen) return;
+    session.typesVersionSeen = version;
+
+    for (final state in session.subscriptions.subscriptions) {
+      final types = <String, Object?>{};
+      final keys = <int, String>{};
+      state.keysByHandle.forEach((handle, key) {
+        final typeId = source.typeIdOf(key);
+        if (typeId == null) return;
+        if (state.typeToldFor(handle) == typeId) return;
+        final descriptor = source.describe(typeId);
+        if (descriptor == null) return;
+        keys[handle] = typeId;
+        if (!state.typeSent(typeId)) types[typeId] = descriptor.toJson();
+      });
+      if (keys.isEmpty) continue;
+      state.noteTypesSent(types.keys, keys);
+      session.buffer.putPriority({
+        'jsonrpc': '2.0',
+        'method': Methods.typesLearned,
+        'params': TypesLearnedParams(
+          sub: state.sub,
+          types: types,
+          keys: keys,
+        ).toJson(),
+      });
+    }
+  }
+
   /// Pushed as a map rather than a string: this path runs when something has
   /// gone wrong, not every tick, so the one `jsonEncode` it costs at the drain
   /// buys the DTO's own field names instead of a hand-spliced envelope on the

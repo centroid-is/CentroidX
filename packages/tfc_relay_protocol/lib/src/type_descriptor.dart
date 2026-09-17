@@ -163,4 +163,23 @@ abstract interface class TypeDescriptions {
 
   /// The descriptor for [typeId], or null when unknown.
   TypeDescriptor? describe(String typeId);
+
+  /// Bumped whenever a type is learned or a key's type changes.
+  ///
+  /// **A dictionary is not complete when a panel subscribes, and cannot be.**
+  /// A type is learned when the first sample of it arrives, and the first
+  /// sample arrives because somebody subscribed — so the first client after a
+  /// backend restart is the very one whose subscription causes the learning,
+  /// and it is the one guaranteed to miss it. Measured on the plant
+  /// (2026-09-17): sign in immediately after a restart and every conveyor
+  /// draws violet for "mode unknown" until the page is reloaded, because the
+  /// enum names for `p_stat_RunMode` were learned a moment after the snapshot
+  /// went out and nothing pushed them.
+  ///
+  /// A counter rather than a stream, and read once per tick: a session that
+  /// sees the same number as last time has nothing to send and pays one
+  /// integer comparison for knowing it. Implementations increment it; nobody
+  /// reads its value for anything but inequality, so wrapping is not a
+  /// property anything depends on.
+  int get typesVersion;
 }
