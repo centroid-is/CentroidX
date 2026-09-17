@@ -2688,6 +2688,8 @@ class _ConveyorState extends ConsumerState<Conveyor>
       return child;
     }
     final beltArea = painter.beltRect(size);
+    final docks =
+        onStationTap == null ? const <WagonDock>[] : painter.docks(size);
     return GestureDetector(
       onTapUp: (details) {
         final p = details.localPosition;
@@ -2696,7 +2698,7 @@ class _ConveyorState extends ConsumerState<Conveyor>
         // Anything else falls through to the wagon's own regions below, the
         // rail included.
         if (onStationTap != null) {
-          for (final dock in painter.docks(size)) {
+          for (final dock in docks) {
             if (dock.body.contains(p)) {
               onStationTap(dock.station);
               return;
@@ -2747,7 +2749,47 @@ class _ConveyorState extends ConsumerState<Conveyor>
         }
         (onBeltTap ?? onMotorTap)?.call();
       },
-      child: child,
+      child: docks.isEmpty ? child : _withStationSubjects(child, docks, size),
+    );
+  }
+
+  Widget _stationSubjectBox(WagonDock dock) {
+    final subject = _stationSubject(dock.station.index);
+    final dockSize = dock.body.size;
+    return KeyedSubtree(
+      key: ObjectKey(subject.part),
+      child: AssetHitShape(
+        shape: () => Path()..addRect(Offset.zero & dockSize),
+        child: SidePaneSubject(
+          subject: subject.part,
+          child: SizedBox.expand(key: subject.anchor),
+        ),
+      ),
+    );
+  }
+
+  /// Lays an empty box over each dock that names the station as its pane's
+  /// subject and publishes the dock as the shape to ring.
+  ///
+  /// The boxes take no taps — a childless box hit-tests nothing — so the
+  /// dispatch above and [ConveyorPainter.hitTest] still decide every one.
+  /// Laid over the belt rather than under it so the belt's own
+  /// [AssetHitShape] is still the first one the plant view finds for the
+  /// conveyor itself.
+  Widget _withStationSubjects(Widget child, List<WagonDock> docks, Size size) {
+    return SizedBox.fromSize(
+      size: size,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          child,
+          for (final dock in docks)
+            Positioned.fromRect(
+              rect: dock.body,
+              child: _stationSubjectBox(dock),
+            ),
+        ],
+      ),
     );
   }
 
@@ -3006,11 +3048,31 @@ class _ConveyorState extends ConsumerState<Conveyor>
   String _stationPaneId(int index) =>
       _paneIdFor('${widget.config.stationsKey}#$index');
 
+  /// Each station slot's pane subject, and the context its pane opens from.
+  ///
+  /// One per slot for the life of this state, so the subject stays the same
+  /// object while the array's flags change under it. Re-minted when the
+  /// config is swapped, since the part names its owner.
+  final Map<int, ({AssetPart part, GlobalKey anchor})> _stationSubjects = {};
+
+  ({AssetPart part, GlobalKey anchor}) _stationSubject(int index) {
+    final known = _stationSubjects[index];
+    if (known != null && identical(known.part.owner, widget.config)) {
+      return known;
+    }
+    return _stationSubjects[index] =
+        (part: AssetPart(widget.config), anchor: GlobalKey());
+  }
+
   /// Opens the pane for one station the wagon serves. It follows the array
   /// itself rather than holding the [WagonStation] it was opened from, so the
   /// lamps keep moving while it is open.
   void _showStationPane(BuildContext context, WagonStation opened) {
     final stationsKey = widget.config.stationsKey!;
+    // Opened from inside the dock's own subject, so the plant view rings the
+    // tapped station rather than the wagon and every dock with it. The
+    // conveyor's context is the fallback for a dock not laid out yet.
+    final anchor = _stationSubject(opened.index).anchor.currentContext;
     SidePane pane(WagonStation station, PaneStatus Function(BuildContext) status,
             {Widget? body}) =>
         SidePane(
@@ -3021,7 +3083,7 @@ class _ConveyorState extends ConsumerState<Conveyor>
           child: body ?? WagonStationPaneBody(station: station),
         );
     showSidePane(
-      context: context,
+      context: anchor ?? context,
       id: _stationPaneId(opened.index),
       builder: (paneContext) => StateManValueBuilder(
         keyName: stationsKey,
