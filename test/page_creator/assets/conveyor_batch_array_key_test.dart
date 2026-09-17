@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -7,21 +9,18 @@ import 'package:tfc/providers/state_man.dart';
 import 'package:tfc_dart/core/state_man.dart';
 import 'package:open62541/open62541.dart' show DynamicValue;
 
-// The batch array moved, PLC-side, out of the conveyor's settings struct and
-// into the conveyor's own function block. On a line downloaded before the move
-// the length and the array are two members of ONE node; after it they are two
-// different nodes, and only the length is still on the settings struct.
-//
-// Lines are downloaded at different times, so both layouts are live at once
-// and one page can show both. Hence an extra optional key rather than a
-// migration: unset, the overlay reads what it always read.
+// The batch array lives in the conveyor's own function block, a different node
+// from the conveyor settings struct that carries the belt length. The overlay
+// therefore reads two nodes: `batchesKey` for the length and `batchArrayKey`
+// for the array. The array is never read out of the settings struct, even
+// when that struct still carries one.
 //
 // Why this needed catching rather than waiting for a bug report: the batch
 // stream is optional, and `_optional` swallows its error to null on purpose
 // (see the comment block above it — a dead decorative node must not grey out a
-// conveyor whose drive is healthy). So a page still pointed at the old member
-// does not go red, does not log, and does not blank: the overlay just stops
-// being drawn, on an asset that otherwise looks entirely correct.
+// conveyor whose drive is healthy). So a page pointed at the wrong node does
+// not go red, does not log, and does not blank: the overlay just stops being
+// drawn, on an asset that otherwise looks entirely correct.
 //
 // Fixtures here are deliberately neutral: `line.conveyor.*`, not any real tag.
 
@@ -33,9 +32,7 @@ const _recipeKey = 'line.recipe';
 const _beltLength = 1000.0;
 const _slotPosition = 250.0;
 
-/// One element of the batch array. The member names are unchanged by the
-/// move — only the node the array hangs off changed — which is the whole
-/// reason one decoder can serve both layouts.
+/// One element of the batch array.
 DynamicValue _slot({required bool occupied, required double position}) {
   final slot = DynamicValue();
   slot['xOccupied'] = occupied;
@@ -46,8 +43,8 @@ DynamicValue _slot({required bool occupied, required double position}) {
 DynamicValue _oneOccupiedSlot() =>
     _slot(occupied: true, position: _slotPosition);
 
-/// The conveyor settings struct. [slots] present is the old layout, where the
-/// array sits beside the length; absent is the refactored one.
+/// The conveyor settings struct. [slots] present is a struct that still
+/// carries an array member, which the overlay must ignore.
 DynamicValue _settings({List<DynamicValue>? slots}) {
   final dv = DynamicValue();
   dv['p_stat_Length'] = _beltLength;
@@ -55,8 +52,7 @@ DynamicValue _settings({List<DynamicValue>? slots}) {
   return dv;
 }
 
-/// The conveyor's function-block instance, which is where the array lives
-/// after the move.
+/// The conveyor's function-block instance, which is where the array lives.
 DynamicValue _functionBlock(List<DynamicValue> slots) {
   final dv = DynamicValue();
   dv['p_stat_Batches'] = DynamicValue.fromList(slots);
@@ -78,15 +74,23 @@ DynamicValue _drive() {
 }
 
 /// Serves a canned value per key; keys in [erroring] answer the way a PLC
-/// answers for a node that is not there.
+/// answers for a node that is not there, and keys in [live] are driven by the
+/// test through their controller.
 class _MapStateMan extends Fake implements StateMan {
-  _MapStateMan(this.values, {this.erroring = const <String>{}});
+  _MapStateMan(
+    this.values, {
+    this.erroring = const <String>{},
+    this.live = const <String, StreamController<DynamicValue>>{},
+  });
 
   final Map<String, DynamicValue> values;
   final Set<String> erroring;
+  final Map<String, StreamController<DynamicValue>> live;
 
   @override
   Future<Stream<DynamicValue>> subscribe(String key) async {
+    final controller = live[key];
+    if (controller != null) return controller.stream;
     if (erroring.contains(key)) {
       return Stream<DynamicValue>.error(
           StateManException('Failed to read value: BadNodeIdUnknown'));
@@ -148,37 +152,15 @@ Future<void> _pump(
 void main() {
   group('batch array source', () {
     testWidgets(
-      'with no batch-array key the array is read from the settings node, '
-      'exactly as before the key existed',
-      (tester) async {
-        await _pump(
-          tester,
-          _config(),
-          _MapStateMan({
-            _driveKey: _drive(),
-            _settingsKey: _settings(slots: [_oneOccupiedSlot()]),
-          }),
-        );
-
-        final batches = _batches(tester);
-        expect(batches.keys, ['0']);
-        expect(batches['0']!.start, closeTo(0.25, 1e-9));
-        expect(batches['0']!.end, closeTo(0.75, 1e-9),
-            reason: 'the pre-existing layout must keep reading the array out '
-                'of the settings struct, at the historical 500 mm slot');
-      },
-    );
-
-    testWidgets(
-      'with the batch-array key set the array comes off its own node while '
-      'the length still comes from the settings node',
+      'the array comes off its own node while the length comes from the '
+      'settings node',
       (tester) async {
         await _pump(
           tester,
           _config(batchArrayKey: _arrayKey),
           _MapStateMan({
             _driveKey: _drive(),
-            // Refactored PLC: settings carries the length and nothing else.
+            // The settings carry the length and nothing else.
             _settingsKey: _settings(),
             _arrayKey: _functionBlock([_oneOccupiedSlot()]),
           }),
@@ -215,46 +197,64 @@ void main() {
     );
 
     testWidgets(
-      'xOccupied and position decode to the same overlay under either layout',
+      'an array still inside the settings struct is never read',
       (tester) async {
-        final slots = [
-          _slot(occupied: true, position: 0),
-          _slot(occupied: false, position: 300),
-          _slot(occupied: true, position: 400),
-        ];
-
         await _pump(
           tester,
           _config(),
           _MapStateMan({
             _driveKey: _drive(),
-            _settingsKey: _settings(slots: slots),
+            _settingsKey: _settings(slots: [_oneOccupiedSlot()]),
           }),
         );
-        final together = {
-          for (final e in _batches(tester).entries)
-            e.key: (start: e.value.start, end: e.value.end)
-        };
 
+        expect(tester.takeException(), isNull);
+        expect(_isDisconnected(tester), isFalse);
+        expect(_batches(tester), isEmpty,
+            reason: 'only the batch-array key supplies the array; a settings '
+                'struct that still carries one is ignored');
+      },
+    );
+
+    testWidgets(
+      'with both bound, the array node wins over an array in the settings',
+      (tester) async {
         await _pump(
           tester,
           _config(batchArrayKey: _arrayKey),
           _MapStateMan({
             _driveKey: _drive(),
-            _settingsKey: _settings(),
-            _arrayKey: _functionBlock(slots),
+            _settingsKey: _settings(slots: [
+              _slot(occupied: true, position: 0),
+              _slot(occupied: true, position: 100),
+            ]),
+            _arrayKey: _functionBlock([
+              _slot(occupied: false, position: 0),
+              _oneOccupiedSlot(),
+            ]),
           }),
         );
-        final apart = {
-          for (final e in _batches(tester).entries)
-            e.key: (start: e.value.start, end: e.value.end)
-        };
 
-        expect(apart, together,
-            reason: 'only the node moved — the element members did not, so '
-                'both layouts must paint the same slots');
-        // Index 1 was unoccupied, so it is absent from both.
-        expect(together.keys, ['0', '2']);
+        final batches = _batches(tester);
+        expect(batches.keys, ['1']);
+        expect(batches['1']!.start, closeTo(0.25, 1e-9));
+      },
+    );
+
+    testWidgets(
+      'the array key alone draws nothing, because the length is missing',
+      (tester) async {
+        await _pump(
+          tester,
+          _config(batchesKey: null, batchArrayKey: _arrayKey),
+          _MapStateMan({
+            _driveKey: _drive(),
+            _arrayKey: _functionBlock([_oneOccupiedSlot()]),
+          }),
+        );
+
+        expect(tester.takeException(), isNull);
+        expect(_batches(tester), isEmpty);
       },
     );
   });
@@ -303,11 +303,11 @@ void main() {
     );
 
     testWidgets(
-      'a settings struct that no longer carries the array draws no overlay '
-      'instead of throwing out of build',
+      'a page with only the settings bound draws no overlay and does not '
+      'throw',
       (tester) async {
-        // The un-reconfigured page on a refactored line: the key still points
-        // at the settings node, which reads fine but has no array member.
+        // The un-reconfigured page: the settings node reads fine but nothing
+        // supplies the array.
         await _pump(
           tester,
           _config(),
@@ -339,6 +339,67 @@ void main() {
 
         expect(tester.takeException(), isNull);
         expect(_isDisconnected(tester), isFalse);
+        expect(_batches(tester), isEmpty);
+      },
+    );
+
+    testWidgets(
+      'an array node that goes dead clears the batches it drew',
+      (tester) async {
+        final array = StreamController<DynamicValue>();
+        addTearDown(array.close);
+
+        await _pump(
+          tester,
+          _config(batchArrayKey: _arrayKey),
+          _MapStateMan(
+            {
+              _driveKey: _drive(),
+              _settingsKey: _settings(),
+            },
+            live: {_arrayKey: array},
+          ),
+        );
+        expect(_batches(tester), isEmpty);
+
+        array.add(_functionBlock([_oneOccupiedSlot()]));
+        await tester.pumpAndSettle();
+        expect(_batches(tester).keys, ['0']);
+
+        array.addError(
+            StateManException('Failed to read value: BadNodeIdUnknown'));
+        await tester.pumpAndSettle();
+        expect(_isDisconnected(tester), isFalse);
+        expect(_batches(tester), isEmpty,
+            reason: 'the overlay must blank, not freeze on the last batches '
+                'a node that stopped reporting drew');
+      },
+    );
+
+    testWidgets(
+      'an array element that stops decoding drops its batch',
+      (tester) async {
+        final array = StreamController<DynamicValue>();
+        addTearDown(array.close);
+
+        await _pump(
+          tester,
+          _config(batchArrayKey: _arrayKey),
+          _MapStateMan(
+            {
+              _driveKey: _drive(),
+              _settingsKey: _settings(),
+            },
+            live: {_arrayKey: array},
+          ),
+        );
+
+        array.add(_functionBlock([_oneOccupiedSlot()]));
+        await tester.pumpAndSettle();
+        expect(_batches(tester).keys, ['0']);
+
+        array.add(DynamicValue.fromList([DynamicValue(value: 1.0)]));
+        await tester.pumpAndSettle();
         expect(_batches(tester), isEmpty);
       },
     );
@@ -384,26 +445,28 @@ void main() {
 
       await _pump(
         tester,
-        _config(),
+        _config(batchArrayKey: _arrayKey),
         _MapStateMan({
           _driveKey: _drive(),
-          _settingsKey: _settings(slots: [_oneOccupiedSlot()]),
+          _settingsKey: _settings(),
+          _arrayKey: _functionBlock([_oneOccupiedSlot()]),
         }),
       );
 
       expect(_batches(tester)['0']!.end, closeTo(0.75, 1e-9),
-          reason: '(250 + 500) / 1000 — unchanged for every page on disk');
+          reason: '(250 + 500) / 1000');
     });
 
     testWidgets('falls back to 500 mm when the recipe node is dead',
         (tester) async {
       await _pump(
         tester,
-        _config(batchLengthKey: _recipeKey),
+        _config(batchArrayKey: _arrayKey, batchLengthKey: _recipeKey),
         _MapStateMan(
           {
             _driveKey: _drive(),
-            _settingsKey: _settings(slots: [_oneOccupiedSlot()]),
+            _settingsKey: _settings(),
+            _arrayKey: _functionBlock([_oneOccupiedSlot()]),
           },
           erroring: {_recipeKey},
         ),
@@ -418,10 +481,11 @@ void main() {
         (tester) async {
       await _pump(
         tester,
-        _config(batchLengthKey: _recipeKey),
+        _config(batchArrayKey: _arrayKey, batchLengthKey: _recipeKey),
         _MapStateMan({
           _driveKey: _drive(),
-          _settingsKey: _settings(slots: [_oneOccupiedSlot()]),
+          _settingsKey: _settings(),
+          _arrayKey: _functionBlock([_oneOccupiedSlot()]),
           _recipeKey: _recipe(0),
         }),
       );
@@ -468,8 +532,8 @@ void main() {
       expect(restored.batchesKey, _settingsKey);
       expect(restored.batchArrayKey, isNull);
       expect(restored.batchLengthKey, isNull,
-          reason: 'the new keys are additive — an existing page is not '
-              'migrated and behaves exactly as it did');
+          reason: 'the new keys are additive, so an existing page still '
+              'loads; it draws no batches until the array key is bound');
     });
 
     test('both new keys are reported as keys the asset depends on', () {
