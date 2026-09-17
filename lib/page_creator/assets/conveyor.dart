@@ -1230,6 +1230,28 @@ class ConveyorConfig extends BaseAsset {
   /// middle. Only read while [railsActive].
   String? stationsKey;
 
+  /// What the station panes call this wagon: "Full-pallet wagon is at
+  /// Infeed 1". Two wagons can share one rail, and then "the wagon" does not
+  /// say which. Null or empty falls back to the asset's label, then to
+  /// "the wagon" — see [wagonDisplayName].
+  String? wagonName;
+
+  /// An extra line under "... is keeping the wagon out" in a station's pane,
+  /// for what that usually means on this line and what to do about it — "The
+  /// other wagon is usually at the station." `FB_Wagon` publishes the lock
+  /// but not why, and the why is a fact about the installation, so it is
+  /// configured here rather than guessed in code. Null or empty adds nothing.
+  String? stationLockHelp;
+
+  /// The name the station panes use for this wagon.
+  String get wagonDisplayName {
+    final configured = wagonName?.trim();
+    if (configured != null && configured.isNotEmpty) return configured;
+    final label = text?.trim();
+    if (label != null && label.isNotEmpty) return label;
+    return 'the wagon';
+  }
+
   /// Reads both safety edges as **normally closed**: true while the edge is
   /// healthy, false when it is pressed or the cable breaks. That is how a
   /// safety edge is usually wired, and with the default reading such an edge
@@ -1349,6 +1371,8 @@ class ConveyorConfig extends BaseAsset {
       this.safetyLeftKey,
       this.safetyRightKey,
       this.stationsKey,
+      this.wagonName,
+      this.stationLockHelp,
       this.invertSafetyPolarity = false,
       this.wagonLength,
       this.beltThickness,
@@ -1452,6 +1476,8 @@ class RollerConveyorConfig extends ConveyorConfig {
       super.safetyLeftKey,
       super.safetyRightKey,
       super.stationsKey,
+      super.wagonName,
+      super.stationLockHelp,
       super.invertSafetyPolarity,
       super.wagonLength,
       super.beltThickness,
@@ -1724,6 +1750,32 @@ class _ConveyorConfigContentState extends State<_ConveyorConfigContent> {
                 setState(() => widget.config.stationsKey = val),
             label: 'Wagon stations key (ARRAY OF ST_WagonStation)',
           ),
+          if (widget.config.stationsKey?.isNotEmpty ?? false) ...[
+            const SizedBox(height: 8),
+            TextFormField(
+              key: const Key('conveyor_wagon_name'),
+              initialValue: widget.config.wagonName,
+              decoration: const InputDecoration(
+                labelText: 'Wagon name in station panes',
+                helperText: 'Empty uses the label, then "the wagon"',
+              ),
+              onChanged: (val) => setState(() => widget.config.wagonName =
+                  val.trim().isEmpty ? null : val),
+            ),
+            const SizedBox(height: 8),
+            TextFormField(
+              key: const Key('conveyor_station_lock_help'),
+              initialValue: widget.config.stationLockHelp,
+              minLines: 1,
+              maxLines: 3,
+              decoration: const InputDecoration(
+                labelText: 'Help when a station keeps the wagon out',
+                helperText: 'Shown under that message in the station pane',
+              ),
+              onChanged: (val) => setState(() => widget.config
+                  .stationLockHelp = val.trim().isEmpty ? null : val),
+            ),
+          ],
           const SizedBox(height: 8),
           NumberSlider(
             labelAbove: true,
@@ -3206,7 +3258,8 @@ class _ConveyorState extends ConsumerState<Conveyor>
 
   /// Opens the pane for one station the wagon serves. It follows the array
   /// itself rather than holding the [WagonStation] it was opened from, so the
-  /// lamps keep moving while it is open.
+  /// sentence keeps up while it is open, and it is handed the whole row so the
+  /// sentence can name the other stations involved.
   void _showStationPane(BuildContext context, WagonStation opened) {
     final stationsKey = widget.config.stationsKey!;
     // Opened from inside the dock's own subject, so the plant view rings the
@@ -3214,13 +3267,19 @@ class _ConveyorState extends ConsumerState<Conveyor>
     // conveyor's context is the fallback for a dock not laid out yet.
     final anchor = _stationSubject(opened.index).anchor.currentContext;
     SidePane pane(WagonStation station, PaneStatus Function(BuildContext) status,
-            {Widget? body}) =>
+            {Widget? body, List<WagonStation> stations = const []}) =>
         SidePane(
           title: station.name,
           subtitle: 'Wagon station',
           icon: Icons.pallet,
           status: status(context),
-          child: body ?? WagonStationPaneBody(station: station),
+          child: body ??
+              WagonStationPaneBody(
+                station: station,
+                stations: stations,
+                wagon: widget.config.wagonDisplayName,
+                lockHelp: widget.config.stationLockHelp,
+              ),
         );
     showSidePane(
       context: anchor ?? context,
@@ -3235,9 +3294,8 @@ class _ConveyorState extends ConsumerState<Conveyor>
               ),
             ])),
         builder: (context, _, dynValue) {
-          final live = wagonStationsFromValue(dynValue)
-              .where((s) => s.index == opened.index)
-              .firstOrNull;
+          final row = wagonStationsFromValue(dynValue);
+          final live = row.where((s) => s.index == opened.index).firstOrNull;
           if (live == null) {
             // Disabled or renamed away while the pane was open: say so rather
             // than go on showing the last flags as if they were current.
@@ -3249,8 +3307,8 @@ class _ConveyorState extends ConsumerState<Conveyor>
                   ),
                 ]));
           }
-          return pane(
-              live, (context) => wagonStationPaneStatus(context, live.state));
+          return pane(live, (context) => wagonStationPaneStatus(context, live),
+              stations: row);
         },
       ),
     );
