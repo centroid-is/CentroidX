@@ -147,9 +147,15 @@ void main() {
         async.elapse(const Duration(seconds: 5));
         stateMan.push('B', 9);
         async.flushMicrotasks();
+        expect(async.pendingTimers, hasLength(1),
+            reason: 'one delay per rule, however often the values change');
         async.elapse(const Duration(seconds: 10));
 
         expect(seen.single.expression, contains('9'));
+        async.elapse(const Duration(minutes: 1));
+        expect(seen, hasLength(1),
+            reason: 'a value change inside the delay neither restarts it '
+                'nor starts a second one');
       });
     });
 
@@ -174,10 +180,11 @@ void main() {
         setA(async, true);
         sub.cancel();
         async.flushMicrotasks();
+        expect(async.pendingTimers, isEmpty,
+            reason: 'a timer left running would outlive the listener');
         async.elapse(const Duration(minutes: 1));
 
         expect(seen, isEmpty);
-        expect(async.pendingTimers, isEmpty);
       });
     });
   });
