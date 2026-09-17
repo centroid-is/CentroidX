@@ -176,12 +176,15 @@ jobs:
             exit 0
           fi
 
-          # 1.8e9 per part: comfortably inside the limit, and two parts for
-          # anything up to 3.6GB. -d -a 2 names them .part00, .part01, which
-          # sort in `cat`'s glob order -- the reassembly instruction in the
-          # release notes depends on that.
+          # 800MB per part, not the 1.8e9 that merely fits GitHub's 2GiB cap:
+          # a part that size is accepted in principle and not in practice --
+          # every attempt in run 35257514051 died with "HTTP 500: Error saving
+          # asset" on a 1.7GB part00. Smaller requests land, and retrying one
+          # costs a minute instead of twenty. -d -a 2 names them .part00,
+          # .part01, ... which sort in `cat`'s glob order -- the reassembly
+          # instruction in the release notes depends on that.
           echo "installer is $size bytes, past the ${limit}-byte limit - splitting"
-          split -b 1800000000 -d -a 2 usb-installer.img.gz usb-installer.img.gz.part
+          split -b 800000000 -d -a 2 usb-installer.img.gz usb-installer.img.gz.part
           rm -f usb-installer.img.gz
           ls -l usb-installer.img.gz.part*
 
@@ -277,11 +280,11 @@ jobs:
             if [ -f release/usb-installer.img.gz ]; then
               STATION_ROW='| Station OS (x64) | `usb-installer.img.gz` — write to a USB key and boot it to install Debian + the container stack on a station; `.bmap` is for `bmaptool` |'
             else
-              STATION_ROW='| Station OS (x64) | `usb-installer.img.gz.part00`, `.part01` — GitHub caps one asset at 2 GiB, so download **every** part and rejoin them first: `cat usb-installer.img.gz.part* > usb-installer.img.gz`. Then write that to a USB key and boot it to install Debian + the container stack on a station; `.bmap` is for `bmaptool` |'
+              STATION_ROW='| Station OS (x64) | `usb-installer.img.gz.part00`, `.part01`, … — GitHub caps one asset at 2 GiB, so download **every** part and rejoin them first: `cat usb-installer.img.gz.part* > usb-installer.img.gz`. Then write that to a USB key and boot it to install Debian + the container stack on a station; `.bmap` is for `bmaptool` |'
             fi
           fi
 
-          notes="Automatically built from the tip of \`main\` (\`${GITHUB_SHA:0:7}\`).
+          notes_template="Automatically built from the tip of \`main\` (\`${GITHUB_SHA:0:7}\`).
 
           These are development builds, not a release — they have had no release testing and are replaced on every merge to \`main\`. For production use the [latest release](https://github.com/${GITHUB_REPOSITORY}/releases/latest).
 
@@ -292,31 +295,78 @@ jobs:
           | Windows (x64) | \`centroidx_windows_amd64.msix\` — sideload installer, used by the in-app updater's latest channel |
           | Windows (x64) | \`centroidx-sideload.cer\` — public signing certificate; the MSIX will not install until this is in \`LocalMachine\\TrustedPeople\` |
           | Linux (x64) | \`centroidx_linux_x64.tar.gz\` — GTK3 desktop bundle |
-          ${STATION_ROW}
+          __STATION_ROW__
 
           The \`centroidx-manager_*\` assets are the version manager built from this same commit; its **Latest** channel installs the packages above.
 
           Checksums in \`SHA256SUMS.txt\`."
 
-          # The delete below means main-latest is already gone by the time the
-          # uploads start, so one failed upload leaves the README's download
-          # links 404 until the next merge. GitHub's upload endpoint does throw
-          # transient 5xx ("HTTP 500: Error saving asset") on the multi-hundred
-          # MB assets, so the whole delete + create is retried. gh deletes its
-          # half-built draft when an upload fails, and the delete at the top of
-          # each attempt clears anything it left behind.
-          for attempt in 1 2 3; do
-            gh release delete main-latest --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
-            if gh release create main-latest \
-                 --repo "$GITHUB_REPOSITORY" \
-                 --target "$GITHUB_SHA" \
-                 --prerelease \
-                 --title "Latest main build" \
-                 --notes "$notes" \
-                 "${assets[@]}"; then
-              exit 0
+          # The station row is only in the notes once every station asset is
+          # actually up: the row tells the reader to `cat` the parts together,
+          # and doing that to a partial set silently yields a corrupt image.
+          notes="${notes_template//__STATION_ROW__/}"
+          notes_with_station="${notes_template//__STATION_ROW__/$STATION_ROW}"
+
+          # Assets are uploaded one at a time rather than passed to `create`,
+          # which sends them as a single all-or-nothing act. The station image
+          # is ~3GB and GitHub's upload endpoint does fail on it; such a
+          # failure used to discard the assets that had already landed and
+          # start the whole upload over. Run 35257514051 spent 75 minutes
+          # doing that three times and published nothing at all.
+          #
+          # So the release is created empty first -- the README's download
+          # links resolve seconds after the delete, whatever becomes of the
+          # uploads -- and every asset then retries on its own.
+          upload() {
+            local f=$1 attempt
+            for attempt in 1 2 3; do
+              # --clobber because an upload can fail after the asset was in
+              # fact saved; without it the retry is refused as a duplicate
+              # ("HTTP 422: Validation Failed"), which is how the manual rerun
+              # of run 35246924477 died.
+              if gh release upload main-latest --repo "$GITHUB_REPOSITORY" --clobber "$f"; then
+                return 0
+              fi
+              echo "::warning::upload of $f failed (attempt $attempt of 3)"
+              [ "$attempt" -lt 3 ] && sleep $(( attempt * 30 ))
+            done
+            return 1
+          }
+
+          gh release delete main-latest --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+          gh release create main-latest \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "Latest main build" \
+            --notes "$notes"
+
+          # Smallest first, so a slow giant at the end cannot hold up the app
+          # downloads -- the ones anybody actually clicks.
+          failed=()
+          while read -r f; do
+            upload "$f" || failed+=( "$f" )
+          done < <(ls -rS "${assets[@]}")
+
+          if [ "${#station[@]}" -gt 0 ]; then
+            station_failed=0
+            for f in ${failed[@]+"${failed[@]}"}; do
+              case "$f" in release/usb-installer.*) station_failed=1 ;; esac
+            done
+            if [ "$station_failed" -eq 0 ]; then
+              gh release edit main-latest --repo "$GITHUB_REPOSITORY" --notes "$notes_with_station"
+            else
+              # Unannounced parts would still be sitting there for someone to
+              # find and rejoin, so they go.
+              echo "::warning::station installer incomplete - removing its parts from the release"
+              for f in "${station[@]}" release/usb-installer.img.bmap; do
+                gh release delete-asset main-latest "$(basename "$f")" \
+                  --repo "$GITHUB_REPOSITORY" --yes || true
+              done
             fi
-            echo "::warning::Publishing main-latest failed (attempt $attempt of 3)"
-            [ "$attempt" -lt 3 ] && sleep $(( attempt * 60 ))
-          done
-          exit 1
+          fi
+
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "::error::failed to upload: ${failed[*]} - the rest of main-latest is published"
+            exit 1
+          fi
