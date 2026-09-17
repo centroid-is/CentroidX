@@ -259,7 +259,10 @@ const Set<String> expectedBackendConfigApi = {
 
 /// Every type that is reachable from the wire, and its agreed table.
 const Set<String> expectedConfigItemsApi = {
-  'list',
+  // `items`, not `list`: `AccessTemplateApi` already had a `list`, and two
+  // members of the same name on one wire surface is the collision the union
+  // count below exists to catch. The wire name is `configItems.items`.
+  'items',
   'fingerprint',
 };
 const Map<String, Set<String>> wireSurface = {
@@ -353,7 +356,7 @@ void main() {
       });
     }
 
-    test('the whole surface is 84 members over nine types, 82 distinct names',
+    test('the whole surface is 87 members over ten types, 85 distinct names',
         () {
       final actual = <String>{
         for (final type in wireTypes) ...declaredMemberNames(type),
@@ -376,18 +379,24 @@ void main() {
       // .setUserPages — a widening this guard is supposed to catch, and did.
       // 84 since the second merge from main brought multi-role accounts and
       // per-account inactivity timeouts, adding .setUserRoles and
-      // .setUserInactivityTimeout beside them.
+      // .setUserInactivityTimeout beside them. 87 over TEN types since the
+      // relational config replaced the configuration blobs: ConfigItemsApi is
+      // a tenth wire type with `items` and `fingerprint` on it, hanging off a
+      // tenth StateManApi getter. Three members, and the widening is the
+      // point -- the plant's own pages and key mappings are now fetched over
+      // the wire rather than mirrored into a local database.
       final total = wireTypes
           .map((type) => declaredMemberNames(type).length)
           .fold<int>(0, (sum, length) => sum + length);
-      expect(total, 84,
+      expect(total, 87,
           reason: 'the count is written down so a same-size swap — one member '
               'removed, another added — cannot slip through as a coincidence. '
               '82 = 49 before Phase 17, plus four StateManApi getters, plus '
               'the twenty-eight access methods behind them after the access '
               'audit cut accessTemplates.template, minus the dead-code '
               'audit\'s countTimeseriesDataMultiple, plus the whitelist\'s '
-              'two admin writes and multi-role\'s two');
+              'two admin writes and multi-role\'s two; 87 with the '
+              'config-item getter and its two methods');
 
       // The union is SHORTER than the sum, and the gap is named rather than
       // left as an arithmetic surprise: BackendConfigApi.read and .write share
@@ -395,7 +404,7 @@ void main() {
       // happen to share a verb, kept apart on the wire by the
       // `backendConfig.` family segment. Asserting both numbers is what stops
       // a future collision from being absorbed silently by the set.
-      expect(actual, hasLength(82),
+      expect(actual, hasLength(85),
           reason: 'exactly two names appear on two types — read and write, on '
               'StateManApi and BackendConfigApi. A third collision would drop '
               'this to 81 while the per-type tables above still passed, so it '

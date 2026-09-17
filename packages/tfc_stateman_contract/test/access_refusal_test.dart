@@ -13,7 +13,7 @@
 /// So the refusal arms that lived here are gone — a refusal a contract now
 /// answers would be a false claim. What remains is the property those arms were
 /// standing in for while the contract was being written: that the interface
-/// declares **exactly** the four access getters this package knows how to judge,
+/// declares **exactly** the five access getters this package knows how to judge,
 /// and no unjudged fifth. A sub-API getter added with nothing behind it would
 /// slip past `dart analyze` (it compiles) and reach a driver as a silent answer;
 /// this arm names the newcomer instead.
@@ -27,12 +27,20 @@ import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 import 'package:tfc_stateman_contract/tfc_stateman_contract.dart';
 import 'package:test/test.dart';
 
-/// The four access getters the contract has a home for.
+/// The five access getters the contract has a home for.
+///
+/// `configItems` is the fifth, and it arrived from main rather than from
+/// 17-03: the relational config replaced the blobs, so the plant's own pages
+/// and key mappings are now read over the wire like anything else — which
+/// means "who may ask for them" is a graded question and the contract answers
+/// it (`checkConfigItemsListRefusesWithoutOperatePermitsWithIt` and its
+/// fingerprint twin).
 const accessFamilies = <String>[
   'accessTemplates',
   'accessAdmin',
   'audit',
   'backendConfig',
+  'configItems',
 ];
 
 /// Every public member `StateManApi` declares, inherited members included.
@@ -58,7 +66,7 @@ Set<String> declaredMemberNames(Type type) {
 
 void main() {
   group('the access surface is exhaustive over StateManApi', () {
-    test('the interface declares exactly these four access getters', () {
+    test('the interface declares exactly these five access getters', () {
       final declared = declaredMemberNames(StateManApi);
 
       for (final member in accessFamilies) {
@@ -93,6 +101,7 @@ void main() {
           'accessAdmin' => 'role',
           'audit' => 'audit',
           'backendConfig' => 'config',
+          'configItems' => 'config item',
           _ => family,
         };
         expect(judged, contains(surface),

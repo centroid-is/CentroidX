@@ -41,7 +41,16 @@ import 'package:tfc_stateman_contract/tfc_stateman_contract.dart';
 /// 31 since the second merge from main: `setUserRoles` (multi-role accounts,
 /// #512) and `setUserInactivityTimeout` (per-account timeouts, #505) are two
 /// more admin writes, and every write takes a check of its own.
-const _declaredAccessCheckCount = 31;
+///
+/// 33 since the relational config reached the wire: `configItems.items` and
+/// `configItems.fingerprint` are the fifth family, and they are READS rather
+/// than writes — which is why they take a check each anyway. A read of the
+/// plant's own pages and key mappings is the whole screen, so "who may ask
+/// for it" is graded (`operate`, per kind) and the grade is worth a check on
+/// every leg. They are the two checks behind the anonymous refusal Jon asked
+/// for on 2026-09-16: if anonymous holds no privilege, the configuration is
+/// gated too.
+const _declaredAccessCheckCount = 33;
 
 /// Tokens that mark a check name as asserting a refusal, and the tokens that
 /// mark its permission twin. Exactly 17-CONTEXT D-12's pairing rule, mechanised.
