@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:logger/logger.dart';
 import 'package:tfc_access/tfc_access.dart' show AccessSession, kAnonymousUsername;
 
+import '../core/access_authority.dart';
 import 'access.dart';
 
 /// A home-page lookup's answer.
@@ -30,6 +31,22 @@ typedef HomePageLookup = Future<HomePageAnswer> Function(AccessSession session);
 /// boot, sign-in and a session ending.
 final homePageLookupProvider = Provider<HomePageLookup>((ref) {
   return (session) async {
+    // The transport question first, and asked of the authority rather than
+    // resolved out of a null repository — the rule `guard_wiring_test` states
+    // and the three defects it names were each a caller deciding what a null
+    // repository meant on its own. A gateway panel has no repository **by
+    // design and permanently**, so "nobody could say yet" would be a debt it
+    // can never settle: the boot navigation would stay owed for the life of
+    // the process, waiting on a database that is not coming.
+    //
+    // KNOWN, page null: this transport carries no per-account home page, so
+    // the panel opens on Home and stops owing anybody a move. When identity
+    // crosses the wire — the `hello`/`session.login` work that would carry a
+    // session's admitted pages and its home page — this branch is where that
+    // answer arrives, and the shape above already fits it.
+    final authority = await ref.read(accessAuthorityProvider.future);
+    if (authority == AccessAuthority.relay) return (known: true, page: null);
+
     try {
       final repo = await ref.read(accessRepositoryProvider.future);
       if (repo == null) return (known: false, page: null);

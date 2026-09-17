@@ -89,12 +89,14 @@ final class _Apis {
       : templates = ClientAccessTemplateApi(call),
         admin = ClientAccessAdminApi(call),
         audit = ClientAuditApi(call),
-        config = ClientBackendConfigApi(call);
+        config = ClientBackendConfigApi(call),
+        configItems = ClientConfigItemsApi(call);
 
   final ClientAccessTemplateApi templates;
   final ClientAccessAdminApi admin;
   final ClientAuditApi audit;
   final ClientBackendConfigApi config;
+  final ClientConfigItemsApi configItems;
 }
 
 // -----------------------------------------------------------------------------
@@ -297,7 +299,34 @@ final List<_Member> _members = <_Member>[
   ),
   _Member(AccessMethods.configRestorePrevious,
       (a) => a.config.restorePrevious(), () => null),
+  // ----------------------------------------------------------- config items
+  // The fifth family, from main's relational config. Two reads, and they are
+  // how a browser gets the plant's pages and key mappings at all — a panel
+  // with no local mirror has nothing else to build a screen from.
+  _Member(
+    AccessMethods.configItemsItems,
+    (a) => a.configItems.items('page'),
+    () => [_configItem.toJson()],
+    check: (decoded) => expect(
+        (decoded! as List<ConfigItemRecord>).single.id, _configItem.id),
+  ),
+  _Member(
+    AccessMethods.configItemsFingerprint,
+    (a) => a.configItems.fingerprint(const ['page', 'asset']),
+    () => const ConfigItemsFingerprint(count: 3, revSum: 12).toJson(),
+    check: (decoded) =>
+        expect((decoded! as ConfigItemsFingerprint).revSum, 12),
+  ),
 ];
+
+/// One row, shaped the way a page row is: the payload is the page's JSON as
+/// a string, which is what makes `payload` a `String` here and not a map.
+const ConfigItemRecord _configItem = ConfigItemRecord(
+  kind: 'page',
+  id: '/speedbatchers',
+  payload: '{"menu_item":{"label":"Speedbatchers"}}',
+  rev: 7,
+);
 
 // -----------------------------------------------------------------------------
 // Arm 2's forbidden identity keys
@@ -564,6 +593,21 @@ final class _ServedAccessGateway {
       await fake.restorePrevious(reason: reasonOf(p));
       return null;
     });
+
+    // Config items, shaped exactly as `access_handlers.dart` shapes them: a
+    // list of rows and a fingerprint object, both already gated inside the
+    // fake. Missing here, the access contract's two config-item checks met a
+    // "method not found" and read it as the session having been ADMITTED —
+    // a refusal is what they are looking for, and -32601 is not one.
+    _on(AccessMethods.configItemsItems, (p) async => [
+          for (final record in await fake.items(p['kind'].asString))
+            record.toJson(),
+        ]);
+    _on(
+        AccessMethods.configItemsFingerprint,
+        (p) async =>
+            (await fake.fingerprint(p['kinds'].asList.cast<String>()))
+                .toJson());
   }
 }
 
@@ -965,13 +1009,15 @@ void main() {
     // run itself did, not what it intended.
     test('LEDGER: the leg ran the whole access roster with an empty gap', () {
       // The declared count, reconciled against the in-memory leg's:
-      // access_contract_meta_test.dart pins `_declaredAccessCheckCount = 31`
+      // access_contract_meta_test.dart pins `_declaredAccessCheckCount = 33`
       // — 27 until the page-visibility whitelist added setRolePages and
       // setUserPages, 31 once multi-role accounts added setUserRoles and
-      // setUserInactivityTimeout. If the kit's roster moves, this literal
-      // must move with it — deliberately, on the record.
-      expect(accessChecks.length, 31,
-          reason: 'the in-memory leg declares 31 access checks; this leg '
+      // setUserInactivityTimeout, 33 once main's relational config put the
+      // plant's own pages and key mappings on the wire as `configItems`. If
+      // the kit's roster moves, this literal must move with it —
+      // deliberately, on the record.
+      expect(accessChecks.length, 33,
+          reason: 'the in-memory leg declares 33 access checks; this leg '
               'must judge the same roster, not a subset that happens to be '
               'green');
       expect(_legsBuilt, accessChecks.length,

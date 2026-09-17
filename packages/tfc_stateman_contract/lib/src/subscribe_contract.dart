@@ -116,6 +116,118 @@ Future<void> checkListenDeliversValueSetBeforeListening(
           'the purple conveyor on a running line');
 }
 
+/// The `subscribe()` stream's FIRST event is the value that was already in
+/// place when the listener attached — without waiting for a change.
+///
+/// [checkListenDeliversValueSetBeforeListening] states this property for the
+/// listenable path and, until this case existed, nothing stated it for the
+/// stream: [checkSubscribeStreamMirrorsListen] takes the stream and THEN sets
+/// the value, so a `subscribe` that only forwards changes passed it. Two
+/// implementations then read the silence two ways — one opened every stream
+/// with the store's current value, the other opened it with nothing — and a
+/// page bound through the second showed `---` for every setpoint on a line,
+/// for as long as the setpoint stayed what it was. On a plant most signals
+/// are constants by design; a stream that owes its listener only the next
+/// change owes a constant nothing, ever.
+///
+/// So the decision, stated once here and again on `StateManApi.subscribe`: a
+/// snapshot-never-replay wire means the snapshot IS the current value, and a
+/// listener attaching after it landed is owed that value as its first event.
+/// Every listener, not the first one — a broadcast controller runs `onListen`
+/// once, and the second widget on a key is the ordinary case, not an edge.
+Future<void> checkSubscribeOpensWithValueSetBeforeListening(
+    StateManApi api) async {
+  final plant = harnessOf(api);
+  plant.setValue(_speedKey, 1450);
+  // Landed, on whatever leg this is, BEFORE the stream exists: the property
+  // is that a value already in the store reaches a listener who arrived late,
+  // and a case where the value was still in flight would be
+  // [checkSubscribeStreamMirrorsListen] over again.
+  await arrived(api, _speedKey);
+
+  final stream = api.subscribe(_speedKey);
+  final first = await within(stream.first,
+      'the value already in place opening a new subscribe() stream');
+  expect(first.asInt, 1450,
+      reason: 'the key held 1450 before the stream was listened to and the '
+          'first event was not it — a subscribe that opens with nothing until '
+          'the next change renders every constant on the plant as unknown');
+  expect(first.quality.isGood, isTrue,
+      reason: 'the opening event must carry the quality the source holds, not '
+          'a placeholder; a constant is not stale for being constant');
+
+  // And a second listener, attaching after the first one has already been
+  // served, is owed the same opening event. This is the arm a broadcast
+  // controller fails: its onListen runs for the first subscriber only, so the
+  // second widget bound to the key opens with nothing.
+  final second = await within(stream.first,
+      'the same value opening the stream for a SECOND, later listener');
+  expect(second, first,
+      reason: 'the second listener on one subscribe() stream did not receive '
+          'the opening value the first one did; two widgets watching one key '
+          'is the normal case, and the second one must not open blank');
+  expect(api.listen(_speedKey).value, first,
+      reason: 'the stream opened with something other than what listen() '
+          'holds; the stream is a view of the store, never a second source');
+}
+
+/// A `subscribe()` stream on a key nothing has arrived for opens with NO
+/// event, and then delivers the first value when it lands.
+///
+/// The other half of [checkSubscribeOpensWithValueSetBeforeListening], and
+/// the same rule as [checkUnknownKeyReportsConfigErrorNotThrow] states for the
+/// listenable: a key the source has heard nothing about invents no traffic.
+/// The not-yet-known placeholder is readable — `listen(key).value` carries
+/// it, `read(key)` answers null — and it is never pushed as an event, because
+/// every stream consumer already shows its own "no value yet" and an event
+/// carrying null would replace that with a rendered nothing. On a slow link
+/// every key on a page is in this state for one round trip.
+///
+/// "Nothing arrived" is asserted with a barrier, not a sleep: a value for a
+/// second key is sent and awaited on the same source, so by the time the
+/// assertion runs the source has demonstrably processed later traffic.
+Future<void> checkSubscribeStaysSilentUntilFirstValue(StateManApi api) async {
+  final plant = harnessOf(api);
+
+  final events = <DynamicValue>[];
+  final subscription = api.subscribe(_speedKey).listen(events.add);
+  try {
+    // The barrier: a batch to a different key, awaited through the same
+    // source, so an implementation that pushed an opening placeholder has
+    // had every chance to do so.
+    final live = api.listen(_otherKey);
+    final seen = observe(live);
+    plant.setValue(_otherKey, 3);
+    await within(seen.next, 'a batch reaching a key the source does have');
+    seen.stop();
+    // A microtask-delivered opening event would be queued before the barrier
+    // resolved on an in-process leg, but give the queue one more turn so the
+    // assertion below is about the implementation and not about ordering.
+    await Future<void>.delayed(Duration.zero);
+
+    expect(events, isEmpty,
+        reason: 'the stream for a key nothing has arrived for produced '
+            '${events.length} event(s) before any value landed. A stream '
+            'that opens with a placeholder makes every widget render a null '
+            'where it was already showing its own "no value yet"; the '
+            'placeholder is readable off listen(), it is not traffic');
+
+    plant.setValue(_speedKey, 1450);
+    await within(
+        Future.doWhile(() async {
+          await Future<void>.delayed(const Duration(milliseconds: 5));
+          return events.isEmpty;
+        }),
+        'the first value for the key reaching the stream that was waiting');
+    expect(events.single.asInt, 1450,
+        reason: 'the stream that waited through the unknown period must '
+            'deliver the first real value, and only that');
+    expect(events.single.quality.isGood, isTrue);
+  } finally {
+    await subscription.cancel();
+  }
+}
+
 Future<void> checkListenDeliversSubsequentChanges(StateManApi api) async {
   final plant = harnessOf(api);
 
@@ -275,6 +387,12 @@ const subscribeChecks = <String, Check<StateManApi>>{
       checkListenDeliversSubsequentChanges,
   'the subscribe() stream mirrors listen() and serves every listener':
       checkSubscribeStreamMirrorsListen,
+  'the subscribe() stream opens with a value in place before anybody listened, '
+          'for every listener':
+      checkSubscribeOpensWithValueSetBeforeListening,
+  'the subscribe() stream stays silent for an unarrived key, then delivers '
+          'its first value':
+      checkSubscribeStaysSilentUntilFirstValue,
   'an unknown key reports a configuration error instead of throwing':
       checkUnknownKeyReportsConfigErrorNotThrow,
   'a disposed source notifies nobody': checkDisposeStopsNotifications,

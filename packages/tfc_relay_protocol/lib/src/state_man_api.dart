@@ -96,6 +96,29 @@ abstract interface class StateManApi {
   /// that `state_man.dart:1600` returns today: a future-of-stream forces
   /// every call site to await before it can even listen, which is how a
   /// widget ends up missing the first values of its own subscription.
+  ///
+  /// **What the stream owes each listener** — decided after two
+  /// implementations read the previous silence two ways and a plant page
+  /// showed `---` for every setpoint on a line (the value was in the store;
+  /// the stream only ever forwarded changes, and a setpoint never changes):
+  ///
+  ///  1. If the source knows a value for [key] when the listener attaches,
+  ///     that value is the stream's **first event** — for every listener,
+  ///     not only the first, delivered on a microtask rather than inside the
+  ///     `listen` call. Snapshot-never-replay on the wire means the snapshot
+  ///     IS the current value, and a listener that has to wait for a change
+  ///     never sees a constant.
+  ///  2. If nothing has arrived for [key], the stream opens with **no
+  ///     event** and delivers the first value when it lands. The
+  ///     not-yet-known placeholder is readable off [listen] and [read]; it is
+  ///     never pushed as traffic, exactly as [listen] notifies nobody for it.
+  ///  3. Every later change is forwarded, including the source forgetting the
+  ///     key (a clear on resync), which is a real change in what it knows.
+  ///
+  /// Held to by `checkSubscribeOpensWithValueSetBeforeListening` and
+  /// `checkSubscribeStaysSilentUntilFirstValue` in the contract suite;
+  /// implemented once, in `HandedOutStreams.over`, which every in-tree
+  /// implementation uses.
   Stream<DynamicValue> subscribe(String key);
 
   /// The last known value for [key], or null if none is known yet.

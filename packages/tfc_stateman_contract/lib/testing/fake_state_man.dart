@@ -153,7 +153,7 @@ class FakeStateMan
   ///
   /// A [Set] with identity semantics, because two closers are never
   /// interchangeable even though nothing distinguishes their signatures.
-  final _closeHandedOutStreams = <Future<void> Function()>{};
+  final _handedOut = HandedOutStreams();
 
   /// When each key last had a value *arrive* for it.
   ///
@@ -245,44 +245,23 @@ class FakeStateMan
   @override
   ValueListenable<DynamicValue> listen(String key) => _store.node(key);
 
-  /// A broadcast view of the same node, for stream-consuming code.
+  /// A view of the same node, for stream-consuming code.
   ///
-  /// A view, never a second source of truth: the controller carries whatever
-  /// the node currently holds, pushed by a listener attached on first
-  /// subscription and removed when the last subscriber cancels. That is also
-  /// why nothing is replayed on listen — the snapshot lives in the store, where
-  /// [read] and `listen(key).value` reach it synchronously, and this stream
-  /// carries changes from the moment it is taken. Because the stream is
-  /// returned synchronously (not behind a `Future`), taking it and listening to
-  /// it happen in the same turn, so there is no window in which a change can be
-  /// missed.
+  /// A view, never a second source of truth — and one whose first event is
+  /// the value the store already holds, when it holds one. This is the
+  /// reference implementation, and until the contract had
+  /// `checkSubscribeOpensWithValueSetBeforeListening` it documented the
+  /// opposite ("nothing is replayed on listen"), which is how the relay client
+  /// came to copy a stream that showed `---` for every constant on a page.
+  /// What the stream owes is written on `StateManApi.subscribe` and
+  /// implemented once in [HandedOutStreams.over]; this fake keeps the rule the
+  /// same way every production implementation does, by not owning a copy.
+  ///
+  /// Returned synchronously (not behind a `Future`), so taking the stream and
+  /// listening to it happen in the same turn and there is no window in which
+  /// a change can be missed.
   @override
-  Stream<DynamicValue> subscribe(String key) {
-    final node = _store.node(key);
-    late final StreamController<DynamicValue> controller;
-    void push() => controller.add(node.value);
-    // Registered while the stream is live and deregistered when the last
-    // subscriber goes away, so the registry tracks streams that still need
-    // closing rather than every stream ever handed out. Re-listening
-    // re-registers, exactly as it re-attaches the node listener.
-    late final Future<void> Function() close;
-    close = () async {
-      _closeHandedOutStreams.remove(close);
-      await controller.close();
-    };
-    controller = StreamController<DynamicValue>.broadcast(
-      onListen: () {
-        node.addListener(push);
-        _closeHandedOutStreams.add(close);
-      },
-      onCancel: () {
-        node.removeListener(push);
-        _closeHandedOutStreams.remove(close);
-      },
-    );
-    _closeHandedOutStreams.add(close);
-    return controller.stream;
-  }
+  Stream<DynamicValue> subscribe(String key) => _handedOut.over(_store.node(key));
 
   /// How many handed-out streams are still registered for closing.
   ///
@@ -290,7 +269,7 @@ class FakeStateMan
   /// outside, and a registry that only ever grows is a leak in shipped `lib/`
   /// code rather than in a test file: this class is imported by the server and
   /// client packages, and Phase 3/4 tests hold one instance across many cases.
-  int get openHandedOutStreams => _closeHandedOutStreams.length;
+  int get openHandedOutStreams => _handedOut.open;
 
   /// The cached value, or null when nothing has arrived for [key] yet — the
   /// "not known" / "known to be bad" distinction the interface requires.
@@ -340,12 +319,7 @@ class FakeStateMan
     _loseTrackOfWritesInFlight(const WriteReason('link_lost',
         message: 'the source was disposed while the write was in flight'));
     _store.dispose();
-    // A snapshot: each closer deregisters itself, and closing a controller
-    // with a live subscriber runs onCancel, which does the same.
-    for (final close in List.of(_closeHandedOutStreams)) {
-      await close();
-    }
-    _closeHandedOutStreams.clear();
+    await _handedOut.closeAll();
     await _preferences.dispose();
   }
 

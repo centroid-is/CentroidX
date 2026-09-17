@@ -156,7 +156,18 @@ const _readOnlyKey = 'ST301.CN21.SEN01.temp';
 /// eighth data-services check, and it is reachable here on the day it is
 /// written because the `preferences.clear` handler landed back in 10-05. The
 /// gap list stays empty.
-const int reachableChecks = 51;
+/// **And 51 became 54.** Two of the three are the subscribe contract growing
+/// (PR #463):
+/// `subscribe()` owed a new listener the value the source already held, and
+/// no leg said so, which is how every setpoint on a plant page read `---`
+/// while the value sat in the store. Both checks are reachable here on the day
+/// they are written — and this leg is the one that found the implementation
+/// wrong, because a socket notifies for a key it has nothing for and an
+/// in-memory source does not. The third is a check that landed earlier on
+/// this branch while nothing ran this arithmetic: CI's relay-packages lane
+/// runs this package on dart2js only, so the VM legs' reconciliation went
+/// unchecked and drifted by one. The gap list stays empty.
+const int reachableChecks = 54;
 
 /// Every check this leg does not pass, by name. **It is empty**, and 10-05 is
 /// the commit that emptied it.

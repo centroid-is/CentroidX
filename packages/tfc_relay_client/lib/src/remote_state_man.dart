@@ -233,12 +233,10 @@ final class RemoteStateMan implements StateManApi {
   /// it was handed.
   final Map<String, String> _subOf = <String, String>{};
 
-  /// Closers for the streams [subscribe] handed out that are still open.
-  ///
-  /// The shape is `channel_state_man.dart:114-119`'s, including the
-  /// self-deregistering closer: a registry that only grows is a leak, and a
-  /// panel runs for a shift.
-  final _closeHandedOutStreams = <Future<void> Function()>{};
+  /// The streams [subscribe] handed out that are still open, closed on
+  /// [dispose]. A registry that only grows is a leak, and a panel runs for a
+  /// shift.
+  final _handedOut = HandedOutStreams();
 
   /// Commands whose outcome this client cannot establish.
   ///
@@ -614,36 +612,28 @@ final class RemoteStateMan implements StateManApi {
     await _supervisor.resync.onResync(_page);
   }
 
-  /// A broadcast view of the same node, for stream-consuming code.
+  /// A view of the same node, for stream-consuming code.
   ///
-  /// A view and never a second source of truth. Returned synchronously so
-  /// taking the stream and listening to it happen in one turn, which is what
-  /// stops a widget missing the first values of its own subscription.
+  /// A view and never a second source of truth — and one that OPENS with the
+  /// value the store already holds. The previous body here was a broadcast
+  /// controller that pushed only when the node notified, which rendered every
+  /// constant on a page as `---` for as long as it stayed constant: the
+  /// snapshot had put the setpoint in the store, the store never notified
+  /// again, and the widget's placeholder stood for the whole shift. What the
+  /// stream owes a listener is written on `StateManApi.subscribe`, held to by
+  /// the contract suite, and implemented once in [HandedOutStreams.over].
+  ///
+  /// A stream handed out before the first snapshot lands still delivers
+  /// correctly once it does: the node listener is attached at `listen`, the
+  /// opening microtask finds nothing known and sends nothing, and the
+  /// snapshot's `applyBatch` notifies the node, which is the first event.
+  ///
+  /// Returned synchronously so taking the stream and listening to it happen
+  /// in one turn, which is what stops a widget missing the first values of
+  /// its own subscription.
   @override
-  Stream<DynamicValue> subscribe(String key) {
-    final node = _storeOf(key).node(key);
-    late final StreamController<DynamicValue> controller;
-    void push() => controller.add(node.value);
-    late final Future<void> Function() close;
-    close = () async {
-      _closeHandedOutStreams.remove(close);
-      await controller.close();
-    };
-    controller = StreamController<DynamicValue>.broadcast(
-      onListen: () {
-        node.addListener(push);
-        _closeHandedOutStreams.add(close);
-      },
-      onCancel: () {
-        node.removeListener(push);
-        _closeHandedOutStreams.remove(close);
-      },
-    );
-    // Added twice on purpose — once here, once in `onListen`. A stream nobody
-    // ever listened to still has to be closable at dispose.
-    _closeHandedOutStreams.add(close);
-    return controller.stream;
-  }
+  Stream<DynamicValue> subscribe(String key) =>
+      _handedOut.over(_storeOf(key).node(key));
 
   // -------------------------------------------------- answers over the wire
 
@@ -1681,10 +1671,7 @@ final class RemoteStateMan implements StateManApi {
     _releaseHolds(HoldEnded.disposed);
     _disposed = true;
 
-    for (final close in List.of(_closeHandedOutStreams)) {
-      await close();
-    }
-    _closeHandedOutStreams.clear();
+    await _handedOut.closeAll();
     await _resolved.close();
     await _freshness.close();
     await preferences.dispose();

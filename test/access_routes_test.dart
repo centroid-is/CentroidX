@@ -163,14 +163,16 @@ void main() {
       // group only a working database can grant. Exempting Server Config
       // without this one leaves a loop with no entry: the page naming the
       // server opens, the page that lets the machine reach it does not.
-      expect(routeAllowedWhenRepositoryUnavailable(kIpSettingsRoute), isTrue);
+      expect(routeAllowedWhenNobodyCanSignIn(kIpSettingsRoute), isTrue);
     });
 
     test('answers false for every other raised route', () {
       for (final path in kRaisedRoutes.keys) {
         if (path == kServerConfigRoute || path == kIpSettingsRoute) continue;
         expect(routeAllowedWhenNobodyCanSignIn(path), isFalse,
-            reason: '$path must stay denied while the repository is down');
+            reason: '$path must stay denied while nothing on the station can '
+                'verify a credential — an absent authority, or a relay '
+                'authority with no link under it');
       }
     });
 
@@ -190,8 +192,8 @@ void main() {
       // the repository, so with the database down both still do exactly what
       // they claim. The admin page would edit nothing while looking like it
       // worked, and the audit trail *is* the database.
-      expect(routeAllowedWhenRepositoryUnavailable(kAccessAdminRoute), isFalse);
-      expect(routeAllowedWhenRepositoryUnavailable(kAuditTrailRoute), isFalse);
+      expect(routeAllowedWhenNobodyCanSignIn(kAccessAdminRoute), isFalse);
+      expect(routeAllowedWhenNobodyCanSignIn(kAuditTrailRoute), isFalse);
     });
 
     test('answers false for the admin screen', () {

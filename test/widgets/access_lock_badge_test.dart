@@ -456,8 +456,14 @@ void main() {
     });
 
     testWidgets(
-        'an unreachable gateway link unlocks Server Config and nothing else',
-        (tester) async {
+        'an unreachable gateway link unlocks the two bootstrap routes and '
+        'nothing else', (tester) async {
+      // Two, not one. Server Config points the machine at a database or a
+      // gateway; IP Settings gives it an address to reach one with. Exempting
+      // the second without the first is a loop with no entry — the page naming
+      // the server opens and the page that lets the machine reach it does not
+      // — which is what a commissioning engineer hit, and why
+      // `routeAllowedWhenNobodyCanSignIn` answers true for both.
       for (final path in kRaisedRoutes.keys) {
         await tester.pumpWidget(const SizedBox.shrink());
         await tester.pumpWidget(_host(
@@ -469,10 +475,18 @@ void main() {
 
         expect(
           _lockGlyph,
-          path == kServerConfigRoute ? findsNothing : findsOneWidget,
+          routeAllowedWhenNobodyCanSignIn(path)
+              ? findsNothing
+              : findsOneWidget,
           reason: path,
         );
       }
+
+      // Anti-vacuity: the exemption is exactly the two, asked of the same
+      // function the loop above asks, so a change that exempted everything
+      // would pass the loop and fail here.
+      expect(kRaisedRoutes.keys.where(routeAllowedWhenNobodyCanSignIn),
+          unorderedEquals([kServerConfigRoute, kIpSettingsRoute]));
     });
 
     testWidgets('the two causes of unavailable give the same badge, per route',

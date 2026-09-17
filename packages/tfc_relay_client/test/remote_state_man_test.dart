@@ -316,6 +316,44 @@ void main() {
           completion(isTrue));
     });
 
+    test(
+        'a subscribe stream OPENS with the value the snapshot already '
+        'delivered — a constant that never ticks still renders', () async {
+      // PR #463, /baader/sensors: `Measured: 70 %` rendered and
+      // `Setpoint: --- %` did not, for all ten machines. The wire was right —
+      // the snapshot carried every setpoint, good — and the stream this
+      // client handed the widget pushed only on a node notification, which a
+      // constant never produces. This is that page, in one key.
+      final gateway = await _gateway();
+      final client = _client(gateway.uri);
+      // The snapshot has landed, and nothing will ever change this key again.
+      await _until('a snapshot', () => client.read(_seededKey) != null);
+      final constant = client.read(_seededKey)!;
+
+      final first = await client
+          .subscribe(_seededKey)
+          .first
+          .timeout(const Duration(seconds: 2), onTimeout: () {
+        fail('the stream never opened with the value already in the store; '
+            'a widget bound to a constant would show its placeholder for '
+            'ever');
+      });
+      expect(first.value, constant.value,
+          reason: 'the opening event must be the snapshot value, not '
+              'something that had to change first');
+      expect(first.quality.isGood, isTrue);
+
+      // And a second widget on the same key, arriving later, opens the same
+      // way — the arm a broadcast controller's single onListen fails.
+      final stream = client.subscribe(_seededKey);
+      final a = await stream.first.timeout(const Duration(seconds: 2));
+      final b = await stream.first.timeout(const Duration(seconds: 2));
+      expect(a.value, constant.value);
+      expect(b.value, constant.value,
+          reason: 'the second listener on one stream opened blank');
+      await client.dispose();
+    });
+
     test('a subscribe stream delivers the values that arrive on it', () async {
       final gateway = await _gateway();
       final client = _client(gateway.uri);

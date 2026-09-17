@@ -80,8 +80,11 @@ void main() {
       // whitelist half's business — see 'the boot window waits' below.
       expect(
         resolveAccessGate(
+          // No `path`: the group half does not take one. `resolvePageAccess`
+          // is what turns a path into `allowWhenNobodyCanSignIn`, and asking
+          // the group half "on its own terms" means handing it that answer
+          // directly, which is what the `false` below is.
           group: AccessGroup.operate,
-          path: '/fillet',
           authority: _loadingAuthority,
           session: _loadingSession,
           allowWhenNobodyCanSignIn: false,
@@ -481,6 +484,14 @@ void main() {
         'refuse', (tester) async {
       // The whole transition, in one test: loading -> resolved-with-an-empty
       // whitelist. The page must not appear at any point between them.
+      //
+      // The refusal it lands on is the SIGN-IN-FIRST one, not "not available",
+      // and that is the distinction [anonymousSeesNothing] draws: nobody is
+      // signed in and no page was granted, so the useful first sentence is the
+      // sign-in rather than an explanation of a whitelist the operator cannot
+      // see. The case below is the same transition for somebody who IS signed
+      // in, where "not available" is the honest voice. What both arms assert
+      // is the same property the name states: the page never appears.
       final controller = _SwitchableSession(_loadingSession);
       await tester.pumpWidget(host(
         path: '/fillet',
@@ -494,7 +505,33 @@ void main() {
       controller.resolve(_session(pages: const <String>{}).requireValue);
       await tester.pumpAndSettle();
 
+      expect(find.byKey(kAccessSignInFirstBodyKey), findsOneWidget);
+      expect(find.byKey(kPageNotAvailableBodyKey), findsNothing);
+      expect(find.text('the page itself'), findsNothing);
+    });
+
+    testWidgets('a signed-in account outside the whitelist gets the '
+        'not-available refusal, and still never the page', (tester) async {
+      // The other voice of the same refusal. An account somebody signed in to
+      // has a whitelist that simply does not carry this page, and telling that
+      // person to sign in would send them hunting for a credential that
+      // changes nothing.
+      final controller = _SwitchableSession(_loadingSession);
+      await tester.pumpWidget(host(
+        path: '/fillet',
+        session: _loadingSession,
+        controller: controller,
+      ));
+      await tester.pump();
+      expect(find.text('the page itself'), findsNothing);
+
+      controller.resolve(
+          _session(pages: const <String>{'/other'}, elevated: true)
+              .requireValue);
+      await tester.pumpAndSettle();
+
       expect(find.byKey(kPageNotAvailableBodyKey), findsOneWidget);
+      expect(find.byKey(kAccessSignInFirstBodyKey), findsNothing);
       expect(find.text('the page itself'), findsNothing);
     });
 

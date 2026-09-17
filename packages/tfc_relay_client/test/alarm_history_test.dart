@@ -414,9 +414,11 @@ void main() {
     test('StateManApi did not grow', () {
       final actual = _declaredMemberNames(StateManApi);
 
-      expect(actual, hasLength(18),
+      expect(actual, hasLength(19),
           reason: 'the count is written down so a same-size swap cannot slip '
-              'through as a coincidence');
+              'through as a coincidence. 18 until main\'s relational config '
+              'added the `configItems` getter, which is a fifth access family '
+              'and not a nineteenth reason to widen this interface casually');
       expect(actual, isNot(contains('recentAlarms')),
           reason: 'alarm history has no LocalStateMan meaning — on the backend '
               'the alarm engine and its history writer are reached directly, '

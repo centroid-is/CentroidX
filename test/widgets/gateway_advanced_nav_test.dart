@@ -156,10 +156,16 @@ class _NavBarLocation extends BeamLocation<BeamState> {
                 // remount, and a read would not carry that.
                 child: Consumer(builder: (context, ref, _) {
                   final visible = ref.watch(visibleMenuProvider);
-                  final advanced = visible.topLevel.firstWhere(
-                    (item) => item.label == menuItem.label,
-                    orElse: () => menuItem,
-                  );
+                  // No `orElse` handing back the unfiltered item. That
+                  // fallback is what made the anonymous arms below pass while
+                  // asserting nothing: with every entry filtered away the menu
+                  // is EMPTY, and resurrecting the seed drew Page Editor to a
+                  // panel `BaseScaffold` would have drawn no bar for at all.
+                  // Absent means absent, here as there.
+                  final advanced = visible.topLevel
+                      .where((item) => item.label == menuItem.label)
+                      .firstOrNull;
+                  if (advanced == null) return const SizedBox.shrink();
                   return NavDropdown(menuItem: advanced);
                 }),
               ),
@@ -289,14 +295,16 @@ void main() {
         AccessAuthority.relay,
         reason: 'no repository, and that is the design rather than an outage');
 
-    await _openAdvanced(tester);
-    expect(_row('Page Editor'), findsNothing,
-        reason: 'nobody is signed in yet');
-    expect(_row('Dashboard'), findsNothing,
-        reason: 'a credential-less gateway client is shown no page until '
-            'somebody signs in; it used to be offered every unraised page '
-            'and find each one empty');
-    await _closeMenu(tester);
+    // Not "Advanced opens and is empty" — Advanced is not offered at all. A
+    // section whose every child was filtered away is dropped rather than left
+    // as a heading over nothing (`visibleMenu`), and on this panel that is the
+    // whole menu: a credential-less gateway client is shown no page until
+    // somebody signs in, where it used to be offered every unraised page and
+    // find each one empty.
+    expect(find.text('Advanced'), findsNothing,
+        reason: 'nobody is signed in yet, so there is nothing to drop down');
+    expect(_row('Page Editor'), findsNothing);
+    expect(_row('Dashboard'), findsNothing);
 
     // The transition: the server verifies and answers, and the panel's session
     // becomes what the server resolved. No remount, no navigation.
@@ -375,10 +383,18 @@ void main() {
     await container.read(accessSessionProvider.notifier).signOut();
     await tester.pumpAndSettle();
 
-    await _openAdvanced(tester);
-    expect(_row('Page Editor'), findsNothing,
+    expect(find.text('Advanced'), findsNothing,
         reason: 'the session is the authority in both directions');
-    expect(_row('Server Config'), findsOneWidget,
-        reason: 'the exemption is not a session question');
+    expect(_row('Page Editor'), findsNothing);
+    // Server Config goes with it, and that is the fix rather than a loss. Its
+    // exemption fires when nothing on the station can verify a credential —
+    // an absent authority, or a relay authority with no link under it. This
+    // panel has a live link and a working sign-in, so there is no bootstrap
+    // to rescue: the older name for that flag claimed a condition broad
+    // enough to leave Server Config open on every gateway panel for its whole
+    // life, which is what `access_routes.dart` records it shipping.
+    expect(_row('Server Config'), findsNothing,
+        reason: 'a gateway panel that CAN sign somebody in is not a station '
+            'locked out of its own bootstrap');
   });
 }

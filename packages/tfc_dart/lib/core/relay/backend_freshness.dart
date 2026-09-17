@@ -375,12 +375,13 @@ final class BackendFreshnessSweep implements BackendValueSource {
   /// When a value last arrived on each link, by [_linkOf]'s name for it.
   final Map<String, int> _lastHeardByLink = <String, int>{};
 
-  /// The broadcast controllers [subscribe] handed out, closed on [dispose].
-  final List<StreamController<relay.DynamicValue>> _streams =
-      <StreamController<relay.DynamicValue>>[];
+  /// The streams [subscribe] handed out that still have a listener, closed on
+  /// [dispose]. What each owes its listener is written on
+  /// `StateManApi.subscribe` and kept by [relay.HandedOutStreams.over].
+  final relay.HandedOutStreams _streams = relay.HandedOutStreams();
 
-  /// The same, for [subscribeStamped]. A separate list because the element
-  /// types differ; closed alongside [_streams] on [dispose].
+  /// The controllers behind [subscribeStamped]. A separate registry because
+  /// the element type differs; closed alongside [_streams] on [dispose].
   final List<StreamController<StampedValue>> _stampedStreams =
       <StreamController<StampedValue>>[];
 
@@ -413,20 +414,8 @@ final class BackendFreshnessSweep implements BackendValueSource {
   /// stream's own listeners, so a `subscribe` nobody listens to costs nothing
   /// — neither a monitored item nor a place in the sweep.
   @override
-  Stream<relay.DynamicValue> subscribe(String key) {
-    final watched = _watch(key);
-    late final StreamController<relay.DynamicValue> controller;
-    void forward() {
-      if (!controller.isClosed) controller.add(watched.value);
-    }
-
-    controller = StreamController<relay.DynamicValue>.broadcast(
-      onListen: () => watched.addListener(forward),
-      onCancel: () => watched.removeListener(forward),
-    );
-    _streams.add(controller);
-    return controller.stream;
-  }
+  Stream<relay.DynamicValue> subscribe(String key) =>
+      _streams.over(_watch(key));
 
   _SweptKey _watch(String key) => _watched.putIfAbsent(
       key, () => _SweptKey(this, key, _values.listen(key)));
@@ -814,13 +803,11 @@ final class BackendFreshnessSweep implements BackendValueSource {
     _watched.clear();
     _lastHeard.clear();
 
+    await _streams.closeAll();
     await Future.wait(<Future<void>>[
-      for (final controller in _streams)
-        if (!controller.isClosed) controller.close(),
       for (final controller in _stampedStreams)
         if (!controller.isClosed) controller.close(),
     ]);
-    _streams.clear();
     _stampedStreams.clear();
 
     await _values.dispose();

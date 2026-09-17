@@ -443,6 +443,16 @@ final class LocalStateMan implements StateManApi {
   /// level would otherwise read blank until the level moved. The snapshot is
   /// pushed in `onListen`, so taking the stream and listening to it happen in
   /// the same turn and there is no window in which a change can be missed.
+  ///
+  /// This is the behaviour `StateManApi.subscribe` now requires of every
+  /// implementation (the relay client had the opposite, and a browser page
+  /// showed `---` for every setpoint). One refinement came with the rule: a
+  /// key nothing has arrived for opens with NO event rather than with the
+  /// not-yet-known placeholder — the placeholder is readable off `listen()`
+  /// and `read()`, and pushing it as traffic contradicts the listenable path,
+  /// which notifies nobody for an unknown key. Kept hand-rolled here rather
+  /// than moved onto `HandedOutStreams` because this stream also drives the
+  /// fan-in refcount, which is this class's own concern.
   @override
   Stream<DynamicValue> subscribe(String key) {
     _touch(key);
@@ -479,7 +489,15 @@ final class LocalStateMan implements StateManApi {
       //    called. `subscribe()` immediately followed by an arriving batch is
       //    the ordinary startup order, and a synchronous push there hands the
       //    listener the placeholder and calls it the first value.
-      scheduleMicrotask(push);
+      //
+      // And only when the store HOLDS something: a key whose first batch has
+      // not landed opens with no event and delivers that batch when it
+      // arrives (`checkSubscribeStaysSilentUntilFirstValue`). A refused key
+      // has `errorConfig` in the store by now, from `_touch`, and that is
+      // delivered — it is a verdict the page should render, not wait for.
+      scheduleMicrotask(() {
+        if (node.cached != null) push();
+      });
     });
   }
 

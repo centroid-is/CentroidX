@@ -78,6 +78,57 @@ void main() {
     });
   });
 
+  group('a stream adapter that opens with nothing and forwards only changes',
+      () {
+    // The defect the browser shipped with (PR #463, /baader/sensors): every
+    // setpoint on the page read `---` while every measured value rendered,
+    // because a setpoint is a constant and a constant never notifies.
+    test('is caught by the opens-with-value check', () async {
+      final api = ForwardsChangesOnly();
+      addTearDown(api.dispose);
+      await expectContractViolation(
+          checkSubscribeOpensWithValueSetBeforeListening, api);
+    });
+
+    test('was NOT caught by the listenable-path check — which is why the '
+        'stream needed a check of its own', () async {
+      // Not a sabotage assertion: a demonstration that the pre-existing case
+      // is blind to this defect, so nobody deletes the new one as redundant.
+      final api = ForwardsChangesOnly();
+      addTearDown(api.dispose);
+      await checkListenDeliversValueSetBeforeListening(api);
+    });
+
+    test('was NOT caught by the mirrors-listen check either', () async {
+      final api = ForwardsChangesOnly();
+      addTearDown(api.dispose);
+      await checkSubscribeStreamMirrorsListen(api);
+    });
+
+    test('still stays silent for an unarrived key — the sabotage is surgical',
+        () async {
+      final api = ForwardsChangesOnly();
+      addTearDown(api.dispose);
+      await checkSubscribeStaysSilentUntilFirstValue(api);
+    });
+  });
+
+  group('a stream adapter that opens with the not-yet-known placeholder', () {
+    test('is caught by the silent-until-first-value check', () async {
+      final api = OpensWithPlaceholder();
+      addTearDown(api.dispose);
+      await expectContractViolation(
+          checkSubscribeStaysSilentUntilFirstValue, api);
+    });
+
+    test('still opens with a value already in place — the sabotage is '
+        'surgical', () async {
+      final api = OpensWithPlaceholder();
+      addTearDown(api.dispose);
+      await checkSubscribeOpensWithValueSetBeforeListening(api);
+    });
+  });
+
   group('the meta-assertion itself', () {
     test('reports a check that never fails, so an honest implementation '
         'cannot be mistaken for a caught violation', () async {

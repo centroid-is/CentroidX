@@ -507,6 +507,13 @@ void main() {
         // Renders the create-the-first-account screen, whose whole subject is
         // a station that has a repository and no accounts in it.
         'lib/pages/first_user.dart',
+        // Reads one row through it — the account's stored home page — and
+        // never asks it what the transport is: it asks the AUTHORITY first
+        // and answers `relay` without touching the repository at all, because
+        // a gateway panel has no repository by design and a debt it can never
+        // settle is worse than an answer. Same standing as
+        // `access_admin.dart`, for the same reason.
+        'lib/providers/home_page.dart',
       };
 
       final offenders = <String>[];

@@ -30,6 +30,7 @@ export 'src/send_buffer.dart';
 export 'src/hello_gate.dart';
 export 'src/value_listenable.dart';
 export 'src/value_store.dart';
+export 'src/handed_out_streams.dart';
 export 'src/browse.dart';
 export 'src/timeseries.dart';
 export 'src/series_address.dart';

@@ -203,8 +203,8 @@ final class SessionHealthStateMan implements StateManApi, TypeDescriptions {
   /// than through something written for a test.
   final _store = ValueStore();
 
-  /// Closers for the streams [subscribe] has handed out that are still open.
-  final _closeHandedOutStreams = <Future<void> Function()>{};
+  /// The streams [subscribe] has handed out that are still open.
+  final _handedOut = HandedOutStreams();
 
   /// The `notAfter` of the leaf the running gateway is actually presenting,
   /// read once when this overlay was built.
@@ -384,32 +384,15 @@ final class SessionHealthStateMan implements StateManApi, TypeDescriptions {
     return _store.node(key);
   }
 
-  /// A broadcast view of the same node, never a second source of truth.
+  /// A view of the same node, never a second source of truth; what it owes
+  /// a listener is written on `StateManApi.subscribe` and kept by
+  /// [HandedOutStreams.over].
   @override
   Stream<DynamicValue> subscribe(String key) {
     if (_forwarded(key)) return cert!.subscribe(key);
     if (!ownKeys.contains(key)) return source.subscribe(key);
     refreshIfDue();
-    final node = _store.node(key);
-    late final StreamController<DynamicValue> controller;
-    void push() => controller.add(node.value);
-    late final Future<void> Function() close;
-    close = () async {
-      _closeHandedOutStreams.remove(close);
-      await controller.close();
-    };
-    controller = StreamController<DynamicValue>.broadcast(
-      onListen: () {
-        node.addListener(push);
-        _closeHandedOutStreams.add(close);
-      },
-      onCancel: () {
-        node.removeListener(push);
-        _closeHandedOutStreams.remove(close);
-      },
-    );
-    _closeHandedOutStreams.add(close);
-    return controller.stream;
+    return _handedOut.over(_store.node(key));
   }
 
   @override
@@ -564,9 +547,7 @@ final class SessionHealthStateMan implements StateManApi, TypeDescriptions {
   /// handed out; it owns no timer, which is the point of the argument above.
   @override
   Future<void> dispose() async {
-    for (final close in _closeHandedOutStreams.toList()) {
-      await close();
-    }
+    await _handedOut.closeAll();
     _store.dispose();
     if (probe == null) await source.dispose();
   }

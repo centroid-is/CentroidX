@@ -117,12 +117,10 @@ final class ChannelStateMan
   /// than by harness scaffolding.
   final _store = ValueStore();
 
-  /// Closers for the streams [subscribe] handed out that are still open.
-  ///
-  /// The shape is `FakeStateMan`'s (`fake_state_man.dart:119-130`), including
-  /// the self-deregistering closer: a registry that only grows is a leak, and
-  /// this object is built once per contract case.
-  final _closeHandedOutStreams = <Future<void> Function()>{};
+  /// The streams [subscribe] handed out that are still open, closed on
+  /// [dispose]. A registry that only grows is a leak, and this object is
+  /// built once per contract case.
+  final _handedOut = HandedOutStreams();
 
   var _disposed = false;
 
@@ -147,34 +145,15 @@ final class ChannelStateMan
           if (_store.peek(key) != null) key,
       ];
 
-  /// A broadcast view of the same node, for stream-consuming code.
+  /// A view of the same node, for stream-consuming code.
   ///
-  /// A view and never a second source of truth. Returned synchronously so
-  /// taking the stream and listening to it happen in one turn, which is what
-  /// stops a widget missing the first values of its own subscription.
+  /// A view and never a second source of truth; what it owes a listener is
+  /// written on `StateManApi.subscribe` and kept by [HandedOutStreams.over].
+  /// Returned synchronously so taking the stream and listening to it happen
+  /// in one turn, which is what stops a widget missing the first values of
+  /// its own subscription.
   @override
-  Stream<DynamicValue> subscribe(String key) {
-    final node = _store.node(key);
-    late final StreamController<DynamicValue> controller;
-    void push() => controller.add(node.value);
-    late final Future<void> Function() close;
-    close = () async {
-      _closeHandedOutStreams.remove(close);
-      await controller.close();
-    };
-    controller = StreamController<DynamicValue>.broadcast(
-      onListen: () {
-        node.addListener(push);
-        _closeHandedOutStreams.add(close);
-      },
-      onCancel: () {
-        node.removeListener(push);
-        _closeHandedOutStreams.remove(close);
-      },
-    );
-    _closeHandedOutStreams.add(close);
-    return controller.stream;
-  }
+  Stream<DynamicValue> subscribe(String key) => _handedOut.over(_store.node(key));
 
   // --------------------------------------------------- answers over the wire
 
@@ -532,10 +511,7 @@ final class ChannelStateMan
     _releaseHolds(HoldEnded.disposed);
     _disposed = true;
     _store.dispose();
-    for (final close in List.of(_closeHandedOutStreams)) {
-      await close();
-    }
-    _closeHandedOutStreams.clear();
+    await _handedOut.closeAll();
     await preferences.dispose();
     await _peer.close();
     await _closeServed();
