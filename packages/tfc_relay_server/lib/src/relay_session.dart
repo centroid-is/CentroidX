@@ -2237,11 +2237,28 @@ final class RelaySession {
 /// writes to the verified identity (17-10, D-11) — with the shared source as
 /// the fallback when the factory hands none, which on the shipped backend is
 /// refuse-by-name (fail closed).
-final class _IdentityScopedSource implements StateManApi {
+final class _IdentityScopedSource implements StateManApi, TypeDescriptions {
   _IdentityScopedSource(this._inner, this._scopedOf);
 
   final StateManApi _inner;
   final IdentityAccessFamilies? Function() _scopedOf;
+
+  /// The type dictionary passes straight through.
+  ///
+  /// This view exists to answer three per-identity families and forward the
+  /// rest; a dictionary it did not forward would be a dictionary the session
+  /// never sees, which is how the enum tables went missing on the wire while
+  /// the backend was learning them perfectly well.
+  TypeDescriptions? get _types {
+    final inner = _inner;
+    return inner is TypeDescriptions ? inner as TypeDescriptions : null;
+  }
+
+  @override
+  String? typeIdOf(String key) => _types?.typeIdOf(key);
+
+  @override
+  TypeDescriptor? describe(String typeId) => _types?.describe(typeId);
 
   @override
   AccessTemplateApi get accessTemplates =>

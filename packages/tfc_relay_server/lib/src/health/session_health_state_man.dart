@@ -135,7 +135,21 @@ abstract interface class SessionProbe {
 /// `policy_state_man.dart:80-87` gives: a forwarder would silently absorb a
 /// member added in a later phase, and here a new member is a compile error and
 /// therefore a decision.
-final class SessionHealthStateMan implements StateManApi {
+final class SessionHealthStateMan implements StateManApi, TypeDescriptions {
+  /// The source's type dictionary, forwarded: this decorator adds health keys
+  /// and answers everything else from the source, and the enum tables a panel
+  /// reads its state names from are part of "everything else".
+  TypeDescriptions? get _typeSource {
+    final source = this.source;
+    return source is TypeDescriptions ? source as TypeDescriptions : null;
+  }
+
+  @override
+  String? typeIdOf(String key) => _typeSource?.typeIdOf(key);
+
+  @override
+  TypeDescriptor? describe(String typeId) => _typeSource?.describe(typeId);
+
   SessionHealthStateMan({
     required this.source,
     this.chainPath,
