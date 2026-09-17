@@ -13,6 +13,7 @@ RecipesConfig _$RecipesConfigFromJson(Map<String, dynamic> json) =>
       keys:
           (json['keys'] as List<dynamic>?)?.map((e) => e as String).toList() ??
               [],
+      unifiedRecipe: json['unifiedRecipe'] as bool? ?? false,
     )
       ..variant = json['asset_name'] as String
       ..id = json['id'] as String?
@@ -37,6 +38,7 @@ Map<String, dynamic> _$RecipesConfigToJson(RecipesConfig instance) =>
       'key': instance.key,
       'keys': instance.keys,
       'label': instance.label,
+      'unifiedRecipe': instance.unifiedRecipe,
     };
 
 const _$TextPosEnumMap = {
