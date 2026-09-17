@@ -10,11 +10,13 @@ import 'package:nm/nm.dart' as nm;
 
 import '../widgets/base_scaffold.dart';
 
+import '../core/hardware_temperatures.dart';
 import '../core/system_clock.dart';
 import '../dbus/generated/hostname1.dart' as hostname1;
 import '../dbus/generated/login1.dart' as login1;
 import '../providers/preferences.dart';
 import '../widgets/group_access_guard.dart';
+import '../widgets/hardware_temperatures_section.dart';
 import '../widgets/system_clock_section.dart';
 
 /// What it takes to change this host: the clock, the timezone, the NTP
@@ -43,11 +45,15 @@ class AboutLinuxPage extends ConsumerStatefulWidget {
   final TimeDateApi? timeDate;
   final TimeSyncApi? timeSync;
 
+  /// Null reads the host's sysfs sensors.
+  final Future<List<TemperatureReading>> Function()? temperatures;
+
   const AboutLinuxPage({
     super.key,
     required this.dbusClient,
     this.timeDate,
     this.timeSync,
+    this.temperatures,
   });
 
   @override
@@ -383,6 +389,12 @@ class _AboutLinuxPageState extends ConsumerState<AboutLinuxPage> {
                       ? ''
                       : _fmtDate(info.osSupportEnd!),
                 ),
+
+                // Host sensors, read from sysfs. Draws nothing, divider
+                // included, on a host that has none.
+                widget.temperatures == null
+                    ? const HardwareTemperaturesSection()
+                    : HardwareTemperaturesSection(read: widget.temperatures!),
 
                 const SizedBox(height: 8),
                 const Divider(),
