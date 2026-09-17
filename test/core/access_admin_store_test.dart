@@ -896,6 +896,34 @@ void main() {
       expect((await _people(repository)).single.homePage, isNull);
     });
 
+    test('setUserAlarmAutoNavigate records user.alarm_auto_navigate', () async {
+      await repository.createUser(
+          username: 'bob', password: 'pw2', roleName: 'Shift Leader');
+      repository.calls.clear();
+      final store = buildStore();
+
+      await store.setUserAlarmAutoNavigate('bob', true);
+
+      final row = sink.rows.single;
+      expect(row.itemKey, 'user.alarm_auto_navigate');
+      expect(row.member, 'bob');
+      expect(row.oldValue, 'false');
+      expect(row.newValue, 'true');
+      expect((await _people(repository)).single.alarmAutoNavigate, isTrue);
+    });
+
+    test('the anonymous account\'s alarm navigation is recorded like anybody\'s',
+        () async {
+      final store = buildStore();
+
+      await store.setUserAlarmAutoNavigate(kAnonymousUsername, true);
+
+      final row = sink.rows.single;
+      expect(row.itemKey, 'user.alarm_auto_navigate');
+      expect(row.member, kAnonymousUsername);
+      expect(row.newValue, 'true');
+    });
+
     test('setUserPassword records user.password and nothing about the password',
         () async {
       const secret = 'zXq7-never-in-a-row';
@@ -1043,6 +1071,15 @@ void main() {
       await expectGated('user.home_page',
           (s) => s.setUserHomePage('bob', '/pages/packing'));
       expect((await _people(repository)).single.homePage, isNull);
+    });
+
+    test('setUserAlarmAutoNavigate', () async {
+      await repository.createUser(
+          username: 'bob', password: 'pw', roleName: 'Shift Leader');
+      repository.calls.clear();
+      await expectGated('user.alarm_auto_navigate',
+          (s) => s.setUserAlarmAutoNavigate('bob', true));
+      expect((await _people(repository)).single.alarmAutoNavigate, isFalse);
     });
 
     test('setUserPassword', () async {

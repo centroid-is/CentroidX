@@ -121,7 +121,7 @@ class PendingProposal {
         return 'Key Repository';
       case 'access_account':
       case 'access_role':
-        return 'Access';
+        return 'Users & roles';
       case 'page':
         return 'Page Editor';
       case 'asset':

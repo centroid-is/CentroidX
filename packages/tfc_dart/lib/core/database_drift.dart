@@ -260,6 +260,23 @@ class AppUser extends Table {
   /// Added on open by `_ensureHomePageColumn` rather than by a schema arm, for
   /// the reason [sortOrder] gives: every existing row is correct as NULL.
   TextColumn get homePage => text().nullable()();
+
+  /// Whether a raising alarm takes this account's screen to the page its
+  /// Alarm beacon is on.
+  ///
+  /// Per account rather than plant-wide: being pulled between screens suits
+  /// the person watching a line and ruins the afternoon of somebody working
+  /// through a report on the same panel. It replaced the single
+  /// `auto_navigate` switch in `alarm_man_config`, which was never carried
+  /// over — every account starts off, and an administrator opts accounts in
+  /// on the access page. The reserved anonymous account's value is what a
+  /// logged-out panel does, and a station account's is what that panel does.
+  ///
+  /// Added on open by `_ensureAlarmAutoNavigateColumn` rather than by a schema
+  /// arm, for the reason [sortOrder] gives: every existing row is correct as
+  /// the default.
+  BoolColumn get alarmAutoNavigate =>
+      boolean().withDefault(const Constant(false))();
 }
 
 /// The human-action audit trail: append-only, never pruned.
@@ -746,6 +763,23 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
     }
   }
 
+  /// Make sure `app_user` carries `alarm_auto_navigate`, whether a raising
+  /// alarm takes the account's screen to its page. Built exactly like
+  /// [_ensureHomePageColumn]. NOT NULL with a default, so every existing row
+  /// lands off.
+  Future<void> _ensureAlarmAutoNavigateColumn() async {
+    try {
+      if (await _hasColumn('app_user', 'alarm_auto_navigate')) return;
+      await customStatement(native
+          ? 'ALTER TABLE app_user ADD COLUMN alarm_auto_navigate INTEGER '
+              'NOT NULL DEFAULT 0 CHECK (alarm_auto_navigate IN (0, 1))'
+          : 'ALTER TABLE app_user ADD COLUMN IF NOT EXISTS alarm_auto_navigate BOOLEAN NOT NULL DEFAULT FALSE');
+      logger.i('Added app_user.alarm_auto_navigate');
+    } on Object catch (e) {
+      logger.w('Could not ensure app_user.alarm_auto_navigate: $e');
+    }
+  }
+
   /// Whether [table] already has [column]. Both are literals from this file,
   /// never caller input, which is why they are interpolated.
   Future<bool> _hasColumn(String table, String column) async {
@@ -1048,6 +1082,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
           // Before the seed for the same reason: `home_page` is read by the
           // same generated mapping.
           await _ensureHomePageColumn();
+          await _ensureAlarmAutoNavigateColumn();
           await _seedAnonymousAccount();
         },
         onCreate: (m) async {

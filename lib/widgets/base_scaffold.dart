@@ -158,7 +158,7 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
     // scaffold drains it instead. After the first frame, because this reads
     // the route the scaffold is being built for.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _takeAlarmNavigation();
+      if (mounted) unawaited(_takeAlarmNavigation());
       // The session may have resolved before any scaffold was listening.
       final session = mounted
           ? ref.read(accessSessionProvider).valueOrNull
@@ -171,11 +171,35 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
   /// a moment to move.
   ///
   /// Everything about *which* page is the navigator's call; what is decided
-  /// here is the pair of facts only a mounted scaffold holds -- where the
-  /// operator is standing, and what their session may open.
-  void _takeAlarmNavigation() {
+  /// here is the facts only a mounted scaffold holds -- whether the account on
+  /// this panel wants to be moved, where the operator is standing, and what
+  /// their session may open.
+  ///
+  /// Nothing awaits this -- both callers are a listener and a post-frame
+  /// callback -- so it swallows and logs rather than throwing into the void:
+  /// an `unawaited` future that raises has no handler, and a failed jump must
+  /// not take the frame with it.
+  Future<void> _takeAlarmNavigation() async {
+    try {
+      await _takeAlarmNavigationOrThrow();
+    } on Object catch (e, stack) {
+      _logger.w('Alarm navigation failed: $e\n$stack');
+    }
+  }
+
+  Future<void> _takeAlarmNavigationOrThrow() async {
     final navigator = ref.read(alarmAutoNavigationProvider.notifier).navigator;
     if (!navigator.hasPending) return;
+
+    // The account's own setting, read now rather than at sign-in -- see
+    // `alarmAutoNavigateLookupProvider`. An errored or loading session is the
+    // anonymous account, the same reading the rest of this widget applies.
+    final session = ref.read(accessSessionProvider).valueOrNull ??
+        AccessSession.anonymous(const {});
+    final enabled = await ref.read(alarmAutoNavigateLookupProvider)(session);
+    // Everything below reads where the operator is standing *now*, after the
+    // lookup, not where they were when the raise arrived.
+    if (!mounted) return;
 
     final currentPath = currentBeamPath(context);
 
@@ -208,6 +232,7 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
       currentPath: currentPath,
       canOpen: (path) => visible.indexOfPath(path) != null,
       suppressed: suppressed,
+      enabled: enabled,
     );
     if (target == null) return;
 
@@ -525,7 +550,7 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
     // build for the same reason the listener above is: riverpod re-registers
     // per rebuild and drops it on unmount.
     ref.listen<int>(alarmAutoNavigationProvider, (_, __) {
-      _takeAlarmNavigation();
+      unawaited(_takeAlarmNavigation());
     });
 
     // Retrieve the provider (if any)
