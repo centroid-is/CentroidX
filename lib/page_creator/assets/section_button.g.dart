@@ -9,7 +9,6 @@ part of 'section_button.dart';
 SectionRef _$SectionRefFromJson(Map<String, dynamic> json) => SectionRef(
       key: json['key'] as String,
       label: json['label'] as String?,
-      holdReason: json['holdReason'] as String?,
       exclusiveGroup: json['exclusiveGroup'] as String?,
     );
 
@@ -17,7 +16,6 @@ Map<String, dynamic> _$SectionRefToJson(SectionRef instance) =>
     <String, dynamic>{
       'key': instance.key,
       'label': instance.label,
-      'holdReason': instance.holdReason,
       'exclusiveGroup': instance.exclusiveGroup,
     };
 

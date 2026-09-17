@@ -207,8 +207,9 @@ void main() {
       expect(find.text('Run all'), findsNothing);
       expect(find.text('Stop'), findsOneWidget);
       expect(find.text('Stop all'), findsNothing);
-      expect(find.text('Allowed to start'), findsOneWidget,
-          reason: 'the pane says it in operator words, not "permissive"');
+      // No permit row: the PLC says a section may not start, never why, so
+      // a row repeating that fact told the operator nothing.
+      expect(find.text('Allowed to start'), findsNothing);
       expect(find.text('Permissive'), findsNothing);
     });
 
@@ -466,6 +467,32 @@ void main() {
       expect(fake.writes, isEmpty);
     });
 
+    testWidgets('the mode a member is in is filled, like the choice',
+        (tester) async {
+      // A dead outlined Run on a running section read as "not running". The
+      // choice rows already fill the mode that has the line; plain rows match.
+      final fake = _FakeStateMan()
+        ..push('sec/a', enabled: true)
+        ..push('sec/b', cleaning: true)
+        ..push('sec/c');
+      await pumpButton(tester, fake,
+          cfg: SectionButtonConfig(sections: [
+            SectionRef(key: 'sec/a'),
+            SectionRef(key: 'sec/b'),
+            SectionRef(key: 'sec/c'),
+          ])..text = 'Line 1');
+      await tester.tap(find.byType(SectionButton));
+      await _settle(tester);
+
+      Widget at(String k) => tester.widget(find.byKey(Key(k)));
+      expect(at('section-0-run'), isA<FilledButton>());
+      expect(at('section-0-clean'), isNot(isA<FilledButton>()));
+      expect(at('section-1-clean'), isA<FilledButton>());
+      expect(at('section-1-run'), isNot(isA<FilledButton>()));
+      expect(at('section-2-run'), isNot(isA<FilledButton>()));
+      expect(at('section-2-clean'), isNot(isA<FilledButton>()));
+    });
+
     testWidgets('an unreadable member offers nothing at all', (tester) async {
       final fake = _FakeStateMan()..push('sec/a', enabled: true);
       await pumpButton(tester, fake,
@@ -485,31 +512,23 @@ void main() {
 
     testWidgets('a held member shows it on its own row and offers no start',
         (tester) async {
-      // Per-section "allowed to start" is the member's own state word: a
-      // section that is idle and not permitted reads `Can't start`, and the
-      // summary row above counts how many.
+      // A section that is idle and not permitted reads `Can't start` on its
+      // own row; that is the whole of what the pane can say about it.
       final fake = _FakeStateMan()
         ..push('sec/a', enabled: true)
         ..push('sec/b', enabled: true)
         ..push('sec/c', permissive: false);
       await pumpButton(tester, fake,
           cfg: SectionButtonConfig(sections: [
-            SectionRef(key: 'sec/a', label: 'ST101'),
-            SectionRef(key: 'sec/b', label: 'ST201'),
-            SectionRef(
-              key: 'sec/c',
-              label: 'ST301',
-              holdReason: 'The washdown interlock is open.',
-            ),
-          ])..text = 'Before freezers');
+            SectionRef(key: 'sec/a', label: 'Station 1'),
+            SectionRef(key: 'sec/b', label: 'Station 2'),
+            SectionRef(key: 'sec/c', label: 'Station 3'),
+          ])..text = 'Line 1');
       await tester.tap(find.byType(SectionButton));
       await _settle(tester);
 
-      expect(find.text('No for 1 of 3'), findsOneWidget);
       expect(find.text("Can't start"), findsOneWidget,
           reason: "the held member's own row says so");
-      expect(find.textContaining('ST301: The washdown interlock is open.'),
-          findsOneWidget);
 
       // The PLC ignores start commands without the go-ahead, so neither of
       // that member's start buttons is offered — but Stop still is.
@@ -542,84 +561,10 @@ void main() {
     });
   });
 
-  group('the hold reason is per section, not baked in', () {
-    testWidgets('an unconfigured section explains only what is always true',
-        (tester) async {
-      final fake = _FakeStateMan()..push('sec/a', permissive: false);
-      await pumpButton(tester, fake, cfg: config(['sec/a'], name: 'Line 1'));
-      await tester.tap(find.byType(SectionButton));
-      await _settle(tester);
-
-      expect(find.textContaining('Run and Clean are ignored'), findsOneWidget);
-      // No guess about WHY. An asset cannot know which interlock holds a
-      // section, and a confident wrong instruction is worse than none.
-      expect(find.textContaining('vacuum'), findsNothing);
-      expect(find.textContaining('freezer'), findsNothing);
-    });
-
-    testWidgets('a configured section shows its own words', (tester) async {
-      final fake = _FakeStateMan()..push('sec/a', permissive: false);
-      await pumpButton(
-        tester,
-        fake,
-        cfg: SectionButtonConfig(sections: [
-          SectionRef(
-            key: 'sec/a',
-            holdReason: 'The vacuum mode has the line. Stop it and this one '
-                'is free.',
-          ),
-        ])..text = 'Box packing film',
-      );
-      await tester.tap(find.byType(SectionButton));
-      await _settle(tester);
-
-      expect(
-          find.textContaining('The vacuum mode has the line'), findsOneWidget);
-      // The always-true sentence stays: the operator still needs to know
-      // that pressing the buttons will not help.
-      expect(find.textContaining('Run and Clean are ignored'), findsOneWidget);
-    });
-
-    testWidgets('in a group each held member names itself', (tester) async {
-      final fake = _FakeStateMan()
-        ..push('sec/a', enabled: true)
-        ..push('sec/b', permissive: false);
-      await pumpButton(
-        tester,
-        fake,
-        cfg: SectionButtonConfig(sections: [
-          SectionRef(key: 'sec/a', label: 'ST201', holdReason: 'never shown'),
-          SectionRef(key: 'sec/b', label: 'ST301', holdReason: 'Vacuum has it'),
-        ])..text = 'Box packing',
-      );
-      await tester.tap(find.byType(SectionButton));
-      await _settle(tester);
-
-      expect(find.text('No for 1 of 2'), findsOneWidget);
-      expect(find.textContaining('ST301: Vacuum has it'), findsOneWidget);
-      // ST201 is running, not held — its reason is not an explanation of
-      // anything right now.
-      expect(find.textContaining('never shown'), findsNothing);
-    });
-
-    testWidgets('blank and whitespace-only reasons add no empty paragraph',
-        (tester) async {
-      final fake = _FakeStateMan()..push('sec/a', permissive: false);
-      await pumpButton(
-        tester,
-        fake,
-        cfg: SectionButtonConfig(sections: [
-          SectionRef(key: 'sec/a', holdReason: '   '),
-        ])..text = 'Line 1',
-      );
-      await tester.tap(find.byType(SectionButton));
-      await _settle(tester);
-      expect(find.text('   '), findsNothing);
-    });
-
+  group('config', () {
     testWidgets('the whole config round-trips through JSON', (tester) async {
       final json = (SectionButtonConfig(sections: [
-        SectionRef(key: 'sec/a', label: 'ST101', holdReason: 'Vacuum has it'),
+        SectionRef(key: 'sec/a', label: 'Station 1'),
         SectionRef(key: 'sec/b'),
       ])
             ..text = 'Before freezers'
@@ -631,8 +576,7 @@ void main() {
       expect(back.text, 'Before freezers');
       expect(back.textPos, TextPos.below);
       expect(back.sections.map((s) => s.key), ['sec/a', 'sec/b']);
-      expect(back.sections.first.label, 'ST101');
-      expect(back.sections.first.holdReason, 'Vacuum has it');
+      expect(back.sections.first.label, 'Station 1');
       // Nested keys are invisible to the base class's JSON introspection, so
       // the override is what stops unused-key cleanup deleting them.
       expect(back.allKeys, ['sec/a', 'sec/b']);
