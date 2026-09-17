@@ -23,7 +23,7 @@ import '../../widgets/panes/setpoint_field.dart';
 import '../../widgets/tag_access_guard.dart';
 import 'auger_conveyor_painter.dart';
 import 'helper/atv320_diagnostics.dart';
-import 'sensor.dart' show SensorConfig, SensorFbPane, SensorFbState;
+import 'sensor.dart' show Sensor, SensorConfig, SensorFbPane, SensorFbState;
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/collector.dart';
 import '../../theme.dart';
@@ -64,6 +64,39 @@ List<ChildGateEntry> _gatesFromJson(List<dynamic>? json) {
 
 List<Map<String, dynamic>> _gatesToJson(List<ChildGateEntry> gates) =>
     gates.map((e) => e.toJson()).toList();
+
+/// Which end of a wagon's belt a sensor sits at.
+///
+/// The same "front" the station docks use: the end the rollers run towards
+/// when they run forward. A reversed belt swaps the two on screen, so a
+/// sensor configured at the front stays at the end pallets leave from.
+enum WagonSensorEnd { front, back }
+
+/// A sensor riding a wagon: a whole [SensorConfig] — key, kind, colours,
+/// its own pane — placed at one end of the wagon's belt and moving with it.
+///
+/// A wagon carries one or two at most, typically the photo eyes that see a
+/// pallet arrive at an end of the belt, so this is a short list on the
+/// conveyor rather than assets of their own on the page: a sensor drawn on a
+/// page would stay where it was dropped while the wagon drives away from it.
+@JsonSerializable(explicitToJson: true)
+class WagonSensorEntry {
+  @JsonKey(unknownEnumValue: WagonSensorEnd.front)
+  WagonSensorEnd end;
+
+  @JsonKey(fromJson: _sensorFromJson, toJson: _sensorToJson)
+  SensorConfig sensor;
+
+  WagonSensorEntry({this.end = WagonSensorEnd.front, required this.sensor});
+
+  factory WagonSensorEntry.fromJson(Map<String, dynamic> json) =>
+      _$WagonSensorEntryFromJson(json);
+  Map<String, dynamic> toJson() => _$WagonSensorEntryToJson(this);
+}
+
+SensorConfig _sensorFromJson(Map<String, dynamic> json) =>
+    SensorConfig.fromJson(json);
+Map<String, dynamic> _sensorToJson(SensorConfig sensor) => sensor.toJson();
 
 /// A bend in the conveyor belt.
 ///
@@ -1294,6 +1327,31 @@ class ConveyorConfig extends BaseAsset {
   @JsonKey(fromJson: _gatesFromJson, toJson: _gatesToJson)
   List<ChildGateEntry> gates;
 
+  /// Sensors riding the wagon, at the front or back of its belt. At most
+  /// [maxWagonSensors]; only drawn while [railsActive].
+  List<WagonSensorEntry> wagonSensors;
+
+  /// A wagon carries one or two sensors, never more — the editor stops there.
+  static const maxWagonSensors = 2;
+
+  /// The wagon's sensors are drawn inside this conveyor's box, so a pane
+  /// opened from one is marked on that sensor alone (see [SubdeviceSubject]).
+  /// Off the rails nothing draws them, and nothing may be marked.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<Asset> get childAssets =>
+      railsActive ? [for (final e in wagonSensors) e.sensor] : const [];
+
+  /// The belt's own keys and the wagon sensors': a sensor's key lives in its
+  /// nested config, where the top-level key scan cannot see it, and a key
+  /// nobody reports using is a key the unused-key cleanup offers to delete.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<String> get allKeys => {
+        ...super.allKeys,
+        for (final e in wagonSensors) ...e.sensor.allKeys,
+      }.toList();
+
   /// Bends along the belt; empty means a straight conveyor.
   List<ConveyorTurnEntry> turns;
 
@@ -1377,15 +1435,20 @@ class ConveyorConfig extends BaseAsset {
       this.wagonLength,
       this.beltThickness,
       List<ChildGateEntry>? gates,
-      List<ConveyorTurnEntry>? turns})
+      List<ConveyorTurnEntry>? turns,
+      List<WagonSensorEntry>? wagonSensors})
       : gates = gates != null ? List<ChildGateEntry>.of(gates) : [],
-        turns = turns != null ? List<ConveyorTurnEntry>.of(turns) : [];
+        turns = turns != null ? List<ConveyorTurnEntry>.of(turns) : [],
+        wagonSensors = wagonSensors != null
+            ? List<WagonSensorEntry>.of(wagonSensors)
+            : [];
 
   static const previewStr = 'Conveyor Preview';
 
   ConveyorConfig.preview()
       : gates = [],
         turns = [],
+        wagonSensors = [],
         invertSafetyPolarity = false,
         key = previewStr;
 
@@ -1482,7 +1545,8 @@ class RollerConveyorConfig extends ConveyorConfig {
       super.wagonLength,
       super.beltThickness,
       super.gates,
-      super.turns});
+      super.turns,
+      super.wagonSensors});
 
   RollerConveyorConfig.preview() : super.preview();
 
@@ -1501,6 +1565,98 @@ class _ConveyorConfigContent extends StatefulWidget {
 }
 
 class _ConveyorConfigContentState extends State<_ConveyorConfigContent> {
+  /// The wagon's sensors: one or two, each at the front or back of the belt.
+  Widget _wagonSensorsEditor(BuildContext context) {
+    final theme = Theme.of(context);
+    final sensors = widget.config.wagonSensors;
+    final full = sensors.length >= ConveyorConfig.maxWagonSensors;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Expanded(
+                child: Text('Wagon sensors', style: theme.textTheme.titleSmall)),
+            TextButton.icon(
+              key: const Key('conveyor_add_wagon_sensor'),
+              // A new sensor takes the end that is still free, so adding two
+              // gives one at each end without touching the toggle.
+              onPressed: full
+                  ? null
+                  : () => setState(() => sensors.add(WagonSensorEntry(
+                        end: sensors.any((e) => e.end == WagonSensorEnd.front)
+                            ? WagonSensorEnd.back
+                            : WagonSensorEnd.front,
+                        sensor: SensorConfig(),
+                      ))),
+              icon: const Icon(Icons.add),
+              label: const Text('Add sensor'),
+            ),
+          ],
+        ),
+        Text(
+          full
+              ? 'A wagon carries at most ${ConveyorConfig.maxWagonSensors} sensors.'
+              : 'Front is the end the belt runs towards when it runs forward.',
+          style: theme.textTheme.bodySmall,
+        ),
+        for (final entry in [...sensors])
+          Card(
+            margin: const EdgeInsets.symmetric(vertical: 4),
+            child: Padding(
+              padding: const EdgeInsets.all(8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      (entry.sensor.tag?.isNotEmpty ?? false)
+                          ? entry.sensor.tag!
+                          : entry.sensor.detectionKey.isNotEmpty
+                              ? entry.sensor.detectionKey
+                              : 'Sensor',
+                      style: theme.textTheme.bodyMedium,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  SegmentedButton<WagonSensorEnd>(
+                    segments: const [
+                      ButtonSegment(
+                          value: WagonSensorEnd.front, label: Text('Front')),
+                      ButtonSegment(
+                          value: WagonSensorEnd.back, label: Text('Back')),
+                    ],
+                    selected: {entry.end},
+                    showSelectedIcon: false,
+                    onSelectionChanged: (selection) =>
+                        setState(() => entry.end = selection.first),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.edit, size: 20),
+                    tooltip: 'Edit sensor',
+                    onPressed: () => showStandardDialog<void>(
+                      context: context,
+                      title: 'Edit wagon sensor',
+                      icon: Icons.sensors,
+                      width: 420,
+                      builder: (context) => SizedBox(
+                        width: 360,
+                        child: entry.sensor.configure(context),
+                      ),
+                    ).then((_) => setState(() {})),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.delete, size: 20),
+                    tooltip: 'Remove sensor',
+                    onPressed: () => setState(() => sensors.remove(entry)),
+                  ),
+                ],
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
   @override
   void initState() {
     super.initState();
@@ -1789,6 +1945,8 @@ class _ConveyorConfigContentState extends State<_ConveyorConfigContent> {
             onChanged: (v) =>
                 setState(() => widget.config.wagonLength = v),
           ),
+          const SizedBox(height: 16),
+          _wagonSensorsEditor(context),
         ],
         const SizedBox(height: 8),
         Row(
@@ -3100,9 +3258,11 @@ class _ConveyorState extends ConsumerState<Conveyor>
         : conveyorPaint;
 
     final gateEntries = widget.config.gates;
+    final sensorEntries =
+        widget.config.railsActive ? widget.config.wagonSensors : const <WagonSensorEntry>[];
 
     final Widget content;
-    if (gateEntries.isEmpty) {
+    if (gateEntries.isEmpty && sensorEntries.isEmpty) {
       content = belt;
     } else {
       content = SizedBox(
@@ -3115,6 +3275,7 @@ class _ConveyorState extends ConsumerState<Conveyor>
             for (final entry in gateEntries)
               _positionedChildGate(entry, paintSize, geometry,
                   straightBeltWidth: beltWidth),
+            ..._positionedWagonSensors(sensorEntries, painter, paintSize),
           ],
         ),
       );
@@ -3126,6 +3287,32 @@ class _ConveyorState extends ConsumerState<Conveyor>
         onLeftEdgeTap: onLeftEdgeTap,
         onRightEdgeTap: onRightEdgeTap,
         onStationTap: onStationTap);
+  }
+
+  /// The wagon's sensors, each at its end of the belt, riding with the wagon.
+  ///
+  /// Each is the real [Sensor] widget — same glyph, same pane — inside its
+  /// own [SubdeviceSubject], so a tap opens that sensor's pane and the plant
+  /// view rings the sensor rather than the whole conveyor.
+  List<Widget> _positionedWagonSensors(List<WagonSensorEntry> entries,
+      ConveyorPainter painter, Size size) {
+    return [
+      for (final end in WagonSensorEnd.values)
+        ...() {
+          final atEnd = entries.where((e) => e.end == end).toList();
+          return [
+            for (var slot = 0; slot < atEnd.length; slot++)
+              Positioned.fromRect(
+                rect: painter.wagonSensorRect(size, end,
+                    slot: slot, count: atEnd.length),
+                child: SubdeviceSubject(
+                  subdevice: atEnd[slot].sensor,
+                  child: Sensor(config: atEnd[slot].sensor),
+                ),
+              ),
+          ];
+        }(),
+    ];
   }
 
   Widget _positionedChildGate(
@@ -4376,6 +4563,41 @@ class ConveyorPainter extends CustomPainter {
     final band = straightBeltWidth ?? rail.height;
     return Rect.fromLTWH(span.x0,
         railBand.top + (rail.height - band) / 2, span.width, band);
+  }
+
+  /// Where a wagon sensor sits: a square just inside the belt at [end],
+  /// moving with the wagon.
+  ///
+  /// "Front" is the end the belt runs towards when it runs forward — down
+  /// the screen for a belt across the rails, right for one along them — and
+  /// a reversed belt swaps the two. That is the same front the station docks
+  /// use, so a front sensor sits on the side of the front stations. [slot]
+  /// of [count] sensors at one end stand side by side across the belt.
+  Rect wagonSensorRect(Size size, WagonSensorEnd end,
+      {int slot = 0, int count = 1}) {
+    final belt = beltRect(size);
+    final n = max(count, 1);
+    // The far end of the belt's own travel axis, before any reversal.
+    final atFar = (end == WagonSensorEnd.front) != reverseDirection;
+    final across = wagonBeltAcross;
+    final crossExtent = across ? belt.width : belt.height;
+    final travelExtent = across ? belt.height : belt.width;
+    final side = min(crossExtent * (n > 1 ? 0.45 : 0.6), travelExtent * 0.3);
+    final inset = side * 0.15;
+    final spread = (slot - (n - 1) / 2) * side * 1.1;
+    if (across) {
+      final cy = atFar
+          ? belt.bottom - inset - side / 2
+          : belt.top + inset + side / 2;
+      return Rect.fromCenter(
+          center: Offset(belt.center.dx + spread, cy),
+          width: side,
+          height: side);
+    }
+    final cx =
+        atFar ? belt.right - inset - side / 2 : belt.left + inset + side / 2;
+    return Rect.fromCenter(
+        center: Offset(cx, belt.center.dy + spread), width: side, height: side);
   }
 
   /// The whole wagon — belt plus chassis bumpers. This is the tap target
