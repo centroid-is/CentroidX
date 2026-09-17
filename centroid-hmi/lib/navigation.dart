@@ -14,6 +14,7 @@ import 'package:tfc/core/runner_liveness.dart' show EngineEpoch;
 
 export 'package:tfc/core/home_page.dart' show resolveHomePath;
 import 'package:tfc/models/menu_item.dart';
+import 'package:tfc/pages/access_admin.dart' show kAccessAdminTitle;
 import 'package:tfc/routes.dart';
 
 /// History View's menu entry. Lives under Advanced by default; the operator
@@ -105,7 +106,7 @@ List<MenuItem> buildTopLevelMenuItems({
     MenuItem(label: 'Key Repository', path: '/advanced/key-repository', icon: FontAwesomeIcons.key.data),
     MenuItem(label: 'Audit Trail', path: '/advanced/audit-trail', icon: Icons.receipt_long),
     MenuItem(label: 'Config History', path: '/advanced/config-history', icon: Icons.history_edu),
-    MenuItem(label: 'Access', path: '/advanced/access', icon: Icons.manage_accounts),
+    MenuItem(label: kAccessAdminTitle, path: '/advanced/access', icon: Icons.manage_accounts),
     if (kKnowledgeEnabled)
       MenuItem(label: 'Knowledge Base', path: '/advanced/knowledge-base', icon: Icons.library_books),
   ];

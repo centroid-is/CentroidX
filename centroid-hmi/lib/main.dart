@@ -916,8 +916,8 @@ RoutesLocationBuilder createLocationBuilder(
         child: gated('/advanced/audit-trail', 'Audit Trail', const AuditTrailPage())),
     '/advanced/access': (context, state, args) => BeamPage(
         key: const ValueKey('/advanced/access'),
-        title: 'Access',
-        child: gated('/advanced/access', 'Access', const AccessAdminPage())),
+        title: kAccessAdminTitle,
+        child: gated('/advanced/access', kAccessAdminTitle, const AccessAdminPage())),
     AppRoutes.reports: (context, state, args) => BeamPage(
         key: const ValueKey(AppRoutes.reports),
         title: 'Reports',

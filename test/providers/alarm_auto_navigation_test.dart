@@ -68,7 +68,7 @@ AlarmAutoNavigator quietNavigator({
   Duration settle = Duration.zero,
 }) {
   final navigator = AlarmAutoNavigator(settle: settle);
-  navigator.onActive(const [], pages: pages ?? _pages, enabled: true);
+  navigator.onActive(const [], pages: pages ?? _pages);
   return navigator;
 }
 
@@ -78,6 +78,7 @@ AlarmNavigationTarget? takeFromHome(AlarmAutoNavigator navigator) =>
       currentPath: '/',
       canOpen: (_) => true,
       suppressed: false,
+      enabled: true,
     );
 
 void main() {
@@ -86,7 +87,7 @@ void main() {
       final navigator = quietNavigator();
       expect(
         navigator.onActive([activeFx(uid: 'a1')],
-            pages: _pages, enabled: true),
+            pages: _pages),
         isTrue,
       );
       expect(takeFromHome(navigator)?.path, '/freezer');
@@ -94,20 +95,20 @@ void main() {
 
     test('an alarm that stays active does not navigate twice', () {
       final navigator = quietNavigator();
-      navigator.onActive([activeFx(uid: 'a1')], pages: _pages, enabled: true);
+      navigator.onActive([activeFx(uid: 'a1')], pages: _pages);
       expect(takeFromHome(navigator)?.path, '/freezer');
 
       // Same alarm, still on. The operator has since walked back to Home;
       // dragging them to the freezer again every time the alarm set is
       // republished would make the panel unusable.
-      navigator.onActive([activeFx(uid: 'a1')], pages: _pages, enabled: true);
+      navigator.onActive([activeFx(uid: 'a1')], pages: _pages);
       expect(takeFromHome(navigator), isNull);
     });
 
     test('no beacon anywhere means no page to go to', () {
       final navigator = quietNavigator(pages: {'/': pageFx('/', const [])});
       navigator.onActive([activeFx(uid: 'a1')],
-          pages: {'/': pageFx('/', const [])}, enabled: true);
+          pages: {'/': pageFx('/', const [])});
       expect(takeFromHome(navigator), isNull);
     });
 
@@ -117,28 +118,44 @@ void main() {
         '/freezer': pageFx('/freezer', [beacon(['a1'], announce: false)]),
       };
       final navigator = quietNavigator(pages: pages);
-      navigator.onActive([activeFx(uid: 'a1')], pages: pages, enabled: true);
+      navigator.onActive([activeFx(uid: 'a1')], pages: pages);
       expect(takeFromHome(navigator), isNull,
           reason: 'the switch that silences the navigation pulse silences '
               'the jump — it is the same statement of intent');
     });
 
-    test('the flag off queues nothing', () {
+    test('an account without it is not moved, and the raise is spent', () {
       final navigator = quietNavigator();
+      navigator.onActive([activeFx(uid: 'a1')], pages: _pages);
       expect(
-        navigator.onActive([activeFx(uid: 'a1')],
-            pages: _pages, enabled: false),
-        isFalse,
+        navigator.take(
+          currentPath: '/',
+          canOpen: (_) => true,
+          suppressed: false,
+          enabled: false,
+        ),
+        isNull,
       );
+      expect(navigator.hasPending, isFalse);
+      // Somebody who wants it signs in. a1 was news before they arrived.
       expect(takeFromHome(navigator), isNull);
     });
 
-    test('turning the flag on does not jump for alarms already standing', () {
+    test('a raise nobody jumped for claims no hold', () {
       final navigator = quietNavigator();
-      navigator.onActive([activeFx(uid: 'a1')], pages: _pages, enabled: false);
-      // The engineer flips the switch. a1 is still on, and is not news.
-      navigator.onActive([activeFx(uid: 'a1')], pages: _pages, enabled: true);
-      expect(takeFromHome(navigator), isNull);
+      navigator.onActive([activeFx(uid: 'a1')], pages: _pages);
+      navigator.take(
+        currentPath: '/',
+        canOpen: (_) => true,
+        suppressed: false,
+        enabled: false,
+      );
+      expect(navigator.hold, isNull);
+
+      // An equally severe raise must still move the account that wants it.
+      navigator.onActive([activeFx(uid: 'a1'), activeFx(uid: 'a2')],
+          pages: _pages);
+      expect(takeFromHome(navigator)?.path, '/packing');
     });
   });
 
@@ -147,14 +164,14 @@ void main() {
       final start = DateTime(2026, 9, 11, 6);
       final navigator = AlarmAutoNavigator(settle: const Duration(seconds: 15));
       withClock(Clock.fixed(start), () {
-        navigator.onActive(const [], pages: _pages, enabled: true);
+        navigator.onActive(const [], pages: _pages);
       });
       // Subscriptions coming up: each true expression fires within seconds of
       // the connection, which is indistinguishable from a plant raising every
       // alarm at once.
       withClock(Clock.fixed(start.add(const Duration(seconds: 2))), () {
         navigator.onActive([activeFx(uid: 'a1')],
-            pages: _pages, enabled: true);
+            pages: _pages);
       });
       expect(takeFromHome(navigator), isNull);
     });
@@ -163,11 +180,11 @@ void main() {
       final start = DateTime(2026, 9, 11, 6);
       final navigator = AlarmAutoNavigator(settle: const Duration(seconds: 15));
       withClock(Clock.fixed(start), () {
-        navigator.onActive(const [], pages: _pages, enabled: true);
+        navigator.onActive(const [], pages: _pages);
       });
       withClock(Clock.fixed(start.add(const Duration(minutes: 5))), () {
         navigator.onActive([activeFx(uid: 'a1')],
-            pages: _pages, enabled: true);
+            pages: _pages);
       });
       expect(takeFromHome(navigator)?.path, '/freezer');
     });
@@ -176,11 +193,11 @@ void main() {
       final start = DateTime(2026, 9, 11, 6);
       final navigator = AlarmAutoNavigator(settle: const Duration(seconds: 15));
       withClock(Clock.fixed(start), () {
-        navigator.onActive(const [], pages: _pages, enabled: true);
+        navigator.onActive(const [], pages: _pages);
       });
       withClock(Clock.fixed(start.add(const Duration(minutes: 5))), () {
         navigator.onActive([activeFx(uid: 'a1')],
-            pages: _pages, enabled: true);
+            pages: _pages);
       });
       expect(takeFromHome(navigator)?.path, '/freezer');
       expect(navigator.hold?.alarmUid, 'a1');
@@ -189,9 +206,9 @@ void main() {
       // re-raised into the new stream.
       navigator.resettle();
       withClock(Clock.fixed(start.add(const Duration(minutes: 6))), () {
-        navigator.onActive(const [], pages: _pages, enabled: true);
+        navigator.onActive(const [], pages: _pages);
         navigator.onActive([activeFx(uid: 'a1')],
-            pages: _pages, enabled: true);
+            pages: _pages);
       });
       expect(takeFromHome(navigator), isNull,
           reason: 'a re-subscription is not a raise');
@@ -202,15 +219,15 @@ void main() {
     test('a more severe alarm takes over', () {
       final navigator = quietNavigator();
       navigator.onActive([activeFx(uid: 'a1', level: AlarmLevel.warning)],
-          pages: _pages, enabled: true);
+          pages: _pages);
       expect(takeFromHome(navigator)?.path, '/freezer');
 
       navigator.onActive([
         activeFx(uid: 'a1', level: AlarmLevel.warning),
         activeFx(uid: 'a2', level: AlarmLevel.error),
-      ], pages: _pages, enabled: true);
+      ], pages: _pages);
       expect(navigator.take(
-              currentPath: '/freezer', canOpen: (_) => true, suppressed: false)
+              currentPath: '/freezer', canOpen: (_) => true, suppressed: false, enabled: true)
           ?.path,
           '/packing');
     });
@@ -218,36 +235,36 @@ void main() {
     test('an equally severe alarm does not', () {
       final navigator = quietNavigator();
       navigator.onActive([activeFx(uid: 'a1', level: AlarmLevel.error)],
-          pages: _pages, enabled: true);
+          pages: _pages);
       expect(takeFromHome(navigator)?.path, '/freezer');
 
       navigator.onActive([
         activeFx(uid: 'a1', level: AlarmLevel.error),
         activeFx(uid: 'a2', level: AlarmLevel.error),
-      ], pages: _pages, enabled: true);
+      ], pages: _pages);
       expect(
           navigator.take(
               currentPath: '/freezer',
               canOpen: (_) => true,
-              suppressed: false),
+              suppressed: false, enabled: true),
           isNull);
     });
 
     test('a less severe alarm does not', () {
       final navigator = quietNavigator();
       navigator.onActive([activeFx(uid: 'a1', level: AlarmLevel.error)],
-          pages: _pages, enabled: true);
+          pages: _pages);
       expect(takeFromHome(navigator)?.path, '/freezer');
 
       navigator.onActive([
         activeFx(uid: 'a1', level: AlarmLevel.error),
         activeFx(uid: 'a2', level: AlarmLevel.info),
-      ], pages: _pages, enabled: true);
+      ], pages: _pages);
       expect(
           navigator.take(
               currentPath: '/freezer',
               canOpen: (_) => true,
-              suppressed: false),
+              suppressed: false, enabled: true),
           isNull);
     });
 
@@ -255,20 +272,20 @@ void main() {
         () {
       final navigator = quietNavigator();
       navigator.onActive([activeFx(uid: 'a1', level: AlarmLevel.error)],
-          pages: _pages, enabled: true);
+          pages: _pages);
       expect(takeFromHome(navigator)?.path, '/freezer');
 
       // a1 acknowledged and gone.
-      navigator.onActive(const [], pages: _pages, enabled: true);
+      navigator.onActive(const [], pages: _pages);
       expect(navigator.hold, isNull);
 
       navigator.onActive([activeFx(uid: 'a2', level: AlarmLevel.info)],
-          pages: _pages, enabled: true);
+          pages: _pages);
       expect(
           navigator.take(
               currentPath: '/freezer',
               canOpen: (_) => true,
-              suppressed: false)
+              suppressed: false, enabled: true)
               ?.path,
           '/packing',
           reason: 'nothing holds the screen any more, so an info alarm is '
@@ -282,20 +299,20 @@ void main() {
       };
       final navigator = quietNavigator(pages: pages);
       navigator.onActive([activeFx(uid: 'a1', level: AlarmLevel.warning)],
-          pages: pages, enabled: true);
+          pages: pages);
       expect(takeFromHome(navigator)?.path, '/freezer');
 
       navigator.onActive([
         activeFx(uid: 'a1', level: AlarmLevel.warning),
         activeFx(uid: 'a1', level: AlarmLevel.error),
-      ], pages: pages, enabled: true);
+      ], pages: pages);
       // Nowhere new to go — but the hold rises, which is what stops an
       // unrelated warning elsewhere from stealing the screen next.
       expect(
           navigator.take(
               currentPath: '/freezer',
               canOpen: (_) => true,
-              suppressed: false),
+              suppressed: false, enabled: true),
           isNull);
       expect(navigator.hold?.level, AlarmLevel.error);
     });
@@ -312,7 +329,7 @@ void main() {
         activeFx(uid: 'a1', level: AlarmLevel.info),
         activeFx(uid: 'a2', level: AlarmLevel.error),
         activeFx(uid: 'a3', level: AlarmLevel.warning),
-      ], pages: pages, enabled: true);
+      ], pages: pages);
       expect(takeFromHome(navigator)?.path, '/packing');
     });
   });
@@ -321,12 +338,12 @@ void main() {
     test('no jump when already on the page, but the hold is claimed', () {
       final navigator = quietNavigator();
       navigator.onActive([activeFx(uid: 'a1', level: AlarmLevel.warning)],
-          pages: _pages, enabled: true);
+          pages: _pages);
       expect(
           navigator.take(
               currentPath: '/freezer',
               canOpen: (_) => true,
-              suppressed: false),
+              suppressed: false, enabled: true),
           isNull);
       expect(navigator.hold?.alarmUid, 'a1',
           reason: 'the beacon is flashing in front of them; another warning '
@@ -335,23 +352,23 @@ void main() {
       navigator.onActive([
         activeFx(uid: 'a1', level: AlarmLevel.warning),
         activeFx(uid: 'a2', level: AlarmLevel.warning),
-      ], pages: _pages, enabled: true);
+      ], pages: _pages);
       expect(
           navigator.take(
               currentPath: '/freezer',
               canOpen: (_) => true,
-              suppressed: false),
+              suppressed: false, enabled: true),
           isNull);
     });
 
     test('a suppressed jump is dropped, not queued for later', () {
       final navigator = quietNavigator();
-      navigator.onActive([activeFx(uid: 'a1')], pages: _pages, enabled: true);
+      navigator.onActive([activeFx(uid: 'a1')], pages: _pages);
       expect(
           navigator.take(
               currentPath: '/advanced/page-editor',
               canOpen: (_) => true,
-              suppressed: true),
+              suppressed: true, enabled: true),
           isNull);
       // The engineer leaves the editor of their own accord. Nothing pounces.
       expect(takeFromHome(navigator), isNull);
@@ -360,12 +377,12 @@ void main() {
 
     test('a page this session cannot open is not a destination', () {
       final navigator = quietNavigator();
-      navigator.onActive([activeFx(uid: 'a1')], pages: _pages, enabled: true);
+      navigator.onActive([activeFx(uid: 'a1')], pages: _pages);
       expect(
           navigator.take(
               currentPath: '/',
               canOpen: (path) => path != '/freezer',
-              suppressed: false),
+              suppressed: false, enabled: true),
           isNull);
       expect(navigator.hold, isNull,
           reason: 'a page the operator cannot reach never held the screen, '
@@ -378,12 +395,12 @@ void main() {
       navigator.onActive([
         activeFx(uid: 'a1', level: AlarmLevel.error),
         activeFx(uid: 'a2', level: AlarmLevel.info),
-      ], pages: _pages, enabled: true);
+      ], pages: _pages);
       expect(
           navigator.take(
               currentPath: '/',
               canOpen: (path) => path != '/freezer',
-              suppressed: false)
+              suppressed: false, enabled: true)
               ?.path,
           '/packing',
           reason: 'the error is out of reach, so the info alarm the operator '
@@ -404,10 +421,10 @@ void main() {
     test('the earlier page in stored order wins from somewhere else', () {
       final navigator = quietNavigator(pages: twoPages);
       navigator.onActive([activeFx(uid: 'a1')],
-          pages: twoPages, enabled: true);
+          pages: twoPages);
       expect(
           navigator
-              .take(currentPath: '/', canOpen: (_) => true, suppressed: false)
+              .take(currentPath: '/', canOpen: (_) => true, suppressed: false, enabled: true)
               ?.path,
           '/freezer',
           reason: 'arbitrary but stable, and moveable: an operator who wants '
@@ -417,12 +434,12 @@ void main() {
     test('standing on the later one is standing on it — no jump', () {
       final navigator = quietNavigator(pages: twoPages);
       navigator.onActive([activeFx(uid: 'a1')],
-          pages: twoPages, enabled: true);
+          pages: twoPages);
       expect(
           navigator.take(
               currentPath: '/packing',
               canOpen: (_) => true,
-              suppressed: false),
+              suppressed: false, enabled: true),
           isNull,
           reason: 'the beacon is flashing in front of them already; being '
               'dragged to the other page that shows the same alarm is the '
@@ -435,13 +452,13 @@ void main() {
     test('a page the session cannot open falls through to the other', () {
       final navigator = quietNavigator(pages: twoPages);
       navigator.onActive([activeFx(uid: 'a1')],
-          pages: twoPages, enabled: true);
+          pages: twoPages);
       expect(
           navigator
               .take(
                   currentPath: '/',
                   canOpen: (path) => path != '/freezer',
-                  suppressed: false)
+                  suppressed: false, enabled: true)
               ?.path,
           '/packing');
     });
@@ -451,7 +468,7 @@ void main() {
         '/freezer': pageFx('/freezer', [beacon(['a1']), beacon(['a1', 'a2'])]),
       };
       final navigator = quietNavigator(pages: pages);
-      navigator.onActive([activeFx(uid: 'a1')], pages: pages, enabled: true);
+      navigator.onActive([activeFx(uid: 'a1')], pages: pages);
       expect(takeFromHome(navigator)?.path, '/freezer');
     });
   });
@@ -463,7 +480,7 @@ void main() {
         '/freezer': pageFx('/freezer', [beacon(['a1'])]),
       };
       final navigator = quietNavigator(pages: pages);
-      navigator.onActive([activeFx(uid: 'a1')], pages: pages, enabled: true);
+      navigator.onActive([activeFx(uid: 'a1')], pages: pages);
       expect(takeFromHome(navigator)?.path, '/freezer',
           reason: 'an overview page watching everything must not swallow '
               'every alarm in the plant');
@@ -476,13 +493,13 @@ void main() {
         '/freezer': pageFx('/freezer', [beacon(['a1'])]),
       };
       final navigator = quietNavigator(pages: pages);
-      navigator.onActive([activeFx(uid: 'a1')], pages: pages, enabled: true);
+      navigator.onActive([activeFx(uid: 'a1')], pages: pages);
       expect(
           navigator
               .take(
                   currentPath: '/',
                   canOpen: (path) => path != '/freezer',
-                  suppressed: false)
+                  suppressed: false, enabled: true)
               ?.path,
           '/overview',
           reason: 'an overview that shows the alarm beats going nowhere');
@@ -494,7 +511,7 @@ void main() {
         '/freezer': pageFx('/freezer', [beacon(['a1'])]),
       };
       final navigator = quietNavigator(pages: pages);
-      navigator.onActive([activeFx(uid: 'zz')], pages: pages, enabled: true);
+      navigator.onActive([activeFx(uid: 'zz')], pages: pages);
       expect(takeFromHome(navigator)?.path, '/overview');
     });
   });

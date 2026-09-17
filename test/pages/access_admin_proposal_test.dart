@@ -236,7 +236,7 @@ void main() {
 
     test('editorLabel names the access screen', () {
       final p = _proposal(-1, 'access_account', 'create', {'username': 'x'});
-      expect(p.editorLabel, 'Access');
+      expect(p.editorLabel, 'Users & roles');
       expect(p.editorRoute, '/advanced/access');
     });
 

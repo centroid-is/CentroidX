@@ -1072,7 +1072,7 @@ class AccessSessionController extends _$AccessSessionController {
     if (_onPanelSession) {
       Logger().w(
         'Refusing to sign out "${current?.user?.username}": it is this '
-        'panel\'s own account. Release the panel on the access page instead.',
+        'panel\'s own account. Release the panel on the Users & roles page instead.',
       );
       return;
     }
@@ -1748,7 +1748,7 @@ class AccessSessionController extends _$AccessSessionController {
         await local.remove(key);
         Logger().w(
           'Removed the retired per-station setting "$key". Inactivity '
-          'timeouts are per account now (the users list on the access page). '
+          'timeouts are per account now (the users list on the Users & roles page). '
           'A panel that must stay signed in: flag its account as a station '
           'account and commit the panel to it at sign-in.',
         );

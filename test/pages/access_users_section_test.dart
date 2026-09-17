@@ -208,6 +208,14 @@ class _RecordingStore extends AccessAdminStore {
   }
 
   @override
+  Future<void> setUserAlarmAutoNavigate(String username, bool value,
+      {String origin = 'operator', String? reason}) async {
+    calls.add('setUserAlarmAutoNavigate:$username:$value');
+    return super.setUserAlarmAutoNavigate(username, value,
+        origin: origin, reason: reason);
+  }
+
+  @override
   Future<void> setUserHomePage(String username, String? path,
       {String origin = 'operator', String? reason}) async {
     calls.add('setUserHomePage:$username:$path');
@@ -974,6 +982,100 @@ void main() {
       expect(
           store!.calls.where((c) => c.startsWith('setUserStationAccount')),
           isEmpty);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Alarm auto-navigation
+  //
+  // It used to be one plant-wide switch in the Alarm Editor. It is an
+  // account's own now — the anonymous account's included, which is what a
+  // logged-out panel does.
+  // -------------------------------------------------------------------------
+  group('alarm navigation', () {
+    String? tooltip(WidgetTester tester, String username) => tester
+        .widget<IconButton>(find.byKey(kAccessUserAlarmNavigateKey(username)))
+        .tooltip;
+
+    testWidgets('turning it on writes through the store and the row follows',
+        (tester) async {
+      await makeUser('bob', 'Shift Leader');
+      await pumpSection(tester, overrides());
+      expect(tooltip(tester, 'bob'), kAccessUserAlarmNavigateOffTooltip,
+          reason: 'every account starts off');
+
+      await tester.tap(find.byKey(kAccessUserAlarmNavigateKey('bob')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(kAccessUserAlarmNavigateConfirmOn));
+      await tester.pumpAndSettle();
+
+      expect(store!.calls, contains('setUserAlarmAutoNavigate:bob:true'));
+      expect((await userNamed('bob'))!.alarmAutoNavigate, isTrue);
+      expect(tooltip(tester, 'bob'), kAccessUserAlarmNavigateOnTooltip);
+      final row = sink.rows.lastWhere(
+          (r) => r.itemKey == 'user.alarm_auto_navigate');
+      expect(row.allowed, isTrue);
+      expect(row.newValue, 'true');
+    });
+
+    testWidgets('turning it off again', (tester) async {
+      await makeUser('bob', 'Shift Leader');
+      await repository.setAlarmAutoNavigate('bob', true);
+      await pumpSection(tester, overrides());
+
+      await tester.tap(find.byKey(kAccessUserAlarmNavigateKey('bob')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(kAccessUserAlarmNavigateConfirmOff));
+      await tester.pumpAndSettle();
+
+      expect((await userNamed('bob'))!.alarmAutoNavigate, isFalse);
+    });
+
+    testWidgets('cancelling the confirmation writes nothing', (tester) async {
+      await makeUser('bob', 'Shift Leader');
+      await pumpSection(tester, overrides());
+
+      await tester.tap(find.byKey(kAccessUserAlarmNavigateKey('bob')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+
+      expect(store!.calls.where((c) => c.startsWith('setUserAlarmAutoNavigate')),
+          isEmpty);
+    });
+
+    testWidgets('the anonymous account has it — a logged-out panel\'s',
+        (tester) async {
+      await pumpSection(tester, overrides());
+
+      await tester.tap(find.byKey(kAccessUserAlarmNavigateKey(kAnonymousUsername)));
+      await tester.pumpAndSettle();
+      expect(
+          find.text(kAccessUserAlarmNavigateMessage(
+              turningOn: true, anonymous: true)),
+          findsOneWidget);
+      await tester.tap(find.text(kAccessUserAlarmNavigateConfirmOn));
+      await tester.pumpAndSettle();
+
+      expect((await userNamed(kAnonymousUsername))!.alarmAutoNavigate, isTrue);
+    });
+
+    testWidgets('a session without users is refused and nothing is written',
+        (tester) async {
+      await makeUser('bob', 'Shift Leader');
+      session = _configureOnly();
+      await pumpSection(tester, overrides());
+
+      await tester.tap(find.byKey(kAccessUserAlarmNavigateKey('bob')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(kAccessUserAlarmNavigateConfirmOn));
+      await tester.pumpAndSettle();
+
+      expect((await userNamed('bob'))!.alarmAutoNavigate, isFalse);
+      final rows =
+          sink.rows.where((r) => r.itemKey == 'user.alarm_auto_navigate');
+      expect(rows, hasLength(1));
+      expect(rows.single.allowed, isFalse);
     });
   });
 
