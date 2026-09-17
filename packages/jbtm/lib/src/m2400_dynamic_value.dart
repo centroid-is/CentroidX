@@ -1,6 +1,6 @@
 import 'package:jbtm/src/m2400_field_parser.dart';
 import 'package:jbtm/src/m2400_fields.dart';
-import 'package:open62541/open62541.dart'
+import 'package:open62541/open62541_types.dart'
     show DynamicValue, EnumField, LocalizedText;
 
 /// Pre-built enum field map for WeigherStatus values.

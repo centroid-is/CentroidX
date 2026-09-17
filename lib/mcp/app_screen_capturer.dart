@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:tfc_mcp_server/tfc_mcp_server.dart'
+import 'package:tfc_mcp_server/tfc_mcp_server_data.dart'
     show CapturedImage, ScreenCapturer, ScreenCaptureUnavailableException;
 
 import 'app_capture.dart';

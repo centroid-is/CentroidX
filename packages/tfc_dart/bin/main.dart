@@ -32,7 +32,7 @@ void main() async {
   if (statemanConfigFilePath == null) {
     throw Exception("Stateman Config file path needs to be set");
   }
-  final smConfig = await StateManConfig.fromFile(statemanConfigFilePath);
+  final smConfig = await StateManConfigStorage.fromFile(statemanConfigFilePath);
 
   // Key mappings come from `config_item` rows, and from nowhere else. The
   // `flutter_preferences.key_mappings` blob fallback retired with 04-12: it
@@ -80,7 +80,7 @@ void main() async {
   // }
 
   // Create StateMan for alarm monitoring (with separate certificate)
-  final stateMan = await StateMan.create(
+  final stateMan = await OpcUaStateMan.create(
     config: alarmSmConfig,
     keyMappings: keyMappings,
     useIsolate: false,

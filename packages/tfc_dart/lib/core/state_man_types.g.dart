@@ -1,6 +1,6 @@
 // GENERATED CODE - DO NOT MODIFY BY HAND
 
-part of 'state_man.dart';
+part of 'state_man_types.dart';
 
 // **************************************************************************
 // JsonSerializableGenerator

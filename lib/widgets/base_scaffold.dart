@@ -1,4 +1,6 @@
 import 'dart:io';
+
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'dart:async';
 import 'dart:math' as math;
 import 'package:clock/clock.dart';
@@ -651,7 +653,14 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
                           ),
                           globalLeftProvider?.buildAppBarLeftWidgets(context) ??
                               const SizedBox.shrink(),
-                          if (Platform.isAndroid || Platform.isIOS)
+                          // `kIsWeb` first, and it is not decoration:
+                          // `Platform.isAndroid` *throws* under dart2js, and
+                          // this line sits on the first frame the browser ever
+                          // paints — so the app bar took the whole app down
+                          // before anything rendered. The constant
+                          // short-circuits, so a web build never reaches
+                          // `dart:io` here and a station reads as before.
+                          if (!kIsWeb && (Platform.isAndroid || Platform.isIOS))
                             IconButton(
                               icon: const Icon(Icons.fullscreen),
                               onPressed: _toggleFullscreen,
@@ -674,7 +683,10 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
                               padding: const EdgeInsets.only(right: 16.0),
                               child: GestureDetector(
                                 onDoubleTap: () {
-                                  exit(0);
+                                  // Quitting is a station gesture. A browser
+                                  // tab has nothing to exit, and `exit` throws
+                                  // there rather than doing nothing.
+                                  if (!kIsWeb) exit(0);
                                 },
                                 child: SvgPicture.asset(
                                   'assets/centroid.svg',

@@ -12,7 +12,7 @@ import 'package:tfc_dart/core/state_man.dart';
 void main() {
   test('collectUpdates on a non-collector station must not throw a TypeError',
       () async {
-    final stateMan = await StateMan.create(
+    final stateMan = await OpcUaStateMan.create(
       config: StateManConfig(opcua: []),
       keyMappings: KeyMappings(nodes: {}),
     );

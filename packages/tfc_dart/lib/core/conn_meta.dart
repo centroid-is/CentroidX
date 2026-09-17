@@ -1,10 +1,10 @@
 import 'dart:async';
 import 'dart:collection';
 
-import 'package:open62541/open62541.dart' show DynamicValue, NodeId;
+import 'package:open62541/open62541_types.dart' show DynamicValue, NodeId;
 import 'package:rxdart/rxdart.dart';
 
-import 'state_man.dart' show ClientWrapper, ConnectionStatus, StateManException;
+import 'state_man_types.dart' show ConnectionStatus, StateManException;
 import 'modbus_device_client.dart' show ModbusDeviceClientAdapter;
 
 /// Per-connection metadata exposed as synthetic, subscribable StateMan keys.
@@ -319,7 +319,8 @@ class ConnMeta {
 
 /// A source of connection metadata for a single server alias.
 ///
-/// Concrete implementations wrap a live client ([OpcUaConnMetaSource],
+/// Concrete implementations wrap a live client (`OpcUaConnMetaSource`, which
+/// lives in `state_man.dart` because a `ClientWrapper` is `dart:ffi`, and
 /// [ModbusConnMetaSource]); tests can supply a fake to exercise
 /// [ConnMetaRouter] in isolation.
 abstract class ConnMetaSource {
@@ -339,63 +340,11 @@ abstract class ConnMetaSource {
   Stream<void> get changes;
 }
 
-/// Metadata source backed by an OPC-UA [ClientWrapper].
-///
-/// requestsPerSec here approximates protocol load: the native publish rate is
-/// not exposed through the isolate binding, so it counts monitored-item value
-/// emissions (and heartbeat ticks) routed through StateMan's OPC-UA
-/// subscription wiring for this server, sampled per second by [RollingRate].
-class OpcUaConnMetaSource implements ConnMetaSource {
-  final ClientWrapper wrapper;
-
-  /// Count of `keyMappings` entries whose OPC-UA server alias == this server.
-  /// Derived in StateMan (not from the isolate binding) and passed as a live
-  /// closure so it tracks key-mapping edits.
-  final int Function() subscribedKeysFn;
-
-  /// The alias this source answers for in `@conn/<alias>/<field>` keys.
-  /// For unnamed servers the caller assigns a stable synthetic identity
-  /// (host:port) — see `StateMan._buildConnMetaRouter`.
-  @override
-  final String metaAlias;
-
-  OpcUaConnMetaSource(this.wrapper,
-      {required this.subscribedKeysFn, String? metaAlias})
-      : metaAlias = metaAlias ?? wrapper.config.serverAlias ?? '';
-
-  @override
-  bool get isModbus => false;
-
-  @override
-  Stream<void> get changes => wrapper.connectionStream.map((_) {});
-
-  @override
-  ConnMeta snapshot() {
-    final ep = parseOpcEndpoint(wrapper.config.endpoint);
-    final status = wrapper.connectionStatus;
-    final age = wrapper.lastDataAgeSec;
-    return ConnMeta(
-      isModbus: false,
-      state: status.name,
-      connected: status == ConnectionStatus.connected,
-      destIp: ep.host,
-      destPort: ep.port,
-      requestsPerSec: wrapper.requestsPerSec,
-      uptimeSec: wrapper.uptimeSec,
-      reconnectCount: wrapper.reconnectCount,
-      lastError: wrapper.lastError,
-      endpoint: wrapper.config.endpoint,
-      channelState: wrapper.channelStateName,
-      sessionState: wrapper.sessionStateName,
-      statusCode: wrapper.recoveryStatus,
-      subscribedKeys: subscribedKeysFn(),
-      lastDataAgeSec: age,
-      health: wrapper.effectiveStatus.name,
-      healthDetail: wrapper.healthDetail ?? '',
-      heartbeatAgeSec: wrapper.heartbeatAgeSec,
-    );
-  }
-}
+// `OpcUaConnMetaSource` moved to `state_man.dart`, which holds its only
+// constructor site (`_buildConnMetaRouter`). It is the one source in this file
+// backed by a `ClientWrapper` — an open62541 session, and so `dart:ffi` — and
+// this file is reached from the key-mapping editor through
+// `modbus_client_wrapper.dart`. Everything else here is plain data.
 
 /// Metadata source backed by a Modbus [ModbusDeviceClientAdapter].
 class ModbusConnMetaSource implements ConnMetaSource {
@@ -405,7 +354,7 @@ class ModbusConnMetaSource implements ConnMetaSource {
   /// configured poll groups. Null when the server declares none.
   final int? pollIntervalMs;
 
-  /// See [OpcUaConnMetaSource.metaAlias].
+  /// See `OpcUaConnMetaSource.metaAlias` in `state_man.dart`.
   @override
   final String metaAlias;
 

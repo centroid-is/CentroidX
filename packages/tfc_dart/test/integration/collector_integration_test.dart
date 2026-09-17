@@ -33,7 +33,7 @@ void main() {
     late Database database;
 
     setUpAll(() async {
-      stateMan = await StateMan.create(
+      stateMan = await OpcUaStateMan.create(
           config: StateManConfig(opcua: []),
           keyMappings: KeyMappings(nodes: {}));
       await stopDockerCompose();

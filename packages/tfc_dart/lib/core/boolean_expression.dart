@@ -1,10 +1,10 @@
 import 'dart:async';
 
 import 'package:json_annotation/json_annotation.dart';
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 import 'package:rxdart/rxdart.dart';
 
-import 'state_man.dart';
+import 'state_man_types.dart';
 
 part 'boolean_expression.g.dart';
 

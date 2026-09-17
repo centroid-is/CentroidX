@@ -26,7 +26,7 @@ library;
 
 import 'dart:convert';
 
-import '../state_man.dart' show KeyMappingEntry, KeyMappings;
+import '../state_man_types.dart' show KeyMappingEntry, KeyMappings;
 import 'config_item.dart';
 
 /// The preference key the blob lives under today, and the id of the

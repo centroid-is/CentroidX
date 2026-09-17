@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show FilteringTextInputFormatter;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
-import 'package:tfc_dart/core/state_man.dart';
+import 'package:tfc_dart/core/state_man_types.dart';
 import 'package:tfc_dart/core/modbus_client_wrapper.dart' show ModbusDataType;
 import 'package:tfc_dart/core/umas_types.dart' show mapUmasDataTypeToModbus;
 import 'package:tfc_dart/core/collector.dart';
@@ -16,7 +16,9 @@ import '../providers/access_templates.dart';
 import '../providers/state_man.dart';
 import '../pages/key_repository.dart' show ModbusConfigListExt;
 import 'opcua_array_index_field.dart';
-import 'opcua_browse.dart';
+// The seam, not the dialog: the dialog holds a live OPC UA session and is
+// `dart:ffi`. It hands back a `NodeId`, which is in the FFI-free barrel.
+import 'live_browse.dart';
 import 'umas_browse.dart';
 import 'duration_field.dart';
 
@@ -118,7 +120,7 @@ class _OpcUaConfigSectionState extends ConsumerState<OpcUaConfigSection> {
     if (!mounted) return;
 
     if (result != null) {
-      final nodeId = result.nodeId;
+      final nodeId = result;
       setState(() {
         _namespaceController.text = nodeId.namespace.toString();
         _identifierController.text =

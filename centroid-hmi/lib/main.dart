@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -192,7 +193,12 @@ void main(List<String> args) {
   // killing the process.  The MCP HTTP server, OPC UA client, and pdfium
   // background isolate all perform native socket/pipe IO that can trigger
   // SIGPIPE when the remote end closes unexpectedly.
-  if (Platform.isLinux || Platform.isMacOS) {
+  //
+  // The rest of this block is `dart:io` too — signals, an environment, a file
+  // to append to — and in a browser every one of those members throws rather
+  // than returning an empty answer. `kIsWeb` is a compile-time constant, so a
+  // web build contains none of it and a station's path is unchanged.
+  if (!kIsWeb && (Platform.isLinux || Platform.isMacOS)) {
     try {
       ProcessSignal.sigpipe.watch().listen((_) {
         stderr.writeln('SIGPIPE received — broken pipe (ignored)');
@@ -202,17 +208,19 @@ void main(List<String> args) {
     }
   }
 
-  final logFilePath = Platform.environment['CENTROID_LOG_FILE'];
-  final debugMode = Platform.environment['CENTROID_STDOUT'] == '1' ||
-      Platform.environment['CENTROID_STDOUT'] == 'true' ||
-      logFilePath != null;
+  final logFilePath = kIsWeb ? null : Platform.environment['CENTROID_LOG_FILE'];
+  final debugMode = !kIsWeb &&
+      (Platform.environment['CENTROID_STDOUT'] == '1' ||
+          Platform.environment['CENTROID_STDOUT'] == 'true' ||
+          logFilePath != null);
 
   // The Windows runner sets CENTROID_LOG_REDIRECTED once it has pointed
   // stdout/stderr at the log file *and* resynced the engine's streams to
   // match, at which point print() already reaches the file on its own.
   // Opening it here as well would write every line twice, so this direct
   // write is now only a fallback for runners that do not redirect.
-  final runnerRedirectsOutput = Platform.environment['CENTROID_LOG_REDIRECTED'] == '1';
+  final runnerRedirectsOutput =
+      !kIsWeb && Platform.environment['CENTROID_LOG_REDIRECTED'] == '1';
 
   if (debugMode && logFilePath != null && !runnerRedirectsOutput) {
     try {
@@ -293,7 +301,7 @@ Future<void> _startApp([bool debugMode = false]) async {
     pdfrxFlutterInitialize();
   }
   AmplifySecureStorageDart.registerWith();
-  if (Platform.isWindows || Platform.isMacOS) {
+  if (!kIsWeb && (Platform.isWindows || Platform.isMacOS)) {
     // Use the properly branded flutter_secure_storage implementation on
     // Windows and macOS; AwsSecureStorage (amplify, keychain service name
     // "com.amplify.awsCognitoAuthPlugin") remains only the Linux/eLinux
@@ -371,7 +379,9 @@ Future<void> _startApp([bool debugMode = false]) async {
     // would be absurd.
     String station;
     try {
-      station = Platform.localHostname;
+      // `Platform.localHostname` throws in a browser, where the change log's
+      // idea of "which station wrote this" has no answer anyway.
+      station = kIsWeb ? 'browser' : Platform.localHostname;
     } on Object catch (e) {
       logger.w('Could not read the local hostname for the change log: $e');
       station = 'unknown';
@@ -402,7 +412,7 @@ Future<void> _startApp([bool debugMode = false]) async {
   // to persist them over D-Bus, so the HMI is what carries the operator's
   // choice across a reboot. Fire-and-forget: a station without the polkit
   // rule will be refused, and that must not hold up or break startup.
-  if (Platform.isLinux) {
+  if (!kIsWeb && Platform.isLinux) {
     unawaited(applyStoredNtpServers(
       prefs: prefs,
       connect: () => DBusTimeSync(DBusClient.system()),
@@ -578,7 +588,10 @@ Future<void> _startApp([bool debugMode = false]) async {
               duration: const Duration(seconds: 10),
             ),
           ),
-          onHandedOff: () => exit(0),
+          onHandedOff: () {
+            // A browser tab has no process to leave; `exit` throws there.
+            if (!kIsWeb) exit(0);
+          },
         ));
         return false;
       },
@@ -1311,7 +1324,7 @@ List<MenuItem> _composeTopLevelMenu(PageManager pageManager) {
   // (Alarm View, History View) and the pages share one persisted top-level
   // order, editable in the page editor's Pages dialog.
   final items = buildTopLevelMenuItems(
-    isLinux: Platform.isLinux,
+    isLinux: !kIsWeb && Platform.isLinux,
     pageMenuItems: pageManager.getRootMenuItems(),
     // History View and Reports sit under Advanced unless the operator
     // promoted them to the top level in the page editor (recorded in the

@@ -1,8 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:open62541/open62541.dart' show NodeId, DynamicValue;
-import 'package:tfc_dart/core/state_man.dart';
 import '../providers/state_man.dart';
+import 'live_browse.dart';
 
 /// A field that lets the user select an index within an OPC UA array node.
 ///
@@ -86,41 +85,35 @@ class OpcUaArrayIndexFieldState extends ConsumerState<OpcUaArrayIndexField> {
       final stateMan = ref.read(stateManProvider).valueOrNull;
       if (stateMan == null) throw Exception('Server connections not ready');
 
-      ClientWrapper? wrapper;
-      for (final w in stateMan.clients) {
-        if (w.config.serverAlias == widget.serverAlias) {
-          wrapper = w;
-          break;
-        }
+      // Behind the transport seam: finding the session and reading the node
+      // is `dart:ffi`, and this field is reachable from every asset's
+      // configure form. See `live_browse.dart`.
+      final int size;
+      try {
+        size = await probeOpcUaArrayLength(
+          stateMan,
+          serverAlias: widget.serverAlias,
+          namespace: ns,
+          identifier: id,
+        );
+      } on Exception catch (e) {
+        if (!mounted) return;
+        setState(() {
+          _isProbing = false;
+          _probeError = e.toString().replaceFirst('Exception: ', '');
+        });
+        return;
       }
-      wrapper ??= stateMan.clients.isEmpty ? null : stateMan.clients.first;
-      if (wrapper == null) throw Exception('No OPC UA client available');
-
-      final nodeId = int.tryParse(id) != null
-          ? NodeId.fromNumeric(ns, int.parse(id))
-          : NodeId.fromString(ns, id);
-
-      final DynamicValue value =
-          await wrapper.client.read(nodeId).timeout(const Duration(seconds: 5));
 
       if (!mounted) return;
-      if (value.isArray) {
-        final size = value.asArray.length;
-        setState(() {
-          _isProbing = false;
-          _arraySize = size;
-        });
-        // Invalidate selection if it is out-of-range for the new size.
-        final current = widget.value;
-        if (current != null && (current < 0 || current >= size)) {
-          widget.onChanged(null);
-        }
-      } else {
-        setState(() {
-          _isProbing = false;
-          _arraySize = null;
-          _probeError = 'Node is not an array';
-        });
+      setState(() {
+        _isProbing = false;
+        _arraySize = size;
+      });
+      // Invalidate selection if it is out-of-range for the new size.
+      final current = widget.value;
+      if (current != null && (current < 0 || current >= size)) {
+        widget.onChanged(null);
       }
     } catch (e) {
       if (!mounted) return;

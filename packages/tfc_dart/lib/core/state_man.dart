@@ -1,881 +1,39 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:typed_data';
 import 'dart:convert';
 
 import 'package:meta/meta.dart'; // Add this import at the top
 import 'package:logger/logger.dart';
-import 'package:json_annotation/json_annotation.dart';
 import 'package:open62541/open62541.dart';
 import 'package:rxdart/rxdart.dart';
 import 'package:collection/collection.dart';
 
 import 'package:jbtm/src/m2400.dart' show M2400RecordType;
-import 'package:jbtm/src/m2400_fields.dart' show M2400Field;
 import 'package:jbtm/src/m2400_client_wrapper.dart' show M2400ClientWrapper;
-import 'package:tfc_dart/core/log_config.dart' show opcuaLogLevelFromEnv;
+import 'package:tfc_dart/core/opcua_log_level.dart' show opcuaLogLevelFromEnv;
 import 'package:jbtm/src/msocket.dart' as jbtm show ConnectionStatus;
 
-import 'package:modbus_client/modbus_client.dart'
-    show ModbusElementType, ModbusEndianness;
-
-import 'collector.dart';
 import 'config/config_diff.dart';
 import 'config/config_item.dart' show ConfigKind;
 import 'conn_meta.dart';
-import 'modbus_client_wrapper.dart' show ModbusDataType;
 import 'modbus_device_client.dart'
     show
         ModbusDeviceClientAdapter,
         buildUmasPollGroupsFromKeyMappings,
         buildVariableNamesFromKeyMappings;
-import 'preferences.dart';
 
-part 'state_man.g.dart';
-
-/// Statistics tracker for runIterate timing
-class RunIterateStats {
-  final String clientName;
-  final Logger _logger = Logger();
-
-  DateTime? _lastCallTime;
-  int _callCount = 0;
-
-  // Time between calls (gaps)
-  Duration _maxGap = Duration.zero;
-  Duration _totalGap = Duration.zero;
-
-  // Execution time
-  Duration _maxExecTime = Duration.zero;
-  Duration _totalExecTime = Duration.zero;
-
-  // Report interval
-  final int _reportInterval = 1000; // Report every N calls
-
-  RunIterateStats(this.clientName);
-
-  void recordCall(Duration execTime) {
-    final now = DateTime.now();
-
-    if (_lastCallTime != null) {
-      final gap = now.difference(_lastCallTime!);
-      _totalGap += gap;
-      if (gap > _maxGap) {
-        _maxGap = gap;
-      }
-    }
-
-    _totalExecTime += execTime;
-    if (execTime > _maxExecTime) {
-      _maxExecTime = execTime;
-    }
-
-    _callCount++;
-    _lastCallTime = now;
-
-    // Log periodically
-    if (_callCount % _reportInterval == 0) {
-      _logStats();
-    }
-  }
-
-  void _logStats() {
-    if (_callCount == 0) return;
-
-    final avgGapMs = _callCount > 1
-        ? (_totalGap.inMicroseconds / (_callCount - 1) / 1000)
-            .toStringAsFixed(2)
-        : 'N/A';
-    final avgExecMs =
-        (_totalExecTime.inMicroseconds / _callCount / 1000).toStringAsFixed(2);
-
-    _logger.i('[$clientName] runIterate stats after $_callCount calls: '
-        'gap(avg: ${avgGapMs}ms, max: ${_maxGap.inMilliseconds}ms) '
-        'exec(avg: ${avgExecMs}ms, max: ${_maxExecTime.inMilliseconds}ms)');
-  }
-
-  void logFinal() {
-    _logStats();
-  }
-}
-
-class Base64Converter implements JsonConverter<Uint8List?, String?> {
-  const Base64Converter();
-
-  @override
-  Uint8List? fromJson(String? json) {
-    if (json == null) return null;
-    return base64Decode(json);
-  }
-
-  @override
-  String? toJson(Uint8List? certificateContents) {
-    if (certificateContents == null) return null;
-    return base64Encode(certificateContents);
-  }
-}
-
-/// Common shape of a single server entry inside [StateManConfig].
-///
-/// Implemented by [OpcUAConfig], [M2400Config] and [ModbusConfig] so
-/// [StateManConfig] can reason about "which aliases are switched off"
-/// without caring which protocol the entry speaks.
-abstract interface class ServerConfigEntry {
-  /// When false the server is never connected to, and every key routed
-  /// to it fails fast instead of retrying. See [StateManConfig.isServerEnabled].
-  bool get enabled;
-
-  /// The alias keys reference in their `server_alias` node field.
-  String? get serverAlias;
-}
-
-@JsonSerializable(explicitToJson: true)
-class OpcUAConfig implements ServerConfigEntry {
-  String endpoint = "opc.tcp://localhost:4840";
-  String? username;
-  String? password;
-  @Base64Converter()
-  @JsonKey(name: 'ssl_cert')
-  Uint8List? sslCert;
-  @Base64Converter()
-  @JsonKey(name: 'ssl_key')
-  Uint8List? sslKey;
-  @JsonKey(name: 'server_alias')
-  String? serverAlias;
-
-  /// Whether this server takes part in data acquisition.
-  ///
-  /// Disabling a server stops the connect/reconnect loop entirely — an
-  /// unreachable PLC otherwise emits a connect failure, a channel-state
-  /// transition and a subscription retry line every second, which buries
-  /// the rest of the log. Defaults to true so existing configs (which have
-  /// no `enabled` field) keep working untouched.
-  @JsonKey(defaultValue: true)
-  bool enabled = true;
-
-  /// Lifetime the client asks for when it opens the SecureChannel, in
-  /// milliseconds.
-  ///
-  /// open62541 renews the channel at 75% of whatever the server grants, so
-  /// this is really "how often do we exercise the renew path", and each
-  /// renewal rotates the channel's symmetric keys.
-  ///
-  /// Defaults to open62541's own default of 10 minutes — deliberately NOT
-  /// the 60 s that used to be hardcoded in [StateMan.create]. That minute
-  /// existed to reproduce the frozen-session bug on the bench and made every
-  /// station renew 80 times an hour; 10 minutes drops that to 8, which is
-  /// already nothing beside a subscription publishing ten times a second.
-  /// Going longer still buys no measurable relief and only ages the
-  /// symmetric keys on the SIGNANDENCRYPT links.
-  ///
-  /// This is a *requested* lifetime. The server answers with what it granted
-  /// and may cap it well below this; the binding does not surface that
-  /// figure, so a long value here is a ceiling, not a promise.
-  @JsonKey(name: 'secure_channel_lifetime_ms', defaultValue: 600000)
-  int secureChannelLifetimeMs = 600000;
-
-  /// How often the server is asked to publish subscription notifications,
-  /// in milliseconds — the rate at which values reach the HMI.
-  ///
-  /// Applied both as the subscription's requested publishing interval and as
-  /// the sampling interval of every monitored item on it, so the one number
-  /// governs the update rate end to end. Slowing it down is the cheapest way
-  /// to cut load on a PLC that is drowning in monitored items.
-  ///
-  /// Keep it well under [ClientWrapper.heartbeatStaleAfter]: the heartbeat
-  /// rides this same subscription, so an interval near 15 s would make a
-  /// perfectly healthy server report `opcuaUnhealthy`. The UI clamps to
-  /// [publishingIntervalMaxMs] for that reason.
-  @JsonKey(name: 'publishing_interval_ms', defaultValue: 100)
-  int publishingIntervalMs = 100;
-
-  /// Smallest accepted [publishingIntervalMs]. Below this the client asks
-  /// for more publishes per second than a PLC will honour anyway.
-  static const publishingIntervalMinMs = 10;
-
-  /// Largest accepted [publishingIntervalMs]. Bounded by the heartbeat
-  /// staleness window — see [publishingIntervalMs].
-  static const publishingIntervalMaxMs = 5000;
-
-  /// Smallest accepted [secureChannelLifetimeMs] (10 s).
-  static const secureChannelLifetimeMinMs = 10000;
-
-  /// Largest accepted [secureChannelLifetimeMs] (24 h).
-  static const secureChannelLifetimeMaxMs = 86400000;
-
-  /// Convenience getter for use with the open62541 Duration APIs.
-  Duration get secureChannelLifetime =>
-      Duration(milliseconds: secureChannelLifetimeMs);
-
-  /// Convenience getter for use with the open62541 Duration APIs.
-  Duration get publishingInterval =>
-      Duration(milliseconds: publishingIntervalMs);
-
-  OpcUAConfig();
-
-  @override
-  String toString() {
-    return 'OpcUAConfig(endpoint: $endpoint, username: $username, password: $password, sslCert: $sslCert, sslKey: $sslKey, enabled: $enabled, secureChannelLifetimeMs: $secureChannelLifetimeMs, publishingIntervalMs: $publishingIntervalMs)';
-  }
-
-  factory OpcUAConfig.fromJson(Map<String, dynamic> json) =>
-      _$OpcUAConfigFromJson(json);
-  Map<String, dynamic> toJson() => _$OpcUAConfigToJson(this);
-}
-
-@JsonSerializable(explicitToJson: true)
-class M2400Config implements ServerConfigEntry {
-  @JsonKey(defaultValue: 'm2400')
-  String type;
-  String host;
-  int port;
-  @JsonKey(name: 'server_alias')
-  String? serverAlias;
-
-  /// See [OpcUAConfig.enabled].
-  @JsonKey(defaultValue: true)
-  bool enabled;
-
-  M2400Config(
-      {this.type = 'm2400',
-      this.host = '',
-      this.port = 52211,
-      this.enabled = true});
-
-  factory M2400Config.fromJson(Map<String, dynamic> json) =>
-      _$M2400ConfigFromJson(json);
-  Map<String, dynamic> toJson() => _$M2400ConfigToJson(this);
-
-  @override
-  String toString() =>
-      'M2400Config(type: $type, host: $host, port: $port, alias: $serverAlias, enabled: $enabled)';
-}
-
-@JsonSerializable(explicitToJson: true)
-class M2400NodeConfig {
-  @JsonKey(name: 'record_type')
-  M2400RecordType recordType;
-  M2400Field? field;
-  @JsonKey(name: 'server_alias')
-  String? serverAlias;
-
-  /// Optional WeigherStatus code filter (BATCH only).
-  /// When set, only BATCH records whose status field matches this code are emitted.
-  @JsonKey(name: 'status_filter')
-  int? statusFilter;
-
-  M2400NodeConfig({
-    required this.recordType,
-    this.field,
-    this.serverAlias,
-    this.statusFilter,
-  });
-
-  factory M2400NodeConfig.fromJson(Map<String, dynamic> json) =>
-      _$M2400NodeConfigFromJson(json);
-  Map<String, dynamic> toJson() => _$M2400NodeConfigToJson(this);
-
-  @override
-  String toString() =>
-      'M2400NodeConfig(recordType: $recordType, field: $field, alias: $serverAlias, statusFilter: $statusFilter)';
-}
-
-// =============================================================================
-// Modbus configuration classes (Phase 8)
-// =============================================================================
-
-/// Modbus register type for JSON serialization.
-///
-/// Maps to [ModbusElementType] at runtime via [toModbusElementType] and
-/// [fromModbusElementType]. Kept as a separate enum so json_serializable
-/// generates camelCase string serialization without depending on the
-/// modbus_client package in the serialization layer.
-enum ModbusRegisterType {
-  coil,
-  discreteInput,
-  holdingRegister,
-  inputRegister;
-
-  /// Converts to the modbus_client library's [ModbusElementType].
-  ModbusElementType toModbusElementType() {
-    switch (this) {
-      case ModbusRegisterType.coil:
-        return ModbusElementType.coil;
-      case ModbusRegisterType.discreteInput:
-        return ModbusElementType.discreteInput;
-      case ModbusRegisterType.holdingRegister:
-        return ModbusElementType.holdingRegister;
-      case ModbusRegisterType.inputRegister:
-        return ModbusElementType.inputRegister;
-    }
-  }
-
-  /// Creates from the modbus_client library's [ModbusElementType].
-  static ModbusRegisterType fromModbusElementType(ModbusElementType type) {
-    switch (type) {
-      case ModbusElementType.coil:
-        return ModbusRegisterType.coil;
-      case ModbusElementType.discreteInput:
-        return ModbusRegisterType.discreteInput;
-      case ModbusElementType.holdingRegister:
-        return ModbusRegisterType.holdingRegister;
-      case ModbusElementType.inputRegister:
-        return ModbusRegisterType.inputRegister;
-      default:
-        throw ArgumentError('Unsupported ModbusElementType: $type');
-    }
-  }
-}
-
-/// Configuration for a named Modbus poll group.
-///
-/// Poll groups allow registers to be read at different intervals (e.g. fast
-/// control loop vs slow diagnostics).
-@JsonSerializable(explicitToJson: true)
-class ModbusPollGroupConfig {
-  String name;
-  @JsonKey(name: 'interval_ms')
-  int intervalMs;
-
-  ModbusPollGroupConfig({required this.name, this.intervalMs = 1000});
-
-  /// Convenience getter for use with Timer/Duration APIs.
-  Duration get interval => Duration(milliseconds: intervalMs);
-
-  factory ModbusPollGroupConfig.fromJson(Map<String, dynamic> json) =>
-      _$ModbusPollGroupConfigFromJson(json);
-  Map<String, dynamic> toJson() => _$ModbusPollGroupConfigToJson(this);
-
-  @override
-  String toString() =>
-      'ModbusPollGroupConfig(name: $name, intervalMs: $intervalMs)';
-}
-
-/// Top-level configuration for a single Modbus TCP server connection.
-///
-/// Parallels [M2400Config] and [OpcUAConfig] in the config hierarchy.
-@JsonSerializable(explicitToJson: true)
-class ModbusConfig implements ServerConfigEntry {
-  String host;
-  int port;
-  @JsonKey(name: 'unit_id')
-  int unitId;
-  @JsonKey(name: 'server_alias')
-  String? serverAlias;
-
-  /// See [OpcUAConfig.enabled].
-  @JsonKey(defaultValue: true)
-  bool enabled;
-  @JsonKey(name: 'poll_groups', defaultValue: [])
-  List<ModbusPollGroupConfig> pollGroups;
-  @JsonKey(name: 'umas_enabled', defaultValue: false)
-  bool umasEnabled;
-  @JsonKey(defaultValue: ModbusEndianness.ABCD)
-  ModbusEndianness endianness;
-  @JsonKey(name: 'address_base', defaultValue: 0)
-  int addressBase;
-
-  ModbusConfig({
-    this.host = '',
-    this.port = 502,
-    int unitId = 1,
-    this.serverAlias,
-    this.pollGroups = const [],
-    this.umasEnabled = false,
-    this.endianness = ModbusEndianness.ABCD,
-    this.addressBase = 0,
-    this.enabled = true,
-  }) : unitId = unitId.clamp(0, 255);
-
-  factory ModbusConfig.fromJson(Map<String, dynamic> json) =>
-      _$ModbusConfigFromJson(json);
-  Map<String, dynamic> toJson() => _$ModbusConfigToJson(this);
-
-  @override
-  String toString() =>
-      'ModbusConfig(host: $host, port: $port, unitId: $unitId, alias: $serverAlias, pollGroups: $pollGroups, enabled: $enabled)';
-}
-
-/// Per-key configuration that describes which Modbus register a key maps to.
-///
-/// Parallels [M2400NodeConfig] and [OpcUANodeConfig] in the keymappings.
-@JsonSerializable(explicitToJson: true)
-class ModbusNodeConfig {
-  @JsonKey(name: 'server_alias')
-  String? serverAlias;
-  @JsonKey(name: 'register_type')
-  ModbusRegisterType registerType;
-  int address;
-  @JsonKey(name: 'data_type')
-  ModbusDataType dataType;
-  @JsonKey(name: 'poll_group')
-  String pollGroup;
-
-  ModbusNodeConfig({
-    this.serverAlias,
-    required this.registerType,
-    required int address,
-    this.dataType = ModbusDataType.uint16,
-    this.pollGroup = 'default',
-  }) : address = address.clamp(0, 65535);
-
-  factory ModbusNodeConfig.fromJson(Map<String, dynamic> json) =>
-      _$ModbusNodeConfigFromJson(json);
-  Map<String, dynamic> toJson() => _$ModbusNodeConfigToJson(this);
-
-  @override
-  String toString() =>
-      'ModbusNodeConfig(alias: $serverAlias, registerType: $registerType, address: $address, dataType: $dataType, pollGroup: $pollGroup)';
-}
-
-@JsonSerializable(explicitToJson: true)
-class StateManConfig {
-  List<OpcUAConfig> opcua;
-  @JsonKey(defaultValue: [])
-  List<M2400Config> jbtm;
-  @JsonKey(defaultValue: [])
-  List<ModbusConfig> modbus;
-
-  StateManConfig(
-      {required this.opcua, this.jbtm = const [], this.modbus = const []});
-
-  StateManConfig copy() => StateManConfig.fromJson(toJson());
-
-  /// Every configured server, regardless of protocol or enabled state.
-  List<ServerConfigEntry> get allServers => [...opcua, ...jbtm, ...modbus];
-
-  /// Only the servers that should actually be connected to.
-  List<OpcUAConfig> get enabledOpcua => opcua.where((c) => c.enabled).toList();
-  List<M2400Config> get enabledJbtm => jbtm.where((c) => c.enabled).toList();
-  List<ModbusConfig> get enabledModbus =>
-      modbus.where((c) => c.enabled).toList();
-
-  /// Normalises an alias so a missing alias and an empty one are the same
-  /// bucket — the UI writes `null` for a cleared alias field but imported
-  /// JSON often carries `""`.
-  static String? normalizeAlias(String? alias) =>
-      (alias == null || alias.isEmpty) ? null : alias;
-
-  /// Aliases that resolve to nothing but disabled servers.
-  ///
-  /// An alias shared by a disabled and an enabled entry is *not* disabled —
-  /// the enabled one still serves its keys. `null` in the returned set means
-  /// the unnamed (aliasless) server is off.
-  Set<String?> get disabledServerAliases {
-    final enabled = <String?>{};
-    final disabled = <String?>{};
-    for (final server in allServers) {
-      final alias = normalizeAlias(server.serverAlias);
-      (server.enabled ? enabled : disabled).add(alias);
-    }
-    return disabled.difference(enabled);
-  }
-
-  /// Whether keys pointing at [alias] should be acquired at all.
-  bool isServerEnabled(String? alias) =>
-      !disabledServerAliases.contains(normalizeAlias(alias));
-
-  @override
-  String toString() {
-    return 'StateManConfig(opcua: ${opcua.toString()}, jbtm: ${jbtm.toString()}, modbus: ${modbus.toString()})';
-  }
-
-  static Future<StateManConfig> fromFile(String path) async {
-    final file = File(path);
-    if (!await file.exists()) {
-      throw Exception('Config file not found: $path');
-    }
-    final contents = await file.readAsString();
-    final Map<String, dynamic> json;
-    try {
-      json = jsonDecode(contents) as Map<String, dynamic>;
-    } on FormatException catch (e) {
-      throw Exception('Invalid JSON in config file: $path - ${e.message}');
-    }
-    return StateManConfig.fromJson(json);
-  }
-
-  static Future<StateManConfig> fromPrefs(Preferences prefs) async {
-    var configJson = await prefs.getString(configKey, secret: true);
-    if (configJson == null) {
-      configJson = jsonEncode(StateManConfig(opcua: [OpcUAConfig()]).toJson());
-      await prefs.setString(configKey, configJson,
-          secret: true, saveToDb: false);
-    }
-    return StateManConfig.fromJson(jsonDecode(configJson));
-  }
-
-  Future<void> toPrefs(Preferences prefs) async {
-    final configJson = jsonEncode(toJson());
-    await prefs.setString(configKey, configJson, secret: true, saveToDb: false);
-  }
-
-  factory StateManConfig.fromJson(Map<String, dynamic> json) =>
-      _$StateManConfigFromJson(json);
-  Map<String, dynamic> toJson() => _$StateManConfigToJson(this);
-
-  static const String configKey = 'state_man_config';
-}
-
-@JsonSerializable(explicitToJson: true)
-class OpcUANodeConfig {
-  int namespace;
-  String identifier;
-  // I only want to support one dimension arrays, I dont think it is relevant to support multi-dimensional arrays
-  @JsonKey(name: 'array_index')
-  int? arrayIndex;
-  @JsonKey(name: 'server_alias')
-  String? serverAlias;
-
-  OpcUANodeConfig({required this.namespace, required this.identifier});
-
-  (NodeId, int?) toNodeId() {
-    if (int.tryParse(identifier) != null) {
-      return (NodeId.fromNumeric(namespace, int.parse(identifier)), arrayIndex);
-    }
-    return (NodeId.fromString(namespace, identifier), arrayIndex);
-  }
-
-  factory OpcUANodeConfig.fromJson(Map<String, dynamic> json) =>
-      _$OpcUANodeConfigFromJson(json);
-  Map<String, dynamic> toJson() => _$OpcUANodeConfigToJson(this);
-
-  @override
-  String toString() {
-    return 'OpcUANodeConfig(namespace: $namespace, identifier: $identifier)';
-  }
-}
-
-@JsonSerializable(explicitToJson: true)
-class KeyMappingEntry {
-  @JsonKey(name: 'opcua_node')
-  OpcUANodeConfig? opcuaNode;
-  @JsonKey(name: 'm2400_node')
-  M2400NodeConfig? m2400Node;
-  @JsonKey(name: 'modbus_node')
-  ModbusNodeConfig? modbusNode;
-  bool? io; // if true, the key is an IO unit
-  CollectEntry? collect;
-
-  /// Optional bit mask for extracting bits from integer values.
-  /// When set, reads extract (value & bitMask) >>> bitShift.
-  /// Single-bit mask produces bool; multi-bit produces int.
-  @JsonKey(name: 'bit_mask')
-  int? bitMask;
-
-  /// Bit shift applied after masking (position of lowest set bit in mask).
-  @JsonKey(name: 'bit_shift')
-  int? bitShift;
-
-  /// Optional UMAS symbol path (e.g. `B_F1_RC_01_Front` or
-  /// `M_Elevator.i_isAuto`). When set on a key whose server has UMAS
-  /// enabled, the polled value is read by UMAS variable name rather than
-  /// translated to a Modbus address — Schneider PLCs only expose
-  /// `%MW`-located variables on the FC03 register map, so symbolic
-  /// variables fail to read via plain Modbus addressing.
-  ///
-  /// `null` means classic Modbus addressing (the address + bit fields are
-  /// the read source). When `variableName != null` but the server has
-  /// `umasEnabled == false`, the key is invalid and the UI surfaces an
-  /// Error badge — the address-space fallback is intentionally not silent.
-  ///
-  /// JSON key is `variable_name` for snake_case parity with the other
-  /// fields. Existing entries deserialize cleanly because `defaultValue`
-  /// is `null` (see `_$KeyMappingEntryFromJson` in `state_man.g.dart`).
-  @JsonKey(name: 'variable_name', defaultValue: null)
-  String? variableName;
-
-  String? get server =>
-      opcuaNode?.serverAlias ??
-      m2400Node?.serverAlias ??
-      modbusNode?.serverAlias;
-
-  KeyMappingEntry({
-    this.opcuaNode,
-    this.m2400Node,
-    this.modbusNode,
-    this.collect,
-    this.bitMask,
-    this.bitShift,
-    this.variableName,
-  });
-
-  KeyMappingEntry copyWith({
-    OpcUANodeConfig? opcuaNode,
-    M2400NodeConfig? m2400Node,
-    ModbusNodeConfig? modbusNode,
-    CollectEntry? collect,
-    int? bitMask,
-    int? bitShift,
-    bool clearBitMask = false,
-    String? variableName,
-    bool clearVariableName = false,
-  }) {
-    return KeyMappingEntry(
-      opcuaNode: opcuaNode ?? this.opcuaNode,
-      m2400Node: m2400Node ?? this.m2400Node,
-      modbusNode: modbusNode ?? this.modbusNode,
-      collect: collect ?? this.collect,
-      bitMask: clearBitMask ? null : (bitMask ?? this.bitMask),
-      bitShift: clearBitMask ? null : (bitShift ?? this.bitShift),
-      variableName:
-          clearVariableName ? null : (variableName ?? this.variableName),
-    )..io = io;
-  }
-
-  factory KeyMappingEntry.fromJson(Map<String, dynamic> json) =>
-      _$KeyMappingEntryFromJson(json);
-  Map<String, dynamic> toJson() => _$KeyMappingEntryToJson(this);
-
-  @override
-  String toString() {
-    return 'KeyMappingEntry(opcuaNode: ${opcuaNode?.toString()}, m2400Node: ${m2400Node?.toString()}, modbusNode: ${modbusNode?.toString()}, collect: $collect, io: $io'
-        '${variableName != null ? ', variableName: $variableName' : ''})';
-  }
-}
-
-@JsonSerializable(explicitToJson: true)
-class KeyMappings {
-  Map<String, KeyMappingEntry> nodes;
-
-  KeyMappings({required this.nodes});
-
-  (NodeId, int?)? lookupNodeId(String key) {
-    final direct = nodes[key]?.opcuaNode?.toNodeId();
-    if (direct != null) return direct;
-    final derived = _derive(key);
-    if (derived == null) return null;
-    final (node, suffix) = derived;
-    return (NodeId.fromString(node.namespace, node.identifier + suffix), null);
-  }
-
-  String? lookupServerAlias(String key) {
-    final entry = nodes[key];
-    if (entry != null) {
-      return entry.opcuaNode?.serverAlias ??
-          entry.m2400Node?.serverAlias ??
-          entry.modbusNode?.serverAlias;
-    }
-    return _derive(key)?.$1.serverAlias;
-  }
-
-  /// What may follow a mapped key to name one of its children: an element
-  /// index first, then any mix of further indices and `.member` steps.
-  static final RegExp _derivedSuffix =
-      RegExp(r'^\[\d+\](?:\[\d+\]|\.[A-Za-z_][A-Za-z0-9_]*)*$');
-
-  /// [key] read as a mapped array node plus a path into it, or null.
-  ///
-  /// `ECT.Diag[17].p_cmd_reset`, with `ECT.Diag` mapped to the string node
-  /// `ECT_Diag.Device_1_Diag`, names `ECT_Diag.Device_1_Diag[17].p_cmd_reset`
-  /// on the same server. That is how TwinCAT spells the child nodes it
-  /// publishes, so a single BOOL deep in a 128-element array can be written
-  /// without a key mapping of its own — and without writing the whole array
-  /// back to change one bit of it.
-  ///
-  /// Deliberately narrow. The suffix must start with an element index, so a
-  /// misspelt dotted key (`SPB01.CN01.FD01` when only `SPB01.CN01` exists)
-  /// still reads as unmapped rather than as a child nobody meant. Only string
-  /// identifiers qualify — a numeric node id has no path to append to — and
-  /// only a mapping without an `array_index`, which already names one element.
-  /// The longest mapped prefix wins. Nothing here is persisted: a derived key
-  /// is a way of naming a child, not a mapping.
-  (OpcUANodeConfig, String)? _derive(String key) {
-    for (var i = key.lastIndexOf('['); i > 0; i = key.lastIndexOf('[', i - 1)) {
-      final node = nodes[key.substring(0, i)]?.opcuaNode;
-      if (node == null) continue;
-      final suffix = key.substring(i);
-      if (node.arrayIndex != null ||
-          int.tryParse(node.identifier) != null ||
-          !_derivedSuffix.hasMatch(suffix)) {
-        return null;
-      }
-      return (node, suffix);
-    }
-    return null;
-  }
-
-  String? lookupKey(NodeId nodeId) {
-    return nodes.entries.firstWhereOrNull((entry) {
-      final result = entry.value.opcuaNode?.toNodeId();
-      if (result == null) return false;
-      final (entryNodeId, _) = result;
-      return entryNodeId == nodeId;
-    })?.key;
-  }
-
-  Iterable<String> get keys => nodes.keys;
-
-  /// Filter key mappings to only include entries for a specific server alias.
-  KeyMappings filterByServer(String? serverAlias) {
-    final filtered = Map.fromEntries(
-      nodes.entries.where((e) => e.value.server == serverAlias),
-    );
-    return KeyMappings(nodes: filtered);
-  }
-
-  // `fromPrefs` was here, and it is deleted rather than deprecated (v1.2 phase
-  // 2, plan 06). Left alive after the cutover it was a loaded gun: the blob it
-  // read is no longer loaded into the preference cache, so it would have found
-  // null, taken its `createDefault` branch, and written the two-key example
-  // mapping back over a fully wired plant. The shared configuration store —
-  // `ConfigStore.keyMappings`, one row per key — is the only read path.
-
-  factory KeyMappings.fromJson(Map<String, dynamic> json) =>
-      _$KeyMappingsFromJson(json);
-  Map<String, dynamic> toJson() => _$KeyMappingsToJson(this);
-}
-
-/// What [StateMan.updateKeyMappings] applied in place, and whether the
-/// caller still needs to rebuild the whole StateMan.
-///
-/// The apply is incremental by design: unchanged keys are untouched (no
-/// reconnects, no resubscriptions), OPC UA edits are re-pointed live, and
-/// UMAS-by-name edits propagate through the adapter hooks. Only edits whose
-/// state is frozen at construction time (classic-Modbus register specs,
-/// M2400 extraction captured per widget stream) ask for a reload.
-class KeyMappingsUpdateResult {
-  /// Keys present in the new mappings but not the old.
-  final Set<String> added;
-
-  /// Keys present in the old mappings but not the new.
-  final Set<String> removed;
-
-  /// Keys present in both whose entry differs.
-  final Set<String> changed;
-
-  /// Changed keys whose live OPC UA monitor was re-pointed in place.
-  final Set<String> resubscribed;
-
-  /// Human-readable reasons a full StateMan rebuild is still required.
-  /// Empty when the whole edit was applied live.
-  final List<String> reloadReasons;
-
-  bool get requiresReload => reloadReasons.isNotEmpty;
-
-  const KeyMappingsUpdateResult({
-    required this.added,
-    required this.removed,
-    required this.changed,
-    required this.resubscribed,
-    required this.reloadReasons,
-  });
-
-  @override
-  String toString() =>
-      'KeyMappingsUpdateResult(added: ${added.length}, removed: '
-      '${removed.length}, changed: ${changed.length}, resubscribed: '
-      '${resubscribed.length}, requiresReload: $requiresReload'
-      '${requiresReload ? ', reasons: ${reloadReasons.join('; ')}' : ''})';
-}
-
-class StateManException implements Exception {
-  final String message;
-  StateManException(this.message);
-  @override
-  String toString() => 'StateManException: $message';
-}
-
-/// Thrown when a key is routed to a server the operator switched off.
-///
-/// Distinct from a plain [StateManException] so callers can tell "this key
-/// is parked on purpose" from "this key is broken" — the key repository
-/// renders it as a grey Disabled badge rather than a red Error one. Raised
-/// without logging: an offline PLC with hundreds of keys would otherwise
-/// reproduce the very log flood disabling it is meant to stop.
-class ServerDisabledException extends StateManException {
-  /// The alias that is switched off (`null` for the unnamed server).
-  final String? serverAlias;
-
-  ServerDisabledException(String key, this.serverAlias)
-      : super('Key "$key" belongs to disabled server '
-            '"${serverAlias ?? '<unnamed>'}"');
-
-  @override
-  String toString() => 'ServerDisabledException: $message';
-}
-
-class SingleWorker {
-  List<Completer<bool>> waiters = [];
-
-  /// How long a waiter blocks before giving up on the current owner.
-  ///
-  /// The owner only calls [complete] from the `finally` of its own work, so a
-  /// PLC (or isolate) that never answers means that `finally` never runs. An
-  /// unbounded wait here then parks every other key on the server with no
-  /// retry and no log. Giving up returns `false`, which puts the caller back
-  /// on its normal retry ladder -- it re-checks whether the work is still
-  /// needed before trying again, so this can never create duplicate work.
-  final Duration waitTimeout;
-
-  SingleWorker({this.waitTimeout = const Duration(seconds: 5)});
-
-  Future<bool> doTheWork() async {
-    final completer = Completer<bool>();
-    waiters.add(completer);
-    if (waiters.length == 1) {
-      completer.complete(true);
-      return completer.future;
-    }
-
-    return completer.future.timeout(waitTimeout, onTimeout: () {
-      waiters.remove(completer);
-      return false;
-    });
-  }
-
-  void complete() {
-    for (final waiter in waiters) {
-      if (!waiter.isCompleted) {
-        waiter.complete(false);
-      }
-    }
-    waiters.clear();
-  }
-}
-
-enum ConnectionStatus { connected, connecting, disconnected }
-
-/// TD-004 (v1.1.x): a derived health status that combines TCP socket
-/// state with protocol-layer state (UMAS session). Surfaces the case
-/// where TCP is up but every UMAS read/write fails because the PLC's
-/// Data Dictionary is disabled or the session refuses to pair —
-/// previously rendered as a green "Connected" chip while every key
-/// card on the page showed an error badge.
-///
-/// Mapping:
-///   - [disconnected] / [connecting] / [connected]: same as the pure
-///     TCP states for adapters where UMAS is OFF or no operation has
-///     attempted to pair yet.
-///   - [umasUnhealthy]: TCP is connected, `umasEnabled == true`, but
-///     the UMAS session is not `paired` (init failed, identification
-///     failed, or the session was reset by a recent protocol error).
-///   - [opcuaUnhealthy]: the OPC UA client's last known state says
-///     connected, but the data plane is dead: the heartbeat monitored
-///     item (server time, same subscription as every data key) has not
-///     ticked within [ClientWrapper.heartbeatStaleAfter], or the
-///     session/subscription is known lost. This is the frozen-session
-///     shape from docs/opcua-frozen-session-repro.md — TCP Established,
-///     channel formally open, no state event ever emitted again — which
-///     a purely event-driven status can never catch.
-///   - [opcuaUnmonitored]: the client could not be given a heartbeat
-///     ([ClientWrapper.heartbeatUnavailable] is set), so nothing is
-///     watching it. That is a *diagnostic* failure, not a data failure:
-///     the session is open and its existing data subscriptions may be —
-///     and on the plant, were — delivering sub-second values throughout.
-///     Kept distinct from [opcuaUnhealthy] because collapsing the two
-///     put "No data" on a server whose data was demonstrably fine, and
-///     two people spent half an hour chasing the wrong thing. "Nobody is
-///     watching this client" and "this client's values have stopped" are
-///     different facts and they need different words.
-enum EffectiveDeviceStatus {
-  disconnected,
-  connecting,
-  connected,
-  umasUnhealthy,
-  opcuaUnhealthy,
-  opcuaUnmonitored,
-}
+import 'auto_disposing_stream.dart';
+import 'state_man_types.dart';
+
+// The configuration types, the key mappings and the [StateMan] interface moved
+// to `state_man_types.dart` so that a build with no `dart:ffi` can still name
+// them. Re-exported so every existing `import 'state_man.dart'` is unaffected.
+export 'state_man_types.dart';
+export 'auto_disposing_stream.dart';
+
+/// Kept re-exported: `fromPrefs` is called from several places that also build
+/// a client, and they should not need two imports for one config object.
+export 'state_man_config_storage.dart';
 
 class ClientWrapper {
   final ClientApi client;
@@ -1571,46 +729,6 @@ class ClientWrapper {
   }
 }
 
-/// Protocol-agnostic device client interface.
-///
-/// Abstracts the subscribe/status pattern shared by different device protocols
-/// (OPC UA via [ClientWrapper], M2400 via M2400ClientWrapper, etc.).
-///
-/// Implementations define [subscribableKeys] and [canSubscribe] to declare
-/// which keys they handle. [StateMan.subscribe] checks device clients first,
-/// falling through to OPC UA if no device client claims the key.
-abstract class DeviceClient {
-  /// The set of top-level keys this device client can handle.
-  Set<String> get subscribableKeys;
-
-  /// Whether this client can handle a subscribe request for [key].
-  ///
-  /// Should return true for both top-level keys (e.g., 'BATCH') and
-  /// dot-notation keys (e.g., 'BATCH.weight') if the root is subscribable.
-  bool canSubscribe(String key);
-
-  /// Subscribe to a DynamicValue stream by key.
-  Stream<DynamicValue> subscribe(String key);
-
-  /// Read the last known value for [key], or null if unavailable.
-  DynamicValue? read(String key);
-
-  /// Current connection status (synchronous).
-  ConnectionStatus get connectionStatus;
-
-  /// Stream of connection status changes.
-  Stream<ConnectionStatus> get connectionStream;
-
-  /// Start connecting to the device.
-  void connect();
-
-  /// Write a value to the device by key.
-  Future<void> write(String key, DynamicValue value);
-
-  /// Dispose resources.
-  void dispose();
-}
-
 /// Adapter that wraps [M2400ClientWrapper] from the jbtm package as a
 /// [DeviceClient] for use in [StateMan].
 ///
@@ -1685,30 +803,10 @@ List<DeviceClient> createM2400DeviceClients(List<M2400Config> configs) {
   }).toList();
 }
 
-class StateMan {
+class OpcUaStateMan implements StateMan {
   final logger = Logger();
   final StateManConfig config;
   KeyMappings keyMappings;
-
-  /// Apply bit mask extraction to a raw [DynamicValue].
-  ///
-  /// Returns the original value unchanged if [bitMask] is null.
-  /// Single-bit mask returns bool; multi-bit returns int.
-  /// Non-numeric values pass through unchanged.
-  static DynamicValue applyBitMask(
-      DynamicValue value, int? bitMask, int? bitShift) {
-    if (bitMask == null) return value;
-    final raw = value.value;
-    if (raw is! num) return value;
-    final intValue = raw.toInt();
-    final masked = (intValue & bitMask) >>> (bitShift ?? 0);
-    // Single-bit: power of two check (exactly one bit set)
-    final isSingle = bitMask != 0 && (bitMask & (bitMask - 1)) == 0;
-    if (isSingle) {
-      return DynamicValue(value: masked != 0, typeId: NodeId.boolean);
-    }
-    return DynamicValue(value: masked, typeId: value.typeId);
-  }
 
   final List<ClientWrapper> clients;
   final List<DeviceClient> deviceClients;
@@ -1735,7 +833,7 @@ class StateMan {
   String alias;
 
   /// Constructor requires the server endpoint.
-  StateMan._({
+  OpcUaStateMan._({
     required this.config,
     required this.keyMappings,
     required this.clients,
@@ -1884,7 +982,7 @@ class StateMan {
     }
   }
 
-  static Future<StateMan> create({
+  static Future<OpcUaStateMan> create({
     required StateManConfig config,
     required KeyMappings keyMappings,
     bool useIsolate = true,
@@ -1944,7 +1042,7 @@ class StateMan {
         resendOnRecovery: resendOnRecovery,
       ));
     }
-    final stateMan = StateMan._(
+    final stateMan = OpcUaStateMan._(
         config: config,
         keyMappings: keyMappings,
         clients: clients,
@@ -2049,10 +1147,10 @@ class StateMan {
     for (final key in keysToResub) {
       final ads = _subscriptions[key];
       logger.d('[$alias] resub $key: exists=${ads != null}, '
-          'hasRawSub=${ads?._rawSub != null}');
-      if (ads != null && ads._rawSub != null) {
-        final oldSub = ads._rawSub;
-        ads._rawSub = null;
+          'hasRawSub=${ads?.rawSub != null}');
+      if (ads != null && ads.rawSub != null) {
+        final oldSub = ads.rawSub;
+        ads.rawSub = null;
         oldSub!.cancel(); // fire-and-forget; queues delete via FFI
       }
     }
@@ -2291,7 +1389,7 @@ class StateMan {
       }
       // Apply bit mask if configured on this key
       final entry = keyMappings.nodes[key];
-      return applyBitMask(value, entry?.bitMask, entry?.bitShift);
+      return StateMan.applyBitMask(value, entry?.bitMask, entry?.bitShift);
     } catch (e) {
       throw StateManException('Failed to read key: \"$key\": $e');
     }
@@ -2581,10 +1679,10 @@ class StateMan {
       final ads = _subscriptions.remove(key);
       if (ads == null) continue;
       logger.i('[$alias] key mapping removed, closing live stream: $key');
-      ads._idleTimer?.cancel();
-      ads._rawSub?.cancel();
-      ads._rawSub = null;
-      if (!ads._subject.isClosed) ads._subject.close();
+      ads.idleTimer?.cancel();
+      ads.rawSub?.cancel();
+      ads.rawSub = null;
+      if (!ads.subject.isClosed) ads.subject.close();
       _unregisterStream(ads);
     }
 
@@ -2595,15 +1693,15 @@ class StateMan {
     for (final key in changed) {
       final ads = _subscriptions[key];
       if (ads == null) continue;
-      ads._rawSub?.cancel();
-      ads._rawSub = null;
+      ads.rawSub?.cancel();
+      ads.rawSub = null;
       if (newKeyMappings.nodes[key]?.opcuaNode == null) {
         // The key switched protocols; the old OPC UA stream cannot carry
         // the new routing, so complete it like a removal. Fresh subscribes
         // route through the new protocol.
         _subscriptions.remove(key);
-        ads._idleTimer?.cancel();
-        if (!ads._subject.isClosed) ads._subject.close();
+        ads.idleTimer?.cancel();
+        if (!ads.subject.isClosed) ads.subject.close();
         _unregisterStream(ads);
         continue;
       }
@@ -2763,8 +1861,8 @@ class StateMan {
     }
     // Clean up subscriptions
     for (final entry in _subscriptions.values) {
-      entry._rawSub?.cancel();
-      entry._subject.close();
+      entry.rawSub?.cancel();
+      entry.subject.close();
     }
     _subscriptions.clear();
 
@@ -2953,8 +2051,8 @@ class StateMan {
         // server ever acknowledges the delete before we create its
         // replacement. If deleteAcked stops tracking deleteRequested, the
         // items are accumulating on the PLC.
-        _subscriptions[key]?._rawSub?.cancel();
-        _subscriptions[key]?._rawSub = null;
+        _subscriptions[key]?.rawSub?.cancel();
+        _subscriptions[key]?.rawSub = null;
 
         await client.awaitConnect();
 
@@ -3022,7 +2120,7 @@ class StateMan {
         // deletes live monitored items on the PLC.
         if (_monitorLoopGeneration[key] != gen) return handOver();
         final ads = _subscriptions[key]!;
-        final hadPrevious = ads._rawSub != null;
+        final hadPrevious = ads.rawSub != null;
 
         // Trace, not debug: this fired 13,013 times in one run. The default
         // level used to be trace when CENTROID_LOG_LEVEL was unset, so this
@@ -3063,7 +2161,7 @@ class StateMan {
         final entry = keyMappings.nodes[key];
         if (entry?.bitMask != null) {
           stream = stream.map(
-              (value) => applyBitMask(value, entry!.bitMask, entry.bitShift));
+              (value) => StateMan.applyBitMask(value, entry!.bitMask, entry.bitShift));
         }
 
         // Wait for monitor to deliver first value. No asBroadcastStream()
@@ -3071,7 +2169,7 @@ class StateMan {
         // properly to delete monitored items on retry.
         // Cleared per attempt: otherwise a timeout reports the previous
         // attempt's error as the reason this one failed.
-        _subscriptions[key]?._lastRawError = null;
+        _subscriptions[key]?.lastRawError = null;
         final firstEmission = Completer<void>();
         final wrappedStream = stream.map((value) {
           if (!firstEmission.isCompleted) firstEmission.complete();
@@ -3088,7 +2186,7 @@ class StateMan {
             // Two very different things end up here, because `firstEmission`
             // only completes on a *value*: a server that stayed silent, and
             // one that answered with an error. They need opposite responses.
-            final last = _subscriptions[key]?._lastRawError;
+            final last = _subscriptions[key]?.lastRawError;
             if (last != null) {
               // The server gave a hard answer (BadNodeIdUnknown,
               // BadDeviceFailure, ...). That is a subscription which will not
@@ -3180,144 +2278,60 @@ String unresolvedKeyMessage(String key) {
       'the variable has loaded.';
 }
 
-class AutoDisposingStream<T> {
-  final String key;
-  final ReplaySubject<T> _subject;
-  final Logger _logger = Logger();
-  int _listenerCount = 0;
-  Timer? _idleTimer;
-  StreamSubscription<T>? _rawSub;
-  final Function(String key) _onDispose;
-  T? _lastValue;
+/// Metadata source backed by an OPC-UA [ClientWrapper].
+///
+/// requestsPerSec here approximates protocol load: the native publish rate is
+/// not exposed through the isolate binding, so it counts monitored-item value
+/// emissions (and heartbeat ticks) routed through StateMan's OPC-UA
+/// subscription wiring for this server, sampled per second by [RollingRate].
+class OpcUaConnMetaSource implements ConnMetaSource {
+  final ClientWrapper wrapper;
 
-  /// Set once a permanent (BadNodeIdUnknown) error has been reported for this
-  /// key, so the same dead mapping is not reprinted on every retry.
-  bool _loggedPermanentError = false;
+  /// Count of `keyMappings` entries whose OPC-UA server alias == this server.
+  /// Derived in StateMan (not from the isolate binding) and passed as a live
+  /// closure so it tracks key-mapping edits.
+  final int Function() subscribedKeysFn;
 
-  /// Last error the raw stream reported, so a first-value timeout can name
-  /// the server's actual complaint instead of just saying it timed out.
-  String? _lastRawError;
+  /// The alias this source answers for in `@conn/<alias>/<field>` keys.
+  /// For unnamed servers the caller assigns a stable synthetic identity
+  /// (host:port) — see `StateMan._buildConnMetaRouter`.
+  @override
+  final String metaAlias;
 
-  final Duration idleTimeout;
-  AutoDisposingStream(this.key, this._onDispose,
-      {this.idleTimeout = const Duration(minutes: 10)})
-      : _subject = ReplaySubject<T>(maxSize: 1) {
-    // Count UI listeners for idle shutdown:
-    _subject
-      ..onListen = _handleListen
-      ..onCancel = _handleCancel;
-  }
+  OpcUaConnMetaSource(this.wrapper,
+      {required this.subscribedKeysFn, String? metaAlias})
+      : metaAlias = metaAlias ?? wrapper.config.serverAlias ?? '';
 
-  Stream<T> get stream => _subject.stream;
+  @override
+  bool get isModbus => false;
 
-  /// True once the subject is closed and this entry can never deliver again.
-  ///
-  /// A closed subject hands a new listener the replay buffer and then `done`,
-  /// which looks to a widget exactly like a key that has stopped updating.
-  /// [StateMan._monitor] checks this before reusing a cached entry.
-  bool get isSpent => _subject.isClosed;
+  @override
+  Stream<void> get changes => wrapper.connectionStream.map((_) {});
 
-  void subscribe(Stream<T> raw, T? firstValue) {
-    _logger.d('[$key] subscribe() called: '
-        'subjectClosed=${_subject.isClosed}, '
-        'listeners=$_listenerCount, '
-        'hadRawSub=${_rawSub != null}, '
-        'hasFirstValue=${firstValue != null}');
-    _rawSub?.cancel();
-    // wire raw → subject
-    _rawSub = raw.listen(
-      (value) {
-        if (_subject.isClosed) {
-          _logger.e(
-              '[$key] RAW STREAM emitted value but subject is CLOSED — data lost!');
-          return;
-        }
-        _lastValue = value;
-        _subject.add(value);
-      },
-      onError: (error, stackTrace) {
-        // BadNodeIdUnknown is the server's final answer: that node does not
-        // exist in its address space, so every retry will get the same reply.
-        // Log it once at error level and then stay quiet, rather than
-        // reprinting the same dead mapping on every reconnect and burying the
-        // faults that are actually actionable.
-        _lastRawError = '$error';
-        final permanent = '$error'.contains('BadNodeIdUnknown');
-        if (permanent && _loggedPermanentError) {
-          // already reported; swallow the repeat
-        } else {
-          _logger.e('[$key] raw stream error: $error'
-              '${permanent ? " (node does not exist -- fix or remove this key "
-                  "mapping; further repeats suppressed)" : ""}');
-          if (permanent) _loggedPermanentError = true;
-        }
-        if (!_subject.isClosed) {
-          _subject.addError(error, stackTrace);
-        }
-      },
-      onDone: () {
-        _logger.w('[$key] raw stream DONE — '
-            'subject will close! listeners=$_listenerCount, '
-            'subjectClosed=${_subject.isClosed}');
-        // A spent entry must not leave an idle timer armed. _onDispose
-        // removes BY KEY, so a timer surviving into the next subscription for
-        // this key would evict the live entry that replaced this one, and the
-        // subscriber after that would ask the PLC for four more monitored
-        // items while the displaced entry kept streaming.
-        _idleTimer?.cancel();
-        _idleTimer = null;
-        _subject.close();
-        // Retire the entry as well. The idle path already does both -- it
-        // calls _onDispose before closing -- but this one used to close and
-        // leave the entry in StateMan._subscriptions, so the next subscriber
-        // for this key was handed a closed subject and saw nothing. That is
-        // what made a readout stay blank on returning to a page while
-        // selecting a different key worked: the different key had no cached
-        // entry to inherit.
-        _onDispose(key);
-      },
+  @override
+  ConnMeta snapshot() {
+    final ep = parseOpcEndpoint(wrapper.config.endpoint);
+    final status = wrapper.connectionStatus;
+    final age = wrapper.lastDataAgeSec;
+    return ConnMeta(
+      isModbus: false,
+      state: status.name,
+      connected: status == ConnectionStatus.connected,
+      destIp: ep.host,
+      destPort: ep.port,
+      requestsPerSec: wrapper.requestsPerSec,
+      uptimeSec: wrapper.uptimeSec,
+      reconnectCount: wrapper.reconnectCount,
+      lastError: wrapper.lastError,
+      endpoint: wrapper.config.endpoint,
+      channelState: wrapper.channelStateName,
+      sessionState: wrapper.sessionStateName,
+      statusCode: wrapper.recoveryStatus,
+      subscribedKeys: subscribedKeysFn(),
+      lastDataAgeSec: age,
+      health: wrapper.effectiveStatus.name,
+      healthDetail: wrapper.healthDetail ?? '',
+      heartbeatAgeSec: wrapper.heartbeatAgeSec,
     );
-    _lastValue = firstValue;
-    if (firstValue != null) {
-      if (_subject.isClosed) {
-        _logger.e('[$key] subject is CLOSED, cannot add firstValue!');
-      } else {
-        _subject.add(firstValue);
-        _logger.d('[$key] firstValue pushed to subject');
-      }
-    }
-  }
-
-  void _handleListen() {
-    _listenerCount++;
-    _idleTimer?.cancel();
-    _logger.d('[$key] listener added (count=$_listenerCount)');
-  }
-
-  void _handleCancel() {
-    _listenerCount--;
-    _logger.d('[$key] listener removed (count=$_listenerCount)');
-    // Nothing left to retire, and nothing that may outlive this entry.
-    if (_subject.isClosed) return;
-    if (_listenerCount == 0) {
-      _logger.w(
-          '[$key] no listeners left, starting ${idleTimeout.inSeconds}s idle timer');
-      _idleTimer = Timer(idleTimeout, () {
-        _logger.w('[$key] idle timer fired — disposing');
-        _rawSub?.cancel(); // tear down the OPC-UA monitoredItem
-        _onDispose(key); // remove from StateMan._subscriptions
-        _subject.close(); // close the replay buffer
-      });
-    }
-  }
-
-  void resendLastValue() {
-    // A spent entry can still be reachable from ClientWrapper.streams; adding
-    // to its closed subject throws StateError, which would abort the recovery
-    // loop and leave every later key on that server unrefreshed.
-    if (_subject.isClosed) return;
-    if (_lastValue != null) {
-      _subject.add(_lastValue!);
-    }
   }
 }

@@ -10,7 +10,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:postgres/postgres.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:tfc/providers/database.dart';
-import 'package:tfc_mcp_server/tfc_mcp_server.dart'
+import 'package:tfc_mcp_server/tfc_mcp_server_data.dart'
     show
         McpConfig,
         McpToolToggles,

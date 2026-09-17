@@ -12,7 +12,7 @@ import 'package:logger/logger.dart';
 import 'package:tfc_access/tfc_access.dart' show AccessDenied;
 import 'package:tfc_dart/core/fuzzy_match.dart';
 import 'package:tfc_dart/core/config/config_store_errors.dart';
-import 'package:tfc_mcp_server/tfc_mcp_server.dart'
+import 'package:tfc_mcp_server/tfc_mcp_server_data.dart'
     show TechDocIndex, TechDocSummary, PlcAssetSummary;
 
 import '../chat/ai_context_action.dart';

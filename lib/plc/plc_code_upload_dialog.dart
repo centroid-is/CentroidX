@@ -3,7 +3,7 @@ import 'package:tfc/widgets/panes/standard_dialog.dart';
 import 'package:tfc/widgets/panes/pane_chrome.dart';
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
-import 'package:tfc_mcp_server/tfc_mcp_server.dart';
+import 'package:tfc_mcp_server/tfc_mcp_server_data.dart';
 
 import 'plc_code_upload_service.dart';
 

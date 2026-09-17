@@ -13,7 +13,7 @@
 library;
 
 import 'package:json_annotation/json_annotation.dart';
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 
 part 'ethercat_subdevice.g.dart';
 

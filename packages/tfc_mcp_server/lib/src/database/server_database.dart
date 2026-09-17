@@ -1,5 +1,8 @@
 import 'package:drift/drift.dart';
-import 'package:drift/native.dart';
+// The opener, behind tfc_dart's seam. `package:drift/native.dart` reaches
+// `sqlite3` and so `dart:ffi`, and this library is in the closure of
+// `providers/chat.dart` — i.e. of the app itself.
+import 'package:tfc_dart/core/sqlite_executor.dart';
 import 'package:drift_postgres/drift_postgres.dart';
 import 'package:postgres/postgres.dart' as pg;
 import 'package:tfc_dart/tfc_dart_core.dart' show McpDatabase;
@@ -289,7 +292,7 @@ class ServerDatabase extends _$ServerDatabase implements McpDatabase {
 
   /// Create an in-memory SQLite database for testing.
   factory ServerDatabase.inMemory() {
-    return ServerDatabase._(NativeDatabase.memory());
+    return ServerDatabase._(sqliteInMemory());
   }
 
   /// Create a PostgreSQL-backed database for production.

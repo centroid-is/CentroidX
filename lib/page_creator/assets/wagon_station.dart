@@ -19,7 +19,7 @@
 /// both — and the tests — decode the same array the same way.
 library;
 
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 
 /// Member names on `ST_WagonStation`.
 ///

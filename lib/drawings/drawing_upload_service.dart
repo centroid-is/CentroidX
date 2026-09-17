@@ -3,7 +3,7 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:pdfrx/pdfrx.dart';
-import 'package:tfc_mcp_server/tfc_mcp_server.dart';
+import 'package:tfc_mcp_server/tfc_mcp_server_data.dart';
 
 /// Service for uploading and managing electrical drawing PDFs.
 ///

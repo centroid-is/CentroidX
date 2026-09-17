@@ -14,3 +14,27 @@ dependencies:
 dev_dependencies:
   test: ^1.25.0
   lints: ^5.0.0
+
+dependency_overrides:
+  open62541:
+    git:
+      url: https://github.com/centroid-is/open62541_dart.git
+      # `web-types`: 1.5.7+3 plus two things a web build cannot do without.
+      #
+      # The NodeId split that gives the package an FFI-free
+      # `open62541_types.dart`: `DynamicValue` used to reach `dart:ffi`
+      # through node_id.dart, which is a hard compile error under dart2js.
+      # Import `open62541_types.dart` for values, `open62541.dart` only where
+      # a real OPC UA client is used.
+      #
+      # And the build hook skipping the native build when no code assets were
+      # asked for. Measured on main (2026-09-17): `flutter build web` dies in
+      # `_buildMbedTLS` with "Null check operator used on a null value" out of
+      # `CodeConfig._fromJson`, because a web target requests no code assets
+      # and the hook read the config anyway. Nothing in this repository can
+      # build for the web until this SHA.
+      #
+      # Pinned to a SHA, not a branch. Every open62541 override in this repo
+      # carries THIS SHA — two packages in one process resolving two different
+      # open62541 builds is not a state this repository should be in.
+      ref: 91a497a2f1b2e5c7232c9e229de9a9d67c353edb

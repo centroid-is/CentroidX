@@ -1,6 +1,6 @@
 import 'dart:io';
 
-import 'package:tfc_mcp_server/tfc_mcp_server.dart';
+import 'package:tfc_mcp_server/tfc_mcp_server_data.dart';
 
 /// Thin wrapper around [PlcCodeService] for Flutter UI integration.
 ///

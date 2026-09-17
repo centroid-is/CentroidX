@@ -5,6 +5,7 @@ import 'package:open62541/open62541.dart' show LogLevel;
 import 'package:test/test.dart';
 
 import 'package:tfc_dart/core/log_config.dart';
+import 'package:tfc_dart/core/opcua_log_level.dart';
 
 /// Captures formatted output instead of printing it.
 class _CapturingOutput extends LogOutput {

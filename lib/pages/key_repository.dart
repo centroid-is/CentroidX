@@ -12,7 +12,8 @@ import 'package:path/path.dart' as path;
 import '../widgets/base_scaffold.dart';
 import '../widgets/proposal_visual.dart';
 import '../providers/proposal_state.dart';
-import 'package:tfc_dart/core/state_man.dart';
+import 'package:tfc_dart/core/state_man_types.dart';
+import 'package:tfc_dart/core/state_man_config_storage.dart';
 import 'package:tfc_dart/core/modbus_client_wrapper.dart' show ModbusDataType;
 import 'package:tfc_dart/core/collector.dart';
 import 'package:tfc_dart/core/database.dart';
@@ -1143,7 +1144,7 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
       _invalidateDerived();
       _savedJson = _currentJson();
       final prefs = await ref.read(preferencesProvider.future);
-      _stateManConfig = await StateManConfig.fromPrefs(prefs);
+      _stateManConfig = await StateManConfigStorage.fromPrefs(prefs);
       _rebuildAliasLists();
     } catch (e) {
       _error = e.toString();

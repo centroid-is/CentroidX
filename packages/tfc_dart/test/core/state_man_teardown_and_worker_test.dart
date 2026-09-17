@@ -72,6 +72,7 @@ class ScriptedClientApi implements ClientApi {
     Duration samplingInterval = const Duration(milliseconds: 100),
     bool discardOldest = true,
     int queueSize = 1,
+    bool deliverBadStatus = false,
   }) {
     monitorCalls++;
     final c = StreamController<DynamicValue>();
@@ -94,6 +95,7 @@ class ScriptedClientApi implements ClientApi {
     Duration samplingInterval = const Duration(milliseconds: 100),
     bool discardOldest = true,
     int queueSize = 1,
+    bool deliverBadStatus = false,
   }) =>
       const Stream.empty();
 
@@ -108,7 +110,7 @@ class ScriptedClientApi implements ClientApi {
 
 Future<StateMan> stateManWith(ScriptedClientApi fake,
     {Map<String, KeyMappingEntry>? nodes}) async {
-  final sm = await StateMan.create(
+  final sm = await OpcUaStateMan.create(
     config: StateManConfig(opcua: []),
     keyMappings: KeyMappings(
         nodes: nodes ??

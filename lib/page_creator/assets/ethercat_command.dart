@@ -14,7 +14,7 @@
 library;
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:open62541/open62541.dart' show DynamicValue, NodeId;
+import 'package:open62541/open62541_types.dart' show DynamicValue, NodeId;
 
 import '../../providers/state_man.dart';
 import '../../widgets/tag_access_guard.dart' show writeTag;

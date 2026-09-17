@@ -107,7 +107,7 @@ void main() {
     addTearDown(adapter.dispose);
 
     final db = RecordingDatabase();
-    final stateMan = await StateMan.create(
+    final stateMan = await OpcUaStateMan.create(
       config: StateManConfig(opcua: []),
       keyMappings: KeyMappings(nodes: {}),
     );

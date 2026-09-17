@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
-import 'package:tfc_dart/core/state_man.dart' show KeyMappingEntry, KeyMappings;
-import 'package:tfc_mcp_server/tfc_mcp_server.dart'
+import 'package:tfc_dart/core/state_man_types.dart' show KeyMappingEntry, KeyMappings;
+import 'package:tfc_mcp_server/tfc_mcp_server_data.dart'
     show
         CallGraphData,
         PlcCodeBlock,

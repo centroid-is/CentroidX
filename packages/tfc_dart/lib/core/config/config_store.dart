@@ -70,7 +70,7 @@ import 'package:meta/meta.dart';
 import '../database.dart';
 import '../database_connections.dart';
 import '../database_drift.dart';
-import '../state_man.dart' show KeyMappings;
+import '../state_man_types.dart' show KeyMappings;
 import 'config_change.dart';
 import 'config_diff.dart';
 import 'config_history_policy.dart';

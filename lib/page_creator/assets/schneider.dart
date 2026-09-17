@@ -4,8 +4,13 @@ import 'package:json_annotation/json_annotation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:rxdart/rxdart.dart';
-import 'package:open62541/open62541.dart'
-    show AttributeId, DynamicValue, LocalizedText, NodeId;
+// The FFI-free barrel. Browsing for the field labels is behind a seam — see
+// `core/browse/field_descriptions.dart` — so this file, which the asset
+// registry pulls into every page editor, names no OPC UA session.
+import 'package:open62541/open62541_types.dart'
+    show DynamicValue, LocalizedText, NodeId;
+
+import '../../core/browse/field_descriptions.dart';
 
 import 'common.dart';
 import 'ethercat_asset.dart';
@@ -13,7 +18,7 @@ import 'link_anchors.dart' show NetworkPort;
 import '../../widgets/panes/pane_chrome.dart';
 import '../../widgets/panes/side_pane.dart';
 import '../../painter/schneider/atv320.dart';
-import 'package:tfc_dart/core/state_man.dart';
+import 'package:tfc_dart/core/state_man_types.dart';
 import '../../providers/state_man.dart';
 import '../../widgets/dynamic_value.dart';
 import '../../widgets/memo_stream_builder.dart';
@@ -372,7 +377,7 @@ class _ATV320ConfigPaneState extends ConsumerState<_ATV320ConfigPane> {
   String? _pendingMember;
 
   /// browseName -> {displayName, description} from OPC UA browse
-  Map<String, ({String? displayName, String? description})>? _fieldMeta;
+  Map<String, FieldDescription>? _fieldMeta;
 
   @override
   void initState() {
@@ -382,39 +387,9 @@ class _ATV320ConfigPaneState extends ConsumerState<_ATV320ConfigPane> {
 
   Future<void> _fetchFieldDescriptions() async {
     try {
-      final stateMan = widget.stateMan;
-      final key = stateMan.resolveKey(widget.configKey);
-      final nodeIdResult = stateMan.keyMappings.lookupNodeId(key);
-      if (nodeIdResult == null) return;
-      final (nodeId, _) = nodeIdResult;
-
-      final alias = stateMan.keyMappings.lookupServerAlias(key);
-      final wrapper = stateMan.clients.firstWhere(
-        (w) => w.config.serverAlias == alias,
-      );
-      await wrapper.client.awaitConnect();
-
-      final children = await wrapper.client.browse(nodeId);
-
-      // Batch read descriptions for all children
-      final readParams = <NodeId, List<AttributeId>>{};
-      for (final child in children) {
-        readParams[child.nodeId] = [
-          AttributeId.UA_ATTRIBUTEID_DESCRIPTION,
-          AttributeId.UA_ATTRIBUTEID_DISPLAYNAME,
-        ];
-      }
-      final results = await wrapper.client.readAttribute(readParams);
-
-      final meta = <String, ({String? displayName, String? description})>{};
-      for (final child in children) {
-        final val = results[child.nodeId];
-        meta[child.browseName] = (
-          displayName: val?.displayName?.value,
-          description: val?.description?.value,
-        );
-      }
-
+      final meta =
+          await fetchFieldDescriptions(widget.stateMan, widget.configKey);
+      if (meta.isEmpty) return;
       if (mounted) {
         setState(() => _fieldMeta = meta);
       }

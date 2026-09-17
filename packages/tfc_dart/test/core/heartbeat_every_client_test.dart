@@ -73,6 +73,7 @@ class ScriptedClientApi implements ClientApi {
     Duration samplingInterval = const Duration(milliseconds: 100),
     bool discardOldest = true,
     int queueSize = 1,
+    bool deliverBadStatus = false,
   }) =>
       StreamController<DynamicValue>().stream;
 
@@ -84,6 +85,7 @@ class ScriptedClientApi implements ClientApi {
     Duration samplingInterval = const Duration(milliseconds: 100),
     bool discardOldest = true,
     int queueSize = 1,
+    bool deliverBadStatus = false,
   }) {
     monitoredItemsSubs.add(subscriptionId);
     return heartbeat.stream;
@@ -276,7 +278,7 @@ void main() {
   group('StateMan.connectionsSettled', () {
     test('completes once every client has a clock or a stated reason',
         () async {
-      final stateMan = await StateMan.create(
+      final stateMan = await OpcUaStateMan.create(
         config: StateManConfig(opcua: []),
         keyMappings: KeyMappings(nodes: {}),
       );
@@ -304,7 +306,7 @@ void main() {
     });
 
     test('completes immediately when there are no OPC UA clients', () async {
-      final stateMan = await StateMan.create(
+      final stateMan = await OpcUaStateMan.create(
         config: StateManConfig(opcua: []),
         keyMappings: KeyMappings(nodes: {}),
       );
@@ -316,7 +318,7 @@ void main() {
       // A server that never answers must delay an engine rebuild, but not
       // indefinitely -- an operator who has just reconnected would otherwise
       // be left looking at a renderer that is never rebuilt.
-      final stateMan = await StateMan.create(
+      final stateMan = await OpcUaStateMan.create(
         config: StateManConfig(opcua: []),
         keyMappings: KeyMappings(nodes: {}),
       );
@@ -330,7 +332,7 @@ void main() {
     });
 
     test('every caller gets the same future', () async {
-      final stateMan = await StateMan.create(
+      final stateMan = await OpcUaStateMan.create(
         config: StateManConfig(opcua: []),
         keyMappings: KeyMappings(nodes: {}),
       );

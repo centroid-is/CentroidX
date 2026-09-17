@@ -21,7 +21,7 @@ import '../config/config_store_errors.dart';
 import '../config/key_mapping_codec.dart' as codec;
 import '../config/key_mapping_migration.dart'
     show kKeyMappingsMigratedMarkerId;
-import '../state_man.dart' show KeyMappingEntry, KeyMappings, OpcUANodeConfig;
+import '../state_man_types.dart' show KeyMappingEntry, KeyMappings, OpcUANodeConfig;
 
 /// The `who` of a row written with nobody signed in. Matches
 /// `GuardedPreferences`, because it is the same trail.

@@ -7,14 +7,18 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:rxdart/rxdart.dart';
 
 import 'package:tfc_dart/core/access/guarded_state_man.dart';
-import 'package:tfc_dart/core/modbus_device_client.dart';
-import 'package:open62541/open62541.dart' show DynamicValue;
-import 'package:tfc_dart/core/state_man.dart';
+import 'package:open62541/open62541_types.dart' show DynamicValue;
+// The interface and the config types, never the OPC UA client. Building one
+// is `direct_transport.dart`'s job, behind a compile-time seam: naming
+// `OpcUaStateMan` here would link `dart:ffi` into every library that reaches
+// `stateManProvider`, which is the whole app.
+import 'package:tfc_dart/core/state_man_types.dart';
+import 'package:tfc_dart/core/state_man_config_storage.dart';
+import 'direct_transport.dart';
 import 'access.dart';
 import 'access_policy.dart';
 import 'config_store.dart';
 import 'preferences.dart';
-import 'collector.dart';
 
 part 'state_man.g.dart';
 
@@ -38,7 +42,7 @@ typedef StateManFactory = Future<StateMan> Function({
 /// unit test. Those two properties have no other way to be observed, and both
 /// of them failing looks like nothing at all until it is a plant.
 final stateManFactoryProvider =
-    Provider<StateManFactory>((ref) => StateMan.create);
+    Provider<StateManFactory>((ref) => createOpcUaStateMan);
 
 @Riverpod(keepAlive: true)
 Future<StateMan> stateMan(Ref ref) async {
@@ -57,7 +61,7 @@ Future<StateMan> stateMan(Ref ref) async {
   // store's `seedDefaultIfEmpty`, which only writes against a reachable and
   // genuinely empty shared database.
   final systemPrefs = await ref.read(systemPreferencesProvider.future);
-  final config = await StateManConfig.fromPrefs(systemPrefs);
+  final config = await StateManConfigStorage.fromPrefs(systemPrefs);
 
   // What the shared store holds. A station with no Postgres and an empty
   // mirror boots on empty mappings, which is the honest answer: it has no
@@ -115,16 +119,11 @@ Future<StateMan> stateMan(Ref ref) async {
   );
 
   try {
-    final m2400Clients = createM2400DeviceClients(config.jbtm);
-    final modbusClients = buildModbusDeviceClients(config.modbus, keyMappings);
-    final deviceClients = [...m2400Clients, ...modbusClients];
-    final stateMan = await ref.read(stateManFactoryProvider)(
-        config: config,
-        keyMappings: keyMappings,
-        deviceClients: deviceClients);
-
-    // Initialize collector
-    ref.read(collectorProvider.future);
+    // The device clients, the factory call and the collector, all behind the
+    // transport seam — see `direct_transport.dart`. On a station this is the
+    // same three steps it always was; in a browser it refuses by name.
+    final stateMan = await buildDirectStateMan(ref,
+        config: config, keyMappings: keyMappings);
 
     // The **inner** instance, exactly once. Closing through the decorator
     // would forward to the same call and add nothing but a second path to get

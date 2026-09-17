@@ -1,7 +1,11 @@
 import 'dart:async';
 
-import 'package:tfc_dart/core/state_man.dart';
-import 'package:tfc_mcp_server/tfc_mcp_server.dart'
+import 'package:tfc_dart/core/state_man_types.dart';
+// Native-only, and deliberately so: this browser enumerates live OPC UA
+// sessions, which are `dart:ffi`. It is reached from the in-process MCP
+// server, which a browser does not run.
+import '../core/opcua_sessions.dart';
+import 'package:tfc_mcp_server/tfc_mcp_server_data.dart'
     show BrowseSource, BrowsedNode, BrowsedNodeType, NodeBrowser;
 
 import '../widgets/browse_panel.dart'
@@ -14,7 +18,9 @@ import '../widgets/opcua_browse.dart' show OpcUaBrowseDataSource;
 /// address space behind one `BrowseDataSource`
 /// abstraction. This adapts that to the MCP layer rather than growing a
 /// second browse implementation that would drift from the one operators see.
-/// Only `StateMan.clients` (OPC UA) are enumerated today. UMAS devices live
+/// Only the live OPC UA sessions (`opcUaSessionsOf`) are enumerated today —
+/// they used to be `StateMan.clients`, which is no longer an interface member
+/// because a `ClientWrapper` is `dart:ffi`. UMAS devices live
 /// in `StateMan.deviceClients` and would need `UmasBrowseDataSource` wiring in
 /// here; the NodeBrowser interface is already protocol-agnostic so that can be
 /// added without touching the server package or the tools.
@@ -34,7 +40,7 @@ class StateManNodeBrowser implements NodeBrowser {
 
   @override
   List<BrowseSource> get sources => [
-        for (final w in _stateMan.clients)
+        for (final w in opcUaSessionsOf(_stateMan))
           if (w.config.serverAlias != null)
             BrowseSource(
               alias: w.config.serverAlias!,
@@ -46,7 +52,7 @@ class StateManNodeBrowser implements NodeBrowser {
   BrowseDataSource _sourceFor(String alias) {
     final cached = _sources[alias];
     if (cached != null) return cached;
-    for (final w in _stateMan.clients) {
+    for (final w in opcUaSessionsOf(_stateMan)) {
       if (w.config.serverAlias == alias) {
         final src = OpcUaBrowseDataSource(w.client);
         _sources[alias] = src;
