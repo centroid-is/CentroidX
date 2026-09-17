@@ -46,15 +46,51 @@ class AlarmRule {
   final ExpressionConfig expression;
   final bool acknowledgeRequired;
 
+  /// How long [expression] must hold, without a break, before the alarm goes
+  /// active. Zero raises on the first true evaluation.
+  ///
+  /// An on-delay only: a condition that clears inside the delay never raises
+  /// (and so never clears either), and an active alarm clears the moment its
+  /// condition does. It filters the chatter of a signal that flickers — a
+  /// photo-eye blinking past a gap, a level riding its threshold — without
+  /// hiding a real fault for longer than the delay.
+  ///
+  /// Evaluated wherever the rule is, which in production is the backend's
+  /// headless [AlarmMan]; the activation is stamped when the delay ends.
+  ///
+  /// Stored as whole milliseconds and left out when zero, so a configuration
+  /// with no delays serialises exactly as it did before the field existed.
+  @JsonKey(
+    name: 'onDelayMs',
+    fromJson: _durationFromMs,
+    toJson: _durationToMs,
+    includeIfNull: false,
+  )
+  final Duration onDelay;
+
   AlarmRule({
     required this.level,
     required this.expression,
     required this.acknowledgeRequired,
+    this.onDelay = Duration.zero,
   });
+
+  AlarmRule copyWith({
+    AlarmLevel? level,
+    ExpressionConfig? expression,
+    bool? acknowledgeRequired,
+    Duration? onDelay,
+  }) =>
+      AlarmRule(
+        level: level ?? this.level,
+        expression: expression ?? this.expression,
+        acknowledgeRequired: acknowledgeRequired ?? this.acknowledgeRequired,
+        onDelay: onDelay ?? this.onDelay,
+      );
 
   @override
   String toString() {
-    return 'AlarmRule(level: $level, expression: $expression, acknowledgeRequired: $acknowledgeRequired)';
+    return 'AlarmRule(level: $level, expression: $expression, acknowledgeRequired: $acknowledgeRequired, onDelay: $onDelay)';
   }
 
   factory AlarmRule.fromJson(Map<String, dynamic> json) =>
@@ -67,20 +103,28 @@ class AlarmRule {
     return other is AlarmRule &&
         level == other.level &&
         expression == other.expression &&
-        acknowledgeRequired == other.acknowledgeRequired;
+        acknowledgeRequired == other.acknowledgeRequired &&
+        onDelay == other.onDelay;
   }
 
   @override
-  int get hashCode => Object.hash(level, expression, acknowledgeRequired);
+  int get hashCode =>
+      Object.hash(level, expression, acknowledgeRequired, onDelay);
 
   static AlarmRule from(AlarmRule copy) {
     return AlarmRule(
       level: copy.level,
       expression: ExpressionConfig.from(copy.expression),
       acknowledgeRequired: copy.acknowledgeRequired,
+      onDelay: copy.onDelay,
     );
   }
 }
+
+Duration _durationFromMs(int? ms) => Duration(milliseconds: ms ?? 0);
+
+/// Null for zero, which `includeIfNull: false` then leaves out of the JSON.
+int? _durationToMs(Duration d) => d == Duration.zero ? null : d.inMilliseconds;
 
 @JsonSerializable()
 class AlarmConfig {
@@ -755,6 +799,10 @@ class Alarm {
   Stream<AlarmNotification> onChange(StateMan stateMan) {
     final streamController = StreamController<AlarmNotification>.broadcast();
     final evaluators = <Evaluator>[];
+    // Per rule: the on-delay running for a condition that is true but has not
+    // held long enough yet, and the text it will raise with.
+    final pending = List<Timer?>.filled(config.rules.length, null);
+    final pendingText = List<String?>.filled(config.rules.length, null);
 
     streamController.onListen = () async {
       for (var i = 0; i < config.rules.length; i++) {
@@ -762,19 +810,46 @@ class Alarm {
         final evaluator =
             Evaluator(stateMan: stateMan, expression: rule.expression);
         evaluators.add(evaluator);
+
+        void emit(String? state) {
+          _lastEvaluations[i] = state;
+          streamController.add(AlarmNotification(
+              uid: config.uid,
+              // If this rule is true, the alarm is active
+              active: state != null,
+              expression: state,
+              rule: rule,
+              timestamp: DateTime.now()));
+        }
+
         evaluator.state().listen((state) {
-          // Only emit if state has changed for this rule
-          if (state != _lastEvaluations[i]) {
-            _lastEvaluations[i] = state;
-            // If this rule is true, the alarm is active
-            final alarmState = state != null;
-            streamController.add(AlarmNotification(
-                uid: config.uid,
-                active: alarmState,
-                expression: _lastEvaluations[i],
-                rule: rule,
-                timestamp: DateTime.now()));
+          if (state == null) {
+            // Cleared inside the delay: it never went active, so there is
+            // nothing to clear either.
+            pending[i]?.cancel();
+            pending[i] = null;
+            pendingText[i] = null;
+            if (_lastEvaluations[i] != null) emit(null);
+            return;
           }
+
+          final raised = _lastEvaluations[i] != null;
+          if (raised || rule.onDelay <= Duration.zero) {
+            // Only emit if state has changed for this rule
+            if (state != _lastEvaluations[i]) emit(state);
+            return;
+          }
+
+          // True, not yet raised: hold it for the delay. Later evaluations
+          // while the timer runs only refresh the text, so the alarm raises
+          // with the values as they are when it does.
+          pendingText[i] = state;
+          pending[i] ??= Timer(rule.onDelay, () {
+            pending[i] = null;
+            final text = pendingText[i];
+            pendingText[i] = null;
+            if (text != null && !streamController.isClosed) emit(text);
+          });
         }, onError: (error, stack) {
           streamController.addError(error, stack);
         });
@@ -782,6 +857,11 @@ class Alarm {
     };
 
     streamController.onCancel = () async {
+      for (var i = 0; i < pending.length; i++) {
+        pending[i]?.cancel();
+        pending[i] = null;
+        pendingText[i] = null;
+      }
       for (final evaluator in evaluators) {
         evaluator.cancel();
       }
