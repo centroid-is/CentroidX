@@ -348,12 +348,12 @@ void main() {
     // --- callouts -------------------------------------------------------
 
     /// Where the middle of an interval lands, in pixels right of the label
-    /// column, in the window the view opens on: the last three hours plus the
+    /// column, in the window the view opens on: the whole twelve-hour period plus the
     /// live pad for the configured twelve-hour period (10 minutes).
     double xOfInterval(WidgetTester tester, DateTime start, DateTime end) {
       final laneWidth =
           tester.getRect(find.byType(StopTimelineView)).width - 210;
-      final windowStart = now.subtract(const Duration(hours: 3));
+      final windowStart = now.subtract(const Duration(hours: 12));
       final windowEnd = now.add(const Duration(minutes: 10));
       final span = windowEnd.difference(windowStart).inMicroseconds;
       final mid = start.add(end.difference(start) ~/ 2);
