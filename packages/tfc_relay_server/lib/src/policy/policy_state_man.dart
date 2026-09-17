@@ -542,19 +542,25 @@ final class PolicyStateMan implements StateManApi, TypeDescriptions {
   /// keys answer: a hidden key has no type either, or the type would say the
   /// key exists. The dictionary itself is shared and carries no plant state,
   /// so [describe] passes straight through.
-  @override
-  String? typeIdOf(String key) {
-    final types = source;
-    if (types is! TypeDescriptions) return null;
-    if (!canSee(key)) return null;
-    return types.typeIdOf(key);
+  /// The source's dictionary, or null when it keeps none.
+  ///
+  /// An explicit cast rather than a promoted `is`: `TypeDescriptions` is not a
+  /// subtype of `StateManApi`, so a test against it promotes nothing and the
+  /// call would not compile — the two interfaces meet only on the composed
+  /// object.
+  TypeDescriptions? get _types {
+    final source = this.source;
+    return source is TypeDescriptions ? source as TypeDescriptions : null;
   }
 
   @override
-  TypeDescriptor? describe(String typeId) {
-    final types = source;
-    return types is TypeDescriptions ? types.describe(typeId) : null;
+  String? typeIdOf(String key) {
+    if (!canSee(key)) return null;
+    return _types?.typeIdOf(key);
   }
+
+  @override
+  TypeDescriptor? describe(String typeId) => _types?.describe(typeId);
 
   /// Refuses [method] unless this session clears the read floor — the gate
   /// `subscribe`, `read`, `readFresh`, `readMany` and `alarmHistory` ask
