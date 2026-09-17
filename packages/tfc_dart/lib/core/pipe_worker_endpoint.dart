@@ -702,17 +702,31 @@ class PipeWorkerEndpoint {
   }
 
   /// Whether [identity] names a type worth a definition read: a custom node
-  /// type (namespace 0 is the builtins, which carry no table), or a bare
-  /// struct known only by its shape (see [_describedTypes]).
+  /// type (namespace 0 is the builtins, which carry no table), a bare struct
+  /// known only by its shape, or a sample that offered no usable identity at
+  /// all (`key:<key>`, see [_announceType]) — for which the read is the only
+  /// source. See [_describedTypes].
   static bool _worthReading(String identity, DynamicValue sample) {
     if (identity.startsWith('shape:')) return true;
+    if (identity.startsWith('key:')) return true;
     final nodeType = sample.typeId;
     return nodeType != null && nodeType.namespace != 0;
   }
 
   void _announceType(String key, DynamicValue sample) {
-    final identity = typeIdentityOf(sample);
-    if (identity == null) return;
+    // A sample that offered no identity at all — no type id, and not a
+    // non-empty struct to take a shape from — is read once per key
+    // (`key:<key>`), post-deduped by the type id the read resolves. This is
+    // the drive-struct case on the plant (2026-09-17): a constant conveyor's
+    // struct notifies once, at establishment, with no type id and, measured,
+    // no member map either, so shape gave nothing; the read of the struct
+    // node fetches its DATATYPE and resolves every member's enum table
+    // (`RemoteStateMan.typeOf`, and `client.read`'s ordered attribute read).
+    // The `_describedTypes`/`_keysAwaitingType` entries are the one-shot
+    // guard, so the per-key form is read at most once whether or not it ever
+    // yields a table — a bounded startup cost, one read per typeless key, and
+    // the descriptors still dedupe by resolved type id.
+    final identity = typeIdentityOf(sample) ?? 'key:$key';
     final awaiting = _keysAwaitingType[identity];
     if (awaiting != null) {
       // The definition read for this type is in flight: remembered, and
@@ -729,6 +743,8 @@ class PipeWorkerEndpoint {
       } else if (_readType != null && _worthReading(identity, sample)) {
         // No table on the sample: fetch the definition once, by reading this
         // key, and answer for every key of the type when it lands.
+        _logger.d('pipe endpoint: reading "$key" for the definition of '
+            '$identity (sample carried no enum table)');
         _keysAwaitingType[identity] = <String>{key};
         // Fire-and-forget WITH a handler attached, as [_subscribe] does: the
         // read's own failure is handled inside, and anything else that could

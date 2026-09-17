@@ -309,6 +309,79 @@ void main() {
               'dictionary exists to avoid');
     });
 
+    test('a struct notification with NO type id anywhere — the constant '
+        'drive struct — is read once per key and described from the read',
+        () async {
+      // The measured case (2026-09-17): the struct sample carries neither a
+      // type id nor, at `_onSample`, a member map to take a shape from, so
+      // the only trigger left is "read the key". The read of the struct node
+      // fetches its DATATYPE and resolves every member's enum table.
+      final reads = <String>[];
+      final port2 = ReceivePort();
+      final got = <Object?>[];
+      port2.listen(got.add);
+      final reading = PipeWorkerEndpoint(
+        stateMan: upstream,
+        toMain: port2.sendPort,
+        drainInterval: _interval,
+        readType: (key) async {
+          reads.add(key);
+          return fdSample(2); // the read resolves the whole struct
+        },
+      );
+      addTearDown(() {
+        reading.dispose();
+        port2.close();
+      });
+      // What a constant struct notification looks like: a bare value with no
+      // type id and no members to inspect (an opaque leaf).
+      reading.handleControl(const PipeSubscribe('CVS02.CN01.FD01'));
+      await ticks(1);
+      upstream.controllerFor('CVS02.CN01.FD01').add(DynamicValue(value: 0));
+      await ticks(3);
+      // Constant: no second notification, ever.
+      expect(reads, ['CVS02.CN01.FD01'],
+          reason: 'the one sample carried no identity, so the key was read '
+              'once for it — the constant-conveyor case that never notifies '
+              'again');
+      final events = [for (final f in got.whereType<PipeFrame>()) ...f.priority];
+      expect(events.whereType<PipeTypeDescribed>().single.typeId, 'ns=4;i=3012',
+          reason: 'described under the type id the read resolved');
+      expect(events.whereType<PipeKeyType>().single,
+          isA<PipeKeyType>()
+              .having((e) => e.key, 'key', 'CVS02.CN01.FD01')
+              .having((e) => e.typeId, 'typeId', 'ns=4;i=3012'));
+    });
+
+    test('a typeless key whose read yields no enum table is read once and '
+        'then left alone — the per-key read is one-shot', () async {
+      var reads = 0;
+      final port2 = ReceivePort();
+      port2.listen((_) {});
+      final reading = PipeWorkerEndpoint(
+        stateMan: upstream,
+        toMain: port2.sendPort,
+        drainInterval: _interval,
+        readType: (key) async {
+          reads++;
+          return DynamicValue(value: 1, typeId: NodeId.int32); // no table
+        },
+      );
+      addTearDown(() {
+        reading.dispose();
+        port2.close();
+      });
+      reading.handleControl(const PipeSubscribe('k'));
+      await ticks(1);
+      upstream.controllerFor('k').add(DynamicValue(value: 1)); // typeless
+      await ticks(2);
+      upstream.controllerFor('k').add(DynamicValue(value: 2)); // ticks again
+      await ticks(2);
+      expect(reads, 1,
+          reason: 'the read is one-shot per key: a second sample must not '
+              'read again, table or no table');
+    });
+
     test('a type with no enum anywhere is not described, and its keys are '
         'not named — a plain number has nothing the wire does not carry',
         () async {
