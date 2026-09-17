@@ -203,6 +203,91 @@ void main() {
               'type says nothing');
     });
 
+    test('a notification without the table triggers ONE read per custom '
+        'type, and every key of the type is named when it lands', () async {
+      // The plant's case (2026-09-17): monitored-item notifications carry
+      // `2`, the same node read carries `auto(2)`.
+      final reads = <String>[];
+      final port2 = ReceivePort();
+      final got = <Object?>[];
+      port2.listen(got.add);
+      final reading = PipeWorkerEndpoint(
+        stateMan: upstream,
+        toMain: port2.sendPort,
+        drainInterval: _interval,
+        readType: (key) async {
+          reads.add(key);
+          return fdSample(2); // the read-backed value carries the table
+        },
+      );
+      addTearDown(() {
+        reading.dispose();
+        port2.close();
+      });
+      DynamicValue bare(int mode) {
+        // What a notification looks like: values and the type id, no table.
+        final struct = DynamicValue(typeId: NodeId.fromNumeric(4, 3012));
+        struct.value = LinkedHashMap<String, DynamicValue>.from({
+          'p_stat_RunMode':
+              DynamicValue(value: mode, typeId: NodeId.fromNumeric(4, 3001)),
+          'p_stat_Speed': DynamicValue(value: 12.5, typeId: NodeId.int32),
+        });
+        return struct;
+      }
+
+      reading.handleControl(const PipeSubscribe('k'));
+      reading.handleControl(const PipeSubscribe('k2'));
+      await ticks(1);
+      upstream.controllerFor('k').add(bare(2));
+      upstream.controllerFor('k2').add(bare(0));
+      upstream.controllerFor('k').add(bare(1));
+      await ticks(3);
+
+      expect(reads, ['k'],
+          reason: 'one read, for the first key seen of the type; the second '
+              'key and the second sample cost nothing');
+      final events = [for (final f in got.whereType<PipeFrame>()) ...f.priority];
+      final described = events.whereType<PipeTypeDescribed>().toList();
+      expect(described, hasLength(1));
+      expect(
+          relay.TypeDescriptor.fromJson(described.single.descriptor)
+              .members['p_stat_RunMode']!
+              .enumFields![2]!
+              .name,
+          'auto');
+      expect(events.whereType<PipeKeyType>().map((e) => e.key).toSet(),
+          {'k', 'k2'},
+          reason: 'both keys sampled while the read was in flight are named '
+              'once it lands');
+    });
+
+    test('a builtin type (namespace 0) is never read for a definition', () async {
+      final reads = <String>[];
+      final port2 = ReceivePort();
+      port2.listen((_) {});
+      final reading = PipeWorkerEndpoint(
+        stateMan: upstream,
+        toMain: port2.sendPort,
+        drainInterval: _interval,
+        readType: (key) async {
+          reads.add(key);
+          return DynamicValue(value: 1, typeId: NodeId.int32);
+        },
+      );
+      addTearDown(() {
+        reading.dispose();
+        port2.close();
+      });
+      reading.handleControl(const PipeSubscribe('k'));
+      await ticks(1);
+      upstream.controllerFor('k').add(DynamicValue(value: 42, typeId: NodeId.int32));
+      await ticks(2);
+      expect(reads, isEmpty,
+          reason: 'namespace 0 is the builtins: nothing to look up, and a '
+              'read per plain number would be the per-key cost the '
+              'dictionary exists to avoid');
+    });
+
     test('a type with no enum anywhere is not described, and its keys are '
         'not named — a plain number has nothing the wire does not carry',
         () async {

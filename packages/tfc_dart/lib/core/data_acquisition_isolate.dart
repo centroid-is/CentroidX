@@ -416,6 +416,11 @@ Future<void> _runDataAcquisition(
       // up, sampled from the clients' own session state.
       aliveLinks: () =>
           aliveLinksOf(stack, singleServer: config.serverJson != null),
+      // The type dictionary's source when a notification carries no enum
+      // table: one `StateMan.read` per distinct custom type, whose attribute
+      // read decodes the value with its data type known — the path the
+      // station app's own reads take (`PipeWorkerEndpoint._readType`).
+      readType: stack.stateMan.read,
       logger: logger,
     ));
   }

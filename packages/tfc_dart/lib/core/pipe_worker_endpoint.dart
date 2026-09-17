@@ -363,11 +363,13 @@ class PipeWorkerEndpoint {
     this.writeDeadline = kPipeWorkerWriteDeadline,
     Iterable<String?> Function()? aliveLinks,
     this.keepAliveInterval = kPipeKeepAliveInterval,
+    Future<DynamicValue> Function(String key)? readType,
     DateTime Function()? now,
     Logger? logger,
   })  : _stateMan = stateMan,
         _toMain = toMain,
         _aliveLinks = aliveLinks,
+        _readType = readType,
         _now = now ?? DateTime.now,
         _logger = logger ?? Logger() {
     // The keep-alive runs from construction, not from the first subscribe:
@@ -448,6 +450,27 @@ class PipeWorkerEndpoint {
 
   /// The described type each subscribed key was last announced under.
   final Map<String, String> _typeOfKey = <String, String>{};
+
+  /// Where a type's definition is fetched when a subscription sample carries
+  /// none — `StateMan.read(key)`, whose attribute read (DESCRIPTION,
+  /// DISPLAYNAME, DATATYPE, VALUE, in that order) always decodes the value
+  /// with its data type known and so resolves the enum tables, for a scalar
+  /// enum and for every member of a struct. Measured on the plant
+  /// (2026-09-17): the same struct read through the station app carries
+  /// `auto(2)`, while its monitored-item notifications carry `2` and no
+  /// table — the notification handler resolves a schema only when it already
+  /// holds the node's DATATYPE, and the initial notifications of one node's
+  /// attributes arrive in no promised order. A read is deterministic.
+  ///
+  /// One read per distinct **type**, never per key: [_describedTypes] dedupes
+  /// on the type id, so a thousand conveyors sharing one FD struct cost one
+  /// read at startup. Null on a fixture with no reader, and then only the
+  /// table the sample itself carries is ever described.
+  final Future<DynamicValue> Function(String key)? _readType;
+
+  /// Types whose definition read is in flight, and the keys sampled under
+  /// each while it was — announced together when the read lands.
+  final Map<String, Set<String>> _keysAwaitingType = <String, Set<String>>{};
 
   Timer? _tick;
   bool _disposed = false;
@@ -652,20 +675,80 @@ class PipeWorkerEndpoint {
   /// Cheap on the hot path: one `toString` of a node id and two map lookups
   /// per sample; the walk over the struct happens once per type.
   void _announceType(String key, DynamicValue sample) {
-    final typeId = sample.typeId?.toString() ?? 'key:$key';
+    final nodeType = sample.typeId;
+    final typeId = nodeType?.toString() ?? 'key:$key';
+    final awaiting = _keysAwaitingType[typeId];
+    if (awaiting != null) {
+      // The definition read for this type is in flight: remembered, and
+      // announced with the others when it lands.
+      awaiting.add(key);
+      return;
+    }
     var worthDescribing = _describedTypes[typeId];
     if (worthDescribing == null) {
       final descriptor = describeUaType(sample);
-      worthDescribing = descriptor.hasEnum;
-      _describedTypes[typeId] = worthDescribing;
-      if (worthDescribing) {
+      if (descriptor.hasEnum) {
+        // The sample itself carried the table (a read-backed source, or a
+        // notification that happened to resolve): nothing to fetch.
+        worthDescribing = true;
+        _describedTypes[typeId] = true;
         _emitPriority(PipeTypeDescribed(typeId, descriptor.toJson()));
+      } else if (_readType != null && nodeType != null && nodeType.namespace != 0) {
+        // A custom type (namespace 0 is the builtins, which have no table)
+        // whose sample carries none: fetch the definition once, by reading
+        // this key, and answer for every key of the type when it lands.
+        _keysAwaitingType[typeId] = <String>{key};
+        // Fire-and-forget WITH a handler attached, as [_subscribe] does: the
+        // read's own failure is handled inside, and anything else that could
+        // throw on the way to a descriptor costs this type its names, said
+        // once, rather than an unhandled error the guarded zone swallows.
+        _describeTypeByRead(typeId, key).catchError((Object error) {
+          _keysAwaitingType.remove(typeId);
+          _describedTypes[typeId] = false;
+          _logger.w('pipe endpoint: describing type $typeId from "$key" '
+              'failed; values of that type cross without their enum names: '
+              '${_describe(error)}');
+        });
+        return;
+      } else {
+        worthDescribing = false;
+        _describedTypes[typeId] = false;
       }
     }
     if (!worthDescribing) return;
+    _announceKey(key, typeId);
+  }
+
+  void _announceKey(String key, String typeId) {
     if (_typeOfKey[key] == typeId) return;
     _typeOfKey[key] = typeId;
     _emitPriority(PipeKeyType(key, typeId));
+  }
+
+  /// Reads [key] once for its type's definition — see [_readType] — and
+  /// describes [typeId] from the value that comes back. A failed read costs
+  /// this type its names until the next process start, and says so once.
+  Future<void> _describeTypeByRead(String typeId, String key) async {
+    DynamicValue full;
+    try {
+      full = await _readType!(key);
+    } catch (error) {
+      _logger.w('pipe endpoint: could not read "$key" for the definition of '
+          'type $typeId; values of that type cross without their enum names: '
+          '${_describe(error)}');
+      _keysAwaitingType.remove(typeId);
+      _describedTypes[typeId] = false;
+      return;
+    }
+    if (_disposed) return;
+    final keys = _keysAwaitingType.remove(typeId) ?? const <String>{};
+    final descriptor = describeUaType(full);
+    _describedTypes[typeId] = descriptor.hasEnum;
+    if (!descriptor.hasEnum) return;
+    _emitPriority(PipeTypeDescribed(typeId, descriptor.toJson()));
+    for (final waiting in keys) {
+      if (_subscribed.contains(waiting)) _announceKey(waiting, typeId);
+    }
   }
 
   void _onStreamError(String key, Object error) {
