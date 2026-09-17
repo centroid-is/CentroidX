@@ -8,6 +8,7 @@ import 'package:tfc/page_creator/assets/common.dart';
 import 'package:tfc/providers/state_man.dart';
 import 'package:tfc_dart/core/state_man.dart';
 import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:logger/logger.dart';
 
 // The batch array lives in the conveyor's own function block, a different node
 // from the conveyor settings struct that carries the belt length. The overlay
@@ -405,6 +406,121 @@ void main() {
     );
   });
 
+  // The overlay is a picture of one reading of the array, so it is replaced by
+  // one reading. Edited in place — which is what it used to do — it kept slots
+  // that were no longer in the reading that produced them, because the only
+  // thing that ever removed an index was the loop reaching that index again.
+  group('the overlay is whatever the newest reading says, and only that', () {
+    /// Drives the array node by hand, so the overlay can be watched across
+    /// successive readings.
+    Future<StreamController<DynamicValue>> liveArray(WidgetTester tester) async {
+      final array = StreamController<DynamicValue>();
+      addTearDown(array.close);
+      await _pump(
+        tester,
+        _config(batchArrayKey: _arrayKey),
+        _MapStateMan(
+          {
+            _driveKey: _drive(),
+            _settingsKey: _settings(),
+          },
+          live: {_arrayKey: array},
+        ),
+      );
+      return array;
+    }
+
+    List<DynamicValue> occupiedSlots(int count) => [
+          for (var i = 0; i < count; i++)
+            _slot(occupied: true, position: i * 100.0),
+        ];
+
+    testWidgets('a shorter array does not leave the slots past its end drawn',
+        (tester) async {
+      final array = await liveArray(tester);
+
+      array.add(_functionBlock(occupiedSlots(5)));
+      await tester.pumpAndSettle();
+      expect(_batches(tester).keys, ['0', '1', '2', '3', '4']);
+
+      // The belt is re-declared with three slots — a PLC restarted with a
+      // shorter array, or a key re-pointed in the page editor.
+      array.add(_functionBlock(occupiedSlots(3)));
+      await tester.pumpAndSettle();
+      expect(_batches(tester).keys, ['0', '1', '2'],
+          reason: 'slots 3 and 4 are not in the reading any more, so they '
+              'must not still be painted on the belt');
+    });
+
+    testWidgets('an array that comes back empty clears the belt',
+        (tester) async {
+      final array = await liveArray(tester);
+
+      array.add(_functionBlock(occupiedSlots(3)));
+      await tester.pumpAndSettle();
+      expect(_batches(tester), isNotEmpty);
+
+      array.add(_functionBlock(const []));
+      await tester.pumpAndSettle();
+      expect(_batches(tester), isEmpty,
+          reason: 'an empty array is a reading, not the absence of one: the '
+              'belt is empty and must be drawn empty');
+    });
+
+    testWidgets('a slot of the wrong shape costs that slot and no other',
+        (tester) async {
+      final array = await liveArray(tester);
+
+      array.add(_functionBlock([
+        _slot(occupied: true, position: 0),
+        // One element of something the key is bound one node off from.
+        DynamicValue(value: 1.0),
+        _slot(occupied: true, position: 500),
+      ]));
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      expect(_isDisconnected(tester), isFalse);
+      expect(_batches(tester).keys, ['0', '2'],
+          reason: 'the slots that did decode are still a true reading; only '
+              'the one that did not is dropped');
+    });
+
+    testWidgets(
+        'a settings node that loses its length blanks the overlay rather '
+        'than freezing it', (tester) async {
+      final settings = StreamController<DynamicValue>();
+      addTearDown(settings.close);
+
+      await _pump(
+        tester,
+        _config(batchArrayKey: _arrayKey),
+        _MapStateMan(
+          {
+            _driveKey: _drive(),
+            _arrayKey: _functionBlock([_oneOccupiedSlot()]),
+          },
+          live: {_settingsKey: settings},
+        ),
+      );
+
+      settings.add(_settings());
+      await tester.pumpAndSettle();
+      expect(_batches(tester).keys, ['0']);
+
+      // The same node, answering without the member the slot positions are
+      // measured against — the shape the struct actually took when the PLC
+      // side of this was rewritten.
+      settings.add(DynamicValue()..['p_stat_Frequency'] = 50.0);
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(_isDisconnected(tester), isFalse,
+          reason: 'the drive is reading fine; a settings struct that changed '
+              'shape must cost the overlay and nothing else');
+      expect(_batches(tester), isEmpty);
+    });
+  });
+
   group('batch length', () {
     testWidgets('comes from the recipe key when it is set', (tester) async {
       await _pump(
@@ -491,6 +607,113 @@ void main() {
       );
 
       expect(_batches(tester)['0']!.end, closeTo(0.75, 1e-9));
+    });
+  });
+
+  // A batches key bound one node off used to be completely silent. It still
+  // must not shout: this runs from a `StreamBuilder` builder, which is re-run
+  // on every rebuild rather than on every PLC update, so an ungated line here
+  // is a line a frame per conveyor on the page.
+  group('what it says about a batches key it cannot use', () {
+    /// Everything the conveyor logged while [body] ran.
+    Future<List<String>> logged(Future<void> Function() body) async {
+      final lines = <String>[];
+      void listen(LogEvent event) => lines.add(event.message.toString());
+      Logger.addLogListener(listen);
+      addTearDown(() => Logger.removeLogListener(listen));
+      await body();
+      return lines;
+    }
+
+    List<String> about(List<String> lines, String fragment) =>
+        [for (final line in lines) if (line.contains(fragment)) line];
+
+    testWidgets('an array node of the wrong shape is named once, not once a '
+        'frame', (tester) async {
+      final lines = await logged(() async {
+        await _pump(
+          tester,
+          _config(batchArrayKey: _arrayKey),
+          _MapStateMan({
+            _driveKey: _drive(),
+            _settingsKey: _settings(),
+            _arrayKey: DynamicValue(value: 1.0),
+          }),
+        );
+        // Rebuild the way resizing a window does.
+        for (var frame = 0; frame < 30; frame++) {
+          await tester.pump(const Duration(milliseconds: 16));
+        }
+      });
+
+      expect(about(lines, 'neither an array of slots'), hasLength(1),
+          reason: 'said once, and then not again while nothing has changed');
+    });
+
+    testWidgets('a settings node with no length says which half is missing',
+        (tester) async {
+      final lines = await logged(() async {
+        await _pump(
+          tester,
+          _config(batchArrayKey: _arrayKey),
+          _MapStateMan({
+            _driveKey: _drive(),
+            _settingsKey: DynamicValue()..['p_stat_Frequency'] = 50.0,
+            _arrayKey: _functionBlock([_oneOccupiedSlot()]),
+          }),
+        );
+      });
+
+      expect(about(lines, 'p_stat_Length'), hasLength(1));
+    });
+
+    testWidgets('a key that is simply unbound is not complained about',
+        (tester) async {
+      final lines = await logged(() async {
+        // The un-reconfigured page: settings bound, no array key at all.
+        await _pump(
+          tester,
+          _config(),
+          _MapStateMan({
+            _driveKey: _drive(),
+            _settingsKey: _settings(),
+          }),
+        );
+      });
+
+      expect(about(lines, 'draws no batches'), isEmpty,
+          reason: 'not having bound a key is a configuration, not a fault');
+    });
+
+    testWidgets('a node that fails, answers, then fails again is named both '
+        'times', (tester) async {
+      final array = StreamController<DynamicValue>();
+      addTearDown(array.close);
+
+      final lines = await logged(() async {
+        await _pump(
+          tester,
+          _config(batchArrayKey: _arrayKey),
+          _MapStateMan(
+            {
+              _driveKey: _drive(),
+              _settingsKey: _settings(),
+            },
+            live: {_arrayKey: array},
+          ),
+        );
+
+        array.addError(StateManException('Failed to read value: BadNodeIdUnknown'));
+        await tester.pumpAndSettle();
+        array.add(_functionBlock([_oneOccupiedSlot()]));
+        await tester.pumpAndSettle();
+        array.addError(StateManException('Failed to read value: BadNodeIdUnknown'));
+        await tester.pumpAndSettle();
+      });
+
+      expect(about(lines, 'the batchArray node failed'), hasLength(2),
+          reason: 'a belt that drops out, comes back and drops out again is '
+              'the case most worth seeing, so the gate is reset by a value');
     });
   });
 
