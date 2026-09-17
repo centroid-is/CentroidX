@@ -185,16 +185,28 @@ Future<void> tapLane(WidgetTester tester, String rowKey, double dx) async {
 }
 
 /// Where the middle of an interval lands, in pixels right of the label
-/// column, in the window the view opens on: the last three hours, plus the
+/// column, in the window the view opens on: the whole twelve-hour period, plus the
 /// live pad for the configured twelve-hour period (12h/20, clamped to ten
 /// minutes).
 double xOfInterval(WidgetTester tester, DateTime start, DateTime end) {
   final laneWidth = tester.getRect(find.byType(StopTimelineView)).width - 210;
-  final windowStart = now.subtract(const Duration(hours: 3));
+  final windowStart = now.subtract(const Duration(hours: 12));
   final windowEnd = now.add(const Duration(minutes: 10));
   final span = windowEnd.difference(windowStart).inMicroseconds;
   final mid = start.add(end.difference(start) ~/ 2);
   return mid.difference(windowStart).inMicroseconds / span * laneWidth;
+}
+
+/// Zooms in with the mouse wheel at [at]. The view opens on the whole
+/// period and panning is clamped to it, so there is nowhere to pan until the
+/// window is narrower than the period.
+Future<void> zoomIn(WidgetTester tester, Offset at, {int notches = 5}) async {
+  final mouse = TestPointer(2, PointerDeviceKind.mouse);
+  await tester.sendEventToBinding(mouse.hover(at));
+  for (var i = 0; i < notches; i++) {
+    await tester.sendEventToBinding(mouse.scroll(const Offset(0, -120)));
+    await tester.pumpAndSettle();
+  }
 }
 
 /// Opens the period menu in the header.
@@ -640,8 +652,24 @@ void main() {
   group('the period picker', () {
     testWidgets('the live window reads out as bare times', (tester) async {
       await pumpTimeline(tester);
-      // Three hours back plus the ten-minute lead over the live edge.
-      expect(find.text('11:22 – 14:32'), findsOneWidget);
+      // The configured twelve hours plus the ten-minute lead over the live
+      // edge.
+      expect(find.text('02:22 – 14:32'), findsOneWidget);
+    });
+
+    testWidgets('the configured period opens whole, matching its tick',
+        (tester) async {
+      // The read-out and the ticked interval must name the same stretch: a
+      // three-hour zoom under a "Last 12 hours" tick read as the menu lying.
+      await pumpTimeline(tester);
+      expect(find.text('02:22 – 14:32'), findsOneWidget);
+      await openPeriodMenu(tester);
+      expect(
+          tester
+              .widget<CheckedPopupMenuItem<Object>>(
+                  find.byKey(const ValueKey('stop-timeline-interval-720')))
+              .checked,
+          isTrue);
     });
 
     testWidgets('a picked range is shown whole, and dated', (tester) async {
@@ -757,7 +785,7 @@ void main() {
     testWidgets('a new period starts the view over at the top of it',
         (tester) async {
       await pumpTimeline(tester);
-      expect(find.text('11:22 – 14:32'), findsOneWidget);
+      expect(find.text('02:22 – 14:32'), findsOneWidget);
 
       // Same widget, new range: the old window is outside the new bounds and
       // must not be dragged to an edge by the clamp.
@@ -767,7 +795,7 @@ void main() {
             start: DateTime(2026, 8, 27, 6), end: DateTime(2026, 8, 27, 18)),
       );
       expect(find.text('27/08 06:00 – 18:00'), findsOneWidget);
-      expect(find.text('11:22 – 14:32'), findsNothing);
+      expect(find.text('02:22 – 14:32'), findsNothing);
     });
   });
 
@@ -807,15 +835,15 @@ void main() {
 
     testWidgets('the lane statistic clamps to the window', (tester) async {
       await pumpTimeline(tester, intervals: sinceYesterday);
-      // Opening window is the last 3h (+pad): in-window standing time is 3h,
-      // not the alarm\'s 26h lifetime.
-      expect(find.textContaining('now · 3h 00m · 1×'), findsOneWidget);
+      // Opening window is the whole 12h period (+pad): in-window standing
+      // time is 12h, not the alarm\'s 26h lifetime.
+      expect(find.textContaining('now · 12h 00m · 1×'), findsOneWidget);
     });
   });
 
   group('the activation callout', () {
     // 'film-reel-empty' stood 90..70 minutes ago; the opening window is the
-    // last three hours, so it lands well inside the lane.
+    // whole twelve-hour period, so it lands inside the lane.
     Future<void> openMultivac(WidgetTester tester) async {
       await tester
           .tap(find.byKey(const ValueKey('stop-timeline-row-g:Line 3')));
@@ -1084,8 +1112,11 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.byKey(activationCallout), findsOneWidget);
 
-      // Drag right — back in time — until the bar is off the right edge.
+      // Zoom in near the live edge so there is room to pan, then drag right
+      // — back in time — until the bar is off the right edge.
       final onLane = Offset(label.right + 200, label.center.dy);
+      await zoomIn(tester, Offset(label.right + xOfInterval(tester, ago(90), ago(70)), label.center.dy));
+      expect(find.byKey(activationCallout), findsOneWidget);
       await tester.dragFrom(onLane, const Offset(900, 0));
       await tester.pumpAndSettle();
       expect(find.byKey(activationCallout), findsNothing);
@@ -1253,8 +1284,10 @@ void main() {
     // under the last alarm is still pointing at it.
     testWidgets('drags the window like a lane does', (tester) async {
       await pumpTimeline(tester);
+      // The whole period is showing, so zoom in to leave room to pan.
+      await zoomIn(tester, belowTheRows(tester));
       final before = axisTicks(tester);
-      // Rightwards, into the past: the window opens docked to the live edge,
+      // Rightwards, into the past: the window stays docked to the live edge,
       // so a leftward drag has nowhere to go.
       await tester.dragFrom(belowTheRows(tester), const Offset(200, 0));
       await tester.pumpAndSettle();
@@ -1268,21 +1301,23 @@ void main() {
       final before = axisTicks(tester);
       final mouse = TestPointer(1, PointerDeviceKind.mouse);
       await tester.sendEventToBinding(mouse.hover(belowTheRows(tester)));
-      for (var i = 0; i < 5; i++) {
-        await tester.sendEventToBinding(mouse.scroll(const Offset(0, 120)));
-        await tester.pumpAndSettle();
-      }
-      // Zoomed out far enough that the ticks are hours, not half hours.
-      final widened = axisTicks(tester);
-      expect(widened, isNot(before));
-      expect(widened.every((t) => t.endsWith(':00')), isTrue);
-
+      // Opens on the whole period: hour ticks.
+      expect(before.every((t) => t.endsWith(':00')), isTrue);
       for (var i = 0; i < 9; i++) {
         await tester.sendEventToBinding(mouse.scroll(const Offset(0, -120)));
         await tester.pumpAndSettle();
       }
-      // And back in past where it started: quarter hours.
-      expect(axisTicks(tester).any((t) => t.endsWith(':15')), isTrue);
+      // Zoomed in far enough that the ticks are half hours.
+      final narrowed = axisTicks(tester);
+      expect(narrowed, isNot(before));
+      expect(narrowed.any((t) => t.endsWith(':30')), isTrue);
+
+      for (var i = 0; i < 12; i++) {
+        await tester.sendEventToBinding(mouse.scroll(const Offset(0, 120)));
+        await tester.pumpAndSettle();
+      }
+      // And back out to where it started, clamped to the period.
+      expect(axisTicks(tester), before);
     });
 
     testWidgets('a tap on it puts an open callout down', (tester) async {
