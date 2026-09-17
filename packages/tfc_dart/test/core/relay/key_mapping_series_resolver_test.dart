@@ -346,15 +346,29 @@ void main() {
 
       expect(source, isNot(contains('plantKey: wireName')));
       expect(source, isNot(contains('table: wireName')));
-      expect(source, isNot(contains('table: address.series')),
-          reason: 'the table must come from a collect entry, never from the '
-              'string the client sent — that is the whole of T-13-04-b');
-      expect(source, contains('if (table == null) return null;'),
-          reason: 'the refusal branch is pinned positively: sabotage (a) '
-              'reached the identity fallback by writing `?? address.series` '
-              'onto the lookup, which no negative substring arm can enumerate '
-              'in advance. An early return that is gone is a fallback that '
-              'has arrived');
+      expect(source, isNot(contains('?? address.series')),
+          reason: 'the sabotage shape, forbidden by name: an `?? '
+              'address.series` onto either lookup turns a refusal into the '
+              'identity fallback T-13-04-b exists to prevent — the client '
+              'names a table and the resolver believes it');
+      // `table: address.series` IS now in the source, on the second branch,
+      // and it is not the fallback. That branch is reached only after
+      // `_keyForName[address.series]` has answered, which is what makes the
+      // string a DECLARED COLLECT NAME rather than whatever the client sent —
+      // the same provenance the first branch gets from `_tableForKey`, reached
+      // through a membership test instead of through a lookup's value. The
+      // refusal it hangs off is what is pinned positively, for the reason the
+      // old pin gave: an early return that is gone is a fallback that has
+      // arrived, and no negative substring arm can enumerate in advance the
+      // shapes that would remove it.
+      expect(source, contains('if (recordedBy == null) return null;'),
+          reason: 'the second branch\'s refusal. A series name that no collect '
+              'entry declares has no table, and saying so is the whole answer');
+      expect(source, contains('_keyForName[address.series]'),
+          reason: 'and it must be THAT lookup the refusal hangs off: a branch '
+              'that took the table from the address without first asking the '
+              'mapping whether the name is declared would pass the arm above '
+              'while being exactly the fallback');
     });
   });
 }

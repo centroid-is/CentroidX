@@ -23,6 +23,8 @@ import 'package:test/test.dart';
 import 'package:tfc_dart/core/pipe_main_endpoint.dart';
 import 'package:tfc_dart/core/pipe_send_buffer.dart';
 import 'package:tfc_dart/core/pipe_worker_endpoint.dart';
+import 'package:tfc_dart/core/relay/backend_composition.dart'
+    show buildBackendValueSource;
 import 'package:tfc_dart/core/relay/backend_freshness.dart';
 import 'package:tfc_dart/core/relay/backend_live_values.dart';
 import 'package:tfc_dart/core/relay/backend_seams.dart' show StampedValue;
@@ -182,8 +184,17 @@ final Duration _unitStaleAfter =
     const Duration(milliseconds: 200) * budgetScale;
 
 /// One assembled subject: one or two workers, one pipe, one adapter, one sweep.
+///
+/// **Nothing is wired to the pipe by hand.** The frame and keep-alive hooks
+/// are the sweep's to claim in its own constructor, and a fixture that wired
+/// them itself was how the plant ran without them for a day: every unit arm
+/// green, and the binary — which built its pair somewhere else — anchoring
+/// nothing (`backend_freshness.dart`, 2026-09-17). With
+/// [asTheBinaryBuildsIt] the pair comes from `buildBackendValueSource`, the
+/// function `bin/main.dart` calls, and the arms under it are the ones that
+/// would have gone red.
 class _Fixture {
-  _Fixture({this.twoWorkers = false}) {
+  _Fixture({this.twoWorkers = false, this.asTheBinaryBuildsIt = false}) {
     alpha = _FakePlantLink('alpha');
     pipe = PipeMainEndpoint(
       writeDeadline: const Duration(milliseconds: 150),
@@ -193,6 +204,17 @@ class _Fixture {
     if (twoWorkers) {
       beta = _FakePlantLink('beta');
       pipe.addWorker(beta!, <String>[_farKey]);
+    }
+    if (asTheBinaryBuildsIt) {
+      final pair = buildBackendValueSource(
+        pipe: pipe,
+        keyMappings: _mappings(),
+        staleAfter: staleAfter,
+        logger: _quiet(),
+      );
+      values = pair.values;
+      sweep = pair.freshness;
+      return;
     }
     values = BackendLiveValues(
       pipe: pipe,
@@ -204,18 +226,20 @@ class _Fixture {
       values: values,
       staleAfter: staleAfter,
       pipe: pipe,
-      // The worker is the link here: alpha and beta are two sessions.
-      linkOf: (key) => pipe.workerOf(key)?.toString(),
+      // The worker is the link here: alpha and beta are two sessions,
+      // spelled as the sweep's own keep-alive hook spells them.
+      linkOf: (key) {
+        final worker = pipe.workerOf(key);
+        return worker == null
+            ? null
+            : BackendFreshnessSweep.linkId(worker, null);
+      },
       logger: _quiet(),
     );
-    // As `composeBackendRelay` wires it: frames and keep-alives feed the
-    // link anchor, spelled the way `linkOf` above spells the key's link.
-    pipe.onWorkerFrame = (_, keys) => sweep.heardKeys(keys);
-    pipe.onLinkAlive =
-        (worker, alias) => sweep.heardLink(alias == null ? '$worker' : '$worker/$alias');
   }
 
   final bool twoWorkers;
+  final bool asTheBinaryBuildsIt;
   final Duration staleAfter = _unitStaleAfter;
 
   late final _FakePlantLink alpha;
@@ -859,10 +883,17 @@ void main() {
       expect(f.sweep.read(relay.PipeKeys.connected)!.asBool, isFalse);
     });
 
-    test('dispose gives the pipe\'s link hooks back', () async {
+    test('dispose gives the pipe\'s link hooks back — all four of them',
+        () async {
       final f = _Fixture();
       expect(f.pipe.onWorkerDied, isNotNull);
       expect(f.pipe.onWorkerReady, isNotNull);
+      expect(f.pipe.onWorkerFrame, isNotNull,
+          reason: 'the frame anchor is claimed in the constructor, beside '
+              'onWorkerDied — not wired at a call site, which is where it '
+              'was forgotten');
+      expect(f.pipe.onLinkAlive, isNotNull,
+          reason: 'and the keep-alive anchor with it');
 
       await f.sweep.dispose();
 
@@ -870,6 +901,8 @@ void main() {
           reason: 'a disposed sweep left wired to the pipe announces an '
               'outage through a source that is already torn down');
       expect(f.pipe.onWorkerReady, isNull);
+      expect(f.pipe.onWorkerFrame, isNull);
+      expect(f.pipe.onLinkAlive, isNull);
 
       f.pipe.dispose();
       f.alpha.dispose();
@@ -1016,6 +1049,139 @@ void main() {
           reason: 'a restore must never overwrite a fault with a stale '
               'key\'s old good: only a node still reading badStale is '
               'the sweep\'s to put back');
+    });
+  });
+
+  // ------------------------------------------ the pair the binary builds
+  //
+  // Every arm above builds its sweep in this file. The plant on 2026-09-17
+  // ran the pair `bin/main.dart` built — no `linkOf`, no hooks — and 293 of
+  // 1437 keys read `badStale` on a live session while every arm above was
+  // green. These arms build the pair the way the binary now does, through
+  // `buildBackendValueSource`, and feed it a real `PipeLinkAlive` across the
+  // pipe: the production shape end to end, with only the isolate faked.
+  group('the pair the binary builds, on a real keep-alive '
+      '(measured 2026-09-17: 293 of 1437 keys stale on a live session)', () {
+    test('the binary\'s pair is anchored on its link, and claims both feeds '
+        'from the pipe', () {
+      final f = _Fixture(asTheBinaryBuildsIt: true);
+      addTearDown(f.tearDown);
+      expect(f.sweep.linkAnchored, isTrue,
+          reason: 'built without linkOf the sweep is per-key: F3, the '
+              'defect the plant ran on');
+      expect(f.pipe.onLinkAlive, isNotNull,
+          reason: 'the keep-alive reaches the sweep, or a link on which '
+              'nothing changes is a link that went quiet');
+      expect(f.pipe.onWorkerFrame, isNotNull);
+    });
+
+    test('a constant key on a live link stays good: keep-alives cross the '
+        'pipe and nothing on the link changes for two deadlines', () async {
+      final f = _Fixture(asTheBinaryBuildsIt: true);
+      addTearDown(f.tearDown);
+      // `BufferRequestSetpoint`: a configured constant, delivered once when
+      // the watcher attaches and never again — OPC UA notifies on change.
+      final setpoint = f.watch(_speedKey);
+      f.alpha.deliver(_speedKey, _good(80.0));
+      await _settle();
+      // The worker's keep-alive, one per server per interval, as
+      // `PipeWorkerEndpoint._sendKeepAlive` emits it for an OPC UA worker.
+      final keepAlive = Timer.periodic(f.sweep.interval, (_) {
+        f.alpha.emit(PipeFrame(const [PipeLinkAlive(null)], const {}));
+      });
+      addTearDown(keepAlive.cancel);
+      await f.pastDeadline();
+      await f.pastDeadline();
+      expect(setpoint.value.quality, relay.Quality.good,
+          reason: 'the session is alive and the server never said anything '
+              'but good about this value. A monitored item that has not '
+              'notified has not changed — the quality belongs to the '
+              'server\'s report, and the pipe manufactures none of its own');
+      expect(setpoint.value.value, 80.0);
+      expect(f.sweep.degraded, isEmpty,
+          reason: 'not badged and restored — never badged');
+    });
+
+    test('a link that goes quiet stales every key on it: the keep-alive '
+        'stops, and the constant AND the ticking key are badged', () async {
+      final f = _Fixture(asTheBinaryBuildsIt: true);
+      addTearDown(f.tearDown);
+      final setpoint = f.watch(_speedKey);
+      final percent = f.watch(_otherKey);
+      f.alpha.deliver(_speedKey, _good(80.0));
+      await _settle();
+      var n = 0;
+      final chatter = Timer.periodic(f.sweep.interval, (_) {
+        f.alpha.deliver(_otherKey, _good(++n));
+      });
+      addTearDown(chatter.cancel);
+      final keepAlive = Timer.periodic(f.sweep.interval, (_) {
+        f.alpha.emit(PipeFrame(const [PipeLinkAlive(null)], const {}));
+      });
+      addTearDown(keepAlive.cancel);
+      await f.pastDeadline();
+      expect(setpoint.value.quality, relay.Quality.good,
+          reason: 'the link is speaking, through the keep-alive and through '
+              'its sibling');
+      expect(percent.value.quality, relay.Quality.good);
+
+      // A frozen session, a PLC that stopped scanning: no keep-alive, no
+      // frame, nothing — the failure this machinery exists to catch.
+      chatter.cancel();
+      keepAlive.cancel();
+      await f.pastDeadline();
+      await f.pastDeadline();
+      expect(setpoint.value.quality, relay.Quality.badStale,
+          reason: 'the link stopped: the constant is badged, as before this '
+              'change and after it');
+      expect(percent.value.quality, relay.Quality.badStale,
+          reason: 'and the key that had been ticking — the plausible number '
+              'under a good quality is the lie, and it is caught');
+      expect(f.sweep.degraded, containsAll(<String>[_speedKey, _otherKey]));
+    });
+
+    test('re-watching a badged key is not evidence: it stays stale until the '
+        'link speaks, and the link speaking is what takes it back', () async {
+      final f = _Fixture(asTheBinaryBuildsIt: true);
+      addTearDown(f.tearDown);
+      final node = f.sweep.listen(_speedKey);
+      void first() {}
+      node.addListener(first);
+      f.alpha.deliver(_speedKey, _good(80.0));
+      await _settle();
+      await f.pastDeadline();
+      await f.pastDeadline();
+      expect(node.value.quality, relay.Quality.badStale,
+          reason: 'nothing on the link spoke');
+
+      // The last watcher leaves and a new one attaches. Registration seeds a
+      // fresh anchor for the key — an instant this sweep measured, not one
+      // the plant produced.
+      node.removeListener(first);
+      void second() {}
+      node.addListener(second);
+      addTearDown(() => node.removeListener(second));
+      await f.insideDeadline();
+      await f.insideDeadline();
+      expect(node.value.quality, relay.Quality.badStale,
+          reason: 'a good badge put back because somebody looked again is a '
+              'good badge with no evidence behind it, on a link exactly as '
+              'dead as when the key was badged');
+      expect(f.sweep.degraded, contains(_speedKey),
+          reason: 'the memory of what it held is kept for when the link '
+              'does speak');
+
+      final keepAlive = Timer.periodic(f.sweep.interval, (_) {
+        f.alpha.emit(PipeFrame(const [PipeLinkAlive(null)], const {}));
+      });
+      addTearDown(keepAlive.cancel);
+      await f.insideDeadline();
+      await f.insideDeadline();
+      expect(node.value.quality, relay.Quality.good,
+          reason: 'the link is back and the key has not changed: a constant '
+              'on a live link, restored to what the server last said');
+      expect(node.value.value, 80.0);
+      expect(f.sweep.degraded, isNot(contains(_speedKey)));
     });
   });
 

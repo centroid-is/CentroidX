@@ -251,41 +251,49 @@ void main() {
   });
 
   test('arm 5: the value source is built OUTSIDE the relay block, so the '
-      'WebSocket being off does not turn alarms off', () {
+      'WebSocket being off does not turn alarms off — and built by the one '
+      'function that anchors the sweep on its link', () {
     final main = code[_mainPath]!;
 
-    final live = main.indexOf('BackendLiveValues(');
-    final sweep = main.indexOf('BackendFreshnessSweep(');
+    final pair = main.indexOf('buildBackendValueSource(');
     final guard = main.indexOf('if (relayConfig != null)');
 
     expect(guard, greaterThanOrEqualTo(0),
         reason: 'the relay block must still be guarded by a null config — off '
             'by default is the upgrade-safety property 13-06 shipped');
-    expect(live, greaterThanOrEqualTo(0),
-        reason: 'bin/main.dart must build the live half itself. Built inside '
-            'composeBackendRelay it exists only when a relay section does');
-    expect(sweep, greaterThanOrEqualTo(0),
-        reason: 'and the freshness sweep with it — the engine must read '
-            'through the watchdog, or a rule evaluates a value that has gone '
-            'quiet as though it were current');
+    expect(pair, greaterThanOrEqualTo(0),
+        reason: 'bin/main.dart must build the value source itself — the live '
+            'half and the freshness sweep together, so the engine reads '
+            'through the watchdog. Built inside composeBackendRelay it '
+            'exists only when a relay section does');
 
-    expect(live, lessThan(guard),
+    expect(pair, lessThan(guard),
         reason: 'D-8 / P-5. The relay is OFF BY DEFAULT and SVN runs that way '
             'today. A value source built inside the relay block means turning '
             'the WebSocket off turns alarm evaluation off — a regression '
             'against the very thing this phase deleted, because the duplicate '
             '"alarmman" StateMan evaluated unconditionally. A deployment '
             'choice about a WebSocket must not decide whether the plant is '
-            'monitored.'
-            '\nBackendLiveValues( at line ${_lineOf(main, live)}, the relay '
-            'guard at line ${_lineOf(main, guard)}');
-    expect(sweep, lessThan(guard),
-        reason: 'the sweep is half of the same value source and moves with it. '
-            'A sweep inside the guard around a live half outside it would '
-            'also be two objects registering the pipe\'s onWorkerDied '
-            'callback, and the second silently wins.'
-            '\nBackendFreshnessSweep( at line ${_lineOf(main, sweep)}, the '
+            'monitored. The pair moves as one, so a sweep inside the guard '
+            'around a live half outside it — two objects registering the '
+            'pipe\'s onWorkerDied callback, the second silently winning — '
+            'cannot be written.'
+            '\nbuildBackendValueSource( at line ${_lineOf(main, pair)}, the '
             'relay guard at line ${_lineOf(main, guard)}');
+
+    // The other half, measured on the plant on 2026-09-17: a bare
+    // `BackendFreshnessSweep(...)` written here has no `linkOf`, and
+    // `composeBackendRelay` wires neither of the pipe's anchor hooks for a
+    // pair it did not build. The binary ran a per-key watchdog with a
+    // one-way badge for a day — 293 of 1437 keys stale on a live session —
+    // while the unit fixture wired all three by hand and stayed green.
+    expect(main.contains('BackendFreshnessSweep('), isFalse,
+        reason: 'the sweep is built by buildBackendValueSource and never by '
+            'hand in bin/main.dart: a bare constructor here has no link '
+            'anchor, and the composition cannot add one after the fact');
+    expect(main.contains('BackendLiveValues('), isFalse,
+        reason: 'and the live half with it — half a pair built here is a '
+            'pair built in two places');
   });
 
   // --------------------------------------------- arms 6-7: what may be said

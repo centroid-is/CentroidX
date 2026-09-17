@@ -45,7 +45,12 @@
 ///
 /// A write that arrives anyway throws [UnsupportedError] rather than returning
 /// quietly, so a panel writing a preference over the pipe is told, rather than
-/// being told it worked. **That is a live gap, not a resolved one**: gateway
+/// being told it worked. `remove` and `clear` are writes and are refused with
+/// the setters: inherited from `Preferences` they would empty a memory tier
+/// this store never reads and announce the key, which is a delete that
+/// "worked" while the row stayed — and the relay's old `clear` reached past
+/// them to `DELETE` from the retired table, which is the reintroduced
+/// reference `scripts/check-flutter-preferences-retired.sh` catches. **That is a live gap, not a resolved one**: gateway
 /// panels could write shared preferences through this route before the merge,
 /// and cannot now. Closing it means a backend-side writer that shares the
 /// relay's `action_id` with its audit row — a design, not a merge fix.
@@ -196,4 +201,19 @@ class BackendSharedPreferences extends Preferences {
     if (secret) return super.setStringList(key, value, secret: true);
     _refuseWrite('setStringList');
   }
+
+  /// A removal is a write of the plant's configuration and is refused with
+  /// the setters. The secret arm is the keychain's, as everywhere here.
+  @override
+  Future<void> remove(String key, {bool secret = false}) async {
+    if (secret) return super.remove(key, secret: true);
+    _refuseWrite('remove');
+  }
+
+  /// The same, for every row at once. Refused whatever [allowList] says and
+  /// whatever is stored: `clear` has never had a keychain arm, and a refusal
+  /// that depended on the plant being non-empty would be one nobody could
+  /// predict from the interface.
+  @override
+  Future<void> clear({Set<String>? allowList}) async => _refuseWrite('clear');
 }

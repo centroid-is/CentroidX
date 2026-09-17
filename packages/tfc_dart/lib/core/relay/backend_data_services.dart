@@ -27,10 +27,12 @@
 ///    (`read_limits.dart:153-159`), because four tables each at the cap is
 ///    four times the budget in one frame, arrived at by obeying the limit four
 ///    times.
-///  * **`clear` is a remove per key and not a delegation**
-///    (`preference_store.dart:446-488`): upstream's `Preferences.clear` empties
-///    the memory cache and never touches Postgres, so through a gateway it is
-///    a clear that undoes itself on the next rebuild.
+///  * **`clear` is one call to the store's own `clear` and one announcement
+///    pass, never a `remove` per key** (`preference_store.dart`'s `clear`):
+///    the keys go out with no `await` between them, so the wire sees one
+///    frame and not one per key. The "not a delegation" rule both files once
+///    carried died with `flutter_preferences`; [BackendPreferences.clear]
+///    says why.
 ///  * **`StateError` for the historian, `UnsupportedError` for preferences**
 ///    (`local_state_man.dart:1407-1490`). See [BackendTimeseries] and
 ///    [BackendPreferences] for the reasoning; the distinction is mechanical,
@@ -62,7 +64,6 @@ library;
 
 import 'dart:async';
 
-import 'package:drift/drift.dart' show UpdateKind, Variable;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay;
 
 import '../database.dart' as db;
@@ -819,13 +820,17 @@ final class BackendHistoryViews implements relay.HistoryViewApi {
 /// in this file and an arm greps for it, because the obvious future edit is to
 /// add it back "for symmetry".
 ///
-/// Two members are not on `PreferencesApi` and are here because `clear` needs
-/// them:
-///
-///  * [clearFromMemory] is upstream's own `clear`, named for what it actually
-///    does — it empties the memory cache and the local cache and **never
-///    touches Postgres** (`preferences.dart:439-442`).
-///  * [deletePreferenceRows] is the durable half, in one statement.
+/// [clear] is the one member whose meaning has moved. This seam used to carry
+/// two members in its place — upstream's memory-only `clear` and a "delete the
+/// rows" primitive that issued `DELETE FROM flutter_preferences` — because the
+/// shared settings lived in that table and upstream's `clear` did not reach
+/// it. Since main's #465 every `Preferences` owns the durable half of its own
+/// `clear`: `SharedRowPreferences` removes the `config_item` rows in one
+/// guarded write, `BackendSharedPreferences` refuses by name, and the base
+/// class holds nothing but memory. So there is no separate row primitive left
+/// for this seam to carry, and the `DELETE` it used to issue is exactly the
+/// reintroduced reference `scripts/check-flutter-preferences-retired.sh`
+/// exists to catch.
 abstract interface class PreferenceSource {
   Future<Set<String>> getKeys({Set<String>? allowList});
   Future<Map<String, Object?>> getAll({Set<String>? allowList});
@@ -842,11 +847,8 @@ abstract interface class PreferenceSource {
   Future<void> setStringList(String key, List<String> value);
   Future<void> remove(String key);
 
-  /// Upstream's `clear`: the memory and local caches, and nothing durable.
-  Future<void> clearFromMemory({Set<String>? allowList});
-
-  /// Deletes the named rows in ONE statement.
-  Future<void> deletePreferenceRows(Set<String> keys);
+  /// The store's own `clear`, total over whatever that store holds.
+  Future<void> clear({Set<String>? allowList});
 
   /// Every key whose value changed through this store.
   Stream<String> get onPreferencesChanged;
@@ -897,38 +899,11 @@ final class PreferencesSource implements PreferenceSource {
   @override
   Future<void> remove(String key) => preferences.remove(key);
   @override
-  Future<void> clearFromMemory({Set<String>? allowList}) =>
+  Future<void> clear({Set<String>? allowList}) =>
       preferences.clear(allowList: allowList);
 
   @override
   Stream<String> get onPreferencesChanged => preferences.onPreferencesChanged;
-
-  /// One `DELETE`, with the keys bound as placeholders.
-  ///
-  /// Placeholders rather than an array parameter, following
-  /// `preferences_watch.dart:56-63` — the one shape in this repository known
-  /// to bind a key list through this driver. Every key is a bound variable,
-  /// so nothing a caller supplies is concatenated into the statement.
-  ///
-  /// A store with no database is a memory-only `Preferences`
-  /// (`preferences.dart:216-222` accepts a null one), and there is then
-  /// nothing durable to delete. That is not a refusal: the composition root
-  /// decides whether this backend has a database, and by the time a
-  /// [PreferencesSource] exists the decision has been made.
-  @override
-  Future<void> deletePreferenceRows(Set<String> keys) async {
-    if (keys.isEmpty) return;
-    final database = preferences.database;
-    if (database == null) return;
-    final ordered = keys.toList();
-    final placeholders =
-        List.generate(ordered.length, (i) => '\$${i + 1}').join(', ');
-    await database.db.customUpdate(
-      'DELETE FROM flutter_preferences WHERE key IN ($placeholders)',
-      variables: [for (final key in ordered) Variable.withString(key)],
-      updateKind: UpdateKind.delete,
-    );
-  }
 }
 
 /// `PreferencesApi` over the backend's shared preference store.
@@ -936,8 +911,9 @@ final class PreferencesSource implements PreferenceSource {
 /// ## The change feed is a merge, and it is listener-gated
 ///
 /// [onPreferencesChanged] is one broadcast controller carrying two things: the
-/// store's own stream, and the keys [clear] removed — which the store cannot
-/// announce, because its `clear` is memory-only and fires nothing.
+/// store's own stream, and the keys [clear] removed — which the base
+/// `Preferences.clear` does not announce (it fires no event), so this adapter
+/// announces them itself.
 ///
 /// The subscription to the store is taken in `onListen` and dropped in
 /// `onCancel`. A feed armed at construction is an always-on subscription in
@@ -1046,27 +1022,42 @@ final class BackendPreferences implements relay.PreferencesApi {
 
   /// Removes every stored preference, or every one [allowList] names.
   ///
-  /// **Not a delegation, and this is the one member that could not be.**
-  /// Upstream's `clear` empties the memory cache and never touches Postgres
-  /// (`preferences.dart:439-442`), so through this backend a delegation would
-  /// be a clear that undoes itself: the row is still there, the next rebuild
-  /// brings the key back, and nothing anywhere said the call did not do what
-  /// it said.
+  /// **A delegation, and the reason it once could not be is gone.** While the
+  /// shared settings lived in `flutter_preferences`, upstream's `clear`
+  /// emptied a memory cache that the next rebuild refilled from that table,
+  /// so a delegation was a clear that undid itself and this method issued the
+  /// `DELETE` itself. Main's #465 retired the table, and with it the split:
+  /// the base `Preferences` no longer loads from anywhere shared, so its
+  /// `clear` is total over what it holds; `SharedRowPreferences.clear` removes
+  /// the `config_item` rows in one guarded write and lands the change row;
+  /// and `BackendSharedPreferences` — the store `bin/main.dart` composes this
+  /// backend over — refuses the call by name, as it refuses every setter,
+  /// because the backend is not an author of the plant's configuration. Each
+  /// store owns its durable half. A `DELETE` written here would reach the
+  /// retired table: green in every test, and the first thing to break on the
+  /// night `bin/drop_flutter_preferences.dart` runs.
   ///
-  /// **One statement and one announcement pass, not a `remove` per key.**
+  /// **The caller's [allowList] goes down unchanged; the keys are read first
+  /// only so they can be announced.** Handing the store the resolved key set
+  /// instead would make it clear "everything, as of what `getKeys` just
+  /// answered" — and the row store's `getKeys` leaves out a row whose payload
+  /// this build cannot decode. Totality is the store's, over what it holds.
+  ///
+  /// **One call and one announcement pass, not a `remove` per key.**
   /// `remove` awaits a round trip, the event loop turns between them, and
   /// `data_handlers._scheduleFlush`'s `Timer.run` fires in every gap — eight
   /// keys measured eight frames, and five hundred keys is a priority-lane
   /// overflow that every operator reads as the network having dropped
-  /// (`preference_store.dart:462-477`). So the rows go in one `DELETE`, the
-  /// memory cache is emptied by upstream's own `clear` — the one call site
-  /// where a memory-only clear is exactly what is wanted — and the keys are
-  /// announced with no `await` between them, so the whole burst is pending
-  /// before any flush timer can run.
+  /// (`preference_store.dart`'s `clear`). So the store is cleared in one
+  /// call — one guarded write, on the row store — and the keys are announced
+  /// with no `await` between them, so the whole burst is pending before any
+  /// flush timer can run. The row store also announces its removals through
+  /// its own change feed; a key heard twice costs the coalescing set nothing,
+  /// and a key heard never is the failure being prevented.
   ///
   /// **The blast radius with no allow list is real and is not narrowed here.**
   /// This deletes `key_mappings` — 518 KiB of routing configuration the whole
-  /// plant is served through — from the shared table, and reconnecting does
+  /// plant is served through — from the shared rows, and reconnecting does
   /// not bring it back. The interface's own doc says an allow list is highly
   /// recommended. The gate on the call is the relay's `operate` role and
   /// narrowing it further is a policy decision, which lives in the policy
@@ -1076,9 +1067,11 @@ final class BackendPreferences implements relay.PreferencesApi {
   Future<void> clear({Set<String>? allowList}) async {
     final store = _store('clear');
     final keys = await store.getKeys(allowList: allowList);
+    // Before the emptiness check, deliberately: a store that refuses this
+    // call must refuse it on an empty plant too, or the answer would depend
+    // on what happened to be stored.
+    await store.clear(allowList: allowList);
     if (keys.isEmpty) return;
-    await store.deletePreferenceRows(keys);
-    await store.clearFromMemory(allowList: keys);
     final feed = _feed;
     if (feed == null || feed.isClosed) return;
     // No `await` in this loop. That is the whole point — see the doc above.

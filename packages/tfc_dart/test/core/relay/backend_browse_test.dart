@@ -107,9 +107,14 @@ final class _BrowseOnlyApi implements StateManApi {
       'the browse fixture composed no $member; a browse contract case reached '
       'outside api.browse, which this fixture cannot answer honestly');
 
-  // The four access families (17-03), on this fixture's own rule: everything
-  // outside `api.browse` fails loudly naming the member rather than quietly
-  // passing on a fabricated answer.
+  // The five access families (17-03, plus `configItems` when main's relational
+  // config merged in), on this fixture's own rule: everything outside
+  // `api.browse` fails loudly naming the member rather than quietly passing on
+  // a fabricated answer.
+  @override
+  relay.ConfigItemsApi get configItems =>
+      _notPartOfThisFixture('config item store');
+
   @override
   relay.AccessTemplateApi get accessTemplates =>
       _notPartOfThisFixture('access template store');

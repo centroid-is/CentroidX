@@ -24,7 +24,6 @@ import 'package:tfc_dart/core/relay/backend_shared_preferences.dart';
 import 'package:tfc_dart/core/relay/backend_alarm_history.dart';
 import 'package:tfc_dart/core/relay/backend_alarms.dart';
 import 'package:tfc_dart/core/relay/backend_composition.dart';
-import 'package:tfc_dart/core/relay/backend_freshness.dart';
 import 'package:tfc_dart/core/relay/backend_live_values.dart';
 import 'package:tfc_dart/core/relay/relay_config.dart';
 import 'package:tfc_relay_server/tfc_relay_server.dart';
@@ -330,10 +329,11 @@ void main() async {
   //
   // There is exactly ONE pair, and that matters more than it reads.
   // `BackendLiveValues` claims `pipe.onKeyRetired` in its constructor and
-  // `BackendFreshnessSweep` claims `onWorkerDied` and `onWorkerReady` in its
-  // own — plain fields, last writer wins, no complaint. A second pair built
-  // inside the composition would take those callbacks off this one, and this
-  // one would go on serving the engine while hearing nothing about retired keys
+  // `BackendFreshnessSweep` claims `onWorkerDied`, `onWorkerReady` and the
+  // link anchor's two feeds (`onWorkerFrame`, `onLinkAlive`) in its own —
+  // plain fields, last writer wins, no complaint. A second pair built inside
+  // the composition would take those callbacks off this one, and this one
+  // would go on serving the engine while hearing nothing about retired keys
   // or dead workers. So the pair is passed INTO `composeBackendRelay`, and that
   // function refuses half of one by name.
   //
@@ -342,16 +342,18 @@ void main() async {
   // asserting something about a plant it has lost touch with. 14-05's watcher
   // suspends on a non-good quality (CD-6) — which only works if something is
   // degrading the quality, and the sweep is that something.
-  final liveValues = BackendLiveValues(
+  //
+  // And it is built by `buildBackendValueSource`, never by hand. The sweep's
+  // link anchor needs `linkOf`, which needs the key mappings, and a bare
+  // `BackendFreshnessSweep(...)` written here shipped without one: a per-key
+  // watchdog that badged every constant tag on a live session stale ten
+  // seconds after a panel subscribed and never took it back
+  // (`backend_freshness.dart`, measured 2026-09-17). `alarm_structure_test`
+  // arm 5 refuses the bare constructors in this file by name.
+  final (values: liveValues, freshness: freshness) = buildBackendValueSource(
     pipe: pipe,
     keyMappings: keyMappings,
     staleAfter: kBackendStaleAfter,
-    logger: logger,
-  );
-  final freshness = BackendFreshnessSweep(
-    values: liveValues,
-    staleAfter: kBackendStaleAfter,
-    pipe: pipe,
     logger: logger,
   );
 

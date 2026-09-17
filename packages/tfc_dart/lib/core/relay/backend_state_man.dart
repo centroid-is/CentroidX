@@ -334,7 +334,6 @@ final class BackendStateMan
               'one.');
 
   @override
-  @override
   relay.ConfigItemsApi get configItems =>
       _configItems ??
       _missing(

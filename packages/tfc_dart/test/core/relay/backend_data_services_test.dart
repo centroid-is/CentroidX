@@ -411,18 +411,18 @@ final class _FakePreferences implements PreferenceSource {
     _changes.add(key);
   }
 
+  /// The allow list each `clear` arrived with — null for "everything".
+  final List<Set<String>?> cleared = <Set<String>?>[];
+
   @override
-  Future<void> clearFromMemory({Set<String>? allowList}) async {
+  Future<void> clear({Set<String>? allowList}) async {
+    cleared.add(allowList);
     if (allowList == null) {
       _store.clear();
     } else {
       _store.removeWhere((key, _) => allowList.contains(key));
     }
   }
-
-  @override
-  Future<void> deletePreferenceRows(Set<String> keys) async =>
-      deleted.add(keys);
 }
 
 // -------------------------------------------------------- the contract's api
@@ -468,6 +468,13 @@ final class _DataOnlyApi implements StateManApi, StateManDataHarness {
   @override
   relay.AccessTemplateApi get accessTemplates =>
       _notPartOfThisFixture('access template store');
+
+  // Joined `StateManApi` with the browser client (46399f7b8) and was never
+  // added here, so this file stopped compiling; the same refusal as the
+  // access families, for the same reason.
+  @override
+  relay.ConfigItemsApi get configItems =>
+      _notPartOfThisFixture('config item store');
 
   @override
   relay.AccessAdminApi get accessAdmin =>
@@ -1097,19 +1104,41 @@ void main() {
               'the whole plant is served through — included');
     });
 
-    test('clear takes the durable rows with it, in one statement', () async {
+    test('clear is ONE call to the store\'s own clear, carrying the allow '
+        'list unchanged', () async {
       final fake = _FakePreferences();
       final prefs = BackendPreferences(source: fake);
       await prefs.setInt(_clearedKey, 800);
       await prefs.clear(allowList: <String>{_clearedKey});
 
-      expect(fake.deleted, [
+      expect(fake.cleared, [
         {_clearedKey}
-      ], reason: 'Preferences.clear empties the memory cache and never '
-          'touches Postgres (preferences.dart:439-442), so a delegation would '
-          'be a clear that undoes itself on the next rebuild — and the rows '
-          'go in ONE statement, because a remove per key is one wire frame '
-          'per key (preference_store.dart:462-470)');
+      ], reason: 'since main\'s #465 every Preferences owns the durable half '
+          'of its own clear — SharedRowPreferences removes the config_item '
+          'rows in one guarded write, BackendSharedPreferences refuses — so '
+          'this adapter delegates rather than issuing a DELETE against the '
+          'retired flutter_preferences table. The caller\'s allow list goes '
+          'down as given: the store is total over what IT holds, not over '
+          'what getKeys last answered');
+      expect(fake.deleted, isEmpty,
+          reason: 'and not a remove per key, because a remove per key is one '
+              'wire frame per key (preference_store.dart\'s clear)');
+    });
+
+    test('clear with no allow list asks the store for everything', () async {
+      final fake = _FakePreferences();
+      final prefs = BackendPreferences(source: fake);
+      await prefs.setBool(_prefKey, true);
+      await prefs.setInt(_clearedKey, 800);
+
+      await prefs.clear();
+
+      expect(fake.cleared, [null],
+          reason: 'null is "everything the store holds", which is a stronger '
+              'claim than "the keys getKeys just answered" — a row store\'s '
+              'getKeys leaves out a payload this build cannot decode, and a '
+              'clear must not');
+      expect(await prefs.getKeys(), isEmpty);
     });
 
     test('clear announces every key it removed, with no await between',

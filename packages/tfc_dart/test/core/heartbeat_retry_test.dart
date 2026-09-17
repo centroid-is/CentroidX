@@ -80,6 +80,7 @@ class FlakyClientApi implements ClientApi {
     Duration samplingInterval = const Duration(milliseconds: 100),
     bool discardOldest = true,
     int queueSize = 1,
+    bool deliverBadStatus = false,
   }) =>
       StreamController<DynamicValue>().stream;
 
@@ -91,6 +92,11 @@ class FlakyClientApi implements ClientApi {
     Duration samplingInterval = const Duration(milliseconds: 100),
     bool discardOldest = true,
     int queueSize = 1,
+    // Ignored here, and that is the point: this fake exists to count retries,
+    // and it never delivers a sample of either quality. The parameter is
+    // carried so the override keeps matching `ClientApi` — the upstream pin
+    // added it for PIPE-11's bad-status samples.
+    bool deliverBadStatus = false,
   }) {
     monitoredItemsSubs.add(subscriptionId);
     return heartbeat.stream;

@@ -1,5 +1,20 @@
-/// The fifteen `PreferencesApi` members over `tfc_dart`'s shared
-/// `flutter_preferences` table.
+/// The fifteen `PreferencesApi` members over the `Preferences` `tfc_dart`
+/// builds for this gateway.
+///
+/// ## After main's #465 this store is memory-only
+///
+/// Everything below was written over `tfc_dart`'s shared `flutter_preferences`
+/// table, which `Preferences.create` filled a cache from. That table is
+/// retired: the shared settings are `config_item` rows, served to the app by
+/// `SharedRowPreferences` over a `ConfigStore`, and `Preferences.create(db:)`
+/// now reads nothing from the database it is handed. What [_load] builds is
+/// therefore a store holding exactly what was written through it in this
+/// process, and [invalidate] rebuilds it EMPTY. Serving the rows from this
+/// gateway needs a `ConfigStore` behind a guard, a policy, an audit sink and a
+/// station identity — a design, not a merge fix — so the trap and the
+/// rebuild reasoning below still describe this file's shape, over a table it
+/// no longer reaches. [clear] is the one member rewritten for it, because its
+/// old body was a `DELETE` against the retired table.
 ///
 /// ## TRAP 8: a `Preferences` built by hand answers "no keys"
 ///
@@ -65,7 +80,6 @@ library;
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:drift/drift.dart' show UpdateKind, Variable;
 import 'package:tfc_dart/core/preferences.dart' show Preferences;
 import 'package:tfc_dart/core/secure_storage/interface.dart'
     show MySecureStorage;
@@ -445,21 +459,36 @@ final class PreferenceStore implements PreferencesApi {
 
   /// Removes every stored preference, or every one named by [allowList].
   ///
-  /// **Not a delegation, and this is the one member that could not be.**
-  /// `Preferences.clear` empties the memory cache and the local cache and
-  /// **never touches Postgres** (`preferences.dart:439-442`). Through this
-  /// gateway that would be a clear that undoes itself: the cache is refilled
-  /// from the table on the next rebuild, so every key would come back, and
-  /// nothing anywhere would have said the call did not do what it said. It
-  /// also fires no change event, so no connected panel would hear about it
-  /// either.
+  /// **A delegation, and the paragraphs this replaced said it could not be.**
+  /// They were written when `Preferences.create` filled a cache from the
+  /// shared `flutter_preferences` table: `Preferences.clear` emptied that
+  /// cache and never touched Postgres, so a delegation was a clear that undid
+  /// itself on the next rebuild. This method therefore issued the `DELETE`
+  /// itself (10-09), borrowed the database once across both awaits, and
+  /// rebuilt the cache first so the key list was the table's and not the
+  /// cache's (10-REVIEW WR-07).
   ///
-  /// So it is a remove per key. That also gives the wire the right shape:
-  /// each `remove` announces its key, and `data_handlers.dart` coalesces the
-  /// burst into **one** `preferences.changed` frame carrying the whole set
-  /// (10-05), rather than one frame per key.
+  /// Main's #465 retired the table, and every one of those reasons with it.
+  /// `Preferences.create(db:)` reads nothing from the database it is handed —
+  /// see the library doc — so the `Preferences` this store holds is memory
+  /// only: what it holds is what was written through it, `getKeys` is total
+  /// over that, and its own `clear` is the whole clear. There is no second
+  /// borrow because there is no second statement. And [invalidate] before the
+  /// read would now be worse than useless: a rebuild is an EMPTY store, so a
+  /// clear that rebuilt first would find nothing to clear and report success.
+  /// A `DELETE FROM flutter_preferences` here would be exactly the
+  /// reintroduced reference `scripts/check-flutter-preferences-retired.sh`
+  /// exists to catch — green in every test and broken on the night the drop
+  /// tool runs. The shared rows are `config_item` and are
+  /// `SharedRowPreferences`' to remove; this gateway holds no `ConfigStore`
+  /// to reach them through, and the library doc records that gap rather than
+  /// this method papering over it.
   ///
-  /// **One statement and one turn, not a `remove` per key.** The obvious
+  /// **The caller's [allowList] goes down unchanged**, and the keys are read
+  /// first only to be announced: totality is the store's, over what it holds,
+  /// not "everything, as of what `getKeys` just answered".
+  ///
+  /// **One call and one turn, not a `remove` per key.** The obvious
   /// implementation — loop over the keys calling [remove] — was written,
   /// measured and rejected: each `remove` awaits a round trip, so the event
   /// loop turns between them, and `data_handlers._scheduleFlush`'s `Timer.run`
@@ -469,73 +498,33 @@ final class PreferenceStore implements PreferencesApi {
   /// client and then `close(4004)`, which every operator reads as the network
   /// having dropped.
   ///
-  /// So the rows go in one `DELETE`, the memory cache is emptied by upstream's
-  /// own `clear` — which touches memory and nothing else, the one place that
-  /// behaviour is what is wanted — and the keys are announced in a single
-  /// pass with no `await` between them. Everything the burst announces is
-  /// therefore pending before the flush timer can run, and the wire sees one
-  /// frame carrying the whole set.
+  /// So the store is cleared in one call — `Preferences.clear` fires no change
+  /// event, so it is this method that announces — and the keys go out in a
+  /// single pass with no `await` between them. Everything the burst announces
+  /// is therefore pending before the flush timer can run, and the wire sees
+  /// one frame carrying the whole set.
   ///
   /// **The blast radius is real and is not this file's to narrow.** With no
-  /// allow-list this deletes `key_mappings` — the gateway's own routing
-  /// configuration — from the shared table, and the interface's own doc says
-  /// as much ("It is highly recommended that an allowList be provided"). The
-  /// gate on the call is 10-05's `operate` role, which is the same role that
-  /// writes a motor setpoint; narrowing it further is a policy decision, and
-  /// policy lives in `policy_state_man.dart`, not here. Recorded as a threat
-  /// flag rather than quietly refused, because a store that silently declined
-  /// an unrestricted clear would be a fourth behaviour nobody could predict
-  /// from the interface.
+  /// allow-list this clears every key the gateway holds, and the interface's
+  /// own doc says as much ("It is highly recommended that an allowList be
+  /// provided"). The gate on the call is 10-05's `operate` role, which is the
+  /// same role that writes a motor setpoint; narrowing it further is a policy
+  /// decision, and policy lives in `policy_state_man.dart`, not here.
+  /// Recorded as a threat flag rather than quietly refused, because a store
+  /// that silently declined an unrestricted clear would be a fourth behaviour
+  /// nobody could predict from the interface.
   @override
   Future<void> clear({Set<String>? allowList}) async {
-    // **Rebuilt first, and the database borrowed once** (10-REVIEW WR-07).
-    //
-    // The key list comes from `Preferences.getKeys`, which reads the in-memory
-    // cache — the file's own TRAP 8 paragraph says so. The cache is only as
-    // fresh as the last [invalidate], which happens on a NOTIFY that the
-    // 250 ms de-duplication window may have suppressed or that arrived while
-    // nothing was listening. So a key another process created since the last
-    // rebuild survived a `clear()` and the call reported success. `clear` is
-    // the one method on this interface whose whole contract is *totality*, and
-    // "everything, as of whenever we last looked" is not it.
-    //
-    // The second, narrower gap on the same lines: [_load] borrowed the
-    // database and the DELETE borrowed it again, so a sink reconnect between
-    // the two awaits deleted rows from one instance using a key list built
-    // from another. One borrow, held across both.
-    invalidate();
     final prefs = await _load();
-    final db = database() ?? _noStore();
     final keys = (await prefs.getKeys(allowList: allowList)).toList();
+    await prefs.clear(allowList: allowList);
     if (keys.isEmpty) return;
-
-    // Placeholders rather than an array parameter, following
-    // `preferences_watch.dart:56-63` — the one shape in this repository that
-    // is known to bind a key list through this driver.
-    final placeholders =
-        List.generate(keys.length, (i) => '\$${i + 1}').join(', ');
-    await db.db.customUpdate(
-          'DELETE FROM flutter_preferences WHERE key IN ($placeholders)',
-          variables: [for (final key in keys) Variable.withString(key)],
-          updateKind: UpdateKind.delete,
-        );
-    // Memory only, deliberately: this is the single call site where
-    // upstream's Postgres-untouching `clear` is the right primitive, because
-    // the statement above has already done the durable half.
-    await prefs.clear(allowList: keys.toSet());
 
     // No `await` in this loop. That is the whole point — see the doc above.
     for (final key in keys) {
       if (!_local.isClosed) _local.add(key);
     }
   }
-
-  /// The supplier answered null between [_load] and here.
-  ///
-  /// Written as a `Never` so the expression it guards keeps the static type
-  /// [DatabaseSupplier] declares — 10-08's seam trick, which is what lets
-  /// this file call a drift method without importing the database layer.
-  Never _noStore() => throw const PreferenceStoreUnavailable();
 
   // ------------------------------------------------------------------ events
 

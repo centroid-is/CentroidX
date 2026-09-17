@@ -121,7 +121,9 @@
 ///
 /// [linkOf] is a seam, not a lookup this file does itself: the composition
 /// root knows the pipe's worker routing and the key mappings' server alias,
-/// and hands in one function. Without it the sweep is per-key, as it was.
+/// and hands in one function. Without it the sweep is per-key, as it was —
+/// which is why `buildBackendValueSource` is the one place a production
+/// sweep is built (see the last section of this doc).
 ///
 /// ## What this file does NOT do
 ///
@@ -153,7 +155,7 @@
 ///     seconds after a panel subscribed, before anything on it changed),
 ///     stayed purple for as long as it stayed constant. [sweep] now keeps the
 ///     quality a key held before it was badged and **restores it** the moment
-///     the key's anchor is fresh again ([BackendLiveValues.restoreStale],
+///     its LINK's anchor is fresh again ([BackendLiveValues.restoreStale],
 ///     which refuses to touch a node that has since moved on to a fresh
 ///     sample or a comm fault). A stale badge is the sweep's claim that the
 ///     link stopped speaking; when the link speaks, the claim is withdrawn.
@@ -178,6 +180,34 @@
 /// refuses to badge a never-arrived value, so [_register]'s seeding of a
 /// registration time cannot turn "no data" into "stale". The two are
 /// different statements and the operator must be able to tell them apart.
+///
+/// ## The anchor's hooks are claimed here, and the pair is built in one place
+///
+/// Measured on the plant on 2026-09-17, after everything above had shipped:
+/// `Baader1.BufferRequestSetpoint` badged `badStale` ten seconds after a
+/// panel subscribed and never came back, while `BufferHeightPercent` — same
+/// node, same session — ticked good the whole time. 293 of 1437 keys stale,
+/// 430 "went quiet" log lines in forty minutes, 3 restores. **None of the
+/// three anchors above was wired in the binary.** `bin/main.dart` built this
+/// object itself, before the relay guard, and handed it to
+/// `composeBackendRelay` — and every one of `linkOf`, `onWorkerFrame` and
+/// `onLinkAlive` was wired only in the composition's *fallback* branch, the
+/// one that builds its own pair, which production never takes. The unit
+/// fixture wired all three by hand and went green; the plant ran a per-key
+/// sweep with a one-way badge.
+///
+/// So two things moved. `onWorkerFrame` and `onLinkAlive` are claimed **in
+/// this constructor**, beside `onWorkerDied` and `onWorkerReady`, under the
+/// rule the file already states for those: an obligation wired at a call
+/// site is an obligation that can be forgotten at a call site. The link's
+/// spelling lives here too ([BackendFreshnessSweep.linkId]), so a keep-alive
+/// and a key cannot meet on two strings. And the one thing a constructor
+/// cannot supply — `linkOf`, which needs the key mappings — is supplied by
+/// `buildBackendValueSource` in `backend_composition.dart`, the single
+/// function that builds the live half and this sweep together;
+/// `bin/main.dart` and the composition's fallback both call it, and
+/// `composeBackendRelay` warns by name when it is handed a sweep that has no
+/// link ([BackendFreshnessSweep.linkAnchored]).
 ///
 /// Protocol types are imported `as relay`, the house rule inside `tfc_dart`.
 library;
@@ -235,7 +265,33 @@ final class BackendFreshnessSweep implements BackendValueSource {
     // is an obligation that can be forgotten at a call site.
     pipe.onWorkerDied = _onWorkerDied;
     pipe.onWorkerReady = _onWorkerReady;
+    // The link anchor's two feeds, under the same rule — and they were the
+    // proof of it: wired at one call site of two, the plant ran without them
+    // (library doc, 2026-09-17).
+    pipe.onWorkerFrame = _onWorkerFrame;
+    pipe.onLinkAlive = _onLinkAlive;
   }
+
+  /// One spelling of a link id, shared by the keep-alive side ([heardLink],
+  /// fed from `PipeLinkAlive`) and the key side (`linkOf`, built by
+  /// `buildBackendValueSource`) so the two cannot drift: the worker,
+  /// narrowed by a server alias when the worker hosts several.
+  ///
+  /// An OPC UA worker hosts one server and its keep-alive carries a null
+  /// alias, so its keys and its keep-alive both spell `worker:N`. A Modbus or
+  /// M2400 worker reports each connected device under its alias, and a key
+  /// narrows to the device its mapping names — a poll on one device proves
+  /// nothing about another.
+  static String linkId(int worker, String? alias) =>
+      alias == null ? 'worker:$worker' : 'worker:$worker/$alias';
+
+  /// Whether this sweep can anchor a key on its link at all.
+  ///
+  /// False for a sweep built without `linkOf`, which ages every key on its
+  /// own arrivals alone — F3, the defect HARD-01 fixed, and what the binary
+  /// shipped until 2026-09-17. `composeBackendRelay` warns by name when it is
+  /// handed one.
+  bool get linkAnchored => _linkOf != null;
 
   final BackendValueSource _values;
   final PipeMainEndpoint? _pipe;
@@ -300,7 +356,7 @@ final class BackendFreshnessSweep implements BackendValueSource {
   Set<String> get degraded => Set<String>.unmodifiable(_degraded.keys);
 
   /// Each key the sweep badged stale, with the quality it held before — what
-  /// [sweep] puts back when the key's anchor is fresh again. A key that is
+  /// [sweep] puts back when its link's anchor is fresh again. A key that is
   /// heard (a fresh sample) leaves the map in [_heard]: the sample carries its
   /// own quality, and the badge has nothing left to take back.
   final Map<String, relay.Quality> _degraded = <String, relay.Quality>{};
@@ -505,17 +561,26 @@ final class BackendFreshnessSweep implements BackendValueSource {
       }
       stale.add(key);
     }
-    // The other direction: a key this sweep badged stale whose anchor has
-    // moved since — the link spoke again, through a frame or a watched
-    // change — gets the quality it held back. Its own [_lastHeard] has not
-    // moved (nothing arrived for *it*), which is exactly why the anchor is
-    // the link's: on a live link a constant tag is a tag that has not
-    // changed, not one that has stopped arriving.
+    // The other direction: a key this sweep badged stale whose LINK has
+    // spoken since — a keep-alive, or a frame carrying any key on it — gets
+    // the quality it held back. On a live link a constant tag is a tag that
+    // has not changed, not one that has stopped arriving.
+    //
+    // The link's anchor and never the key's own, and that is a decision. A
+    // sample arriving for the key itself clears the badge in [_heard] — the
+    // sample carries its own quality, there is nothing to put back — so the
+    // only way the key's own anchor moves while it is still in [_degraded]
+    // is [_register] seeding a fresh instant when a watcher re-attaches. A
+    // restore on that is a good badge with no evidence behind it, on a link
+    // exactly as dead as when the key was badged. And only a watched key is
+    // restored, for rule 3's reason: an unwatched key is nobody's to update.
     final restore = <String, relay.Quality>{};
     for (final entry in _degraded.entries) {
-      final anchor = _anchorOf(entry.key);
-      if (anchor == null) continue;
-      if (now - anchor >= staleAfter.inMilliseconds) continue;
+      if (!_lastHeard.containsKey(entry.key)) continue;
+      final link = _linkOf?.call(entry.key);
+      final onLink = link == null ? null : _lastHeardByLink[link];
+      if (onLink == null) continue;
+      if (now - onLink >= staleAfter.inMilliseconds) continue;
       restore[entry.key] = entry.value;
     }
     if (restore.isNotEmpty) {
@@ -538,9 +603,9 @@ final class BackendFreshnessSweep implements BackendValueSource {
   }
 
   /// The link anchor, fed from the worker's frames: every key in a delivered
-  /// frame proves its link is speaking, watched or not. Wired by the
-  /// composition to `PipeMainEndpoint.onWorkerFrame`; see the library doc for
-  /// why the node listener alone was not enough.
+  /// frame proves its link is speaking, watched or not. Claimed from
+  /// `PipeMainEndpoint.onWorkerFrame` in the constructor; see the library doc
+  /// for why the node listener alone was not enough.
   void heardKeys(Iterable<String> keys) {
     if (_disposed) return;
     final linkOf = _linkOf;
@@ -553,14 +618,22 @@ final class BackendFreshnessSweep implements BackendValueSource {
   }
 
   /// The link anchor, fed from a worker's keep-alive (`PipeLinkAlive`):
-  /// [link] is alive now, whatever its keys are doing. The composition spells
-  /// [link] exactly as its `linkOf` spells it for the keys on that link, so
+  /// [link] is alive now, whatever its keys are doing. [link] is spelled by
+  /// [linkId], exactly as `linkOf` spells it for the keys on that link, so
   /// the two meet in [_anchorOf]. See the library doc: this is what makes
   /// "fresh" mean "the session is up", not "a tag happened to change".
   void heardLink(String link) {
     if (_disposed) return;
     _lastHeardByLink[link] = _monotonic.elapsedMilliseconds;
   }
+
+  /// `PipeMainEndpoint.onWorkerFrame`, claimed in the constructor.
+  void _onWorkerFrame(int worker, Iterable<String> keys) => heardKeys(keys);
+
+  /// `PipeMainEndpoint.onLinkAlive`, claimed in the constructor: the
+  /// keep-alive anchors the link under the same spelling `linkOf` uses.
+  void _onLinkAlive(int worker, String? alias) =>
+      heardLink(linkId(worker, alias));
 
   /// Runs [mutation] with [_applying] raised, so the notifications it causes
   /// are not mistaken for readings from the plant.
@@ -652,6 +725,11 @@ final class BackendFreshnessSweep implements BackendValueSource {
   }
 
   /// The last watcher on [key] left.
+  ///
+  /// [_degraded] keeps its memory of the key: a constant badged while its
+  /// link was quiet, un-watched and watched again while the link is back, is
+  /// restored by the link's keep-alive exactly as a continuously watched one
+  /// is. What must NOT restore it is the next [_register] — see [sweep].
   void _deregister(String key) {
     _lastHeard.remove(key);
     if (_lastHeard.isEmpty) _disarm();
@@ -726,6 +804,8 @@ final class BackendFreshnessSweep implements BackendValueSource {
       // exactly that bug against `onKeyRetired` and its own arm caught it).
       if (pipe.onWorkerDied == _onWorkerDied) pipe.onWorkerDied = null;
       if (pipe.onWorkerReady == _onWorkerReady) pipe.onWorkerReady = null;
+      if (pipe.onWorkerFrame == _onWorkerFrame) pipe.onWorkerFrame = null;
+      if (pipe.onLinkAlive == _onLinkAlive) pipe.onLinkAlive = null;
     }
 
     for (final watched in _watched.values) {

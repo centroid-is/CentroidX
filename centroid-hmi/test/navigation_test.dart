@@ -417,13 +417,18 @@ void main() {
         final gate = await buildGate(tester, lb, '/advanced/ip-settings');
         expect(gate.group.name, 'administer');
         expect(gate.child, isA<DbusGate>());
-        // ...but it opens during an outage, which is the one thing that makes
-        // a freshly commissioned station recoverable: the database is reached
-        // over the network, so the page that gives the machine an address
-        // cannot be gated behind a group only a working database can grant.
-        // Asserted on the BUILT gate, not on the declaration, because that is
-        // what the router actually honours.
-        expect(gate.allowWhenRepositoryUnavailable, isTrue,
+        // ...but it opens when nothing on the station can verify a credential,
+        // which is the one thing that makes a freshly commissioned station
+        // recoverable: the database is reached over the network, so the page
+        // that gives the machine an address cannot be gated behind a group
+        // only a reachable authority can grant. Asserted on the BUILT gate,
+        // not on the declaration, because that is what the router honours.
+        //
+        // `allowWhenNobodyCanSignIn` on this line: the flag main asserts as
+        // `allowWhenRepositoryUnavailable` was renamed here, because both of
+        // its earlier names claimed a condition narrower or broader than the
+        // code enforced. See `access_gate.dart`.
+        expect(gate.allowWhenNobodyCanSignIn, isTrue,
             reason: 'a new station reaches its database over the network; '
                 'gating this page behind the database is a loop with no entry');
       });

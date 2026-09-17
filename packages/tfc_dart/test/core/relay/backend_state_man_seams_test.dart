@@ -116,6 +116,15 @@ final Map<String, Refusal> refusals = <String, Refusal>{
     collaborator: 'BackendConfigApi',
     invoke: (s) async => s.backendConfig,
   ),
+  // The fifth family, which arrived with main's relational config rather than
+  // with 17-03, and which joins on the same argument: an adapter composed
+  // without the plant's `config_item` rows that answered "no pages, no key
+  // mappings" would be telling a browser the plant is empty. It refuses and
+  // names itself, so the composition root is what gets fixed.
+  'configItems': (
+    collaborator: 'ConfigItemsApi',
+    invoke: (s) async => s.configItems,
+  ),
 };
 
 /// The one member that must NOT refuse.
@@ -226,12 +235,13 @@ void main() {
       expect(covered.difference(declared), isEmpty,
           reason: 'the roster names something StateManApi no longer declares; '
               'a stale entry makes the count above meaningless');
-      expect(declared, hasLength(18),
-          reason: 'seventeen members refuse and dispose does not; if this '
+      expect(declared, hasLength(19),
+          reason: 'eighteen members refuse and dispose does not; if this '
               'number moved, the interface grew and somebody owes the new '
               'member a decision. It moved from 14 to 18 when plan 17-03 added '
-              'the four access families, and the four decisions are recorded '
-              'in the roster above');
+              'the four access families, and to 19 when main\'s relational '
+              'config brought `configItems`; each decision is recorded in the '
+              'roster above');
     });
   });
 }
