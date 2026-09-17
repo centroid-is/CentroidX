@@ -338,6 +338,13 @@ final class SubscribeResult {
   /// Per-key failures — one bad key never blanks a page.
   final Map<String, KeyReject> rejected;
 
+  /// The type dictionary for this subscription: every distinct type the
+  /// accepted keys carry that has something to describe (an enum table
+  /// somewhere in it), keyed by the id each key's `meta` names as `ty`.
+  /// Once per establishment, never per update — see `type_descriptor.dart`.
+  /// Empty from a gateway with no type metadata, and older clients ignore it.
+  final Map<String, Object?> types;
+
   const SubscribeResult({
     required this.sub,
     required this.epoch,
@@ -347,6 +354,7 @@ final class SubscribeResult {
     required this.snapshot,
     this.rejected = const {},
     this.generation = 0,
+    this.types = const {},
   });
 
   factory SubscribeResult.fromJson(Map<String, Object?> json) =>
@@ -366,6 +374,7 @@ final class SubscribeResult {
             .cast<String, Object?>()
             .map((k, v) =>
                 MapEntry(k, KeyReject.fromJson((v as Map).cast()))),
+        types: (json['types'] as Map? ?? const {}).cast<String, Object?>(),
       );
 
   Map<String, Object?> toJson() => {
@@ -378,6 +387,7 @@ final class SubscribeResult {
         'snapshot': _stringKeyed(snapshot, (v) => v.toJson()),
         if (rejected.isNotEmpty)
           'rejected': rejected.map((k, v) => MapEntry(k, v.toJson())),
+        if (types.isNotEmpty) 'types': types,
       };
 }
 

@@ -2,6 +2,7 @@
 library;
 
 import 'dart:async';
+import 'dart:collection';
 import 'dart:isolate';
 
 import 'package:open62541/open62541.dart';
@@ -150,6 +151,78 @@ void main() {
     endpoint.dispose();
     upstream.dispose();
     port.close();
+  });
+
+  group('the type dictionary (PipeTypeDescribed / PipeKeyType, 2026-09-17)',
+      () {
+    DynamicValue fdSample(int mode) {
+      final runMode = DynamicValue(
+          value: mode, typeId: NodeId.fromNumeric(4, 3001))
+        ..enumFields = {
+          0: EnumField(0, 'stopped', LocalizedText('Stopped', ''),
+              LocalizedText('', '')),
+          2: EnumField(2, 'auto', LocalizedText('Auto', 'en'),
+              LocalizedText('', '')),
+        };
+      final struct = DynamicValue(typeId: NodeId.fromNumeric(4, 3012));
+      struct.value = LinkedHashMap<String, DynamicValue>.from({
+        'p_stat_RunMode': runMode,
+        'p_stat_Speed': DynamicValue(value: 12.5, typeId: NodeId.int32),
+      });
+      return struct;
+    }
+
+    test('a struct with an enum member is described once per TYPE, and each '
+        'key of it is named once', () async {
+      endpoint.handleControl(const PipeSubscribe('k'));
+      endpoint.handleControl(const PipeSubscribe('k2'));
+      await ticks(1);
+      upstream.controllerFor('k').add(fdSample(2));
+      upstream.controllerFor('k2').add(fdSample(0));
+      upstream.controllerFor('k').add(fdSample(0));
+      await ticks(2);
+
+      final described = priority().whereType<PipeTypeDescribed>().toList();
+      expect(described, hasLength(1),
+          reason: 'two keys, three samples, one type: the enum vocabulary '
+              'belongs to the type and crosses once');
+      expect(described.single.typeId, 'ns=4;i=3012');
+      final descriptor =
+          relay.TypeDescriptor.fromJson(described.single.descriptor);
+      expect(descriptor.members['p_stat_RunMode']!.enumFields![2]!.name, 'auto',
+          reason: 'the name readDriveState switches on');
+      expect(descriptor.members['p_stat_RunMode']!.enumFields![2]!.displayName
+              ?.locale,
+          'en');
+      expect(descriptor.members['p_stat_Speed']!.ua, 'ns=0;i=6');
+
+      final named = priority().whereType<PipeKeyType>().toList();
+      expect(named.map((e) => (e.key, e.typeId)).toSet(),
+          {('k', 'ns=4;i=3012'), ('k2', 'ns=4;i=3012')},
+          reason: 'each key names its type once; a second sample of the same '
+              'type says nothing');
+    });
+
+    test('a type with no enum anywhere is not described, and its keys are '
+        'not named — a plain number has nothing the wire does not carry',
+        () async {
+      endpoint.handleControl(const PipeSubscribe('k'));
+      await ticks(1);
+      upstream.controllerFor('k').add(
+          DynamicValue(value: 42, typeId: NodeId.int32));
+      await ticks(2);
+      expect(priority().whereType<PipeTypeDescribed>(), isEmpty);
+      expect(priority().whereType<PipeKeyType>(), isEmpty);
+    });
+
+    test('describeUaType walks members and elements, and normalises an empty '
+        'locale to none', () {
+      final d = describeUaType(fdSample(2));
+      expect(d.ua, 'ns=4;i=3012');
+      expect(d.hasEnum, isTrue);
+      expect(d.members['p_stat_RunMode']!.enumFields![0]!.displayName?.locale,
+          isNull);
+    });
   });
 
   group('the keep-alive (PipeLinkAlive, 2026-09-17)', () {

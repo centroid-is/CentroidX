@@ -125,7 +125,7 @@ class _PendingWrite {
 }
 
 /// Main's end of the acquisition pipe. See the library doc.
-class PipeMainEndpoint {
+class PipeMainEndpoint implements relay.TypeDescriptions {
   PipeMainEndpoint({
     this.writeDeadline = kPipeWriteDeadline,
     Logger? logger,
@@ -161,6 +161,21 @@ class PipeMainEndpoint {
 
   /// The router. Disjoint by construction — see the library doc.
   final Map<String, int> _keyToWorker = <String, int>{};
+
+  /// The type dictionary the workers built, by type id, and which type each
+  /// key carries — [relay.TypeDescriptions] for the relay server, so a
+  /// subscribe can hand a panel the enum tables once per type
+  /// (`type_descriptor.dart`). Filled from [PipeTypeDescribed] and
+  /// [PipeKeyType]; a retired key forgets its type.
+  final Map<String, relay.TypeDescriptor> _types =
+      <String, relay.TypeDescriptor>{};
+  final Map<String, String> _typeOfKey = <String, String>{};
+
+  @override
+  String? typeIdOf(String key) => _typeOfKey[key];
+
+  @override
+  relay.TypeDescriptor? describe(String typeId) => _types[typeId];
 
   /// The next correlation id per worker. Per-worker and monotonic: the ids
   /// never leave the process, so there is nothing to make globally unique.
@@ -557,6 +572,10 @@ class PipeMainEndpoint {
       case PipeLinkAlive(alias: final alias):
         // Liveness and nothing else: no value moves, no quality changes.
         onLinkAlive?.call(index, alias);
+      case PipeTypeDescribed(typeId: final typeId, descriptor: final json):
+        _types[typeId] = relay.TypeDescriptor.fromJson(json);
+      case PipeKeyType(key: final key, typeId: final typeId):
+        _typeOfKey[key] = typeId;
       case PipeKeyError(key: final key, quality: final quality):
         // No payload under a bad badge: `translateOpcUaSample`'s rule, for the
         // same reason — a number nobody measured, greyed out, is still a
@@ -565,6 +584,7 @@ class PipeMainEndpoint {
       case PipeKeyRetired(key: final key):
         // Affirmatively gone, which is a different fact from "not yet known"
         // and from "the link is sick": errorConfig says waiting will not help.
+        _typeOfKey.remove(key);
         _markBad(<String>[key], relay.Quality.errorConfig);
         // THEN the hook (IN-02). Order matters: a consumer that unsubscribes
         // before the value lands would race the reading it is supposed to see
@@ -838,6 +858,8 @@ class PipeMainEndpoint {
       listen.cancel();
     }
     _listens.clear();
+    _types.clear();
+    _typeOfKey.clear();
     // Same promise as a pending write: a caller waiting on a resnapshot must
     // not be left holding a future whose only remaining source has just been
     // torn down.

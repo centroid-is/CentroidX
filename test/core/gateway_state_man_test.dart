@@ -92,6 +92,71 @@ void main() {
     });
   });
 
+  group('value translation, gateway to panel — the type dictionary', () {
+    const fd = rp.TypeDescriptor(
+      ua: 'ns=4;i=3012',
+      displayName: rp.LocalizedText('Frequency drive'),
+      members: {
+        'p_stat_RunMode': rp.TypeDescriptor(
+          ua: 'ns=4;i=3001',
+          enumFields: {
+            0: rp.EnumField(value: 0, name: 'stopped'),
+            2: rp.EnumField(
+                value: 2,
+                name: 'auto',
+                displayName: rp.LocalizedText('Auto', locale: 'en')),
+          },
+        ),
+      },
+    );
+
+    test('a struct member gets its enum table back, so a run mode has a name',
+        () {
+      final wire = rp.DynamicValue(value: <Object, rp.DynamicValue>{
+        'p_stat_RunMode': rp.DynamicValue(value: 2),
+        'p_stat_Speed': rp.DynamicValue(value: 12.5),
+      });
+      final value = toUaValue(wire, type: fd);
+      final mode = value['p_stat_RunMode'];
+      expect(mode.asInt, 2);
+      expect(mode.enumFields?[mode.asInt]?.name, 'auto',
+          reason: 'exactly the lookup readDriveState makes — the one that '
+              'answered unknown in every browser and painted every conveyor '
+              'purple');
+      expect(mode.enumFields![2]!.displayName.locale, 'en');
+      expect(mode.typeId?.toString(), 'ns=4;i=3001');
+      expect(value.typeId?.toString(), 'ns=4;i=3012');
+      expect(value.displayName?.value, 'Frequency drive');
+      expect(value['p_stat_Speed'].enumFields, isNull,
+          reason: 'a member the type says nothing about is built as before');
+    });
+
+    test('without a descriptor the value is built exactly as before', () {
+      final value = toUaValue(rp.DynamicValue(value: 2));
+      expect(value.asInt, 2);
+      expect(value.enumFields, isNull);
+      expect(value.typeId, isNull);
+    });
+
+    test('the attached metadata does not change what a write sends back', () {
+      final wire = rp.DynamicValue(value: <Object, rp.DynamicValue>{
+        'p_stat_RunMode': rp.DynamicValue(value: 2),
+      });
+      expect(plainValueOf(toUaValue(wire, type: fd)), {'p_stat_RunMode': 2},
+          reason: 'plainValueOf reads the value graph only; the enum table '
+              'is for reading names, and a write still sends the integer');
+    });
+
+    test('nodeIdFromText parses the spellings NodeId.toString produces, and '
+        'refuses the rest', () {
+      expect(nodeIdFromText('ns=4;i=3012').toString(), 'ns=4;i=3012');
+      expect(nodeIdFromText('ns=2;s=Tag.A').toString(), 'ns=2;s=Tag.A');
+      expect(nodeIdFromText('i=6').toString(), 'ns=0;i=6');
+      expect(nodeIdFromText('nonsense'), isNull);
+      expect(nodeIdFromText(''), isNull);
+    });
+  });
+
   group('value translation, panel to gateway', () {
     test('a scalar goes as itself', () {
       expect(plainValueOf(ua.DynamicValue(value: 3.5)), 3.5);

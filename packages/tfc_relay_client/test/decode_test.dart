@@ -126,6 +126,44 @@ void main() {
           reason: 'the complaint names the handle, or it cannot be chased');
     });
 
+    test('the type dictionary decodes per type, forgivingly, and a key\'s '
+        'meta names its type', () {
+      final decoded = decodeSubscribeResult({
+        'sub': 'page-1',
+        'epoch': 'e',
+        'seq': 0,
+        'handles': {'CVS02.CN01.FD01': 5, 'CVS02.CN01.SPEED': 6},
+        'meta': {
+          '5': {'key': 'CVS02.CN01.FD01', 'ty': 'ns=4;i=3012'},
+          '6': {'key': 'CVS02.CN01.SPEED'},
+        },
+        'snapshot': {
+          '5': {'v': {'p_stat_RunMode': 2}},
+          '6': {'v': 12.5},
+        },
+        'types': {
+          'ns=4;i=3012': {
+            'members': {
+              'p_stat_RunMode': {
+                'enum': {'2': {'value': 2, 'name': 'auto'}}
+              }
+            }
+          },
+          'broken': 'not a descriptor',
+        },
+      });
+      expect(decoded.types.keys, containsAll(['ns=4;i=3012', 'broken']),
+          reason: 'TypeDescriptor.fromJson is forgiving inside an entry: a '
+              'non-map decodes empty rather than dropping the dictionary');
+      expect(
+          decoded.types['ns=4;i=3012']!.members['p_stat_RunMode']!
+              .enumFields![2]!.name,
+          'auto');
+      expect((decoded.meta['CVS02.CN01.FD01'] as Map)['ty'], 'ns=4;i=3012');
+      expect((decoded.meta['CVS02.CN01.SPEED'] as Map).containsKey('ty'),
+          isFalse);
+    });
+
     test('an absent rejected map is not a crash', () {
       // Finding 7: the live server omits `rejected` entirely rather than
       // sending `{}`.

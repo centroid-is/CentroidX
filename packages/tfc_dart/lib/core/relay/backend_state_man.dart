@@ -44,7 +44,8 @@ import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay;
 /// Every argument is optional, so `BackendStateMan()` is a legal object: it is
 /// a complete `StateManApi` that can honestly answer nothing, which is what the
 /// refusal tests stand on and what a boot with the relay section absent gets.
-final class BackendStateMan implements relay.StateManApi {
+final class BackendStateMan
+    implements relay.StateManApi, relay.TypeDescriptions {
   /// Composes an adapter from the collaborators the caller actually has.
   ///
   /// Named and nullable on purpose. A positional list would make "the backend
@@ -55,6 +56,7 @@ final class BackendStateMan implements relay.StateManApi {
   BackendStateMan({
     this.values,
     this.writes,
+    relay.TypeDescriptions? types,
     relay.BrowseApi? browse,
     relay.TimeseriesApi? timeseries,
     relay.HistoryViewApi? historyViews,
@@ -72,13 +74,25 @@ final class BackendStateMan implements relay.StateManApi {
         _accessAdmin = accessAdmin,
         _audit = audit,
         _backendConfig = backendConfig,
-        _configItems = configItems;
+        _configItems = configItems,
+        _types = types;
 
   /// The live half: the pipe's cache and its refcounted subscriptions.
   final BackendValueSource? values;
 
   /// The command half: the pipe's write router.
   final BackendWriteSource? writes;
+
+  /// Where the type dictionary comes from — the pipe, which learns each type
+  /// from its worker's first sample (`type_descriptor.dart`). Null on a
+  /// composition with no pipe, and then no key has a type to name.
+  final relay.TypeDescriptions? _types;
+
+  @override
+  String? typeIdOf(String key) => _types?.typeIdOf(key);
+
+  @override
+  relay.TypeDescriptor? describe(String typeId) => _types?.describe(typeId);
 
   final relay.BrowseApi? _browse;
   final relay.TimeseriesApi? _timeseries;

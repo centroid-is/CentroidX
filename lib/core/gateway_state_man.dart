@@ -73,6 +73,7 @@ import 'dart:async';
 import 'dart:collection';
 
 import 'package:logger/logger.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:open62541/open62541_types.dart' as ua;
 import 'package:tfc_dart/core/config/config_diff.dart';
 // The interface only, never `state_man.dart`: that library also holds
@@ -272,8 +273,11 @@ class GatewayStateMan implements StateMan {
   /// name means something else on this side and quietly returning a stale
   /// cached value under it would be the wrong kind of compatible.
   @override
-  Future<ua.DynamicValue> read(String key) async =>
-      toUaValue(await _remote.readFresh(resolveKey(key)));
+  Future<ua.DynamicValue> read(String key) async {
+    final resolved = resolveKey(key);
+    return toUaValue(await _remote.readFresh(resolved),
+        type: _remote.typeOf(resolved));
+  }
 
   @override
   Future<Map<String, ua.DynamicValue>> readMany(List<String> keys) async {
@@ -281,13 +285,21 @@ class GatewayStateMan implements StateMan {
     final answer = await _remote.readMany(resolved.keys.toList());
     return {
       for (final entry in answer.entries)
-        resolved[entry.key] ?? entry.key: toUaValue(entry.value),
+        resolved[entry.key] ?? entry.key:
+            toUaValue(entry.value, type: _remote.typeOf(entry.key)),
     };
   }
 
+  // The descriptor is looked up per value rather than once per stream: the
+  // dictionary arrives with the establishment, and a stream opened before
+  // the first snapshot landed must still name its enums once it has.
   @override
-  Future<Stream<ua.DynamicValue>> subscribe(String key) async =>
-      _remote.subscribe(resolveKey(key)).map(toUaValue);
+  Future<Stream<ua.DynamicValue>> subscribe(String key) async {
+    final resolved = resolveKey(key);
+    return _remote
+        .subscribe(resolved)
+        .map((value) => toUaValue(value, type: _remote.typeOf(resolved)));
+  }
 
   /// A write, collapsed onto `Future<void>` — and never silently.
   ///
@@ -429,26 +441,98 @@ class GatewayStateMan implements StateMan {
 /// (`translateOpcUaSample` nulls the value when the quality is bad or error),
 /// and staleness is surfaced by the client's own freshness signal rather than
 /// per value.
-ua.DynamicValue toUaValue(rp.DynamicValue value, {String? name}) {
+///
+/// **The type's metadata is attached from [type]** — the enum tables, member
+/// display names, node ids the gateway described once per type
+/// (`type_descriptor.dart`, `RemoteStateMan.typeOf`). Without it every enum
+/// on this side resolved to *unknown*: `readDriveState` looks a run mode's
+/// integer up in `enumFields` and switches on the name, and the wire's slim
+/// `{"v": 2}` carried no table — every conveyor in every browser was purple
+/// (2026-09-17). The recursion hands each member its own descriptor, so a
+/// struct's enum members are named exactly as a station names them. A value
+/// whose type the gateway did not describe (a plain number, an older
+/// gateway) is built as before.
+ua.DynamicValue toUaValue(rp.DynamicValue value,
+    {String? name, rp.TypeDescriptor? type}) {
   final raw = value.value;
   if (raw is Map<Object, rp.DynamicValue>) {
     final out = ua.DynamicValue(name: name);
     out.value = LinkedHashMap<String, ua.DynamicValue>();
     for (final entry in raw.entries) {
       final member = '${entry.key}';
-      out[member] = toUaValue(entry.value, name: member);
+      out[member] =
+          toUaValue(entry.value, name: member, type: type?.members[member]);
     }
-    return out;
+    return _describe(out, type);
   }
   if (raw is List<rp.DynamicValue>) {
     final out = ua.DynamicValue(name: name);
     out.value = <ua.DynamicValue>[];
     for (var index = 0; index < raw.length; index++) {
-      out[index] = toUaValue(raw[index]);
+      out[index] = toUaValue(raw[index], type: type?.element);
     }
-    return out;
+    return _describe(out, type);
   }
-  return ua.DynamicValue(value: raw, name: name);
+  return _describe(ua.DynamicValue(value: raw, name: name), type);
+}
+
+/// Attaches [type]'s metadata to [out] — see [toUaValue].
+ua.DynamicValue _describe(ua.DynamicValue out, rp.TypeDescriptor? type) {
+  if (type == null) return out;
+  final nodeId = nodeIdFromText(type.ua);
+  if (nodeId != null) out.typeId = nodeId;
+  final enumFields = type.enumFields;
+  if (enumFields != null) {
+    out.enumFields = <int, ua.EnumField>{
+      for (final entry in enumFields.entries)
+        entry.key: ua.EnumField(
+          entry.value.value,
+          entry.value.name,
+          _uaText(entry.value.displayName) ??
+              ua.LocalizedText(entry.value.name, ''),
+          _uaText(entry.value.description) ?? ua.LocalizedText('', ''),
+        ),
+    };
+  }
+  final displayName = _uaText(type.displayName);
+  if (displayName != null) out.displayName = displayName;
+  final description = _uaText(type.description);
+  if (description != null) out.description = description;
+  return out;
+}
+
+ua.LocalizedText? _uaText(rp.LocalizedText? text) =>
+    text == null ? null : ua.LocalizedText(text.value, text.locale ?? '');
+
+/// The textual node id the relay carries (`ns=4;i=3012`, `ns=2;s=Tag`,
+/// `ns=0;g=…`) as an `open62541` [ua.NodeId], or null for anything else.
+///
+/// The FFI-free core `NodeId` this web-safe entry exports builds from the
+/// parts; the spelling parsed here is exactly `NodeId.toString()`'s, the
+/// same one `sourceTypeId` round-trips through the pipe's
+/// `nodeIdFromSourceTypeId`. Kept forgiving: a spelling this does not know
+/// costs a type id, never a value.
+@visibleForTesting
+ua.NodeId? nodeIdFromText(String? text) {
+  if (text == null || text.isEmpty) return null;
+  var namespace = 0;
+  var body = text;
+  final parts = text.split(';');
+  if (parts.length == 2 && parts[0].startsWith('ns=')) {
+    final parsed = int.tryParse(parts[0].substring(3));
+    if (parsed == null || parsed < 0) return null;
+    namespace = parsed;
+    body = parts[1];
+  } else if (parts.length != 1) {
+    return null;
+  }
+  if (body.startsWith('i=')) {
+    final numeric = int.tryParse(body.substring(2));
+    return numeric == null ? null : ua.NodeId.fromNumeric(namespace, numeric);
+  }
+  if (body.startsWith('s=')) return ua.NodeId.fromString(namespace, body.substring(2));
+  if (body.startsWith('g=')) return ua.NodeId.fromGuid(namespace, body.substring(2));
+  return null;
 }
 
 /// A value the relay's sanitizing constructor will accept, out of one of ours.

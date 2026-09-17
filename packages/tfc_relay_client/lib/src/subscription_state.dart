@@ -75,6 +75,11 @@ final class DecodedSubscribeResult {
   /// with nothing in the log cannot be chased.
   final List<String> complaints;
 
+  /// The type dictionary this establishment carried, by type id — what a
+  /// key's `meta['ty']` names (`type_descriptor.dart`). Empty from a gateway
+  /// with nothing to describe.
+  final Map<String, TypeDescriptor> types;
+
   const DecodedSubscribeResult({
     required this.sub,
     required this.epoch,
@@ -85,6 +90,7 @@ final class DecodedSubscribeResult {
     required this.meta,
     required this.rejected,
     required this.complaints,
+    this.types = const <String, TypeDescriptor>{},
   });
 }
 
@@ -260,6 +266,23 @@ DecodedSubscribeResult decodeSubscribeResult(Object? raw) {
     }
   }
 
+  // The type dictionary, one entry per type; a malformed entry costs that
+  // type and is said so, never the establishment (`TypeDescriptor.fromJson`
+  // is itself forgiving inside an entry).
+  final wireTypes = envelope['types'];
+  final types = <String, TypeDescriptor>{};
+  if (wireTypes is Map) {
+    for (final entry in wireTypes.entries) {
+      final id = '${entry.key}';
+      try {
+        types[id] = TypeDescriptor.fromJson(entry.value);
+      } catch (error) {
+        complaints.add('types entry "$id" could not be decoded '
+            '(${error.runtimeType}) and was dropped; values of that type '
+            'render without their enum names');
+      }
+    }
+  }
   final seq = envelope['seq'];
   // Absent from a gateway that predates the generation, and zero is then what
   // every one of its frames carries too — so the client's comparison passes
@@ -276,6 +299,7 @@ DecodedSubscribeResult decodeSubscribeResult(Object? raw) {
     meta: meta,
     rejected: rejected,
     complaints: complaints,
+    types: types,
   );
 }
 

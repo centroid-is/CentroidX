@@ -145,6 +145,7 @@ final class ConnectionSupervisor {
     void Function(StatusParams status)? onStatus,
     void Function(String reason)? onBye,
     void Function(String key)? onPreferenceChanged,
+    void Function(DecodedSubscribeResult result)? onEstablished,
     int Function()? now,
     Future<ConnectAttempt> Function(Uri uri)? dial,
   })  : _onStatus = onStatus,
@@ -161,6 +162,7 @@ final class ConnectionSupervisor {
       subscribe: _subscribe,
       subscriptions: subscriptions,
       forget: watchdog.forgetSubscription,
+      onEstablished: onEstablished,
     );
   }
 

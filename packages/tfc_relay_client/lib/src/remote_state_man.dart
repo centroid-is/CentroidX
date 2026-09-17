@@ -191,6 +191,8 @@ final class RemoteStateMan implements StateManApi {
       // The gateway's `preferences.changed` reaches every local listener
       // through the one API that owns the broadcast controller.
       onPreferenceChanged: (key) => preferences.announce(key),
+      // The type dictionary each establishment carries, kept for [typeOf].
+      onEstablished: _adoptTypes,
       // In production this is [_dialGateway]: `connect` with this panel's one
       // pinned client and its dial ceiling closed over. A harness supplies its
       // own so a contract leg can be built synchronously against a server
@@ -1633,6 +1635,44 @@ final class RemoteStateMan implements StateManApi {
   /// waiting for a connection gets something it can show instead of a spinner
   /// that never stops.
   @override
+  /// The type dictionary the gateway sent, by type id, merged across
+  /// establishments.
+  ///
+  /// A resync re-sends the dictionary for the keys it establishes and a client
+  /// may hold several subscriptions, so merging rather than replacing keeps a
+  /// type described by one establishment usable by the next. A type cannot
+  /// change under a session — which is why the gateway describes it once.
+  final Map<String, TypeDescriptor> _types = <String, TypeDescriptor>{};
+
+  /// key -> the type id its meta named, so [typeOf] is one lookup.
+  final Map<String, String> _typeIdByKey = <String, String>{};
+
+  /// Keeps the dictionary an establishment carried.
+  ///
+  /// Forgiving by construction: a gateway with nothing to describe sends
+  /// neither field, and a key whose meta names no type simply has no
+  /// descriptor — its value still crosses, it is the enum names that do not.
+  void _adoptTypes(DecodedSubscribeResult result) {
+    _types.addAll(result.types);
+    for (final entry in result.meta.entries) {
+      final meta = entry.value;
+      if (meta is Map) {
+        final id = meta['ty'];
+        if (id is String && id.isNotEmpty) _typeIdByKey[entry.key] = id;
+      }
+    }
+  }
+
+  /// What the gateway said [key]'s value is, or null when it said nothing.
+  ///
+  /// The app attaches this to the value it builds, and that is what carries an
+  /// enum's field names across: without them a drive's `p_stat_RunMode` is an
+  /// integer nobody can name, and the conveyor draws "unknown" (violet).
+  TypeDescriptor? typeOf(String key) {
+    final id = _typeIdByKey[key];
+    return id == null ? null : _types[id];
+  }
+
   Future<void> dispose() async {
     if (_disposed) return;
     // Before the flag, so each release is an ordinary write with an honest

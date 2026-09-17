@@ -667,6 +667,9 @@ BackendRelayComposition composeBackendRelay({
   final api = BackendStateMan(
     values: sweep,
     writes: writes,
+    // The enum tables a panel reads names off, once per type, from the pipe
+    // (`type_descriptor.dart`).
+    types: pipe,
     browse: browse,
     timeseries: timeseries,
     historyViews: historyViews,

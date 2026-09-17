@@ -413,7 +413,7 @@ void requireReadFloor(StationIdentity? identity, String method, String what,
 /// hand-written 49 exists to make visible. Here a new member is a compile
 /// error in this file, and the fix is a deliberate decision about whether it
 /// needs the policy.
-final class PolicyStateMan implements StateManApi {
+final class PolicyStateMan implements StateManApi, TypeDescriptions {
   PolicyStateMan({
     required this.source,
     required this.policy,
@@ -538,6 +538,24 @@ final class PolicyStateMan implements StateManApi {
   /// Consulted by `ValueHandlers` through the `canWriteKey` predicate
   /// `RelaySession` builds from it, after the existence check and before the
   /// fingerprint, the idempotency window and the outcome log.
+  /// The source's type dictionary, through the same visibility question the
+  /// keys answer: a hidden key has no type either, or the type would say the
+  /// key exists. The dictionary itself is shared and carries no plant state,
+  /// so [describe] passes straight through.
+  @override
+  String? typeIdOf(String key) {
+    final types = source;
+    if (types is! TypeDescriptions) return null;
+    if (!canSee(key)) return null;
+    return types.typeIdOf(key);
+  }
+
+  @override
+  TypeDescriptor? describe(String typeId) {
+    final types = source;
+    return types is TypeDescriptions ? types.describe(typeId) : null;
+  }
+
   /// Refuses [method] unless this session clears the read floor — the gate
   /// `subscribe`, `read`, `readFresh`, `readMany` and `alarmHistory` ask
   /// through the `requirePlantRead` predicate `RelaySession` builds from it,

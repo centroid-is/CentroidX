@@ -1051,6 +1051,9 @@ final class RelaySession {
       // gate asks, so a session's reads and writes are graded by one identity
       // and cannot drift apart about who it is.
       requirePlantRead: api.requirePlantRead,
+      // The type dictionary, through the same policy view (a hidden key has
+      // no type): the enum tables a panel reads names off, once per type.
+      types: api,
     );
     // The handlers are per session; the outcome log they write to is not.
     // 04-REVIEW CR-02: `writeStatus` is only ever asked by a client that has

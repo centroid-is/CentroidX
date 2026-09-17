@@ -145,6 +145,11 @@ final class ResyncEngine {
   /// `forgetSubscription` is the caller this exists for.
   final void Function(String subId)? forget;
 
+  /// Told each establishment's decoded result after its snapshot has been
+  /// applied — the type dictionary and the per-key meta ride on it, and the
+  /// client keeps them beside the store (`RemoteStateMan.typeOf`).
+  final void Function(DecodedSubscribeResult result)? onEstablished;
+
   String? _lastKnownEpoch;
 
   ResyncEngine({
@@ -152,6 +157,7 @@ final class ResyncEngine {
     required this.subscribe,
     required this.subscriptions,
     this.forget,
+    this.onEstablished,
   });
 
   /// The epoch of the session the client currently believes it is in.
@@ -320,6 +326,7 @@ final class ResyncEngine {
     store.clear();
     sub.adopt(result);
     store.applyBatch(result.values, seq: result.seq);
+    onEstablished?.call(result);
 
     for (final entry in result.rejected.entries) {
       complain('"${entry.key}" was rejected by the gateway '

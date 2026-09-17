@@ -94,11 +94,18 @@ final class SessionHandlers {
     required this.subscriptions,
     required this.epochOf,
     this.requirePlantRead = _openToAll,
+    this.types,
   });
 
   static void _openToAll(String method) {}
 
   final StateManApi api;
+
+  /// Where the type dictionary comes from, when the source has one
+  /// (`type_descriptor.dart`): the session's policy view, so a key this
+  /// session may not see names no type. Null for a source with none, and
+  /// then the subscribe result carries no `types` and no `ty`.
+  final TypeDescriptions? types;
   final ServerConfig config;
 
   /// The **server-global** table. Two sessions asking for one key get one
@@ -227,6 +234,10 @@ final class SessionHandlers {
     final minted = handles.handlesFor(accepted);
     final meta = <int, Object?>{};
     final snapshot = <int, WireValue>{};
+    // The type dictionary for this establishment: each distinct type among
+    // the accepted keys, once, keyed by the `ty` its keys' meta names
+    // (`type_descriptor.dart`).
+    final types = <String, Object?>{};
 
     // **Everything from here to `put` rolls back as one** (03-REVIEW WR-08).
     // The per-key `try` below is the deliberate degradation — one typo costs
@@ -247,7 +258,16 @@ final class SessionHandlers {
         final handle = entry.value;
         try {
           final current = api.read(key);
-          meta[handle] = _meta(key, current);
+          final keyMeta = _meta(key, current);
+          final typeId = this.types?.typeIdOf(key);
+          if (typeId != null) {
+            keyMeta['ty'] = typeId;
+            if (!types.containsKey(typeId)) {
+              final descriptor = this.types!.describe(typeId);
+              if (descriptor != null) types[typeId] = descriptor.toJson();
+            }
+          }
+          meta[handle] = keyMeta;
           snapshot[handle] = _wire(current);
         } catch (error) {
           // One tag, not one call (STATE.md). A value the gateway cannot
@@ -299,6 +319,7 @@ final class SessionHandlers {
       meta: meta,
       snapshot: snapshot,
       rejected: rejected,
+      types: types,
     ).toJson();
   }
 

@@ -200,6 +200,84 @@ final class PipeLinkAlive extends PipeEvent {
   String toString() => 'PipeLinkAlive(${alias ?? '<worker>'})';
 }
 
+/// One type's metadata, told once per distinct type per worker
+/// (`type_descriptor.dart` in the protocol says what and why).
+///
+/// Sent on the first sample of a type that has an enum table anywhere in it,
+/// and never again for that type: the enum vocabulary belongs to the type,
+/// and a thousand conveyors sharing one FD struct are one of these, not a
+/// thousand. Plain JSON rather than the descriptor object so the frame
+/// crosses the isolate port as data.
+final class PipeTypeDescribed extends PipeEvent {
+  const PipeTypeDescribed(this.typeId, this.descriptor);
+
+  final String typeId;
+  final Map<String, Object?> descriptor;
+
+  @override
+  String toString() => 'PipeTypeDescribed($typeId)';
+}
+
+/// Which described type [key]'s values carry. Told once per key (again after
+/// a re-subscribe, which is harmless), only for keys whose type was worth
+/// describing.
+final class PipeKeyType extends PipeEvent {
+  const PipeKeyType(this.key, this.typeId);
+
+  final String key;
+  final String typeId;
+
+  @override
+  String toString() => 'PipeKeyType($key, $typeId)';
+}
+
+/// The relay's description of an `open62541` value's **type**: its node id,
+/// enum table, display name and description, recursively through struct
+/// members and array elements. Pure; the sample's value is read only for its
+/// shape.
+///
+/// `LocalizedText.locale` is empty rather than null on the open62541 side,
+/// and the relay spells "no locale" as null; the crossing normalises it so a
+/// panel does not render an empty locale tag.
+@visibleForTesting
+relay.TypeDescriptor describeUaType(DynamicValue sample) {
+  final raw = sample.value;
+  final enumFields = sample.enumFields;
+  return relay.TypeDescriptor(
+    ua: sample.typeId?.toString(),
+    enumFields: enumFields == null
+        ? null
+        : <int, relay.EnumField>{
+            for (final entry in enumFields.entries)
+              entry.key: relay.EnumField(
+                value: entry.value.value,
+                name: entry.value.name,
+                displayName: _relayText(entry.value.displayName),
+                description: _relayText(entry.value.description),
+              ),
+          },
+    displayName: _relayText(sample.displayName),
+    description: _relayText(sample.description),
+    members: raw is Map
+        ? <String, relay.TypeDescriptor>{
+            for (final entry in raw.entries)
+              if (entry.value is DynamicValue)
+                '${entry.key}': describeUaType(entry.value as DynamicValue),
+          }
+        : const <String, relay.TypeDescriptor>{},
+    element: raw is List && raw.isNotEmpty && raw.first is DynamicValue
+        ? describeUaType(raw.first as DynamicValue)
+        : null,
+  );
+}
+
+relay.LocalizedText? _relayText(LocalizedText? text) {
+  if (text == null) return null;
+  if (text.value.isEmpty) return null;
+  return relay.LocalizedText(text.value,
+      locale: text.locale.isEmpty ? null : text.locale);
+}
+
 /// The answer to one [PipeWriteRequest], carrying main's own [id] beside it.
 final class PipeWriteOutcome extends PipeEvent {
   const PipeWriteOutcome(this.id, this.result);
@@ -361,6 +439,16 @@ class PipeWorkerEndpoint {
   /// rule would demote a genuine OPC UA stamp on every reconnect.
   final Set<String> _lastSubstituted = <String>{};
 
+  /// Each distinct type this worker has seen, by its textual node id (or
+  /// `key:<key>` for a value with none), and whether it was worth describing.
+  /// A type is inspected once — the descriptor is a walk over a struct, and
+  /// walking it per sample would be the per-value cost the dictionary exists
+  /// to avoid.
+  final Map<String, bool> _describedTypes = <String, bool>{};
+
+  /// The described type each subscribed key was last announced under.
+  final Map<String, String> _typeOfKey = <String, String>{};
+
   Timer? _tick;
   bool _disposed = false;
 
@@ -494,6 +582,10 @@ class PipeWorkerEndpoint {
     _subscribed.remove(key);
     _last.remove(key);
     _lastSubstituted.remove(key);
+    // Announced again on the next subscribe: main forgets a key's type when
+    // the key is retired, and a fresh subscribe must not rely on a memory
+    // main may no longer hold.
+    _typeOfKey.remove(key);
     // Cancel the stream we own for this key. Synchronous dispatch: this can
     // never queue behind another key's hung subscribe.
     final stream = _streams.remove(key);
@@ -536,6 +628,9 @@ class PipeWorkerEndpoint {
     if (typeId != null) {
       value = value.copyWith(sourceTypeId: typeId.toString());
     }
+    // And the type's metadata, once per type, on the priority lane — the
+    // enum tables the panel reads names off (`type_descriptor.dart`).
+    _announceType(key, sample);
     // The key answered. Whatever permanent fault was last reported for it is
     // over, so the NEXT occurrence is a transition again and must speak.
     if (!value.quality.isError) _permanentError.remove(key);
@@ -550,6 +645,27 @@ class PipeWorkerEndpoint {
     }
     _buffer.putValue(key, value,
         sourceTimeSubstituted: sourceTimeSubstituted);
+  }
+
+  /// Describes [sample]'s type the first time this worker sees it, and tells
+  /// main which described type [key] carries the first time that changes.
+  /// Cheap on the hot path: one `toString` of a node id and two map lookups
+  /// per sample; the walk over the struct happens once per type.
+  void _announceType(String key, DynamicValue sample) {
+    final typeId = sample.typeId?.toString() ?? 'key:$key';
+    var worthDescribing = _describedTypes[typeId];
+    if (worthDescribing == null) {
+      final descriptor = describeUaType(sample);
+      worthDescribing = descriptor.hasEnum;
+      _describedTypes[typeId] = worthDescribing;
+      if (worthDescribing) {
+        _emitPriority(PipeTypeDescribed(typeId, descriptor.toJson()));
+      }
+    }
+    if (!worthDescribing) return;
+    if (_typeOfKey[key] == typeId) return;
+    _typeOfKey[key] = typeId;
+    _emitPriority(PipeKeyType(key, typeId));
   }
 
   void _onStreamError(String key, Object error) {

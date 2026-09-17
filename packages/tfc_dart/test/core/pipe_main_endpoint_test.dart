@@ -138,6 +138,38 @@ void main() {
       expect(endpoint.read('a.one').quality, relay.Quality.errorConfig);
     });
 
+    test('the type dictionary is kept per type, keys name their type, and a '
+        'retired key forgets it', () async {
+      alpha.emit(PipeFrame(const [
+        PipeTypeDescribed('ns=4;i=3012', {
+          'ua': 'ns=4;i=3012',
+          'members': {
+            'p_stat_RunMode': {
+              'enum': {'2': {'value': 2, 'name': 'auto'}}
+            }
+          }
+        }),
+        PipeKeyType('a.one', 'ns=4;i=3012'),
+      ], const {}));
+      await _settle();
+
+      expect(endpoint.typeIdOf('a.one'), 'ns=4;i=3012');
+      expect(endpoint.typeIdOf('a.two'), isNull);
+      expect(
+          endpoint
+              .describe('ns=4;i=3012')!
+              .members['p_stat_RunMode']!
+              .enumFields![2]!
+              .name,
+          'auto');
+      alpha.emit(PipeFrame(const [PipeKeyRetired('a.one')], const {}));
+      await _settle();
+      expect(endpoint.typeIdOf('a.one'), isNull,
+          reason: 'a retired key names no type; the dictionary entry stays, '
+              'it is the type\'s, not the key\'s');
+      expect(endpoint.describe('ns=4;i=3012'), isNotNull);
+    });
+
     test('a keep-alive reaches onLinkAlive with the worker and the alias, and '
         'moves no value', () async {
       final heard = <(int, String?)>[];
