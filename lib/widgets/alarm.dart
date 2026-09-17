@@ -857,6 +857,37 @@ class _ListActiveAlarmsState extends ConsumerState<ListActiveAlarms> {
     return StreamBuilder<(AlarmSource, List<(AlarmActive, DateTime?)>)>(
       stream: _streamFor(_showHistory),
       builder: (context, snapshot) {
+        // An error is not a loading state. `alarmManProvider` throws for
+        // real reasons — a gateway client with no alarm transport says so by
+        // name — and every one of them arrived here as a stream error, which
+        // `hasData == false` renders as a spinner that never stops. Reported
+        // on the plant (2026-09-17) as "alarm view is constantly loading",
+        // with nothing in the console, because a provider error is not an
+        // uncaught exception and nothing printed it.
+        if (snapshot.hasError && localAlarm == null) {
+          return Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.error_outline,
+                      color: Theme.of(context).colorScheme.error),
+                  const SizedBox(height: 8),
+                  Text('The alarm list could not be loaded',
+                      style: Theme.of(context).textTheme.titleMedium),
+                  const SizedBox(height: 8),
+                  // The cause, verbatim and selectable. Whoever is standing at
+                  // the panel is the person who can say whether it is the link
+                  // or the plant, and they cannot do that from a spinner.
+                  SelectableText('${snapshot.error}',
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.bodySmall),
+                ],
+              ),
+            ),
+          );
+        }
         if (!snapshot.hasData && localAlarm == null) {
           return const Center(child: CircularProgressIndicator());
         }

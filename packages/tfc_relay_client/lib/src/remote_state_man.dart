@@ -338,6 +338,23 @@ final class RemoteStateMan implements StateManApi {
   /// Whether a call issued right now would go straight out.
   bool get isReady => _supervisor.barrier.isOpen;
 
+  /// Completes when the link is ready to carry a REQUEST — the gate
+  /// `_request` waits on, and therefore the one every read goes through.
+  ///
+  /// The sibling of [sessionReady] and deliberately not the same thing:
+  /// `sessionReady` is about who the session speaks for, this is about
+  /// whether there is a socket to speak on. A caller that awaited the wrong
+  /// one still gets `LinkDown`, which is how this came to be exposed.
+  ///
+  /// **For a composition root's boot read, and not for an operator action.**
+  /// A request refuses rather than queues — `controlDeadline` then `LinkDown`,
+  /// which is the write-safety property `CLAUDE.md` names — and that is right
+  /// for a button press. A provider built while the socket is still dialling
+  /// is a different case: there is no actuation to protect, nothing races it,
+  /// and its failure is CACHED, so the surface it feeds stays broken for the
+  /// life of the tab. Such a caller waits here first.
+  Future<void> get linkReady => _supervisor.barrier.ready;
+
   /// Why the last connection ended, in words an integrator can act on.
   String? get lastDownReason => _supervisor.lastDownReason;
 

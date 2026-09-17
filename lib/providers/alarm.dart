@@ -5,6 +5,9 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import 'package:tfc_dart/core/alarm.dart';
 import 'package:tfc_dart/core/config/config_item.dart' show ConfigKind;
+import 'package:tfc_dart/core/access/guarded_state_man.dart';
+
+import '../core/gateway_state_man.dart';
 import '../core/relay_alarm_source.dart';
 import 'config_store.dart';
 import 'gateway.dart';
@@ -112,6 +115,7 @@ Future<AlarmSource> alarmMan(Ref ref) async {
     // The client is built by `stateManProvider`, which was awaited above; it
     // publishes the port into the slot because `GuardedStateMan` cannot be
     // unwrapped. See [GatewayAlarmSlot].
+    final guarded = stateMan;
     final transport = ref.read(gatewayAlarmSlotProvider).transport;
     if (transport == null) {
       throw UnsupportedError('alarmManProvider is not available in gateway '
@@ -120,6 +124,31 @@ Future<AlarmSource> alarmMan(Ref ref) async {
           'through. Fix the gateway branch of lib/providers/state_man.dart — '
           'do not fall back to evaluating the rules here.');
     }
+    // **Wait for the link before the first read, and wait patiently.**
+    //
+    // `RelayAlarmSource.create` reads `alarm_man_config` through the relay,
+    // and a relay read refuses rather than queues: `_sessionRequest` waits on
+    // the session gate for `controlDeadline` and then throws `LinkDown`. That
+    // is the right answer for an operator's write — `CLAUDE.md` names "no
+    // queue / no retry" as the write-safety property — and the wrong one for
+    // a provider built while the socket is still dialling, because Riverpod
+    // CACHES the failure: the alarm surface then stayed broken for the life
+    // of the tab, signing in afterwards changed nothing, and the page showed
+    // a spinner rather than a reason. Reported from the plant on 2026-09-17
+    // as "alarm view is constantly loading".
+    //
+    // There is no actuation to protect here and nothing to race: this is the
+    // boot read of a configuration document. So it waits on the same gate the
+    // request would have waited on, without the control deadline, and the
+    // spinner the page shows in the meantime is honest — it IS still loading.
+    final client = guarded is GuardedStateMan
+        ? guarded.innerAs<GatewayStateMan>()?.remote
+        : null;
+    // `linkReady`, not `sessionReady`: the read below goes through `_request`,
+    // which waits on the transport barrier. Waiting on the session gate
+    // instead still ended in `LinkDown` — measured, not reasoned.
+    if (client != null) await client.linkReady;
+
     final source = await RelayAlarmSource.create(
         transport: transport, preferences: prefs);
     // `RelayAlarmSource.close` had no caller anywhere before CR-01, so every
