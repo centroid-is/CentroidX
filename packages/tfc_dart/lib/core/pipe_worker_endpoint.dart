@@ -631,7 +631,15 @@ class PipeWorkerEndpoint {
     _disarmTickIfIdle();
   }
 
-  void _onSample(String key, DynamicValue sample) {
+  /// [announceType] is false for the one caller that is already inside the
+  /// type machinery — [_describeTypeByRead] publishing the value its own read
+  /// returned. Left true there, the read's value would be offered for
+  /// description under the type identity the READ resolved, which is a
+  /// different identity from the shape the sample was filed under, and the
+  /// pipe would schedule a second read to describe it. It terminates, but it
+  /// is a round trip per struct for nothing, and the announcement that caller
+  /// owes is the one it makes itself a few lines later.
+  void _onSample(String key, DynamicValue sample, {bool announceType = true}) {
     // `onSourceTimeFallback` fires SYNCHRONOUSLY inside the call, so this local
     // belongs to this sample and no other. That is the whole mechanism: the one
     // place that knows whether the instant was substituted already says so, and
@@ -666,7 +674,7 @@ class PipeWorkerEndpoint {
     }
     // And the type's metadata, once per type, on the priority lane — the
     // enum tables the panel reads names off (`type_descriptor.dart`).
-    _announceType(key, sample);
+    if (announceType) _announceType(key, sample);
     // The key answered. Whatever permanent fault was last reported for it is
     // over, so the NEXT occurrence is a transition again and must speak.
     if (!value.quality.isError) _permanentError.remove(key);
@@ -823,6 +831,27 @@ class PipeWorkerEndpoint {
       return;
     }
     if (_disposed) return;
+
+    // The read's VALUE, not only its schema. A notification decodes against
+    // whatever `defs` the client has built by then, and for a struct whose
+    // DATATYPE did not ride along and whose variant is not the generic
+    // `Structure`, that is nothing: open62541 decodes the members it can name
+    // and SILENTLY omits the rest. Measured on the plant (2026-09-17):
+    // `SPB01.CN02.MA01.ST` crossed as `{p_stat_Length, p_stat_MMS}` with no
+    // type id, while OPC UA holds a third member `p_stat_Batches` — an array
+    // of ten structs — which is what the Line 1 conveyor reads its batch
+    // positions out of. The page threw `Bad state: Key "p_stat_Batches" not
+    // found`, drew a grey box where a conveyor belongs, and took the
+    // batches-per-minute figure with it.
+    //
+    // This read is the thing that builds the schema. So the value it returns
+    // is decoded WITH it and is strictly more complete than the sample that
+    // triggered it — and for a constant it is the only complete one there
+    // will ever be, because the next notification never comes. Publishing it
+    // costs nothing on a key that ticks (the next sample overwrites it a
+    // moment later) and is the whole answer on a key that does not.
+    _onSample(key, full, announceType: false);
+
     final keys = _keysAwaitingType.remove(identity) ?? const <String>{};
     final descriptor = describeUaType(full);
     if (!descriptor.hasEnum) {

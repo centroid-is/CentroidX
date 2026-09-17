@@ -353,6 +353,69 @@ void main() {
               .having((e) => e.typeId, 'typeId', 'ns=4;i=3012'));
     });
 
+    test('the value the definition read returned is what the key serves — a '
+        'partial notification is not the answer for a constant', () async {
+      // The measured defect (2026-09-17, /speedbatchers and /boxes). A struct
+      // notification decodes against whatever schema the client has built by
+      // then; for a struct whose DATATYPE did not ride along and whose
+      // variant is not the generic `Structure`, that is nothing, and
+      // open62541 decodes the members it can name and omits the rest in
+      // silence. `SPB01.CN02.MA01.ST` crossed as two scalars while the PLC
+      // holds a third member — an array of ten structs — and the Line 1
+      // conveyor threw `Bad state: Key "p_stat_Batches" not found`, drew a
+      // grey box and took batches-per-minute with it.
+      //
+      // The read this endpoint already performs is what BUILDS that schema,
+      // so its value is decoded with it. On a key that ticks the next sample
+      // overwrites it a moment later; on a constant it is the only complete
+      // value there will ever be.
+      final port2 = ReceivePort();
+      final got = <Object?>[];
+      port2.listen(got.add);
+      final complete = DynamicValue.fromMap(LinkedHashMap<String, dynamic>.from({
+        'p_stat_Length': 5350.0,
+        'p_stat_MMS': 806.4,
+        'p_stat_Batches': DynamicValue.fromList([
+          DynamicValue.fromMap(LinkedHashMap<String, dynamic>.from(
+              {'position': 0.0, 'xOccupied': false})),
+        ]),
+      }));
+      final reading = PipeWorkerEndpoint(
+        stateMan: upstream,
+        toMain: port2.sendPort,
+        drainInterval: _interval,
+        readType: (key) async => complete,
+      );
+      addTearDown(() {
+        reading.dispose();
+        port2.close();
+      });
+      reading.handleControl(const PipeSubscribe('SPB01.CN02.MA01.ST'));
+      await ticks(1);
+      // The partial notification, exactly as it crosses today: the third
+      // member is simply absent, with no type id to explain why.
+      upstream.controllerFor('SPB01.CN02.MA01.ST').add(
+          DynamicValue.fromMap(LinkedHashMap<String, dynamic>.from({
+        'p_stat_Length': 5350.0,
+        'p_stat_MMS': 806.4,
+      })));
+      // Constant: no second notification, ever.
+      await ticks(4);
+
+      final values = <String, relay.DynamicValue>{};
+      for (final frame in got.whereType<PipeFrame>()) {
+        values.addAll(frame.values);
+      }
+      final served = values['SPB01.CN02.MA01.ST'];
+      expect(served, isNotNull,
+          reason: 'the key never reached main at all');
+      final members = (served!.value as Map).keys.map((k) => '$k').toSet();
+      expect(members, contains('p_stat_Batches'),
+          reason: 'the member the page reads is still missing, so the read '
+              'that resolved the schema was mined for enum tables and its '
+              'value thrown away — which is the defect. Served: $members');
+    });
+
     test('a typeless key whose read yields no enum table is read once and '
         'then left alone — the per-key read is one-shot', () async {
       var reads = 0;
