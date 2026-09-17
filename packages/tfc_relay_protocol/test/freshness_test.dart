@@ -102,6 +102,20 @@ void main() {
       expect(stale(lastHeardMs: null, nowMs: 86400000), isFalse);
     });
 
+    test('a value that has not arrived is not stale even with an arrival time '
+        'on record — no data and stale are different statements', () {
+      // The backend's sweep seeds a key's time at REGISTRATION, so a tag
+      // nobody has ever read carried a time and, ten seconds later, a stale
+      // badge — ~220 known-dead tags on one plant read "stopped arriving"
+      // when the truth was "never arrived". Ruled 2026-09-17.
+      expect(
+          stale(
+              quality: Quality.uncertainNotYetKnown,
+              lastHeardMs: 0,
+              nowMs: 86400000),
+          isFalse);
+    });
+
     test('the sweep only ever degrades: already badStale stages nothing', () {
       // If it could raise a quality an operator would watch a fault clear
       // itself while the fault was still happening — the same lie as a stale

@@ -9,6 +9,8 @@ import 'package:tfc_dart/core/log_config.dart';
 import 'package:tfc_dart/core/modbus_device_client.dart';
 import 'package:tfc_dart/core/pipe_worker_endpoint.dart';
 import 'package:tfc_dart/core/state_man.dart';
+import 'package:tfc_dart/core/state_man_types.dart'
+    show ConnectionStatus, EffectiveDeviceStatus;
 
 /// Configuration for spawning a DataAcquisition isolate.
 class DataAcquisitionIsolateConfig {
@@ -410,6 +412,10 @@ Future<void> _runDataAcquisition(
     inbox.attach(PipeWorkerEndpoint(
       stateMan: StateManUpstream(stack.stateMan),
       toMain: toMain,
+      // The keep-alive (`PipeLinkAlive`): which of this worker's servers are
+      // up, sampled from the clients' own session state.
+      aliveLinks: () =>
+          aliveLinksOf(stack, singleServer: config.serverJson != null),
       logger: logger,
     ));
   }
@@ -418,6 +424,52 @@ Future<void> _runDataAcquisition(
 
   // Keep isolate alive indefinitely
   await Completer<void>().future;
+}
+
+/// Which of [stack]'s servers are alive now, by alias — what the worker's
+/// keep-alive (`PipeLinkAlive`) reports every `kPipeKeepAliveInterval`.
+///
+/// The liveness is the clients' own, not a probe of this function's: an OPC
+/// UA worker hosts one server ([singleServer]), and its `StateMan` derives
+/// `EffectiveDeviceStatus.connected` from the open62541 session state — which
+/// open62541 in turn holds up with its own keep-alive traffic, so a session
+/// that has silently died is one this reports as down within the client's
+/// timeout. A Modbus or M2400 worker hosts several devices, each a
+/// `DeviceClient` with a connection state of its own, and each connected one
+/// is reported under its alias so the sweep narrows the anchor per device.
+///
+/// Null in the answer means "this worker's only server", the spelling the
+/// composition's link id uses for an OPC UA key.
+@visibleForTesting
+Iterable<String?> aliveLinksOf(AcquisitionStack stack,
+    {required bool singleServer}) {
+  final stateMan = stack.stateMan;
+  if (singleServer) {
+    // `ClientWrapper.effectiveStatus` is the liveness this wants: derived from
+    // the heartbeat clock on every read, so a session that died without
+    // emitting a state event drops out of `connected` within seconds — which
+    // is exactly the "is this link's publish loop alive" question, and the same
+    // answer the connection chip shows.
+    //
+    // Reached through the concrete type because the wrappers are not on the
+    // `StateMan` interface. An OPC UA worker always builds one of these
+    // (`bin/main.dart` spawns one worker per OPC UA server); anything else
+    // reports nothing rather than claiming a liveness it cannot observe, and
+    // the sweep then falls back to per-key ageing as it did before.
+    if (stateMan is! OpcUaStateMan) return const <String?>[];
+    final connected = stateMan.clients.any((wrapper) =>
+        wrapper.effectiveStatus == EffectiveDeviceStatus.connected);
+    return connected ? const <String?>[null] : const <String?>[];
+  }
+  return <String?>[
+    for (final client in stateMan.deviceClients)
+      if (client.connectionStatus == ConnectionStatus.connected)
+        switch (client) {
+          M2400DeviceClientAdapter(:final serverAlias) => serverAlias,
+          ModbusDeviceClientAdapter(:final serverAlias) => serverAlias,
+          _ => null,
+        },
+  ];
 }
 
 /// Everything the worker assembles before it parks.

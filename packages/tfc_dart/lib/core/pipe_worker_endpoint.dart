@@ -169,6 +169,37 @@ final class PipeKeyRetired extends PipeEvent {
   String toString() => 'PipeKeyRetired($key)';
 }
 
+/// The worker's keep-alive: the upstream session behind [alias] is alive
+/// **now**, and nothing else (2026-09-17, ruled by the owner).
+///
+/// OPC UA's own model, which this system speaks upstream: a monitored item
+/// reports on change, so an unchanged value is *current* and carries its own
+/// source timestamp — nothing ages it out for standing still. What proves the
+/// session alive when nothing changes is the subscription keep-alive, and its
+/// absence — not a value's age — is what says the session is gone. The
+/// freshness sweep on the main side used to infer liveness from value frames,
+/// so a link on which nothing changed for ten seconds badged every key on it
+/// stale: a stopped line at night, a Modbus device of static registers, both
+/// fine and both purple. This event is the missing keep-alive.
+///
+/// **One per server per [kPipeKeepAliveInterval], never per key.** The worker
+/// samples the liveness its own clients already maintain — the OPC UA
+/// client's session state (which open62541 derives from *its* keep-alive
+/// traffic), a Modbus or M2400 client's connection state — and says so for
+/// each server that is up. A server that is down produces no event, and the
+/// sweep's silence rule then does what it exists to do.
+///
+/// [alias] is the server's configured alias, or null for a worker that hosts
+/// exactly one server (an OPC UA worker), whose link needs no narrowing.
+final class PipeLinkAlive extends PipeEvent {
+  const PipeLinkAlive(this.alias);
+
+  final String? alias;
+
+  @override
+  String toString() => 'PipeLinkAlive(${alias ?? '<worker>'})';
+}
+
 /// The answer to one [PipeWriteRequest], carrying main's own [id] beside it.
 final class PipeWriteOutcome extends PipeEvent {
   const PipeWriteOutcome(this.id, this.result);
@@ -225,6 +256,15 @@ class StateManUpstream implements PipeUpstream {
 /// replaces was queue depth, one message per notification.
 const kPipeDrainInterval = Duration(milliseconds: 50);
 
+/// How often a worker says its servers are alive ([PipeLinkAlive]).
+///
+/// Well inside the backend's stale deadline (`kBackendStaleAfter`, 10 s): a
+/// link is badged stale only after three of these have failed to arrive, so
+/// one late isolate tick or one lost drain does not badge a healthy plant.
+/// The cost is one small event per server per interval — a handful a second
+/// for the whole plant — against the alternative of forwarding every poll.
+const kPipeKeepAliveInterval = Duration(seconds: 3);
+
 /// How long the worker waits for [PipeUpstream.write] before it answers main
 /// without one.
 ///
@@ -243,17 +283,39 @@ class PipeWorkerEndpoint {
     required SendPort toMain,
     this.drainInterval = kPipeDrainInterval,
     this.writeDeadline = kPipeWorkerWriteDeadline,
+    Iterable<String?> Function()? aliveLinks,
+    this.keepAliveInterval = kPipeKeepAliveInterval,
     DateTime Function()? now,
     Logger? logger,
   })  : _stateMan = stateMan,
         _toMain = toMain,
+        _aliveLinks = aliveLinks,
         _now = now ?? DateTime.now,
-        _logger = logger ?? Logger();
+        _logger = logger ?? Logger() {
+    // The keep-alive runs from construction, not from the first subscribe:
+    // liveness is a fact about the link whether or not anybody is watching a
+    // key on it, and the sweep's anchor for a key subscribed later is the
+    // link's last keep-alive, not its own registration.
+    if (aliveLinks != null) {
+      _keepAlive = Timer.periodic(keepAliveInterval, (_) => _sendKeepAlive());
+    }
+  }
 
   final PipeUpstream _stateMan;
   final SendPort _toMain;
   final DateTime Function() _now;
   final Logger _logger;
+
+  /// Which servers are alive right now, by alias (null = this worker's only
+  /// server) — sampled every [keepAliveInterval] and sent as [PipeLinkAlive].
+  /// Null when the worker has no liveness to report (a test fixture), and
+  /// then no keep-alive timer runs at all.
+  final Iterable<String?> Function()? _aliveLinks;
+
+  /// See [kPipeKeepAliveInterval].
+  final Duration keepAliveInterval;
+
+  Timer? _keepAlive;
 
   /// The drain period. See [kPipeDrainInterval].
   final Duration drainInterval;
@@ -622,6 +684,19 @@ class PipeWorkerEndpoint {
     if (_tick == null) _flush();
   }
 
+  /// One [PipeLinkAlive] per server that is up. Through the priority lane so
+  /// it crosses on the next drain — or at once, when nothing is subscribed and
+  /// no drain tick runs: a keep-alive that waited for a subscriber would be
+  /// exactly the inference this event exists to end.
+  void _sendKeepAlive() {
+    if (_disposed) return;
+    final links = _aliveLinks;
+    if (links == null) return;
+    for (final alias in links()) {
+      _emitPriority(PipeLinkAlive(alias));
+    }
+  }
+
   // ------------------------------------------------------------- the tick
 
   void _armTick() {
@@ -650,6 +725,8 @@ class PipeWorkerEndpoint {
     _disposed = true;
     _tick?.cancel();
     _tick = null;
+    _keepAlive?.cancel();
+    _keepAlive = null;
     for (final stream in _streams.values) {
       stream.cancel();
     }

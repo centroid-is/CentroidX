@@ -152,6 +152,56 @@ void main() {
     port.close();
   });
 
+  group('the keep-alive (PipeLinkAlive, 2026-09-17)', () {
+    test('one event per alive server per interval, from construction, with '
+        'nothing subscribed — and none for a server that is down', () async {
+      var alive = <String?>['plc-a', 'plc-b'];
+      final port2 = ReceivePort();
+      final got = <Object?>[];
+      port2.listen(got.add);
+      final keptAlive = PipeWorkerEndpoint(
+        stateMan: upstream,
+        toMain: port2.sendPort,
+        drainInterval: _interval,
+        keepAliveInterval: _interval,
+        aliveLinks: () => alive,
+      );
+      addTearDown(() {
+        keptAlive.dispose();
+        port2.close();
+      });
+
+      await ticks(3);
+      final events = [
+        for (final f in got.whereType<PipeFrame>()) ...f.priority
+      ].whereType<PipeLinkAlive>().toList();
+      expect(events.map((e) => e.alias).toSet(), {'plc-a', 'plc-b'},
+          reason: 'both servers are reported, nothing subscribed: liveness '
+              'is a fact about the link whether anybody watches a key or not');
+      expect(events.where((e) => e.alias == 'plc-a').length,
+          greaterThanOrEqualTo(2),
+          reason: 'and it repeats every interval — it is a keep-alive');
+      expect(got.whereType<PipeFrame>().every((f) => f.values.isEmpty), isTrue,
+          reason: 'liveness and nothing else: no value rides along');
+
+      alive = <String?>[];
+      final before = events.length;
+      await ticks(3);
+      final after = [
+        for (final f in got.whereType<PipeFrame>()) ...f.priority
+      ].whereType<PipeLinkAlive>().length;
+      expect(after, before,
+          reason: 'a server that is down produces no keep-alive: its absence '
+              'is what the sweep reads as the fault');
+    });
+
+    test('no aliveLinks, no keep-alive timer: the fixture endpoint sends '
+        'nothing while idle (the existing idle arm relies on this)', () async {
+      await ticks(3);
+      expect(received, isEmpty);
+    });
+  });
+
   group('subscribe / unsubscribe control + the listener-gated drain tick', () {
     test('an idle endpoint runs no timer and sends nothing', () async {
       expect(endpoint.isDraining, isFalse,

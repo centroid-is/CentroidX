@@ -133,6 +133,14 @@ Duration freshnessIntervalFor(Duration staleAfter) {
 ///    once true. There is no silence to notice.
 ///  * **A key already at or worse than [Quality.badStale]'s band is not
 ///    stale.** Degrade only; see the library doc.
+///  * **A key whose value is still [Quality.uncertainNotYetKnown] is not
+///    stale, whatever [lastHeardMs] says.** The previous rule reads that
+///    quality off a null arrival; this one reads it off the value, because a
+///    sweep that records a *registration* time as if it were an arrival (the
+///    backend's does) would otherwise turn "nothing has ever come" into
+///    "it stopped coming" ten seconds after a panel subscribed. Ruled
+///    2026-09-17: no data and stale are different statements, and neither
+///    is invented for a value that has simply not arrived.
 ///
 /// [lastHeardMs] and [nowMs] are two readings of one **elapsed** counter, in
 /// milliseconds. There is no clock argument, deliberately.
@@ -147,6 +155,7 @@ bool isStaleNow({
   if (PipeKeys.isPipeKey(key)) return false;
   if (skipAlarmKeys && AlarmKeys.isAlarmKey(key)) return false;
   if (lastHeardMs == null) return false;
+  if (quality == Quality.uncertainNotYetKnown) return false;
   // Two readings of a monotonic counter. The subtraction that used to be here
   // took two `DateTime.now()` readings, and a backwards NTP step made it
   // negative for every key at once — the sweep then degraded nothing and the

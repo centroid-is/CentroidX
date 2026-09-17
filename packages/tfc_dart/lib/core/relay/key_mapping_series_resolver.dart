@@ -43,6 +43,30 @@
 /// construction — one line for the whole mapping, because fourteen collisions
 /// must not be fourteen startup lines.
 ///
+/// ## A collect entry's NAME is a series name too (2026-09-16)
+///
+/// The plant's throughput assets — every `BpmConfig`, `RateValueConfig` and
+/// `RatioNumberConfig` on its pages — carry the **collected series name**
+/// (`batcher1.acceptWeight`, the `name:` of the collect entry the two weigher
+/// heads share), not a key: a station queries the table by that name
+/// (`DatabaseTimeseriesSource`), and the operator chose it in the collector
+/// screen. Over the wire the same name reached [resolve], was looked up as a
+/// key, found nothing, and the policy served an empty list without a word —
+/// twelve panels blank in every browser, with 90 000 rows behind each.
+///
+/// So [resolve] answers a name that a collect entry *declares* as well as a
+/// key, resolving it to the table it is (`collectTableName` is the name) and,
+/// for the policy's visibility question, to the key that records it — the
+/// first of two when two heads share the name, which is not [keyForTable]'s
+/// mistake: [keyForTable] answers "which key does this table record", where
+/// picking one changes *what* is served; here the table is fixed by the name
+/// and the key only says *whether* it may be seen, and two heads recording one
+/// declared stream are one operator's decision that they are seen together.
+///
+/// What this does **not** open: a physical table name. An unnamed entry's
+/// table is `collectTableName`'s derived spelling, and only the key names it;
+/// `gw_…` reaches the database through no door, exactly as before.
+///
 /// Protocol types are imported `as relay`, the house rule inside `tfc_dart`.
 library;
 
@@ -72,6 +96,11 @@ final class KeyMappingSeriesResolver implements relay.SeriesResolver {
       final table = collectTableName(collect);
       _tableForKey[entry.key] = table;
       claimants.putIfAbsent(table, () => <String>[]).add(entry.key);
+      // A declared name is a series name in its own right (library doc). The
+      // first claimant answers for the policy; a second head sharing the name
+      // is the same declared stream.
+      final name = collect.name;
+      if (name != null) _keyForName.putIfAbsent(name, () => entry.key);
     }
 
     for (final claim in claimants.entries) {
@@ -100,6 +129,10 @@ final class KeyMappingSeriesResolver implements relay.SeriesResolver {
 
   final Map<String, String> _tableForKey = <String, String>{};
   final Map<String, String> _keyForTable = <String, String>{};
+
+  /// Declared collect names → the first key recording under that name. What
+  /// lets a series be asked for by the name the collector screen gave it.
+  final Map<String, String> _keyForName = <String, String>{};
   final Set<String> _nodes = <String>{};
   final Set<String> _ambiguousTables = <String>{};
 
@@ -129,11 +162,21 @@ final class KeyMappingSeriesResolver implements relay.SeriesResolver {
   relay.ResolvedSeries? resolve(String wireName) {
     final address = relay.SeriesAddress.parse(wireName);
     final table = _tableForKey[address.series];
-    if (table == null) return null;
+    if (table != null) {
+      return relay.ResolvedSeries(
+        table: table,
+        member: address.member,
+        plantKey: address.series,
+      );
+    }
+    // Not a key: a declared collect name, the way a station's assets ask
+    // (library doc, "A collect entry's NAME is a series name too").
+    final recordedBy = _keyForName[address.series];
+    if (recordedBy == null) return null;
     return relay.ResolvedSeries(
-      table: table,
+      table: address.series,
       member: address.member,
-      plantKey: address.series,
+      plantKey: recordedBy,
     );
   }
 

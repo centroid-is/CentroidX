@@ -158,14 +158,26 @@
 ///     sample or a comm fault). A stale badge is the sweep's claim that the
 ///     link stopped speaking; when the link speaks, the claim is withdrawn.
 ///
-/// What this still does not cover, stated rather than hidden: a link on
-/// which **nothing** changes for [staleAfter] — a stopped line at night, a
-/// Modbus device of static registers — sends no frames, because workers
-/// forward changes and not polls, and its keys will badge stale although
-/// the link is fine. Closing that needs the worker to say "still polling"
-/// (a keep-alive frame per server, or the OPC UA publish keep-alive
-/// forwarded), which is a pipe protocol change and a decision about what
-/// "fresh" means for a static plant.
+/// ## The keep-alive is the anchor, and an unchanged value is current
+///
+/// Ruled 2026-09-17, to OPC UA's own model: an unchanged value is *current*
+/// — it carries its own source timestamp and status, and nothing ages it out
+/// for standing still — and what proves a session alive when nothing changes
+/// is the keep-alive. So each worker now sends `PipeLinkAlive` per server
+/// every `kPipeKeepAliveInterval` (3 s, three inside [staleAfter]), sampled
+/// from its clients' own session state, and [heardLink] anchors the link on
+/// it. Value frames still anchor too ([heardKeys]) — a value is proof of
+/// life as well — but a link on which nothing changes for a night stays
+/// green, and a link that genuinely stops (no keep-alive: worker dead,
+/// session frozen, device unplugged) still badges its keys after
+/// [staleAfter], which is the fault this machinery exists to report.
+///
+/// The other half of the same ruling: a key that never produced a value is
+/// **not** stale — it is `uncertainNotYetKnown`, or whatever its worker said
+/// (`badNoData` for a tag that does not exist) — and `relay.isStaleNow` now
+/// refuses to badge a never-arrived value, so [_register]'s seeding of a
+/// registration time cannot turn "no data" into "stale". The two are
+/// different statements and the operator must be able to tell them apart.
 ///
 /// Protocol types are imported `as relay`, the house rule inside `tfc_dart`.
 library;
@@ -538,6 +550,16 @@ final class BackendFreshnessSweep implements BackendValueSource {
       final link = linkOf(key);
       if (link != null) _lastHeardByLink[link] = now;
     }
+  }
+
+  /// The link anchor, fed from a worker's keep-alive (`PipeLinkAlive`):
+  /// [link] is alive now, whatever its keys are doing. The composition spells
+  /// [link] exactly as its `linkOf` spells it for the keys on that link, so
+  /// the two meet in [_anchorOf]. See the library doc: this is what makes
+  /// "fresh" mean "the session is up", not "a tag happened to change".
+  void heardLink(String link) {
+    if (_disposed) return;
+    _lastHeardByLink[link] = _monotonic.elapsedMilliseconds;
   }
 
   /// Runs [mutation] with [_applying] raised, so the notifications it causes

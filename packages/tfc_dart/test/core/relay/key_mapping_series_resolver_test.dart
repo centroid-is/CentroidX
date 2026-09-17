@@ -155,6 +155,38 @@ void main() {
               'would give a client a second, unchecked way to name a table');
     });
 
+    test('a declared collect NAME resolves — the way a station\'s throughput '
+        'assets ask — to the table it is and the key that records it', () {
+      // 2026-09-16: every BpmConfig / RateValueConfig on the plant carries
+      // `batcher1.acceptWeight`, the collect name two weigher heads share.
+      // Over the wire it resolved to nothing and twelve panels were blank.
+      final resolver = _quietResolver();
+
+      final block = resolver.resolve('st101_sensor_block')!;
+      expect(block.table, 'st101_sensor_block',
+          reason: 'the name IS the table (collectTableName)');
+      expect(block.plantKey, 'ST101.CN01.SENS01',
+          reason: 'the key recording under that name answers the policy');
+      expect(resolver.resolve('st101_sensor_block:p_stat_xOutput')!.member,
+          'p_stat_xOutput',
+          reason: 'a member selects a column of the named table as before');
+
+      final shared = resolver.resolve('SB1.CheckWeigher.Accepted')!;
+      expect(shared.table, 'SB1.CheckWeigher.Accepted');
+      expect(shared.plantKey, 'SB1.CheckWeigher.Accepted.1',
+          reason: 'two heads recording one declared stream: the first '
+              'claimant answers whether it may be seen — the table is fixed '
+              'by the name, so no head\'s history is served under the '
+              'other\'s, which is the mistake keyForTable still refuses');
+      expect(resolver.keyForTable('SB1.CheckWeigher.Accepted'), isNull,
+          reason: 'and the reverse question stays refused for an ambiguous '
+              'table: this change opens the forward direction only');
+
+      expect(resolver.resolve('gw_ST101.CN01.MOT01.setpoint'), isNull,
+          reason: 'an unnamed entry\'s derived table is still no series '
+              'name: only a name the collector screen declared is one');
+    });
+
     test('a malformed name throws rather than resolving to null', () {
       final resolver = _quietResolver();
 

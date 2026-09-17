@@ -137,6 +137,22 @@ void main() {
 
       expect(endpoint.read('a.one').quality, relay.Quality.errorConfig);
     });
+
+    test('a keep-alive reaches onLinkAlive with the worker and the alias, and '
+        'moves no value', () async {
+      final heard = <(int, String?)>[];
+      endpoint.onLinkAlive = (worker, alias) => heard.add((worker, alias));
+      alpha.emit(PipeFrame(const [], {'a.one': _good(7)}));
+      await _settle();
+      beta.emit(PipeFrame(const [PipeLinkAlive('dev-1')], const {}));
+      alpha.emit(PipeFrame(const [PipeLinkAlive(null)], const {}));
+      await _settle();
+
+      expect(heard, [(1, 'dev-1'), (0, null)]);
+      expect(endpoint.read('a.one').value, 7);
+      expect(endpoint.read('a.one').quality, relay.Quality.good,
+          reason: 'liveness and nothing else');
+    });
   });
 
   group('the write router', () {

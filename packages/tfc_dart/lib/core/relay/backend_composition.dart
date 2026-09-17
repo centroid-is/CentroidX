@@ -203,6 +203,12 @@ final class BackendRelayComposition {
 /// would make revocation a load test. So the chain is chased once, into memory,
 /// by [refresh], and the resolver reads the map.
 ///
+/// One spelling of a link id for the freshness sweep, shared by the key side
+/// (`linkOf`) and the keep-alive side (`onLinkAlive`) so they cannot drift:
+/// the worker, narrowed by a server alias when the worker hosts several.
+String _linkId(int worker, String? alias) =>
+    alias == null ? 'worker:$worker' : 'worker:$worker/$alias';
+
 /// The accounts and roles are a handful of rows and cache trivially — this is
 /// `UserResolver`'s own stated expectation.
 final class _AccountCache {
@@ -441,27 +447,34 @@ BackendRelayComposition composeBackendRelay({
       staleAfter: staleAfter,
       pipe: pipe,
       // The link a key is served over, for the per-link anchor
-      // (`backend_freshness.dart`, HARD-01): the worker the pipe routes it to,
-      // narrowed by the server alias its mapping names, because one worker
-      // hosts every OPC UA server of its family and a change on one PLC
-      // proves nothing about another. Null for a key no worker owns (a
-      // mapping whose server is disabled or unknown), which then ages on its
-      // own — there is no link to vouch for it.
+      // (`backend_freshness.dart`, HARD-01), spelled by [_linkId] so the
+      // worker's keep-alive and the key meet on one string. An OPC UA worker
+      // hosts exactly one server (`bin/main.dart` spawns one per server), so
+      // its keys are the worker's link whatever alias the node carries; a
+      // Modbus or M2400 worker hosts several devices, and a key narrows to
+      // the device its mapping names, because a poll on one device proves
+      // nothing about another. Null for a key no worker owns (a mapping
+      // whose server is disabled or unknown), which then ages on its own —
+      // there is no link to vouch for it.
       linkOf: (key) {
         final worker = pipe.workerOf(key);
         if (worker == null) return null;
         final entry = keyMappings.nodes[key];
-        final alias = entry?.opcuaNode?.serverAlias ??
-            entry?.modbusNode?.serverAlias ??
-            entry?.m2400Node?.serverAlias;
-        return alias == null ? 'worker:$worker' : 'worker:$worker/$alias';
+        if (entry?.opcuaNode != null) return _linkId(worker, null);
+        final alias =
+            entry?.modbusNode?.serverAlias ?? entry?.m2400Node?.serverAlias;
+        return _linkId(worker, alias);
       },
       logger: logger,
     );
     // The anchor is fed by every frame a worker delivers, not only by the
-    // keys somebody watches — see `backend_freshness.dart`'s library doc for
-    // the 2026-09-16 measurement that made this necessary.
+    // keys somebody watches (the 2026-09-16 measurement in
+    // `backend_freshness.dart`'s library doc) — and, since 2026-09-17, by the
+    // worker's keep-alive per server, which is what keeps a link on which
+    // nothing changes green: liveness is the session's, not a tag's.
     pipe.onWorkerFrame = (_, keys) => sweep.heardKeys(keys);
+    pipe.onLinkAlive =
+        (worker, alias) => sweep.heardLink(_linkId(worker, alias));
   }
 
   // --------------------------------------------------------------- discovery

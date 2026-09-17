@@ -208,8 +208,11 @@ class _Fixture {
       linkOf: (key) => pipe.workerOf(key)?.toString(),
       logger: _quiet(),
     );
-    // As `composeBackendRelay` wires it: frames feed the link anchor.
+    // As `composeBackendRelay` wires it: frames and keep-alives feed the
+    // link anchor, spelled the way `linkOf` above spells the key's link.
     pipe.onWorkerFrame = (_, keys) => sweep.heardKeys(keys);
+    pipe.onLinkAlive =
+        (worker, alias) => sweep.heardLink(alias == null ? '$worker' : '$worker/$alias');
   }
 
   final bool twoWorkers;
@@ -947,6 +950,48 @@ void main() {
       expect(constant.value.quality, relay.Quality.badStale,
           reason: 'the restoration is not a pardon: a link that goes quiet '
               'again is caught again');
+    });
+
+    test('a keep-alive alone keeps a constant key good — nothing on the link '
+        'changes, the session is up (OPC UA\'s model, ruled 2026-09-17)',
+        () async {
+      final f = _Fixture();
+      addTearDown(f.tearDown);
+      final constant = f.watch(_speedKey);
+      f.alpha.deliver(_speedKey, _good(1450));
+      await _settle();
+      final keepAlive = Timer.periodic(f.sweep.interval, (_) {
+        f.alpha.emit(PipeFrame(const [PipeLinkAlive(null)], const {}));
+      });
+      addTearDown(keepAlive.cancel);
+      await f.pastDeadline();
+      await f.pastDeadline();
+      expect(constant.value.quality, relay.Quality.good,
+          reason: 'no value changed for two deadlines and the key is still '
+              'good: a stopped drive reporting the same number for an hour '
+              'is a good value an hour old, and the keep-alive is what says '
+              'the session that would report a change is still there');
+      expect(constant.value.value, 1450);
+      keepAlive.cancel();
+      await f.pastDeadline();
+      await f.pastDeadline();
+      expect(constant.value.quality, relay.Quality.badStale,
+          reason: 'and when the keep-alive stops, the link stopped: that is '
+              'the fault this machinery exists to report, still reported');
+    });
+
+    test('a key that never produced a value is never badged stale: no data '
+        'and stale are different statements', () async {
+      final f = _Fixture();
+      addTearDown(f.tearDown);
+      final never = f.watch(_speedKey);
+      expect(never.value.quality, relay.Quality.uncertainNotYetKnown);
+      await f.pastDeadline();
+      await f.pastDeadline();
+      expect(never.value.quality, relay.Quality.uncertainNotYetKnown,
+          reason: 'registration is not arrival: ~220 dead tags on the plant '
+              'read "stopped arriving" when nothing had ever come');
+      expect(f.sweep.degraded, isNot(contains(_speedKey)));
     });
 
     test('a fresh sample for a badged key clears the badge on its own terms',

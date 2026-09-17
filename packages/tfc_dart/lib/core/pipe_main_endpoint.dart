@@ -299,6 +299,12 @@ class PipeMainEndpoint {
   /// the worker saying "this link is speaking", whoever is listening.
   void Function(int workerIndex, Iterable<String> keys)? onWorkerFrame;
 
+  /// Told about every keep-alive a worker delivers ([PipeLinkAlive]): which
+  /// worker, and which of its servers (by alias, null for its only one). The
+  /// freshness sweep anchors the link on it, so liveness no longer depends
+  /// on a tag happening to change — the OPC UA model, end to end.
+  void Function(int workerIndex, String? alias)? onLinkAlive;
+
   /// The cached value for [key] — [relay.notYetKnown] until one arrives.
   relay.DynamicValue read(String key) => store.node(key).value;
 
@@ -548,6 +554,9 @@ class PipeMainEndpoint {
 
   void _applyEvent(int index, Object? event) {
     switch (event) {
+      case PipeLinkAlive(alias: final alias):
+        // Liveness and nothing else: no value moves, no quality changes.
+        onLinkAlive?.call(index, alias);
       case PipeKeyError(key: final key, quality: final quality):
         // No payload under a bad badge: `translateOpcUaSample`'s rule, for the
         // same reason — a number nobody measured, greyed out, is still a
