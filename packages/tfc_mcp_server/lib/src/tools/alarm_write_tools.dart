@@ -74,8 +74,29 @@ List<Map<String, dynamic>> _buildRules(List<dynamic> rawRules) {
         'value': {'formula': r['formula'] as String}
       },
       'acknowledgeRequired': r['acknowledge_required'] ?? false,
+      // Stored as AlarmRule.toJson writes it: whole milliseconds, absent
+      // when there is no delay.
+      if (_onDelayMs(r) case final ms? when ms > 0) 'onDelayMs': ms,
     };
   }).toList();
+}
+
+/// A rule's `on_delay_seconds` in milliseconds, or null when not given.
+int? _onDelayMs(Map<String, dynamic> rule) {
+  final seconds = rule['on_delay_seconds'];
+  if (seconds is! num) return null;
+  return (seconds * 1000).round();
+}
+
+/// Checks the non-expression fields of a rule, returning an error or null.
+String? _validateRule(Map<String, dynamic> rule, int ruleIndex) {
+  final seconds = rule['on_delay_seconds'];
+  if (seconds == null) return null;
+  if (seconds is! num || !seconds.isFinite || seconds < 0) {
+    return 'Invalid on_delay_seconds in rule $ruleIndex: "$seconds" '
+        '(seconds, 0 or more)';
+  }
+  return null;
 }
 
 void _registerCreateAlarm({
@@ -138,6 +159,12 @@ void _registerCreateAlarm({
                 description: 'Whether acknowledgement is required',
                 defaultValue: false,
               ),
+              'on_delay_seconds': JsonSchema.number(
+                description: 'How long the formula must hold, without a '
+                    'break, before the alarm goes active -- filters a '
+                    'flickering signal. It clears as soon as the formula '
+                    'does. Omit or 0 to raise immediately.',
+              ),
             },
             required: ['level', 'formula'],
           ),
@@ -162,7 +189,8 @@ void _registerCreateAlarm({
       for (var i = 0; i < rawRules.length; i++) {
         final rule = rawRules[i] as Map<String, dynamic>;
         final formula = rule['formula'] as String;
-        final error = _validateFormula(expressionValidator, formula, i);
+        final error = _validateFormula(expressionValidator, formula, i) ??
+            _validateRule(rule, i);
         if (error != null) {
           return CallToolResult(
             content: [TextContent(text: error)],
@@ -199,7 +227,8 @@ void _registerCreateAlarm({
         if (!countsAsStop) 'countsAsStop': 'not counted as a stop',
         'rules': rules
             .map((r) =>
-                '${r['level']}: ${r['expression']['value']['formula']}')
+                '${r['level']}: ${r['expression']['value']['formula']}'
+                '${r['onDelayMs'] == null ? '' : ' (after ${r['onDelayMs'] / 1000} s)'}')
             .join(', '),
       };
       final diff =
@@ -276,6 +305,12 @@ void _registerUpdateAlarm({
                 description: 'Whether acknowledgement is required',
                 defaultValue: false,
               ),
+              'on_delay_seconds': JsonSchema.number(
+                description: 'How long the formula must hold, without a '
+                    'break, before the alarm goes active -- filters a '
+                    'flickering signal. It clears as soon as the formula '
+                    'does. Omit or 0 to raise immediately.',
+              ),
             },
             required: ['level', 'formula'],
           ),
@@ -337,7 +372,8 @@ void _registerUpdateAlarm({
         for (var i = 0; i < rawRules.length; i++) {
           final rule = rawRules[i] as Map<String, dynamic>;
           final formula = rule['formula'] as String;
-          final error = _validateFormula(expressionValidator, formula, i);
+          final error = _validateFormula(expressionValidator, formula, i) ??
+            _validateRule(rule, i);
           if (error != null) {
             return CallToolResult(
               content: [TextContent(text: error)],

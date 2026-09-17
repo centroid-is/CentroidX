@@ -617,12 +617,7 @@ class _AlarmFormState extends ConsumerState<AlarmForm> {
                             ? (level) {
                                 if (level != null) {
                                   setState(() {
-                                    _rules[i] = AlarmRule(
-                                      level: level,
-                                      expression: rule.expression,
-                                      acknowledgeRequired:
-                                          rule.acknowledgeRequired,
-                                    );
+                                    _rules[i] = rule.copyWith(level: level);
                                   });
                                 }
                               }
@@ -632,11 +627,17 @@ class _AlarmFormState extends ConsumerState<AlarmForm> {
                         value: rule.expression.value,
                         editable: widget.editable,
                         onChanged: (expr) => setState(() {
-                          _rules[i] = AlarmRule(
-                            level: rule.level,
-                            expression: ExpressionConfig(value: expr),
-                            acknowledgeRequired: rule.acknowledgeRequired,
-                          );
+                          _rules[i] = rule.copyWith(
+                              expression: ExpressionConfig(value: expr));
+                        }),
+                      ),
+                      const SizedBox(height: 8),
+                      _OnDelayField(
+                        key: ValueKey('alarm-form-rule-$i-on-delay'),
+                        value: rule.onDelay,
+                        editable: widget.editable,
+                        onChanged: (delay) => setState(() {
+                          _rules[i] = _rules[i].copyWith(onDelay: delay);
                         }),
                       ),
                       SwitchListTile(
@@ -644,11 +645,8 @@ class _AlarmFormState extends ConsumerState<AlarmForm> {
                         value: rule.acknowledgeRequired,
                         onChanged: widget.editable
                             ? (val) => setState(() {
-                                  _rules[i] = AlarmRule(
-                                    level: rule.level,
-                                    expression: rule.expression,
-                                    acknowledgeRequired: val,
-                                  );
+                                  _rules[i] =
+                                      rule.copyWith(acknowledgeRequired: val);
                                 })
                             : null,
                       ),
@@ -710,6 +708,59 @@ class _AlarmFormState extends ConsumerState<AlarmForm> {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// How long a rule's expression must hold before the alarm goes active, in
+/// seconds. The timing itself runs wherever the rule is evaluated (the
+/// backend); this only edits [AlarmRule.onDelay].
+class _OnDelayField extends StatelessWidget {
+  final Duration value;
+  final bool editable;
+  final ValueChanged<Duration> onChanged;
+
+  const _OnDelayField({
+    super.key,
+    required this.value,
+    required this.editable,
+    required this.onChanged,
+  });
+
+  /// Seconds as typed, or null when it is not a delay.
+  static Duration? _parse(String? text) {
+    final seconds = double.tryParse((text ?? '').trim());
+    if (seconds == null || seconds.isNaN || seconds.isInfinite || seconds < 0) {
+      return null;
+    }
+    return Duration(milliseconds: (seconds * 1000).round());
+  }
+
+  static String _format(Duration d) {
+    final seconds = d.inMilliseconds / 1000;
+    return seconds == seconds.roundToDouble()
+        ? seconds.toInt().toString()
+        : seconds.toString();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return TextFormField(
+      initialValue: _format(value),
+      enabled: editable,
+      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+      decoration: const InputDecoration(
+        labelText: 'Active after',
+        suffixText: 's',
+        helperText: 'How long the expression must hold before the alarm '
+            'goes active. 0 raises it at once.',
+        helperMaxLines: 2,
+      ),
+      validator: (text) => _parse(text) == null ? 'Seconds, 0 or more' : null,
+      onChanged: (text) {
+        final delay = _parse(text);
+        if (delay != null) onChanged(delay);
+      },
     );
   }
 }

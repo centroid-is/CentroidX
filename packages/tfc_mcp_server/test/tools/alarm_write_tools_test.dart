@@ -239,6 +239,52 @@ void main() {
         expect(rules[0]['acknowledgeRequired'], isTrue);
       });
 
+      test('on_delay_seconds becomes the rule\'s onDelayMs', () async {
+        await setupWithAutoConfirm();
+
+        final result = await client.callTool('create_alarm', {
+          'title': 'Conveyor jam',
+          'description': 'Photo-eye blocked',
+          'rules': [
+            {
+              'level': 'error',
+              'formula': 'cn01.eye == true',
+              'on_delay_seconds': 15,
+            },
+            {
+              'level': 'warning',
+              'formula': 'cn01.eye == true',
+            },
+          ],
+        });
+
+        expect(result.isError, isNot(true));
+        final json = jsonDecode((result.content.first as TextContent).text)
+            as Map<String, dynamic>;
+        final rules = json['rules'] as List;
+        expect(rules[0]['onDelayMs'], 15000);
+        expect((rules[1] as Map).containsKey('onDelayMs'), isFalse,
+            reason: 'no delay is stored the way the app stores it: absent');
+      });
+
+      test('a negative on_delay_seconds is refused', () async {
+        await setupWithAutoConfirm();
+
+        final result = await client.callTool('create_alarm', {
+          'title': 'Conveyor jam',
+          'description': 'Photo-eye blocked',
+          'rules': [
+            {
+              'level': 'error',
+              'formula': 'cn01.eye == true',
+              'on_delay_seconds': -1,
+            },
+          ],
+        });
+
+        expect(result.isError, isTrue);
+      });
+
       test('valid args with compound expression returns proposal', () async {
         await setupWithAutoConfirm();
 

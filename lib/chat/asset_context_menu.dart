@@ -254,6 +254,10 @@ String buildAlarmContextBlock(AlarmConfig alarm) {
     buf.writeln('    Level: ${rule.level.name}');
     buf.writeln('    Expression: ${rule.expression.value.formula}');
     buf.writeln('    Acknowledge required: ${rule.acknowledgeRequired}');
+    if (rule.onDelay > Duration.zero) {
+      buf.writeln(
+          '    Active after: ${rule.onDelay.inMilliseconds / 1000} s held');
+    }
   }
   buf.writeln('[END ALARM CONTEXT]');
   return buf.toString();
