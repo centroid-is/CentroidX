@@ -47,6 +47,7 @@ import 'package:tfc_dart/core/state_man.dart';
 import '../helpers/golden_tolerance.dart';
 import '../helpers/golden_platform.dart';
 import '../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
+import '../helpers/wagon_fixtures.dart';
 
 /// Real letterforms and glyphs; the test font draws every label as a box,
 /// which for an image about how loud a mark is would be misleading.
@@ -131,6 +132,7 @@ void main() {
       Size surface = const Size(800, 600),
       bool dark = false,
       bool appBar = false,
+      DynamicValue? stations,
     }) async {
       await tester.binding.setSurfaceSize(surface);
       addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -145,7 +147,10 @@ void main() {
         ..pushValue('cn/drive', _runningDrive())
         // The rack slices: a couple of inputs high, nothing forced.
         ..pushValue('el/raw', DynamicValue(value: 0x16))
-        ..pushValue('el/force', DynamicValue(value: 0));
+        ..pushValue('el/force', DynamicValue(value: 0))
+        // Half way along the rail, between the docks.
+        ..pushValue('wg/pos', DynamicValue(value: 50.0));
+      if (stations != null) fake.pushValue('wg/stations', stations);
       await tester.pumpWidget(ProviderScope(
         overrides: [stateManProvider.overrideWith((_) async => fake)],
         child: MaterialApp(
@@ -512,6 +517,51 @@ void main() {
       await markAtFullBreath(tester);
 
       await expectCanvas(tester, 'hit_boundary_rack_slice');
+    });
+
+    testWidgets('a wagon station: the tapped dock, not the wagon and every dock',
+        (tester) async {
+      // A pallet wagon serving three stations, tapped on the middle one. The
+      // docks are painted by the conveyor, but each is its own [AssetPart],
+      // so the ring frames that dock alone — ringing the wagon with every
+      // dock beside the rail is the regression this frame keeps out.
+      await pump(
+        tester,
+        [
+          ConveyorConfig(
+            key: 'cn/drive',
+            onRails: true,
+            stationsKey: 'wg/stations',
+            positionKey: 'wg/pos',
+            wagonLength: 0.12,
+          )
+            ..coordinates = Coordinates(x: 0.42, y: 0.5)
+            ..size = const RelativeSize(width: 0.7, height: 0.45),
+        ],
+        surface: const Size(800, 500),
+        stations: stationArray([
+          station('Infeed', position: 0, ready: true),
+          station('Outfeed A', position: 5000, type: 1, loc: 1, order: true),
+          station('Outfeed B', position: 10000, type: 1),
+        ]),
+      );
+
+      final paint = find
+          .descendant(
+              of: find.byType(Conveyor), matching: find.byType(CustomPaint))
+          .first;
+      final painter =
+          tester.widget<CustomPaint>(paint).painter! as ConveyorPainter;
+      final dock = painter
+          .docks(painter.paintSize!)
+          .firstWhere((d) => d.station.name == 'Outfeed A');
+      await tester.tapAt(tester.getTopLeft(paint) + dock.body.center);
+      await tester.pump(const Duration(milliseconds: 16));
+      await tester.pump(const Duration(milliseconds: 16));
+      await tester.pump(const Duration(milliseconds: 400));
+      await markAtFullBreath(tester);
+
+      await expectCanvas(tester, 'hit_boundary_wagon_station');
     });
   });
 }
