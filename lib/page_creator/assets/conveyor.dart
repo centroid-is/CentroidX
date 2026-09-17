@@ -2277,6 +2277,17 @@ class _ConveyorState extends ConsumerState<Conveyor>
   );
   final Map<String, Batch> _batches = {};
   final RepeatedErrorGate _errorGate = RepeatedErrorGate();
+
+  /// Gates the batch overlay's own complaints.
+  ///
+  /// [_errorGate] covers a failure the builder can see. This one covers the
+  /// quieter case: a batches key that answers perfectly well, with something
+  /// the overlay cannot use.
+  final RepeatedErrorGate _batchGate = RepeatedErrorGate();
+
+  /// One gate per optional binding, so a decorative node that is not there is
+  /// named once rather than on every reconnect attempt.
+  final Map<String, RepeatedErrorGate> _optionalGates = {};
   Stream<Map<String, DynamicValue>>? _cachedValues;
   int? _cachedValuesSignature;
   // periodic timer for batches
@@ -2655,7 +2666,9 @@ class _ConveyorState extends ConsumerState<Conveyor>
         CombineLatestStream<DynamicValue?, Map<String, DynamicValue>>(
       [
         for (final s in sources)
-          s.binding.optional ? _optional(s.source) : s.source,
+          s.binding.optional
+              ? _optional(s.binding.label, s.source)
+              : s.source,
       ],
       (values) {
         final result = <String, DynamicValue>{};
@@ -2699,14 +2712,34 @@ class _ConveyorState extends ConsumerState<Conveyor>
   /// So: swallow the error to null, and seed a null up front. A dead
   /// optional stream now costs its own overlay and nothing else, and it
   /// starts working again by itself when the PLC serves that node.
-  Stream<DynamicValue?> _optional(Stream<DynamicValue> source) => source
-      .map<DynamicValue?>((value) => value)
-      .transform(
-        StreamTransformer<DynamicValue?, DynamicValue?>.fromHandlers(
-          handleError: (error, stackTrace, sink) => sink.add(null),
-        ),
-      )
-      .startWith(null);
+  ///
+  /// Swallowed is not the same as unrecorded, though. A key bound one node
+  /// off answers with an error nobody ever sees: the overlay simply stops
+  /// being drawn, on an asset that otherwise looks entirely correct.
+  /// [label] names which binding gave up, once per distinct failure — and
+  /// again if the same failure returns after the node has answered in
+  /// between, which is the case most worth seeing.
+  Stream<DynamicValue?> _optional(String label, Stream<DynamicValue> source) =>
+      source
+          .map<DynamicValue?>((value) {
+            _optionalGates[label]?.recovered();
+            return value;
+          })
+          .transform(
+            StreamTransformer<DynamicValue?, DynamicValue?>.fromHandlers(
+              handleError: (error, stackTrace, sink) {
+                final gate =
+                    _optionalGates.putIfAbsent(label, RepeatedErrorGate.new);
+                if (gate.shouldReport(error)) {
+                  _log.w('Conveyor "${widget.config.key}": the $label node '
+                      'failed, so that overlay is off until it reports '
+                      'again: $error');
+                }
+                sink.add(null);
+              },
+            ),
+          )
+          .startWith(null);
 
   /// The batch array carried by [value], or null if there is not one.
   ///
@@ -2728,8 +2761,8 @@ class _ConveyorState extends ConsumerState<Conveyor>
 
   /// The belt length [value] reports, or null when it does not carry one.
   static double? _conveyorLengthIn(DynamicValue value) {
-    if (!value.contains('p_stat_Length')) return null;
-    final length = value['p_stat_Length'].asDouble;
+    if (!value.contains(_lengthMember)) return null;
+    final length = value[_lengthMember].asDouble;
     // A zero length would divide every slot position by nothing.
     return length > 0 ? length : null;
   }
@@ -2766,39 +2799,105 @@ class _ConveyorState extends ConsumerState<Conveyor>
   /// null falls back to [ConveyorConfig.defaultBatchLengthMm].
   void _updateBatches(DynamicValue? settings, DynamicValue? arrayValue,
       {double? batchLength}) {
-    final conveyorLength =
-        settings == null ? null : _conveyorLengthIn(settings);
-    final batches = arrayValue == null ? null : _batchArrayIn(arrayValue);
-    if (conveyorLength == null || batches == null) {
-      _batches.clear();
-      return;
+    final next = _decodeBatches(settings, arrayValue, batchLength: batchLength);
+    // Decoded into a map of its own and swapped in whole, rather than edited
+    // in place. Edited in place, an array that came back shorter left every
+    // slot past its new end drawn forever, because nothing ever removed an
+    // index the new array no longer reaches; and a value that turned out to
+    // be undecodable partway down left the belt showing some slots from this
+    // reading and the rest from the last one. The overlay is a picture of one
+    // reading, so it is replaced by one reading.
+    _batches
+      ..clear()
+      ..addAll(next);
+  }
+
+  /// The overlay [settings] and [arrayValue] describe, or an empty map when
+  /// they do not describe one.
+  ///
+  /// Nothing in here throws: every read is either shape-checked first or goes
+  /// through an accessor that falls back rather than raising. That is the
+  /// whole point of it. [_updateBatches] is called straight out of the
+  /// `StreamBuilder` builder, so a throw here does not cost the overlay — it
+  /// takes the builder with it, and Flutter replaces the entire conveyor with
+  /// a `RenderErrorBox`, which in a release build paints as a flat grey
+  /// rectangle where the asset used to be. The belt, its colour, its
+  /// frequency and its taps would all still have been perfectly readable;
+  /// only the decoration drawn on top of them was not.
+  Map<String, Batch> _decodeBatches(
+      DynamicValue? settings, DynamicValue? arrayValue,
+      {double? batchLength}) {
+    if (settings == null || arrayValue == null) {
+      // Nothing to decode, and nothing to say about it: an unbound key, a node
+      // that has not answered yet and one whose stream failed all arrive here
+      // as null, and [_optional] has already named the failing one.
+      _batchGate.recovered();
+      return const {};
     }
+
+    final conveyorLength = _conveyorLengthIn(settings);
+    if (conveyorLength == null) {
+      _complain('the batches node carries no usable $_lengthMember — missing, '
+          'or not a positive length — so the slot positions have nothing to '
+          'be measured against');
+      return const {};
+    }
+
+    final batches = _batchArrayIn(arrayValue);
+    if (batches == null) {
+      _complain('the batch array node answers with neither an array of slots '
+          'nor a struct carrying $_batchArrayMember');
+      return const {};
+    }
+
     final slotLength = batchLength ?? ConveyorConfig.defaultBatchLengthMm;
-    var idx = 0;
-    for (final batchInfo in batches) {
-      // Guarded because a key bound one node off still yields an array, and
-      // an array of the wrong thing should cost this overlay rather than
-      // throw out of `build`.
-      if (!batchInfo.contains('xOccupied') ||
-          !batchInfo.contains('position')) {
-        _batches.remove(idx.toString());
-        idx++;
+    final decoded = <String, Batch>{};
+    var undecodable = 0;
+    for (var idx = 0; idx < batches.length; idx++) {
+      final batchInfo = batches[idx];
+      // Guarded per entry because a key bound one node off still yields an
+      // array, and one slot of the wrong thing should cost that slot rather
+      // than the whole overlay — the other slots are still a true reading.
+      if (!batchInfo.contains(_occupiedMember) ||
+          !batchInfo.contains(_positionMember)) {
+        undecodable++;
         continue;
       }
-      final occupied = batchInfo['xOccupied'].asBool;
-      final backendOfBatch = batchInfo['position'].asDouble;
-      final relativeStart = backendOfBatch / conveyorLength;
-      final relativeEnd = (backendOfBatch + slotLength) / conveyorLength;
-      if (occupied) {
-        _batches[idx.toString()] =
-            Batch(start: relativeStart, end: relativeEnd);
-      } else {
-        _batches.remove(idx.toString());
-      }
-      idx++;
+      if (!batchInfo[_occupiedMember].asBool) continue;
+      final backOfBatch = batchInfo[_positionMember].asDouble;
+      decoded['$idx'] = Batch(
+        start: backOfBatch / conveyorLength,
+        end: (backOfBatch + slotLength) / conveyorLength,
+      );
     }
-    if (mounted) {
-      // setState(() {});
+
+    if (undecodable > 0) {
+      _complain('$undecodable of ${batches.length} slots are missing '
+          '$_occupiedMember or $_positionMember');
+    } else {
+      _batchGate.recovered();
+    }
+    return decoded;
+  }
+
+  /// The members a slot publishes its state under.
+  static const _occupiedMember = 'xOccupied';
+  static const _positionMember = 'position';
+
+  /// The member the conveyor settings publish the belt length under.
+  static const _lengthMember = 'p_stat_Length';
+
+  /// Writes [complaint] down once, and again only when it changes or comes
+  /// back after the overlay has read cleanly.
+  ///
+  /// This runs from inside a `StreamBuilder` builder, which is re-run on every
+  /// rebuild and not only when the PLC says something new — so an ungated line
+  /// here would be written once a frame per conveyor. Gated, a batches key
+  /// pointed at the wrong node is diagnosable from the log instead of being
+  /// invisible, which it was: the overlay just stopped being drawn.
+  void _complain(String complaint) {
+    if (_batchGate.shouldReport(complaint)) {
+      _log.w('Conveyor "${widget.config.key}" draws no batches: $complaint');
     }
   }
 
