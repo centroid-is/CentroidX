@@ -6,23 +6,25 @@ part of 'conveyor.dart';
 // JsonSerializableGenerator
 // **************************************************************************
 
-WagonSensorEntry _$WagonSensorEntryFromJson(Map<String, dynamic> json) =>
-    WagonSensorEntry(
-      end: $enumDecodeNullable(_$WagonSensorEndEnumMap, json['end'],
-              unknownValue: WagonSensorEnd.front) ??
-          WagonSensorEnd.front,
+ChildSensorEntry _$ChildSensorEntryFromJson(Map<String, dynamic> json) =>
+    ChildSensorEntry(
+      position: (json['position'] as num?)?.toDouble() ?? 0.5,
+      side: $enumDecodeNullable(_$GateSideEnumMap, json['side'],
+              unknownValue: GateSide.left) ??
+          GateSide.left,
       sensor: _sensorFromJson(json['sensor'] as Map<String, dynamic>),
     );
 
-Map<String, dynamic> _$WagonSensorEntryToJson(WagonSensorEntry instance) =>
+Map<String, dynamic> _$ChildSensorEntryToJson(ChildSensorEntry instance) =>
     <String, dynamic>{
-      'end': _$WagonSensorEndEnumMap[instance.end]!,
+      'position': instance.position,
+      'side': _$GateSideEnumMap[instance.side]!,
       'sensor': _sensorToJson(instance.sensor),
     };
 
-const _$WagonSensorEndEnumMap = {
-  WagonSensorEnd.front: 'front',
-  WagonSensorEnd.back: 'back',
+const _$GateSideEnumMap = {
+  GateSide.left: 'left',
+  GateSide.right: 'right',
 };
 
 ConveyorTurnEntry _$ConveyorTurnEntryFromJson(Map<String, dynamic> json) =>
@@ -111,8 +113,8 @@ ConveyorConfig _$ConveyorConfigFromJson(Map<String, dynamic> json) =>
       turns: (json['turns'] as List<dynamic>?)
           ?.map((e) => ConveyorTurnEntry.fromJson(e as Map<String, dynamic>))
           .toList(),
-      wagonSensors: (json['wagonSensors'] as List<dynamic>?)
-          ?.map((e) => WagonSensorEntry.fromJson(e as Map<String, dynamic>))
+      sensors: (json['sensors'] as List<dynamic>?)
+          ?.map((e) => ChildSensorEntry.fromJson(e as Map<String, dynamic>))
           .toList(),
     )
       ..variant = json['asset_name'] as String
@@ -165,7 +167,7 @@ Map<String, dynamic> _$ConveyorConfigToJson(ConveyorConfig instance) =>
       'invertSafetyPolarity': instance.invertSafetyPolarity,
       'wagonLength': instance.wagonLength,
       'gates': _gatesToJson(instance.gates),
-      'wagonSensors': instance.wagonSensors.map((e) => e.toJson()).toList(),
+      'sensors': instance.sensors.map((e) => e.toJson()).toList(),
       'turns': instance.turns.map((e) => e.toJson()).toList(),
       'beltThickness': instance.beltThickness,
       'beltWidthRelative': instance.beltWidthRelative,
@@ -223,8 +225,8 @@ RollerConveyorConfig _$RollerConveyorConfigFromJson(
       turns: (json['turns'] as List<dynamic>?)
           ?.map((e) => ConveyorTurnEntry.fromJson(e as Map<String, dynamic>))
           .toList(),
-      wagonSensors: (json['wagonSensors'] as List<dynamic>?)
-          ?.map((e) => WagonSensorEntry.fromJson(e as Map<String, dynamic>))
+      sensors: (json['sensors'] as List<dynamic>?)
+          ?.map((e) => ChildSensorEntry.fromJson(e as Map<String, dynamic>))
           .toList(),
     )
       ..variant = json['asset_name'] as String
@@ -278,7 +280,7 @@ Map<String, dynamic> _$RollerConveyorConfigToJson(
       'invertSafetyPolarity': instance.invertSafetyPolarity,
       'wagonLength': instance.wagonLength,
       'gates': _gatesToJson(instance.gates),
-      'wagonSensors': instance.wagonSensors.map((e) => e.toJson()).toList(),
+      'sensors': instance.sensors.map((e) => e.toJson()).toList(),
       'turns': instance.turns.map((e) => e.toJson()).toList(),
       'beltThickness': instance.beltThickness,
       'beltWidthRelative': instance.beltWidthRelative,
