@@ -1,10 +1,11 @@
 @TestOn('vm')
 
-/// The four access families, counted against the interfaces they name, and the
+/// The five access families, counted against the interfaces they name, and the
 /// one parameter shape none of them may have.
 ///
 /// [AccessMethods] is the whole request surface Phase 17 adds to the gateway:
-/// templates, roles-and-users, the audit trail and the backend's own config.
+/// templates, roles-and-users, the audit trail, the backend's own config and
+/// the relational config items the panel edits through.
 /// The mechanics below are `data_service_methods_test.dart`'s, deliberately
 /// unaltered — the property is the same one and inventing a second way to walk
 /// an interface would mean two things to keep in step instead of one.
@@ -16,7 +17,7 @@
 ///    compare; a client-supplied identity recorded as verified is worse than
 ///    recording none, and the honest way to make that unrepresentable is to
 ///    give the client no field to put one in. The pin reflects over every
-///    parameter of every member of all four interfaces and carries an
+///    parameter of every member of all five interfaces and carries an
 ///    anti-vacuity half, because a reflection that found nothing would pass.
 ///  * **The audit trail is read-only by construction.** There is no `record`
 ///    member and there is no member that returns nothing: the relay writes its
@@ -294,7 +295,7 @@ void main() {
     });
   });
 
-  group('no member of the four families takes a caller-supplied identity', () {
+  group('no member of the five families takes a caller-supplied identity', () {
     test('arm 5: the reflection sees enough parameters to be worth trusting',
         () {
       // The anti-vacuity half, and it is half the pin. A reflection that walked
@@ -305,7 +306,7 @@ void main() {
         for (final triple in families.values) ..._parameterNamesOf(triple.$1),
       ];
       expect(all.length, greaterThan(20),
-          reason: 'the four interfaces between them declare well over twenty '
+          reason: 'the five interfaces between them declare well over twenty '
               'parameters; finding ${all.length} means the walk is broken, not '
               'that the surface got smaller');
     });
@@ -351,8 +352,8 @@ void main() {
     });
   });
 
-  group('StateManApi grew by exactly four getters', () {
-    test('arm 6: the sub-API getters are the agreed nine and nothing more', () {
+  group('StateManApi grew by exactly five getters', () {
+    test('arm 6: the sub-API getters are the agreed ten and nothing more', () {
       // A literal list, on api_surface_test.dart's own argument: a set computed
       // from the type would agree with any change and assert nothing.
       const expected = <String>{
@@ -365,13 +366,14 @@ void main() {
         'accessAdmin',
         'audit',
         'backendConfig',
+        'configItems',
       };
 
       expect(_gettersOf(StateManApi), expected,
-          reason: 'Phase 17 adds four getters — accessTemplates, accessAdmin, '
-              'audit, backendConfig — and no others. A fifth getter is a fifth '
-              'family of things any connected client may invoke, and this file '
-              'is where that decision is written down');
+          reason: 'Phase 17 adds five getters — accessTemplates, accessAdmin, '
+              'audit, backendConfig and configItems — and no others. A sixth '
+              'getter is a sixth family of things any connected client may '
+              'invoke, and this file is where that decision is written down');
     });
 
     test('arm 6b: each family segment is the getter it hangs off', () {
