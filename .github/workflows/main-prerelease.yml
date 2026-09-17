@@ -281,13 +281,7 @@ jobs:
             fi
           fi
 
-          gh release delete main-latest --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
-          gh release create main-latest \
-            --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
-            --prerelease \
-            --title "Latest main build" \
-            --notes "Automatically built from the tip of \`main\` (\`${GITHUB_SHA:0:7}\`).
+          notes="Automatically built from the tip of \`main\` (\`${GITHUB_SHA:0:7}\`).
 
           These are development builds, not a release — they have had no release testing and are replaced on every merge to \`main\`. For production use the [latest release](https://github.com/${GITHUB_REPOSITORY}/releases/latest).
 
@@ -302,5 +296,27 @@ jobs:
 
           The \`centroidx-manager_*\` assets are the version manager built from this same commit; its **Latest** channel installs the packages above.
 
-          Checksums in \`SHA256SUMS.txt\`." \
-            "${assets[@]}"
+          Checksums in \`SHA256SUMS.txt\`."
+
+          # The delete below means main-latest is already gone by the time the
+          # uploads start, so one failed upload leaves the README's download
+          # links 404 until the next merge. GitHub's upload endpoint does throw
+          # transient 5xx ("HTTP 500: Error saving asset") on the multi-hundred
+          # MB assets, so the whole delete + create is retried. gh deletes its
+          # half-built draft when an upload fails, and the delete at the top of
+          # each attempt clears anything it left behind.
+          for attempt in 1 2 3; do
+            gh release delete main-latest --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+            if gh release create main-latest \
+                 --repo "$GITHUB_REPOSITORY" \
+                 --target "$GITHUB_SHA" \
+                 --prerelease \
+                 --title "Latest main build" \
+                 --notes "$notes" \
+                 "${assets[@]}"; then
+              exit 0
+            fi
+            echo "::warning::Publishing main-latest failed (attempt $attempt of 3)"
+            [ "$attempt" -lt 3 ] && sleep $(( attempt * 60 ))
+          done
+          exit 1
