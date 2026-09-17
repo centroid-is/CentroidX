@@ -441,12 +441,25 @@ class PipeWorkerEndpoint {
   /// rule would demote a genuine OPC UA stamp on every reconnect.
   final Set<String> _lastSubstituted = <String>{};
 
-  /// Each distinct type this worker has seen, by its textual node id (or
-  /// `key:<key>` for a value with none), and whether it was worth describing.
-  /// A type is inspected once — the descriptor is a walk over a struct, and
-  /// walking it per sample would be the per-value cost the dictionary exists
-  /// to avoid.
-  final Map<String, bool> _describedTypes = <String, bool>{};
+  /// Each distinct type this worker has seen, by the identity a sample gives
+  /// it ([_typeIdentityOf]), mapped to the type id it is announced under on
+  /// the wire — or null once it turned out not worth describing. A type is
+  /// inspected once — the descriptor is a walk over a struct, and walking it
+  /// per sample would be the per-value cost the dictionary exists to avoid.
+  ///
+  /// The identity and the announced id differ for a **bare struct**: on this
+  /// plant a struct's monitored-item notifications carry no `typeId` at all
+  /// (2026-09-17, the DATATYPE race in the binding — the scalar member got
+  /// its type, the struct never did), so the only identity a sample offers
+  /// is its shape, the set of member names. That shape is what dedupes the
+  /// definition read; the read comes back with the real type id, and that
+  /// is what the wire is told. Two struct types with identical member names
+  /// would share one read and one table; on this plant no two do.
+  final Map<String, String?> _describedTypes = <String, String?>{};
+
+  /// The type ids already announced with a [PipeTypeDescribed], so a type
+  /// reached under two identities is described once.
+  final Set<String> _announcedTypes = <String>{};
 
   /// The described type each subscribed key was last announced under.
   final Map<String, String> _typeOfKey = <String, String>{};
@@ -674,49 +687,101 @@ class PipeWorkerEndpoint {
   /// main which described type [key] carries the first time that changes.
   /// Cheap on the hot path: one `toString` of a node id and two map lookups
   /// per sample; the walk over the struct happens once per type.
-  void _announceType(String key, DynamicValue sample) {
+  /// What identifies [sample]'s type before anything has been read: its
+  /// data type node id when the notification carried one; for a struct
+  /// that carried none, its **shape** — the member names, sorted; null for a
+  /// typeless scalar, which is a builtin with nothing to describe.
+  @visibleForTesting
+  static String? typeIdentityOf(DynamicValue sample) {
     final nodeType = sample.typeId;
-    final typeId = nodeType?.toString() ?? 'key:$key';
-    final awaiting = _keysAwaitingType[typeId];
+    if (nodeType != null) return nodeType.toString();
+    final raw = sample.value;
+    if (raw is! Map || raw.isEmpty) return null;
+    final names = [for (final name in raw.keys) '$name']..sort();
+    return 'shape:${names.join(',')}';
+  }
+
+  /// Whether [identity] names a type worth a definition read: a custom node
+  /// type (namespace 0 is the builtins, which carry no table), or a bare
+  /// struct known only by its shape (see [_describedTypes]).
+  static bool _worthReading(String identity, DynamicValue sample) {
+    if (identity.startsWith('shape:')) return true;
+    final nodeType = sample.typeId;
+    return nodeType != null && nodeType.namespace != 0;
+  }
+
+  void _announceType(String key, DynamicValue sample) {
+    final identity = typeIdentityOf(sample);
+    if (identity == null) return;
+    final awaiting = _keysAwaitingType[identity];
     if (awaiting != null) {
       // The definition read for this type is in flight: remembered, and
       // announced with the others when it lands.
       awaiting.add(key);
       return;
     }
-    var worthDescribing = _describedTypes[typeId];
-    if (worthDescribing == null) {
+    if (!_describedTypes.containsKey(identity)) {
       final descriptor = describeUaType(sample);
       if (descriptor.hasEnum) {
         // The sample itself carried the table (a read-backed source, or a
         // notification that happened to resolve): nothing to fetch.
-        worthDescribing = true;
-        _describedTypes[typeId] = true;
-        _emitPriority(PipeTypeDescribed(typeId, descriptor.toJson()));
-      } else if (_readType != null && nodeType != null && nodeType.namespace != 0) {
-        // A custom type (namespace 0 is the builtins, which have no table)
-        // whose sample carries none: fetch the definition once, by reading
-        // this key, and answer for every key of the type when it lands.
-        _keysAwaitingType[typeId] = <String>{key};
+        _learned(identity, identity, descriptor, key);
+      } else if (_readType != null && _worthReading(identity, sample)) {
+        // No table on the sample: fetch the definition once, by reading this
+        // key, and answer for every key of the type when it lands.
+        _keysAwaitingType[identity] = <String>{key};
         // Fire-and-forget WITH a handler attached, as [_subscribe] does: the
         // read's own failure is handled inside, and anything else that could
         // throw on the way to a descriptor costs this type its names, said
         // once, rather than an unhandled error the guarded zone swallows.
-        _describeTypeByRead(typeId, key).catchError((Object error) {
-          _keysAwaitingType.remove(typeId);
-          _describedTypes[typeId] = false;
-          _logger.w('pipe endpoint: describing type $typeId from "$key" '
+        _describeTypeByRead(identity, key).catchError((Object error) {
+          _keysAwaitingType.remove(identity);
+          _describedTypes[identity] = null;
+          _logger.w('pipe endpoint: describing type $identity from "$key" '
               'failed; values of that type cross without their enum names: '
               '${_describe(error)}');
         });
         return;
       } else {
-        worthDescribing = false;
-        _describedTypes[typeId] = false;
+        _describedTypes[identity] = null;
       }
     }
-    if (!worthDescribing) return;
-    _announceKey(key, typeId);
+    final announced = _describedTypes[identity];
+    if (announced == null) return;
+    _announceKey(key, announced);
+  }
+
+  /// Registers [descriptor] for [identity] under the type id [announced]
+  /// (the node id the wire speaks), tells main once per announced id, and
+  /// logs once — so the next person sees the dictionary being learned in the
+  /// backend log rather than in a wire capture.
+  void _learned(String identity, String announced,
+      relay.TypeDescriptor descriptor, String from) {
+    _describedTypes[identity] = announced;
+    if (_announcedTypes.add(announced)) {
+      _emitPriority(PipeTypeDescribed(announced, descriptor.toJson()));
+      _logger.i('pipe endpoint: type $announced learned from "$from"'
+          '${identity == announced ? '' : ' (shape $identity)'}: '
+          '${_enumSummary(descriptor)}');
+    }
+  }
+
+  static String _enumSummary(relay.TypeDescriptor descriptor) {
+    final parts = <String>[];
+    void walk(String path, relay.TypeDescriptor d) {
+      final fields = d.enumFields;
+      if (fields != null) {
+        parts.add('$path{${fields.values.map((f) => f.name).join('|')}}');
+      }
+      for (final entry in d.members.entries) {
+        walk(path.isEmpty ? entry.key : '$path.${entry.key}', entry.value);
+      }
+      final element = d.element;
+      if (element != null) walk('$path[]', element);
+    }
+
+    walk('', descriptor);
+    return parts.isEmpty ? 'no enum table' : parts.join(', ');
   }
 
   void _announceKey(String key, String typeId) {
@@ -726,28 +791,34 @@ class PipeWorkerEndpoint {
   }
 
   /// Reads [key] once for its type's definition — see [_readType] — and
-  /// describes [typeId] from the value that comes back. A failed read costs
+  /// registers what comes back under the type id the read resolves (the
+  /// sample's [identity] may have been only a shape). A failed read costs
   /// this type its names until the next process start, and says so once.
-  Future<void> _describeTypeByRead(String typeId, String key) async {
+  Future<void> _describeTypeByRead(String identity, String key) async {
     DynamicValue full;
     try {
       full = await _readType!(key);
     } catch (error) {
       _logger.w('pipe endpoint: could not read "$key" for the definition of '
-          'type $typeId; values of that type cross without their enum names: '
-          '${_describe(error)}');
-      _keysAwaitingType.remove(typeId);
-      _describedTypes[typeId] = false;
+          'type $identity; values of that type cross without their enum '
+          'names: ${_describe(error)}');
+      _keysAwaitingType.remove(identity);
+      _describedTypes[identity] = null;
       return;
     }
     if (_disposed) return;
-    final keys = _keysAwaitingType.remove(typeId) ?? const <String>{};
+    final keys = _keysAwaitingType.remove(identity) ?? const <String>{};
     final descriptor = describeUaType(full);
-    _describedTypes[typeId] = descriptor.hasEnum;
-    if (!descriptor.hasEnum) return;
-    _emitPriority(PipeTypeDescribed(typeId, descriptor.toJson()));
+    if (!descriptor.hasEnum) {
+      _describedTypes[identity] = null;
+      _logger.i('pipe endpoint: type $identity read from "$key" carries no '
+          'enum table; nothing to describe');
+      return;
+    }
+    final announced = full.typeId?.toString() ?? identity;
+    _learned(identity, announced, descriptor, key);
     for (final waiting in keys) {
-      if (_subscribed.contains(waiting)) _announceKey(waiting, typeId);
+      if (_subscribed.contains(waiting)) _announceKey(waiting, announced);
     }
   }
 

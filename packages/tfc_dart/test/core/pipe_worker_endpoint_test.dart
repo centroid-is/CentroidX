@@ -225,12 +225,13 @@ void main() {
         port2.close();
       });
       DynamicValue bare(int mode) {
-        // What a notification looks like: values and the type id, no table.
-        final struct = DynamicValue(typeId: NodeId.fromNumeric(4, 3012));
+        // What a struct notification looks like on the plant (2026-09-17):
+        // values and NO type id anywhere — the DATATYPE race in the binding
+        // leaves the struct sample with nothing but its members.
+        final struct = DynamicValue();
         struct.value = LinkedHashMap<String, DynamicValue>.from({
-          'p_stat_RunMode':
-              DynamicValue(value: mode, typeId: NodeId.fromNumeric(4, 3001)),
-          'p_stat_Speed': DynamicValue(value: 12.5, typeId: NodeId.int32),
+          'p_stat_RunMode': DynamicValue(value: mode),
+          'p_stat_Speed': DynamicValue(value: 12.5),
         });
         return struct;
       }
@@ -244,11 +245,18 @@ void main() {
       await ticks(3);
 
       expect(reads, ['k'],
-          reason: 'one read, for the first key seen of the type; the second '
-              'key and the second sample cost nothing');
+          reason: 'one read, for the first key seen of the SHAPE — a bare '
+              'struct has no type id to dedupe on, only its member names; '
+              'the second key and the second sample cost nothing');
       final events = [for (final f in got.whereType<PipeFrame>()) ...f.priority];
       final described = events.whereType<PipeTypeDescribed>().toList();
       expect(described, hasLength(1));
+      expect(described.single.typeId, 'ns=4;i=3012',
+          reason: 'announced under the type id the READ resolved, not the '
+              'shape: the wire and the dictionary speak node ids');
+      expect(
+          events.whereType<PipeKeyType>().map((e) => e.typeId).toSet(),
+          {'ns=4;i=3012'});
       expect(
           relay.TypeDescriptor.fromJson(described.single.descriptor)
               .members['p_stat_RunMode']!
@@ -259,6 +267,19 @@ void main() {
           {'k', 'k2'},
           reason: 'both keys sampled while the read was in flight are named '
               'once it lands');
+    });
+
+    test('typeIdentityOf: a node id when there is one, the sorted member '
+        'shape for a bare struct, nothing for a bare scalar', () {
+      expect(PipeWorkerEndpoint.typeIdentityOf(fdSample(1)), 'ns=4;i=3012');
+      final struct = DynamicValue();
+      struct.value = LinkedHashMap<String, DynamicValue>.from({
+        'b': DynamicValue(value: 1),
+        'a': DynamicValue(value: 2),
+      });
+      expect(PipeWorkerEndpoint.typeIdentityOf(struct), 'shape:a,b');
+      expect(PipeWorkerEndpoint.typeIdentityOf(DynamicValue(value: 7)), isNull,
+          reason: 'a typeless scalar is a builtin: nothing to look up');
     });
 
     test('a builtin type (namespace 0) is never read for a definition', () async {
