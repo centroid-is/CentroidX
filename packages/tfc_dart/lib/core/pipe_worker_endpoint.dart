@@ -691,6 +691,24 @@ class PipeWorkerEndpoint {
         sourceTimeSubstituted: sourceTimeSubstituted);
   }
 
+  /// The member names of a decoded struct value, or null when it is not one.
+  static List<String>? _memberNames(Object? value) {
+    if (value is Map) return [for (final k in value.keys) '$k']..sort();
+    return null;
+  }
+
+  /// [DynamicValue]'s payload as plain Dart, so a read and a cached reading
+  /// can be compared by shape without caring which type they are.
+  static Object? _plainOf(DynamicValue value) {
+    final raw = value.value;
+    if (raw is Map) return {for (final e in raw.entries) '${e.key}': e.value};
+    return raw;
+  }
+
+  static bool _sameMembers(List<String> a, List<String> b) =>
+      a.length == b.length &&
+      [for (var i = 0; i < a.length; i++) a[i] == b[i]].every((ok) => ok);
+
   /// Describes [sample]'s type the first time this worker sees it, and tells
   /// main which described type [key] carries the first time that changes.
   /// Cheap on the hot path: one `toString` of a node id and two map lookups
@@ -850,6 +868,21 @@ class PipeWorkerEndpoint {
     // will ever be, because the next notification never comes. Publishing it
     // costs nothing on a key that ticks (the next sample overwrites it a
     // moment later) and is the whole answer on a key that does not.
+    // Said out loud when they differ, because "the value arrived smaller than
+    // it is" has no other symptom: open62541 decodes the members it can name
+    // against whatever schema it has built and omits the rest in silence. The
+    // read builds the schema, so if the read is richer the notification was
+    // lossy; if both are the same size the loss is upstream of both and this
+    // line is the evidence for that too.
+    final sampleMembers = _memberNames(_last[key]?.value);
+    final readMembers = _memberNames(_plainOf(full));
+    if (sampleMembers != null &&
+        readMembers != null &&
+        !_sameMembers(sampleMembers, readMembers)) {
+      _logger.w('pipe endpoint: "$key" decoded differently from a read than '
+          'from a notification — notification $sampleMembers, read '
+          '$readMembers. The wider one is what the plant holds');
+    }
     _onSample(key, full, announceType: false);
 
     final keys = _keysAwaitingType.remove(identity) ?? const <String>{};
