@@ -15,7 +15,6 @@ import 'dart:convert';
 
 import 'package:test/test.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
-import 'package:tfc_relay_server/src/server_config.dart';
 import 'package:tfc_relay_server/src/tick_engine.dart';
 
 import 'support/panels.dart';

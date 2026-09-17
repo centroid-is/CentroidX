@@ -329,7 +329,9 @@ Map<String, Object?> substitutedRequest(String method) => <String, Object?>{
 /// own write group is not `operate` accepts that too (a `users`-holding
 /// administrator reads the templates screen; a `configure`-holding engineer
 /// reads the routing table) — see [requireReadFloor]'s `also`.
-const AccessGroup plantReadFloor = AccessGroup.operate;
+// `plantReadFloor` moved to `package:tfc_access` — the relay may not name a
+// grade (no_second_policy_test arm 8). Re-exported below so the call sites
+// in this file and its tests keep reading as they did.
 
 /// Whether [identity] clears the read floor: holds [plantReadFloor], or —
 /// when the family has a write group of its own — holds [also] instead.
@@ -1253,7 +1255,7 @@ final class _PolicyHistoryViews with _GroupGate implements HistoryViewApi {
   // The read floor for this family: `operate`, or `configure` — the group
   // the family's own writes take, so whoever may save a view may list them.
   void _requireReadView(String method, String what) =>
-      _requireRead(method, what, also: AccessGroup.configure);
+      _requireRead(method, what, also: historyViewReadAlso);
 
   @override
   Future<List<HistoryViewRecord>> selectHistoryViews() {
