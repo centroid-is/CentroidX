@@ -618,7 +618,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
   }
 
   @override
-  int get schemaVersion => 12;
+  int get schemaVersion => 13;
 
   /// The `audit_entry` indexes, created outside Drift because Drift's
   /// `@TableIndex` cannot express `DESC` and every one of these is a
@@ -819,13 +819,14 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
 
   /// Create the [_configIndexStatements] indexes.
   ///
-  /// Called from `onCreate` and from the `from < 10` and `from < 12` upgrade
+  /// Called from `onCreate` and from the `from < 13` and `from < 12` upgrade
   /// branches, on both
   /// backends — the statements are identical on each, so they live in one
   /// place rather than being copied into both arms.
   /// The two config tables, as Postgres gets them: the raw literals with the
-  /// `CHECK (scope = 'shared')`. Run by the v10 arm and by `onCreate`, so an
-  /// upgraded plant and a freshly provisioned one carry the same constraint.
+  /// `CHECK (scope = 'shared')`. Run by the config arm and by `onCreate`, so
+  /// an upgraded plant and a freshly provisioned one carry the same
+  /// constraint.
   Future<void> _createConfigTablesPostgres(Migrator m) async {
     await m.database.customStatement(
         'CREATE TABLE IF NOT EXISTS config_item (kind TEXT NOT NULL, id TEXT NOT NULL, scope TEXT NOT NULL, parent_id TEXT, sort_index INTEGER, payload TEXT NOT NULL, rev BIGINT NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL, PRIMARY KEY (kind, id, scope), CONSTRAINT config_item_shared_only CHECK (scope = \'shared\'))');
@@ -912,7 +913,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
   /// anyway so this codebase has one rule for reading the backend and not two.
   ///
   /// **No test executes the Postgres arm**, exactly as the `from < 6` and
-  /// `from < 10` arms say of their own. The inherited gap is recorded in
+  /// `from < 13` arms say of their own. The inherited gap is recorded in
   /// `.planning/phases/01-identity-and-audit/deferred-items.md` §1 and is
   /// still open. What stands behind these three statements is a read of the
   /// Postgres documentation and the `config_change` DDL directly above; the
@@ -1391,7 +1392,39 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
           // nothing more — it does not connect to Postgres and cannot see a
           // wrong type or a statement that fails at runtime. The first thing
           // that will actually run them is a station.
-          if (from < 10) {
+          //
+          // **`from < 13` rather than `< 10`.** `10` was written when it was
+          // the first version the merged line stamped. It is not any more:
+          // pre-merge builds of the relay branch stamped `user_version` 10,
+          // 11 and 12 for arms of their own — theirs is an `alarm_history`
+          // widening with nothing to do with configuration — and a database
+          // written by such a build opens at `from == 10` with none of these
+          // tables. A version-guarded arm skips it forever, and on this file
+          // the consequence is not a config read failing later: the next arm
+          // down, `from < 12`, runs `CREATE INDEX ... ON config_item` against
+          // a table that is not there and aborts the open with `no such
+          // table: main.config_item`. The station at 10.104.60.84 is exactly
+          // such a database, and `database_migration_test.dart` reproduces
+          // the abort. This is also the failure the v7, v8 and v9 arms above
+          // widened to avoid, with the branches swapped, and the fix is
+          // theirs — open the window past every number either line has
+          // stamped, and rely on the arm being safe to re-run rather than on
+          // it being reached exactly once.
+          //
+          // It is safe to re-run, on both backends, and nothing below had to
+          // change for that. `Migrator.createTable` emits
+          // `CREATE TABLE IF NOT EXISTS` — the same guarantee `onCreate`
+          // above already leans on when it puts the Postgres literals up
+          // first and lets `createAll` find them — the Postgres branch here
+          // is `IF NOT EXISTS` DDL because several SVN stations share one
+          // database, and every statement in [_createConfigIndexes] is
+          // `CREATE INDEX IF NOT EXISTS`. So a station already at 12, with
+          // both tables and rows in them, upgrades to 13 by running those
+          // statements as no-ops: nothing is created and no row is touched.
+          // `database_migration_test.dart` pins both halves — the heal from a
+          // database stamped 10 with the tables missing, and the no-op over
+          // one that has them with rows in.
+          if (from < 13) {
             if (native) {
               await m.createTable(configItemTable);
               await m.createTable(configChangeTable);
