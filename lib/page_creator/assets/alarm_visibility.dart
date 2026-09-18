@@ -16,6 +16,7 @@ import '../../widgets/hit_boundary.dart';
 import '../../widgets/panes/pane_chrome.dart';
 import '../../widgets/panes/side_pane.dart';
 import 'common.dart';
+import '../../widgets/hmi_motion.dart';
 
 /// The beacon's painters live in `widgets/alarm_pulse.dart` so the navigation
 /// bar can draw the same pulse without depending on the asset library. Re-
@@ -190,6 +191,7 @@ class _AlarmVisibilityState extends ConsumerState<AlarmVisibility>
     super.initState();
     _controller = AnimationController(
       vsync: this,
+      animationBehavior: kHmiAnimationBehavior,
       duration: const Duration(milliseconds: 1800),
     );
     _subscribe();
@@ -805,6 +807,7 @@ class _AlarmVisibilityConfigEditorState
     super.initState();
     _previewController = AnimationController(
       vsync: this,
+      animationBehavior: kHmiAnimationBehavior,
       duration: const Duration(milliseconds: 1800),
     );
   }

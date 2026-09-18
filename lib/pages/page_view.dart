@@ -28,6 +28,7 @@ import '../widgets/base_scaffold.dart';
 import '../widgets/hit_boundary.dart';
 import '../widgets/panes/side_pane.dart';
 import '../widgets/zoomable_canvas.dart';
+import '../widgets/hmi_motion.dart';
 
 part 'page_view.g.dart';
 
@@ -944,6 +945,7 @@ class _OpenPaneMarkState extends State<_OpenPaneMark>
     super.initState();
     _march = AnimationController(
       vsync: this,
+      animationBehavior: kHmiAnimationBehavior,
       duration: HitBoundaryStyle.selection.period,
     );
     SidePaneHost.subject.addListener(_onSubjectChanged);
