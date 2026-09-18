@@ -1255,6 +1255,16 @@ class ConveyorConfig extends BaseAsset {
   /// wagon down the track. Only read while [railsActive].
   String? wagonMotorKey;
 
+  /// Swaps which way the traverse drive's jog buttons point: off (null or
+  /// false), `Forward` jogs the wagon right; on, it jogs the wagon left.
+  ///
+  /// Which way the drive's forward actually moves the wagon is a fact about
+  /// the wiring and the page layout, not something the PLC publishes. With
+  /// the wrong answer the pane's `Forward ->` sends the wagon the other way
+  /// down the mimic. The words still name the drive's own commands, so the
+  /// arrows are what change: the left button always points left.
+  bool? reverseWagonDirection;
+
   /// Lay the wagon's belt along the rails instead of across them. Default
   /// (null/false) is across — the classic transfer wagon handing off
   /// sideways; along suits a shuttle that conveys in its own travel
@@ -1438,6 +1448,7 @@ class ConveyorConfig extends BaseAsset {
       this.onRails,
       this.positionKey,
       this.wagonMotorKey,
+      this.reverseWagonDirection,
       this.beltAlongRails,
       this.safetyLeftKey,
       this.safetyRightKey,
@@ -1547,6 +1558,7 @@ class RollerConveyorConfig extends ConveyorConfig {
       super.onRails,
       super.positionKey,
       super.wagonMotorKey,
+      super.reverseWagonDirection,
       super.beltAlongRails,
       super.safetyLeftKey,
       super.safetyRightKey,
@@ -1909,6 +1921,19 @@ class _ConveyorConfigContentState extends State<_ConveyorConfigContent> {
             onChanged: (val) =>
                 setState(() => widget.config.wagonMotorKey = val),
             label: 'Wagon motor key (traverse drive)',
+          ),
+          SwitchListTile(
+            key: const Key('conveyor_reverse_wagon_direction'),
+            title: const Text('Reverse wagon direction'),
+            subtitle: Text(
+              (widget.config.reverseWagonDirection ?? false)
+                  ? 'Forward jogs the wagon left.'
+                  : 'Forward jogs the wagon right.',
+            ),
+            value: widget.config.reverseWagonDirection ?? false,
+            onChanged: (val) =>
+                setState(() => widget.config.reverseWagonDirection = val),
+            contentPadding: EdgeInsets.zero,
           ),
           const SizedBox(height: 8),
           KeyField(
@@ -2812,7 +2837,10 @@ class _ConveyorState extends ConsumerState<Conveyor>
               : null,
           onMotorTap: hasMotorKey
               ? () => _showDrivePane(context, widget.config.wagonMotorKey!,
-                  subtitle: 'Wagon drive', icon: Icons.swap_horiz)
+                  subtitle: 'Wagon drive',
+                  icon: Icons.swap_horiz,
+                  forwardPointsLeft:
+                      widget.config.reverseWagonDirection ?? false)
               : null,
           onLeftEdgeTap: leftEdgeKey != null
               ? () => _showSafetyEdgePane(context, leftEdgeKey, side: 'left')
@@ -3737,8 +3765,13 @@ class _ConveyorState extends ConsumerState<Conveyor>
   /// The subscription lives in a `StreamBuilder` inside the pane body, so it
   /// is released when the pane closes — same lifetime contract as the dialog
   /// it replaces.
+  ///
+  /// [forwardPointsLeft] puts `Forward` on the left button with a left
+  /// arrow — see [ConveyorConfig.reverseWagonDirection].
   void _showDrivePane(BuildContext context, String driveKey,
-      {required String subtitle, required IconData icon}) {
+      {required String subtitle,
+      required IconData icon,
+      bool forwardPointsLeft = false}) {
     showSidePane(
       context: context,
       id: _paneIdFor(driveKey),
@@ -3970,22 +4003,34 @@ class _ConveyorState extends ConsumerState<Conveyor>
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       mainAxisSize: MainAxisSize.min,
                       children: [
+                        //
+                        // The left button always points left. Which command
+                        // it sends depends on which way the drive's forward
+                        // moves the thing on screen.
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                           children: [
                             _JogButton(
                               icon: Icons.arrow_back,
-                              label: 'Reverse',
-                              active: jogBwd,
+                              label: forwardPointsLeft ? 'Forward' : 'Reverse',
+                              active: forwardPointsLeft ? jogFwd : jogBwd,
                               stopOnRelease: stopOnRelease,
-                              onCommand: (v) => write('p_cmd_JogBwd', v),
+                              onCommand: (v) => write(
+                                  forwardPointsLeft
+                                      ? 'p_cmd_JogFwd'
+                                      : 'p_cmd_JogBwd',
+                                  v),
                             ),
                             _JogButton(
                               icon: Icons.arrow_forward,
-                              label: 'Forward',
-                              active: jogFwd,
+                              label: forwardPointsLeft ? 'Reverse' : 'Forward',
+                              active: forwardPointsLeft ? jogBwd : jogFwd,
                               stopOnRelease: stopOnRelease,
-                              onCommand: (v) => write('p_cmd_JogFwd', v),
+                              onCommand: (v) => write(
+                                  forwardPointsLeft
+                                      ? 'p_cmd_JogBwd'
+                                      : 'p_cmd_JogFwd',
+                                  v),
                             ),
                           ],
                         ),
