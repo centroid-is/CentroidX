@@ -97,6 +97,11 @@ void main() {
       accounts: _resolve,
       loginVerifier: _Verifier(),
       config: _reapingConfig(),
+      // A floor that can meet [_deadline] with room: the pump beats at a
+      // third of the advertised deadline, which the default 1 s floor would
+      // override. At the default the margin was ~400 ms from the moment the
+      // hold landed, and a slow CI runner spent it — one reap, on Linux only.
+      clientConfig: ClientConfig(heartbeatFloor: _deadline ~/ 4),
     );
     addTearDown(fixture.teardown);
 
