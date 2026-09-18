@@ -669,9 +669,14 @@ jobs:
       # `lib/main_web.dart`, never `lib/main.dart`: the browser entrypoint
       # registers the eight routes of `docs/web-client-scope.md` and leaves the
       # rest out of the compile, D-Bus and the local database included.
+      # `--no-tree-shake-icons`: the web icon shaker keeps only the glyphs it
+      # can find as bare IconData constants, and Font Awesome's are wrapped in
+      # FaIconData — so it dropped glyphs the bundle draws (the palette and
+      # the update-channel arrows in Preferences rendered as blanks). The
+      # native builds do not shake fonts this way and were unaffected.
       - name: Build web client
         working-directory: centroid-hmi
-        run: flutter build web -t lib/main_web.dart --release --dart-define=CENTROIDX_CHAT=false --dart-define=CENTROIDX_KNOWLEDGE=false
+        run: flutter build web -t lib/main_web.dart --release --no-tree-shake-icons --dart-define=CENTROIDX_CHAT=false --dart-define=CENTROIDX_KNOWLEDGE=false
 
       # The gateway declaration must still be a placeholder here. If a build
       # ever substitutes it, every station serving this image would dial
