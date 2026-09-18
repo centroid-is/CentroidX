@@ -348,6 +348,9 @@ abstract final class AccessMethods {
   static const adminSetUserRoles = 'accessAdmin.setUserRoles';
   static const adminSetUserInactivityTimeout =
       'accessAdmin.setUserInactivityTimeout';
+  static const adminSetUserHomePage = 'accessAdmin.setUserHomePage';
+  static const adminSetUserAlarmAutoNavigate =
+      'accessAdmin.setUserAlarmAutoNavigate';
   static const adminSetRolePages = 'accessAdmin.setRolePages';
   static const adminSetUserPages = 'accessAdmin.setUserPages';
   static const adminSetUserPassword = 'accessAdmin.setUserPassword';
@@ -366,6 +369,8 @@ abstract final class AccessMethods {
     adminSetUserStationAccount,
     adminSetUserRoles,
     adminSetUserInactivityTimeout,
+    adminSetUserHomePage,
+    adminSetUserAlarmAutoNavigate,
     adminSetRolePages,
     adminSetUserPages,
     adminSetUserPassword,

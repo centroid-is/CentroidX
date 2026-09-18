@@ -403,39 +403,22 @@ final class RelayedAccessAdminStore implements AccessAdminStore {
           {String origin = 'operator', String? reason}) async =>
       throw UnsupportedError(_kNoReorderOverRelay('setUserOrder'));
 
-  /// Refused, loudly, for [setRoleOrder]'s reason: `setUserHomePage` arrived
-  /// on main (#564) with the account home page, and `AccessAdminApi` carries
-  /// no write for it yet. The roster still *shows* each account's home page
-  /// over the wire — `UserSummary.homePage` travels with `listUsers` — so a
-  /// gateway panel's operator sees the truth and is told, by name, where it
-  /// can be changed. Adding the wire member is a protocol change (a method,
-  /// a server handler, a policy arm and the pinned surface counts) that a
-  /// merge may not make quietly.
+  /// A pass-through onto `accessAdmin.setUserHomePage`, graded `users` at the
+  /// gateway like every other account write. `'/'` is stored as null by the
+  /// backend's own store, so the two spellings of "Home" cannot diverge
+  /// between transports.
   @override
   Future<void> setUserHomePage(String username, String? path,
-          {String origin = 'operator', String? reason}) async =>
-      throw UnsupportedError(
-          'AccessAdminStore.setUserHomePage is not available in gateway mode: '
-          'the relay protocol has no method for an account\'s home page yet. '
-          'Set it from a station wired directly to the database, or wait for '
-          'the relay method');
+          {String origin = 'operator', String? reason}) =>
+      _guarded(() => _api.setUserHomePage(username, path, reason: reason));
 
-  /// Refused, loudly, for [setUserHomePage]'s reason: `setUserAlarmAutoNavigate`
-  /// arrived on main (#575) with per-account alarm auto-navigation, and
-  /// `AccessAdminApi` carries no write for it yet. The roster still *shows*
-  /// each account's setting over the wire — `UserSummary.alarmAutoNavigate`
-  /// travels with `listUsers` — so a gateway panel's operator sees the truth
-  /// and is told, by name, where it can be changed. The wire member (a method,
-  /// a server handler, a policy arm and the pinned surface counts) is its own
-  /// change, not this merge's.
+  /// A pass-through onto `accessAdmin.setUserAlarmAutoNavigate`, graded
+  /// `users` at the gateway like every other account write.
   @override
   Future<void> setUserAlarmAutoNavigate(String username, bool value,
-          {String origin = 'operator', String? reason}) async =>
-      throw UnsupportedError(
-          'AccessAdminStore.setUserAlarmAutoNavigate is not available in '
-          'gateway mode: the relay protocol has no method for an account\'s '
-          'alarm auto-navigation yet. Set it from a station wired directly to '
-          'the database, or wait for the relay method');
+          {String origin = 'operator', String? reason}) =>
+      _guarded(
+          () => _api.setUserAlarmAutoNavigate(username, value, reason: reason));
 }
 
 String _kNoReorderOverRelay(String member) =>

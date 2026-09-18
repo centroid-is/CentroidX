@@ -179,6 +179,14 @@ final class _RecordingAdmin implements AccessAdminApi {
           {String? reason}) async =>
       writes.add('setUserInactivityTimeout:$subject:${minutes ?? 'null'}');
   @override
+  Future<void> setUserHomePage(String subject, String? path,
+          {String? reason}) async =>
+      writes.add('setUserHomePage:$subject:${path ?? 'null'}');
+  @override
+  Future<void> setUserAlarmAutoNavigate(String subject, bool value,
+          {String? reason}) async =>
+      writes.add('setUserAlarmAutoNavigate:$subject:$value');
+  @override
   // Null and the empty set are recorded differently on purpose: a fake that
   // spelled both `pages=` would let an implementation collapse "no whitelist"
   // into "block all" and still pass every arm below.
@@ -334,6 +342,14 @@ const Map<String, Map<String, Object?>> _validParams = {
     'subject': 'ST999-panel',
     'minutes': 30
   },
+  AccessMethods.adminSetUserHomePage: {
+    'subject': 'ST999-panel',
+    'path': '/fillet'
+  },
+  AccessMethods.adminSetUserAlarmAutoNavigate: {
+    'subject': 'ST999-panel',
+    'value': true
+  },
   AccessMethods.adminSetRolePages: {
     'subject': 'Wire Role',
     'pages': ['/fillet']
@@ -445,7 +461,7 @@ void main() {
             'with no params row cannot have its post-hello half exercised, '
             'and a row naming nothing on the wire is a claim about surface '
             'that does not exist');
-    expect(AccessMethods.all, hasLength(34),
+    expect(AccessMethods.all, hasLength(36),
         reason: 'twenty-eight was the count the audit cut settled on '
             '(accessTemplates.template removed, no caller anywhere); thirty '
             'since the page-visibility whitelist added setRolePages and '
@@ -453,8 +469,11 @@ void main() {
             'setUserRoles and setUserInactivityTimeout. Thirty-four since '
             'main\'s relational config put the plant\'s own pages and key '
             'mappings on the wire as configItems.items and '
-            'configItems.fingerprint. A thirty-fifth is an access-control '
-            'decision, not a convenience — grow this literal deliberately');
+            'configItems.fingerprint. Thirty-six since the account home '
+            'page and alarm auto-navigation got their writes as '
+            'setUserHomePage and setUserAlarmAutoNavigate. A thirty-seventh '
+            'is an access-control decision, not a convenience — grow this '
+            'literal deliberately');
   });
 
   group('the handshake gate covers every access method', () {

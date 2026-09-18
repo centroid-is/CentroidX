@@ -490,6 +490,54 @@ class FakeAccessServices
   }
 
   @override
+  Future<void> setUserHomePage(String subject, String? path,
+      {String? reason}) async {
+    requireGroup(AccessGroup.users, subject, 'admin.setUserHomePage');
+    final existing = _users[subject];
+    // '/' is stored as null, the same as the repository-backed store.
+    final stored = path == '/' ? null : path;
+    if (existing != null) {
+      _users[subject] = UserSummary(
+          username: existing.username,
+          roleName: existing.roleName,
+          displayName: existing.displayName,
+          stationAccount: existing.stationAccount,
+          hasPassword: existing.hasPassword,
+          createdAt: existing.createdAt,
+          lastLoginAt: existing.lastLoginAt,
+          allowedPages: existing.allowedPages,
+          additionalRoles: existing.additionalRoles,
+          inactivityTimeoutMinutes: existing.inactivityTimeoutMinutes,
+          homePage: stored,
+          alarmAutoNavigate: existing.alarmAutoNavigate);
+    }
+    _touch('admin.setUserHomePage:$subject=${stored ?? 'null'}');
+  }
+
+  @override
+  Future<void> setUserAlarmAutoNavigate(String subject, bool value,
+      {String? reason}) async {
+    requireGroup(AccessGroup.users, subject, 'admin.setUserAlarmAutoNavigate');
+    final existing = _users[subject];
+    if (existing != null) {
+      _users[subject] = UserSummary(
+          username: existing.username,
+          roleName: existing.roleName,
+          displayName: existing.displayName,
+          stationAccount: existing.stationAccount,
+          hasPassword: existing.hasPassword,
+          createdAt: existing.createdAt,
+          lastLoginAt: existing.lastLoginAt,
+          allowedPages: existing.allowedPages,
+          additionalRoles: existing.additionalRoles,
+          inactivityTimeoutMinutes: existing.inactivityTimeoutMinutes,
+          homePage: existing.homePage,
+          alarmAutoNavigate: value);
+    }
+    _touch('admin.setUserAlarmAutoNavigate:$subject=$value');
+  }
+
+  @override
   Future<void> setRolePages(String subject, Set<String>? pages,
       {String? reason}) async {
     requireGroup(AccessGroup.users, subject, 'admin.setRolePages');

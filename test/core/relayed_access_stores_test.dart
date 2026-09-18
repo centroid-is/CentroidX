@@ -134,6 +134,8 @@ final class _RecordingAdminApi implements AccessAdminApi {
   ({String subject, int? minutes, String? reason})? timeout;
   ({String subject, Set<String>? pages, String? reason})? rolePages;
   ({String subject, Set<String>? pages, String? reason})? userPages;
+  ({String subject, String? path, String? reason})? homePage;
+  ({String subject, bool value, String? reason})? alarmAutoNavigate;
   List<UserSummary> users = const [];
 
   @override
@@ -167,6 +169,14 @@ final class _RecordingAdminApi implements AccessAdminApi {
   Future<void> setUserInactivityTimeout(String subject, int? minutes,
           {String? reason}) async =>
       timeout = (subject: subject, minutes: minutes, reason: reason);
+  @override
+  Future<void> setUserHomePage(String subject, String? path,
+          {String? reason}) async =>
+      homePage = (subject: subject, path: path, reason: reason);
+  @override
+  Future<void> setUserAlarmAutoNavigate(String subject, bool value,
+          {String? reason}) async =>
+      alarmAutoNavigate = (subject: subject, value: value, reason: reason);
   @override
   Future<void> setRolePages(String subject, Set<String>? pages,
           {String? reason}) async =>
@@ -368,6 +378,23 @@ void main() {
       await store.setUserRole('jon', 'Operator', reason: 'demotion');
       expect(api.roleMove, (subject: 'jon', newRole: 'Operator',
           reason: 'demotion'));
+    });
+
+    test('the home page and alarm auto-navigation writes reach the wire '
+        'rather than being refused', () async {
+      final api = _RecordingAdminApi();
+      final store = RelayedAccessAdminStore(api: api);
+
+      await store.setUserHomePage('jon', '/fillet', reason: 'line lead');
+      expect(api.homePage,
+          (subject: 'jon', path: '/fillet', reason: 'line lead'));
+      await store.setUserHomePage('jon', null);
+      expect(api.homePage, (subject: 'jon', path: null, reason: null),
+          reason: 'clearing the home page is a write of its own');
+
+      await store.setUserAlarmAutoNavigate('jon', true, reason: 'ops ask');
+      expect(api.alarmAutoNavigate,
+          (subject: 'jon', value: true, reason: 'ops ask'));
     });
 
     test(

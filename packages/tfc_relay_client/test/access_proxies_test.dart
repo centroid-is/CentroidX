@@ -241,6 +241,10 @@ final List<_Member> _members = <_Member>[
       () => null),
   _Member(AccessMethods.adminSetUserInactivityTimeout,
       (a) => a.admin.setUserInactivityTimeout('nyr-madur', 30), () => null),
+  _Member(AccessMethods.adminSetUserHomePage,
+      (a) => a.admin.setUserHomePage('nyr-madur', '/fillet'), () => null),
+  _Member(AccessMethods.adminSetUserAlarmAutoNavigate,
+      (a) => a.admin.setUserAlarmAutoNavigate('nyr-madur', true), () => null),
   // Both nulls are exercised elsewhere; the table's job is one request and one
   // answer per member, so a non-null set is enough here.
   _Member(AccessMethods.adminSetRolePages,
@@ -548,6 +552,19 @@ final class _ServedAccessGateway {
           reason: reasonOf(p));
       return null;
     });
+    _on(AccessMethods.adminSetUserHomePage, (p) async {
+      final raw = p['path'].valueOr(null);
+      await fake.setUserHomePage(
+          p['subject'].asString, raw is String ? raw : null,
+          reason: reasonOf(p));
+      return null;
+    });
+    _on(AccessMethods.adminSetUserAlarmAutoNavigate, (p) async {
+      await fake.setUserAlarmAutoNavigate(
+          p['subject'].asString, p['value'].asBool,
+          reason: reasonOf(p));
+      return null;
+    });
     _on(AccessMethods.adminSetRolePages, (p) async {
       await fake.setRolePages(
           p['subject'].asString, pagesFromJson(p['pages'].valueOr(null)),
@@ -776,6 +793,22 @@ void main() {
                 'proxy inventing its own spelling reaches no handler');
         member.check?.call(decoded);
       }
+    });
+
+    test('the account-setting writes send their value as the handler reads '
+        'it — a cleared home page as an explicit null', () async {
+      final recorder = _Recorder((_, __) => null);
+      final apis = _Apis(recorder.call);
+
+      await apis.admin.setUserHomePage('nyr-madur', null);
+      await apis.admin.setUserAlarmAutoNavigate('nyr-madur', false);
+
+      expect(recorder.requests[0].params, containsPair('path', null),
+          reason: 'clearing the home page is a write, so the key must be '
+              'present with null rather than omitted');
+      expect(recorder.requests[0].params, containsPair('subject', 'nyr-madur'));
+      expect(recorder.requests[1].params, containsPair('value', false));
+      expect(recorder.requests[1].params, containsPair('subject', 'nyr-madur'));
     });
   });
 
@@ -1009,15 +1042,16 @@ void main() {
     // run itself did, not what it intended.
     test('LEDGER: the leg ran the whole access roster with an empty gap', () {
       // The declared count, reconciled against the in-memory leg's:
-      // access_contract_meta_test.dart pins `_declaredAccessCheckCount = 33`
+      // access_contract_meta_test.dart pins `_declaredAccessCheckCount = 35`
       // — 27 until the page-visibility whitelist added setRolePages and
       // setUserPages, 31 once multi-role accounts added setUserRoles and
       // setUserInactivityTimeout, 33 once main's relational config put the
-      // plant's own pages and key mappings on the wire as `configItems`. If
+      // plant's own pages and key mappings on the wire as `configItems`, 35
+      // once setUserHomePage and setUserAlarmAutoNavigate reached it. If
       // the kit's roster moves, this literal must move with it —
       // deliberately, on the record.
-      expect(accessChecks.length, 33,
-          reason: 'the in-memory leg declares 33 access checks; this leg '
+      expect(accessChecks.length, 35,
+          reason: 'the in-memory leg declares 35 access checks; this leg '
               'must judge the same roster, not a subset that happens to be '
               'green');
       expect(_legsBuilt, accessChecks.length,

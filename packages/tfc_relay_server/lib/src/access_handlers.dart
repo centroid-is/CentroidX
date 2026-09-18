@@ -264,6 +264,23 @@ final class AccessHandlers {
     return null;
   }
 
+  Future<Object?> adminSetUserHomePage(rpc.Parameters params) async {
+    // `valueOr(null)` as in [adminSetUserInactivityTimeout]: clearing the home
+    // page sends `{'path': null}`, which is a write and not a missing argument.
+    final raw = params['path'].valueOr(null);
+    await source.accessAdmin.setUserHomePage(
+        params['subject'].asString, raw is String ? raw : null,
+        reason: _reason(params));
+    return null;
+  }
+
+  Future<Object?> adminSetUserAlarmAutoNavigate(rpc.Parameters params) async {
+    await source.accessAdmin.setUserAlarmAutoNavigate(
+        params['subject'].asString, params['value'].asBool,
+        reason: _reason(params));
+    return null;
+  }
+
   Future<Object?> adminSetRolePages(rpc.Parameters params) async {
     await source.accessAdmin
         .setRolePages(params['subject'].asString, _pages(params),

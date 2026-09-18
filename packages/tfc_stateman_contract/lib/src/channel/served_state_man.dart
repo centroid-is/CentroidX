@@ -453,6 +453,9 @@ final class ServedStateMan {
     _on(HarnessMethods.accessAdminSetUserRoles, _admSetUserRoles);
     _on(HarnessMethods.accessAdminSetUserInactivityTimeout,
         _admSetUserInactivityTimeout);
+    _on(HarnessMethods.accessAdminSetUserHomePage, _admSetUserHomePage);
+    _on(HarnessMethods.accessAdminSetUserAlarmAutoNavigate,
+        _admSetUserAlarmAutoNavigate);
     _on(HarnessMethods.accessAdminSetRolePages, _admSetRolePages);
     _on(HarnessMethods.accessAdminSetUserPages, _admSetUserPages);
     _on(HarnessMethods.accessAdminSetUserPassword, _admSetUserPassword);
@@ -656,6 +659,23 @@ final class ServedStateMan {
         final raw = params['minutes'].valueOr(null);
         await api.accessAdmin.setUserInactivityTimeout(
             params['subject'].asString, raw is num ? raw.toInt() : null,
+            reason: params['reason'].valueOr(null) as String?);
+        return null;
+      });
+
+  Future<Object?> _admSetUserHomePage(rpc.Parameters params) =>
+      _access(HarnessMethods.accessAdminSetUserHomePage, () async {
+        final raw = params['path'].valueOr(null);
+        await api.accessAdmin.setUserHomePage(
+            params['subject'].asString, raw is String ? raw : null,
+            reason: params['reason'].valueOr(null) as String?);
+        return null;
+      });
+
+  Future<Object?> _admSetUserAlarmAutoNavigate(rpc.Parameters params) =>
+      _access(HarnessMethods.accessAdminSetUserAlarmAutoNavigate, () async {
+        await api.accessAdmin.setUserAlarmAutoNavigate(
+            params['subject'].asString, params['value'].asBool,
             reason: params['reason'].valueOr(null) as String?);
         return null;
       });

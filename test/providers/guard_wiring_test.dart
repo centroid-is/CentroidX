@@ -509,15 +509,15 @@ void main() {
         'lib/pages/first_user.dart',
         // Reads one row through it — the account's stored home page — and
         // never asks it what the transport is: it asks the AUTHORITY first
-        // and answers `relay` without touching the repository at all, because
-        // a gateway panel has no repository by design and a debt it can never
-        // settle is worse than an answer. Same standing as
-        // `access_admin.dart`, for the same reason.
+        // and answers `relay` from the gateway's roster without touching the
+        // repository at all, because a gateway panel has no repository by
+        // design and a debt it can never settle is worse than an answer. Same
+        // standing as `access_admin.dart`, for the same reason.
         'lib/providers/home_page.dart',
         // The same standing as `home_page.dart`, for the same reason: it
         // reads one row — the account's alarm auto-navigation (#575) — after
-        // asking the AUTHORITY, and answers `relay` without touching the
-        // repository.
+        // asking the AUTHORITY, and answers `relay` from the gateway's
+        // roster without touching the repository.
         'lib/providers/alarm_auto_navigation.dart',
       };
 

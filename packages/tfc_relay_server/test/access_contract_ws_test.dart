@@ -282,6 +282,14 @@ const _methodsByCheck = <String, Set<String>>{
     AccessMethods.adminCreateUser,
     AccessMethods.adminSetUserInactivityTimeout,
   },
+  'setting an account home page refuses configure and permits users': {
+    AccessMethods.adminCreateUser,
+    AccessMethods.adminSetUserHomePage,
+  },
+  'setting an account alarm auto-navigation refuses configure and permits users': {
+    AccessMethods.adminCreateUser,
+    AccessMethods.adminSetUserAlarmAutoNavigate,
+  },
   'setting a role page whitelist refuses configure and permits users': {
     AccessMethods.adminCreateRole,
     AccessMethods.adminSetRolePages,
@@ -397,7 +405,7 @@ void main() {
               'unjudged under TLS as it would be with the capability off');
     });
 
-    test('the access check count is the same on all three legs — 33', () {
+    test('the access check count is the same on all three legs — 35', () {
       // In memory (17-05, access_contract_meta_test), over the channel (17-08),
       // and over wss:// here: one declared set, so the count cannot drift
       // between legs without the meta test and this arm disagreeing.
@@ -407,8 +415,9 @@ void main() {
       // 33 since main's relational config put the plant's own pages and key
       // mappings on the wire as `configItems` — two READS rather than writes,
       // and they take a check each anyway, because a read of the whole screen
-      // is a graded question.
-      const declaredOnEveryLeg = 33;
+      // is a graded question. 35 since setUserHomePage and
+      // setUserAlarmAutoNavigate reached the wire, a `users` check each.
+      const declaredOnEveryLeg = 35;
       expect(accessChecks.length, declaredOnEveryLeg,
           reason: 'the kit declares ${accessChecks.length} access checks; the '
               'in-memory and channel legs run that many and so must this one. '
@@ -455,12 +464,14 @@ void main() {
           reason: 'the uncovered set must be exactly the named gap '
               '($namedGap); anything else is a NEW uncovered method wearing the '
               "known one's exemption");
-      expect(AccessMethods.all, hasLength(34),
-          reason: 'the access wire surface is thirty-four names — twenty-eight '
+      expect(AccessMethods.all, hasLength(36),
+          reason: 'the access wire surface is thirty-six names — twenty-eight '
               'after the audit cut accessTemplates.template, plus the '
               'whitelist\'s setRolePages and setUserPages, multi-role\'s '
-              'setUserRoles and setUserInactivityTimeout, and the relational '
-              'config\'s configItems.items and configItems.fingerprint; a '
+              'setUserRoles and setUserInactivityTimeout, the relational '
+              'config\'s configItems.items and configItems.fingerprint, and '
+              'the account settings\' setUserHomePage and '
+              'setUserAlarmAutoNavigate; a '
               'change to that count is a change to what this leg must cover, '
               'and it should be a deliberate edit');
     });

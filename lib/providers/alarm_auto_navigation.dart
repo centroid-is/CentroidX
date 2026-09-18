@@ -27,6 +27,7 @@ import '../core/access_authority.dart';
 import '../page_creator/assets/alarm_visibility.dart' show AlarmVisibilityConfig;
 import '../page_creator/page.dart';
 import 'access.dart';
+import 'access_admin.dart' show relayedAccountSummary;
 import 'alarm.dart';
 import 'page_manager.dart';
 
@@ -73,13 +74,16 @@ final alarmAutoNavigateLookupProvider =
     // The transport question first, asked of the authority rather than
     // resolved out of a null repository — the rule `guard_wiring_test` states,
     // and the shape `homePageLookupProvider` already has. A gateway panel has
-    // no repository by design, and this transport carries no per-account
-    // setting yet (the relay has no method for it — see
-    // `RelayedAccessAdminStore.setUserAlarmAutoNavigate`), so the answer there
-    // is the safe one: stay put.
+    // no repository by design; it reads the account's row from the gateway's
+    // roster (`UserSummary.alarmAutoNavigate`) instead. A session the gateway
+    // will not show the roster to — see [relayedAccountSummary] — cannot be
+    // read, and answers no.
     try {
       final authority = await ref.read(accessAuthorityProvider.future);
-      if (authority == AccessAuthority.relay) return false;
+      if (authority == AccessAuthority.relay) {
+        final row = await relayedAccountSummary(ref, session);
+        return row?.alarmAutoNavigate ?? false;
+      }
       final repo = await ref.read(accessRepositoryProvider.future);
       if (repo == null) return false;
       final row = await repo.user(session.user?.username ?? kAnonymousUsername);

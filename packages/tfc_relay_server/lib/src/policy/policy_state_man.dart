@@ -1863,6 +1863,29 @@ final class _PolicyAccessAdmin with _GroupGate implements AccessAdminApi {
           () => _source()
               .setUserInactivityTimeout(subject, minutes, reason: reason));
 
+  @override
+  Future<void> setUserHomePage(String subject, String? path,
+          {String? reason}) =>
+      _write(
+          AccessPolicy.adminSetUserHomePage,
+          AccessMethods.adminSetUserHomePage,
+          'account "$subject" keeps its home page',
+          'user.home_page',
+          subject,
+          () => _source().setUserHomePage(subject, path, reason: reason));
+
+  @override
+  Future<void> setUserAlarmAutoNavigate(String subject, bool value,
+          {String? reason}) =>
+      _write(
+          AccessPolicy.adminSetUserAlarmAutoNavigate,
+          AccessMethods.adminSetUserAlarmAutoNavigate,
+          'account "$subject" keeps its alarm navigation setting',
+          'user.alarm_auto_navigate',
+          subject,
+          () => _source()
+              .setUserAlarmAutoNavigate(subject, value, reason: reason));
+
   /// A whitelist write is `users`, like every other member here.
   ///
   /// Not `configure`, and the distinction is the point: a page whitelist is

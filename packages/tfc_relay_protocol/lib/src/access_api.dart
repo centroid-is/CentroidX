@@ -198,6 +198,17 @@ abstract interface class AccessAdminApi {
   Future<void> setUserStationAccount(String subject, bool value,
       {String? reason});
 
+  /// Sets the page [subject] lands on after signing in, or clears it with null
+  /// so the account follows the station's startup page.
+  ///
+  /// `'/'` is stored as null server-side, the same as the direct-mode store.
+  Future<void> setUserHomePage(String subject, String? path, {String? reason});
+
+  /// Sets whether a raising alarm takes [subject]'s screen to the alarm's
+  /// page.
+  Future<void> setUserAlarmAutoNavigate(String subject, bool value,
+      {String? reason});
+
   /// Replaces role [subject]'s page whitelist.
   ///
   /// **Null and the empty set are different writes and both are legal.** Null

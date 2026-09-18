@@ -136,3 +136,27 @@ Future<List<UserSummary>> accessAdminUsers(Ref ref) async {
   if (store == null) return const [];
   return store.listUsers();
 }
+
+/// The roster row of the account [session] answers as, read over the relay —
+/// or null when this session may not read the roster, or the roster has no
+/// such account.
+///
+/// For the per-account settings a gateway panel acts on by itself (the home
+/// page, alarm auto-navigation). **There is no self-read on the wire:**
+/// `accessAdmin.listUsers` is the only method that carries these settings, and
+/// the gateway grades it `users` (`_PolicyAccessAdmin.listUsers`). A session
+/// without that group is not sent the call at all — a refused one would leave
+/// a deny row in the trail and raise the denial prompt on every sign-in and
+/// every raising alarm — so for it this answers null, which callers read as
+/// "the account could not be read". A transport failure is thrown.
+Future<UserSummary?> relayedAccountSummary(
+    Ref ref, AccessSession session) async {
+  if (!session.can(AccessGroup.users)) return null;
+  final store = await ref.read(accessAdminStoreProvider.future);
+  if (store == null) return null;
+  final username = session.user?.username ?? kAnonymousUsername;
+  for (final user in await store.listUsers()) {
+    if (user.username == username) return user;
+  }
+  return null;
+}

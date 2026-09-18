@@ -730,6 +730,20 @@ final class ClientAccessAdminApi implements AccessAdminApi {
           {'subject': subject, 'minutes': minutes, 'reason': reason});
 
   @override
+  Future<void> setUserHomePage(String subject, String? path,
+          {String? reason}) async =>
+      // `path` null crosses as an explicit null for the same reason `minutes`
+      // does above: clearing the home page is a write.
+      await _send(AccessMethods.adminSetUserHomePage,
+          {'subject': subject, 'path': path, 'reason': reason});
+
+  @override
+  Future<void> setUserAlarmAutoNavigate(String subject, bool value,
+          {String? reason}) async =>
+      await _send(AccessMethods.adminSetUserAlarmAutoNavigate,
+          {'subject': subject, 'value': value, 'reason': reason});
+
+  @override
   // `pagesToJson(pages)` and not `pages?.toList()`: null must stay null on the
   // wire (no whitelist) while the empty list must survive as an empty list
   // (block all), and the shared codec is what keeps the two apart at every

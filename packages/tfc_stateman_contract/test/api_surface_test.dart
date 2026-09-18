@@ -184,7 +184,7 @@ const Set<String> expectedAccessTemplateApi = {
   'unbind',
 };
 
-/// The eleven role-and-account members, names mirrored verbatim from
+/// The role-and-account members, names mirrored verbatim from
 /// `AccessAdminStore`.
 ///
 /// `updateRole` is the most consequential name in this file: it is the one
@@ -206,6 +206,10 @@ const Set<String> expectedAccessTemplateApi = {
 /// page editor would let anybody who can author a page re-scope who sees which
 /// pages — the same confusion the `AccessKeyBindingTable` ruling closed.
 ///
+/// `setUserHomePage` and `setUserAlarmAutoNavigate` are the account home page
+/// (#564) and per-account alarm auto-navigation (#575). Both graded `users`,
+/// as the direct-mode store grades them.
+///
 /// `createUser` and `setUserPassword` are the only two members on the whole
 /// wire that carry a credential. Both take a params class that withholds it
 /// from `toString`; the value is hashed server-side, and no digest is computed
@@ -223,6 +227,8 @@ const Set<String> expectedAccessAdminApi = {
   'setUserStationAccount',
   'setUserRoles',
   'setUserInactivityTimeout',
+  'setUserHomePage',
+  'setUserAlarmAutoNavigate',
   'setRolePages',
   'setUserPages',
   'setUserPassword',
@@ -384,11 +390,13 @@ void main() {
       // a tenth wire type with `items` and `fingerprint` on it, hanging off a
       // tenth StateManApi getter. Three members, and the widening is the
       // point -- the plant's own pages and key mappings are now fetched over
-      // the wire rather than mirrored into a local database.
+      // the wire rather than mirrored into a local database. 89 since the
+      // account home page and alarm auto-navigation got their writes,
+      // .setUserHomePage and .setUserAlarmAutoNavigate.
       final total = wireTypes
           .map((type) => declaredMemberNames(type).length)
           .fold<int>(0, (sum, length) => sum + length);
-      expect(total, 87,
+      expect(total, 89,
           reason: 'the count is written down so a same-size swap — one member '
               'removed, another added — cannot slip through as a coincidence. '
               '82 = 49 before Phase 17, plus four StateManApi getters, plus '
@@ -396,7 +404,8 @@ void main() {
               'audit cut accessTemplates.template, minus the dead-code '
               'audit\'s countTimeseriesDataMultiple, plus the whitelist\'s '
               'two admin writes and multi-role\'s two; 87 with the '
-              'config-item getter and its two methods');
+              'config-item getter and its two methods; 89 with the two account '
+              'setting writes');
 
       // The union is SHORTER than the sum, and the gap is named rather than
       // left as an arithmetic surprise: BackendConfigApi.read and .write share
@@ -404,10 +413,10 @@ void main() {
       // happen to share a verb, kept apart on the wire by the
       // `backendConfig.` family segment. Asserting both numbers is what stops
       // a future collision from being absorbed silently by the set.
-      expect(actual, hasLength(85),
+      expect(actual, hasLength(87),
           reason: 'exactly two names appear on two types — read and write, on '
               'StateManApi and BackendConfigApi. A third collision would drop '
-              'this to 81 while the per-type tables above still passed, so it '
+              'this to 86 while the per-type tables above still passed, so it '
               'is counted here on purpose');
       expect(
           expectedStateManApi
@@ -416,7 +425,7 @@ void main() {
             ..sort(),
           ['read', 'write'],
           reason: 'and the two are named, not merely counted — a different '
-              'pair of colliding names would keep the length at 82 and mean '
+              'pair of colliding names would keep the length at 87 and mean '
               'something entirely different');
     });
   });

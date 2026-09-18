@@ -227,6 +227,11 @@ const Set<String> expectedHandlerTable = {
   // arriving with the second merge from main. Both graded `users`.
   'accessAdmin.setUserRoles',
   'accessAdmin.setUserInactivityTimeout',
+  // The account home page (#564) and per-account alarm auto-navigation
+  // (#575), whose writes came over after the merge that brought the columns.
+  // Both graded `users`, as the direct-mode store grades them.
+  'accessAdmin.setUserHomePage',
+  'accessAdmin.setUserAlarmAutoNavigate',
   // The page-visibility whitelist's two writes, arriving with the merge from
   // main. Both are graded `users` server-side by `_PolicyAccessAdmin`, like
   // every other `accessAdmin.` name here.
@@ -351,12 +356,14 @@ void main() {
               'registration.');
     });
 
-    test('the table is exactly the seventy-nine names a client may call today',
+    test('the table is exactly the eighty-two names a client may call today',
         () {
-      // The sentence is unchanged in shape and still true: seventy-nine
-      // names a client may *call* — forty-four through Phase 14, 17-09's
+      // The sentence is unchanged in shape and still true: eighty-two names
+      // a client may *call* — forty-four through Phase 14, 17-09's
       // twenty-eight access methods, `alarmHistory`, the whitelist's two
-      // admin writes, and multi-role's two. `h` is not one of them — it is
+      // admin writes, multi-role's two, `session.logout`, the relational
+      // config's two `configItems` reads, and the account home page and
+      // alarm auto-navigation writes. `h` is not one of them — it is
       // announced, never called — so it is taken out of the ledger by name
       // here rather than being added to the literal, which would say a
       // client may ask the gateway to tick.
@@ -367,7 +374,7 @@ void main() {
               'failure prints the whole table rather than a difference');
     });
 
-    test('the registered table is the seventy-nine callable names plus the '
+    test('the registered table is the eighty-two callable names plus the '
         'client notifications', () {
       expect(_session().registeredMethods, everyRegisterableName,
           reason: 'the ledger is the union, because json_rpc_2 dispatches a '

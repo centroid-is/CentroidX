@@ -9,6 +9,7 @@ import 'package:tfc_access/tfc_access.dart' show AccessSession, kAnonymousUserna
 
 import '../core/access_authority.dart';
 import 'access.dart';
+import 'access_admin.dart' show relayedAccountSummary;
 
 /// A home-page lookup's answer.
 ///
@@ -39,15 +40,17 @@ final homePageLookupProvider = Provider<HomePageLookup>((ref) {
     // can never settle: the boot navigation would stay owed for the life of
     // the process, waiting on a database that is not coming.
     //
-    // KNOWN, page null: this transport carries no per-account home page, so
-    // the panel opens on Home and stops owing anybody a move. When identity
-    // crosses the wire — the `hello`/`session.login` work that would carry a
-    // session's admitted pages and its home page — this branch is where that
-    // answer arrives, and the shape above already fits it.
+    // On the relay the account's row is read from the gateway's roster
+    // (`UserSummary.homePage`). A session the gateway will not show the
+    // roster to — see [relayedAccountSummary] — is answered KNOWN, page null:
+    // the panel opens on Home and stops owing anybody a move, rather than
+    // owing one that no later answer can settle.
     final authority = await ref.read(accessAuthorityProvider.future);
-    if (authority == AccessAuthority.relay) return (known: true, page: null);
-
     try {
+      if (authority == AccessAuthority.relay) {
+        final row = await relayedAccountSummary(ref, session);
+        return (known: true, page: row?.homePage);
+      }
       final repo = await ref.read(accessRepositoryProvider.future);
       if (repo == null) return (known: false, page: null);
       final row = await repo.user(session.user?.username ?? kAnonymousUsername);

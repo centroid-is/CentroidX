@@ -363,6 +363,13 @@ class AccessPolicy {
   static const String adminSetUserRoles = 'setUserRoles';
   static const String adminSetUserInactivityTimeout =
       'setUserInactivityTimeout';
+
+  /// `AccessAdminStore.setUserHomePage`.
+  static const String adminSetUserHomePage = 'setUserHomePage';
+
+  /// `AccessAdminStore.setUserAlarmAutoNavigate`.
+  static const String adminSetUserAlarmAutoNavigate =
+      'setUserAlarmAutoNavigate';
   static const String adminSetRolePages = 'setRolePages';
   static const String adminSetUserPages = 'setUserPages';
 

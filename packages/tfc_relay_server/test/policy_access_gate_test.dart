@@ -131,6 +131,16 @@ final class _FakeAccessAdmin implements AccessAdminApi {
       reached.add('setUserInactivityTimeout');
 
   @override
+  Future<void> setUserHomePage(String subject, String? path,
+          {String? reason}) async =>
+      reached.add('setUserHomePage');
+
+  @override
+  Future<void> setUserAlarmAutoNavigate(String subject, bool value,
+          {String? reason}) async =>
+      reached.add('setUserAlarmAutoNavigate');
+
+  @override
   Future<void> setRolePages(String subject, Set<String>? pages,
           {String? reason}) async =>
       reached.add('setRolePages');
@@ -608,6 +618,45 @@ void main() {
       expect(allowed.plant.admin.reached, ['setUserRole']);
       expect(allowed.sink.rows.single.allowed, isTrue);
     });
+
+    // The account home page and alarm auto-navigation writes, graded as the
+    // direct-mode store grades them: `users`, the same as every other account
+    // write. The row carries the store's own itemKey, so a relay-minted row
+    // filters under the same chip a panel-minted one does.
+    final accountSettings = <String,
+        (String itemKey, Future<void> Function(PolicyStateMan served))>{
+      'setUserHomePage': (
+        'user.home_page',
+        (s) => s.accessAdmin.setUserHomePage('jon', '/fillet')
+      ),
+      'setUserAlarmAutoNavigate': (
+        'user.alarm_auto_navigate',
+        (s) => s.accessAdmin.setUserAlarmAutoNavigate('jon', true)
+      ),
+    };
+    for (final entry in accountSettings.entries) {
+      final (itemKey, call) = entry.value;
+      test('${entry.key} is refused without users and reaches the store with '
+          'it', () async {
+        final refused = _seenBy(_everythingButUsers);
+        await _refused(() => call(refused.served),
+            '${entry.key} from a session without users');
+        expect(refused.plant.admin.reached, isEmpty);
+        final deny = refused.sink.rows.single;
+        expect(deny.allowed, isFalse);
+        expect(deny.groupRequired, AccessGroup.users.name);
+        expect(deny.itemKey, itemKey);
+        expect(deny.member, 'jon');
+
+        final allowed = _seenBy(_userAdmin);
+        await call(allowed.served);
+        expect(allowed.plant.admin.reached, [entry.key]);
+        final allow = allowed.sink.rows.single;
+        expect(allow.allowed, isTrue);
+        expect(allow.groupRequired, AccessGroup.users.name);
+        expect(allow.itemKey, itemKey);
+      });
+    }
 
     test('a template write is refused without users and reaches the store '
         'with it — and the template reads stay open', () async {

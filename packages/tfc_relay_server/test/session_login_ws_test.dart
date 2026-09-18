@@ -227,6 +227,12 @@ final class _Admin implements AccessAdminApi {
   Future<void> setUserInactivityTimeout(String subject, int? minutes,
       {String? reason}) async {}
   @override
+  Future<void> setUserHomePage(String subject, String? path,
+      {String? reason}) async {}
+  @override
+  Future<void> setUserAlarmAutoNavigate(String subject, bool value,
+      {String? reason}) async {}
+  @override
   Future<void> setRolePages(String subject, Set<String>? pages,
       {String? reason}) async {}
   @override

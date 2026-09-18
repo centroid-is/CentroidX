@@ -493,6 +493,41 @@ Future<void> checkSetUserInactivityTimeoutRefusesConfigurePermitsUsers(
           api.accessAdmin.setUserInactivityTimeout('tholinmaedi', 30));
 }
 
+/// Where an account lands after signing in. Graded `users` like every other
+/// account write, because it is set on the administrator's roster.
+Future<void> checkSetUserHomePageRefusesConfigurePermitsUsers(
+    StateManApi api) async {
+  final h = accessHarnessOf(api);
+  h.actAs(usersSession);
+  await _seed(
+      () => api.accessAdmin.createUser(const NewUserParams(
+          subject: 'heimasida', password: 'x-9', grantedRole: 'Operator')),
+      'heimasida');
+  await _refusedThenPermitted(api,
+      denied: configureSession,
+      permitted: usersSession,
+      what: 'setting an account home page',
+      action: () => api.accessAdmin.setUserHomePage('heimasida', '/fillet'));
+}
+
+/// Whether a raising alarm moves an account's screen. `users`, for
+/// [checkSetUserHomePageRefusesConfigurePermitsUsers]' reason.
+Future<void> checkSetUserAlarmAutoNavigateRefusesConfigurePermitsUsers(
+    StateManApi api) async {
+  final h = accessHarnessOf(api);
+  h.actAs(usersSession);
+  await _seed(
+      () => api.accessAdmin.createUser(const NewUserParams(
+          subject: 'vidvorun', password: 'x-9', grantedRole: 'Operator')),
+      'vidvorun');
+  await _refusedThenPermitted(api,
+      denied: configureSession,
+      permitted: usersSession,
+      what: 'setting an account alarm auto-navigation',
+      action: () =>
+          api.accessAdmin.setUserAlarmAutoNavigate('vidvorun', true));
+}
+
 /// The page whitelist is `users`, not `configure` — the whole reason it lives
 /// on the admin surface.
 ///
@@ -973,6 +1008,10 @@ const accessChecks = <String, Check<StateManApi>>{
       checkSetUserRolesRefusesConfigurePermitsUsers,
   'setting an account inactivity timeout refuses configure and permits users':
       checkSetUserInactivityTimeoutRefusesConfigurePermitsUsers,
+  'setting an account home page refuses configure and permits users':
+      checkSetUserHomePageRefusesConfigurePermitsUsers,
+  'setting an account alarm auto-navigation refuses configure and permits users':
+      checkSetUserAlarmAutoNavigateRefusesConfigurePermitsUsers,
   'setting a role page whitelist refuses configure and permits users':
       checkSetRolePagesRefusesConfigurePermitsUsers,
   'setting an account page whitelist refuses configure and permits users':
