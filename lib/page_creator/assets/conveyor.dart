@@ -23,7 +23,9 @@ import '../../widgets/panes/setpoint_field.dart';
 import '../../widgets/tag_access_guard.dart';
 import 'auger_conveyor_painter.dart';
 import 'helper/atv320_diagnostics.dart';
-import 'sensor.dart' show Sensor, SensorConfig, SensorFbPane, SensorFbState;
+import 'sensor.dart'
+    show Sensor, SensorConfig, SensorFbPane, SensorFbState, SensorKind,
+        SensorKindMounting;
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/collector.dart';
 import '../../theme.dart';
@@ -1591,8 +1593,9 @@ class _ConveyorConfigContentState extends State<_ConveyorConfigContent> {
         Text('Sensors', style: theme.textTheme.titleSmall),
         const SizedBox(height: 4),
         Text(
-          'Each stands beside the band, turned to look across it. A belt '
-          'narrower than its box leaves them room to stand in.',
+          'A through-beam pair straddles the band, sending from the edge you '
+          'pick. A single housing stands beside that edge instead — a belt '
+          'narrower than its box leaves it room to stand in.',
           style: theme.textTheme.bodySmall,
         ),
         const SizedBox(height: 8),
@@ -1628,6 +1631,10 @@ class _ConveyorConfigContentState extends State<_ConveyorConfigContent> {
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
+                        // The kind, because it decides where the glyph goes:
+                        // a pair spans the band, a housing stands beside it.
+                        Text(entry.sensor.kind.name,
+                            style: theme.textTheme.bodySmall),
                         IconButton(
                           icon: const Icon(Icons.edit, size: 20),
                           tooltip: 'Edit sensor',
@@ -3332,13 +3339,21 @@ class _ConveyorState extends ConsumerState<Conveyor>
   Widget _positionedChildSensor(
       ChildSensorEntry entry, ConveyorPainter painter, Size size) {
     final mount = painter.sensorMount(size,
-        position: entry.position, side: entry.side);
+        position: entry.position,
+        side: entry.side,
+        kind: entry.sensor.kind);
     return Positioned.fromRect(
       rect: mount.rect,
-      child: SubdeviceSubject(
-        subdevice: entry.sensor,
-        child: Transform.rotate(
-          angle: mount.facing,
+      // The turn is outside the subject, not inside it: what
+      // [SubdeviceSubject] publishes for the open-pane ring is its box, and
+      // the page maps that through the transforms above it (see
+      // `AssetHitShape` in `lib/pages/page_view.dart`). Inside, a pair's
+      // ring would be its box unturned — at right angles to the glyph it
+      // is supposed to be drawn around.
+      child: Transform.rotate(
+        angle: mount.facing,
+        child: SubdeviceSubject(
+          subdevice: entry.sensor,
           child: Sensor(config: entry.sensor),
         ),
       ),
@@ -4595,47 +4610,82 @@ class ConveyorPainter extends CustomPainter {
         railBand.top + (rail.height - band) / 2, span.width, band);
   }
 
-  /// How much of a sensor's box stands outside the band edge it is bolted
-  /// to, as a fraction of the box. The housing is at the glyph's outer end,
-  /// so at 0.6 the housing is clear of the belt and only the beam — or the
-  /// field's cone — reaches over it. The gates hang off the same edge by the
-  /// same order of magnitude, for the same reason.
+  /// How much of a single-housing sensor's box stands outside the band edge
+  /// it is bolted to, as a fraction of the box. The housing is at the
+  /// glyph's outer end, so at 0.6 the housing is clear of the belt and only
+  /// the field's cone reaches over it. The gates hang off the same edge by
+  /// the same order of magnitude, for the same reason.
   static const double _sensorStandoff = 0.6;
 
-  /// A sensor's box, and how far to turn its glyph so it looks across the
-  /// belt from the edge it is bolted to.
+  /// The smallest a single-housing sensor's box gets against the belt's
+  /// cross dimension, for a belt that fills its box and leaves no air beside
+  /// the band.
+  static const double _sensorExtentOfBelt = 0.45;
+
+  /// Empty margin a through-beam pair's box keeps outside each band edge, as
+  /// a fraction of the band.
+  ///
+  /// [RedLightBeamPainter] puts its two housings at 0.15 and 0.85 of the box,
+  /// so a box this much wider than the band lands them on the band's two
+  /// edges — where the sender and the receiver are actually bolted — with the
+  /// beam spanning the belt between them. The margin carries no ink, which is
+  /// why it may hang outside the asset's box when the belt fills it.
+  static const double _throughBeamMargin = 0.2;
+
+  /// A sensor's box, and how far to turn its glyph so it reads across the
+  /// belt.
   ///
   /// [position] is a fraction along the belt in screen order — left to right,
-  /// or top to bottom for a wagon belt standing across its rails — and
-  /// [side] names one of the band's two edges ([GateSide.left] the top or
-  /// left one), the same way a gate's does. Everything is measured off
-  /// [beltRect], so on a wagon the sensors ride the wagon.
+  /// or top to bottom for a wagon belt standing across its rails. [side]
+  /// names one of the band's two edges ([GateSide.left] the top or left one),
+  /// the same way a gate's does: for a single-housing [kind] it is the edge
+  /// the housing is bolted to, and for a through-beam pair the edge that
+  /// sends. Everything is measured off [beltRect], so on a wagon the sensors
+  /// ride the wagon.
   ///
-  /// The box the user drew bounds the result. A belt that fills its box
-  /// leaves no air beside the band, and a sensor pushed out of the box would
-  /// be both clipped and untappable — the conveyor's own [Stack] answers no
-  /// tap outside itself — so there the glyph is pulled back in and hugs the
-  /// belt's edge instead of standing off it. A gate may hang outside the
-  /// box; a device with its own pane may not.
+  /// The rect is the glyph's own unrotated box, centred where the glyph
+  /// belongs; `facing` then turns it about that centre, so what lands on
+  /// screen is the rect rotated — the two are the same box only for the
+  /// square one a single housing gets.
+  ///
+  /// A through-beam pair straddles the band: a housing on each edge, the beam
+  /// across. A single housing stands off its edge instead, and the box the
+  /// user drew bounds it — a glyph pushed out of the box would be both
+  /// clipped and untappable, since the conveyor's own [Stack] answers no tap
+  /// outside itself — so on a belt that fills its box it hugs the belt's edge
+  /// rather than standing clear of it.
   ({Rect rect, double facing}) sensorMount(Size size,
-      {required double position, required GateSide side}) {
+      {required double position,
+      required GateSide side,
+      required SensorKind kind}) {
     final p = position.clamp(0.0, 1.0);
+    final atLeftEdge = side == GateSide.left;
     final g = geometry;
     if (g != null) {
-      // A turned belt: follow the centreline, step out past the band edge
-      // along its normal, and look back in along the same line.
-      final extent = g.beltWidth;
+      // A turned belt: step off the centreline along its normal, and look
+      // back in along the same line.
       final tangent = g.tangentAt(p);
       final v = tangent.vector;
       final leftNormal = Offset(v.dy, -v.dx); // the band's "top" side
-      final outward = side == GateSide.left ? leftNormal : -leftNormal;
+      final outward = atLeftEdge ? leftNormal : -leftNormal;
+      final facing = atan2(-outward.dy, -outward.dx);
+      if (kind.isThroughBeam) {
+        return (
+          rect: Rect.fromCenter(
+              center: tangent.position,
+              width: g.beltWidth * (1 + 2 * _throughBeamMargin),
+              height: _throughBeamThickness(g.beltWidth, g.beltWidth)),
+          facing: facing,
+        );
+      }
+      final extent = g.beltWidth;
       // Out from the centreline by half the band, then the standoff.
       final centre = tangent.position + outward * extent * _sensorStandoff;
       return (
         rect: _insideBox(
             Rect.fromCenter(center: centre, width: extent, height: extent),
             size),
-        facing: atan2(-outward.dy, -outward.dx),
+        facing: facing,
       );
     }
     final belt = beltRect(size);
@@ -4644,42 +4694,61 @@ class ConveyorPainter extends CustomPainter {
     final down = onRails && wagonBeltAcross;
     final cross = down ? belt.width : belt.height;
     final travel = down ? belt.height : belt.width;
-    final atLeftEdge = side == GateSide.left;
+    final along =
+        down ? belt.top + p * belt.height : belt.left + p * belt.width;
+    // The glyph reads along its own +x, from the sending edge across the
+    // belt: from the top edge that is down the screen, from the left edge it
+    // is to the right.
+    final facing =
+        down ? (atLeftEdge ? 0.0 : pi) : (atLeftEdge ? pi / 2 : -pi / 2);
+    if (kind.isThroughBeam) {
+      // Centred on the band: the pair straddles it, a housing on each edge.
+      final acrossCentre = down ? belt.center.dx : belt.center.dy;
+      final centre =
+          down ? Offset(acrossCentre, along) : Offset(along, acrossCentre);
+      return (
+        rect: Rect.fromCenter(
+            center: centre,
+            width: cross * (1 + 2 * _throughBeamMargin),
+            height: _throughBeamThickness(cross, travel)),
+        facing: facing,
+      );
+    }
     final edge = atLeftEdge
         ? (down ? belt.left : belt.top)
         : (down ? belt.right : belt.bottom);
-    // The air the box leaves beside the band on this side — which is the
-    // room the glyph has to stand in.
+    // The air the box leaves beside the band on this side — the room a
+    // single housing has to stand in.
     final air = atLeftEdge ? edge : (down ? size.width : size.height) - edge;
     // Square, so the turned glyph reaches as far over the belt as it is
     // long: the band's own width, as a gate's flap is, but never more than a
-    // slice of the run — a photo eye is a point on the belt, not a stretch
-    // of it, and a wagon's belt is barely longer than it is wide. Where the
-    // box leaves air beside the band the glyph grows to fill it; where it
-    // leaves none, it shrinks rather than cover the belt.
+    // slice of the run — a housing is a point on the belt, not a stretch of
+    // it, and a wagon's belt is barely longer than it is wide. Where the box
+    // leaves air beside the band the glyph grows to fill it; where it leaves
+    // none, it shrinks rather than cover the belt.
     final extent = min(min(cross, travel * 0.3),
         max(air / _sensorStandoff, cross * _sensorExtentOfBelt));
     final offset = extent * (_sensorStandoff - 0.5);
-    final along =
-        down ? belt.top + p * belt.height : belt.left + p * belt.width;
     final across = atLeftEdge ? edge - offset : edge + offset;
     final centre = down ? Offset(across, along) : Offset(along, across);
     return (
       rect: _insideBox(
           Rect.fromCenter(center: centre, width: extent, height: extent),
           size),
-      // The glyph looks along its own +x, so it is turned to point at the
-      // belt: in from the top edge is down the screen, in from the left edge
-      // is to the right.
-      facing:
-          down ? (atLeftEdge ? 0.0 : pi) : (atLeftEdge ? pi / 2 : -pi / 2),
+      facing: facing,
     );
   }
 
-  /// The smallest a sensor's box gets against the belt's cross dimension,
-  /// for a belt that fills its box and leaves no air beside the band.
-  static const double _sensorExtentOfBelt = 0.45;
+  /// How thick a through-beam pair's box is along the belt's travel.
+  ///
+  /// The housings' diameter is a quarter of it ([kHousingFraction]), so this
+  /// is what decides whether they read at all; a slice of the run keeps a
+  /// short belt — a wagon's — from carrying a housing the size of a pallet.
+  double _throughBeamThickness(double cross, double travel) =>
+      min(cross * 0.8, travel * 0.3);
 
+  /// [rect] slid — never resized — until the box holds it, so what is drawn
+  /// is what can be tapped. A rect too big for the box is left alone.
   /// [rect] slid — never resized — until the box holds it, so what is drawn
   /// is what can be tapped. A rect too big for the box is left alone.
   Rect _insideBox(Rect rect, Size size) {

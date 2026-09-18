@@ -122,7 +122,7 @@ void main() {
         ],
         child: _frame(solarized().$1, [
           (
-            'one on each edge of the band: the upstream eye sees a pallet',
+            'through-beam pairs: each spans the band, sending from one edge',
             110.0,
             _belt(bandWidth: 0.4, sensors: [
               _eye(_activeKey, position: 0.25),
@@ -130,12 +130,12 @@ void main() {
             ]),
           ),
           (
-            'a belt that fills its box: the eye hugs the edge it is bolted to',
+            'a belt that fills its box: the beam still spans the belt',
             56.0,
             _belt(sensors: [_eye(_activeKey, position: 0.35)]),
           ),
           (
-            'a transfer wagon: the eyes ride it, one at each end of its belt',
+            'a transfer wagon: the eyes ride it, one near each end of its belt',
             150.0,
             _wagon(sensors: [
               _eye(_activeKey, position: 0.85),
@@ -143,7 +143,7 @@ void main() {
             ]),
           ),
           (
-            'a bend: a field sensor inside it, looking across the band',
+            'a bend: a single housing stands beside the band, looking across',
             170.0,
             _belt(
               bandWidth: 0.2,

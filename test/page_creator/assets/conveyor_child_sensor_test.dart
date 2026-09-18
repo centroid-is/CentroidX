@@ -82,18 +82,113 @@ class _SensorStateMan extends Fake implements StateMan {
   KeyMappings get keyMappings => KeyMappings(nodes: {});
 }
 
+/// A single housing, looking out from the edge it is bolted to.
+({Rect rect, double facing}) _housing(ConveyorPainter painter,
+        {double position = 0.5, GateSide side = GateSide.left}) =>
+    painter.sensorMount(_size,
+        position: position, side: side, kind: SensorKind.opticField);
+
+/// A through-beam pair: a sender on one edge of the band, a receiver on the
+/// other.
+({Rect rect, double facing}) _pair(ConveyorPainter painter,
+        {double position = 0.5, GateSide side = GateSide.left}) =>
+    painter.sensorMount(_size,
+        position: position, side: side, kind: SensorKind.redLight);
+
+/// Where [mount] actually lands on screen: its box is the glyph's own, turned
+/// about its centre by `facing`, so a quarter turn swaps the two axes.
+Rect _onScreen(({Rect rect, double facing}) mount) {
+  final quarterTurned = (cos(mount.facing)).abs() < 0.5;
+  return Rect.fromCenter(
+      center: mount.rect.center,
+      width: quarterTurned ? mount.rect.height : mount.rect.width,
+      height: quarterTurned ? mount.rect.width : mount.rect.height);
+}
+
 void main() {
-  group('placement', () {
-    test('it stands off the band edge, with only its beam over the belt', () {
+  group('a through-beam pair', () {
+    // A photo eye of this kind is two devices: the sender is bolted to one
+    // side of the conveyor and the receiver to the other, and the beam
+    // crosses the belt between them. So the glyph straddles the band — it
+    // neither lies on the belt nor stands to one side of it.
+    test('straddles the band, a housing on each edge', () {
       final painter = _painter(beltWidth: 40);
       final belt = painter.beltRect(_size);
-      final top =
-          painter.sensorMount(_size, position: 0.5, side: GateSide.left);
+      final mount = _pair(painter, position: 0.4);
+      final drawn = _onScreen(mount);
+
+      expect(mount.rect.center.dy, closeTo(belt.center.dy, 1e-9),
+          reason: 'centred on the band, not off one edge');
+      expect(drawn.top, lessThan(belt.top));
+      expect(drawn.bottom, greaterThan(belt.bottom));
+      // RedLightBeamPainter puts the housings at 0.15 and 0.85 of the glyph,
+      // which this box lands on the band's two edges.
+      final housings = mount.rect.width * 0.7;
+      expect(housings, closeTo(belt.height, belt.height * 0.05));
+      expect(mount.rect.center.dx, closeTo(belt.left + 0.4 * belt.width, 1e-9));
+    });
+
+    test('the side picks the edge that sends', () {
+      // Both housings are painted alike, so this is which end of the glyph —
+      // the sender is its 0.15 end — lands on which edge.
+      final painter = _painter(beltWidth: 40);
+      expect(_pair(painter, side: GateSide.left).facing, closeTo(pi / 2, 1e-9));
+      expect(
+          _pair(painter, side: GateSide.right).facing, closeTo(-pi / 2, 1e-9));
+    });
+
+    test('spans a wagon belt across its rails, and rides it', () {
+      final painter = _painter(onRails: true);
+      final belt = painter.beltRect(_size);
+      final mount = _pair(painter);
+      final drawn = _onScreen(mount);
+
+      expect(drawn.left, lessThan(belt.left));
+      expect(drawn.right, greaterThan(belt.right));
+      expect(mount.facing, closeTo(0.0, 1e-9), reason: 'the beam reads +x');
+      double at(double wagon) =>
+          _pair(_painter(onRails: true, wagonPosition: wagon)).rect.center.dx;
+      expect(at(1), greaterThan(at(0) + _size.width / 2));
+    });
+
+    test('on a belt that fills its box the beam still spans the belt', () {
+      // The box the pair needs is wider than the band, and the margin either
+      // side of the beam carries no ink, so it is left hanging outside the
+      // asset's box rather than squeezed onto the belt.
+      final painter = _painter();
+      final belt = painter.beltRect(_size);
+      final drawn = _onScreen(_pair(painter));
+      expect(belt, Offset.zero & _size, reason: 'the belt is the whole box');
+      expect(drawn.top, lessThan(belt.top));
+      expect(drawn.bottom, greaterThan(belt.bottom));
+    });
+
+    test('straddles a turned band too, across its centreline', () {
+      final geometry = ConveyorPathGeometry.build(
+          [ConveyorTurnEntry(position: 0.5, angle: 90)], _size,
+          beltWidthOverride: 24);
+      final painter = _painter(geometry: geometry!);
+      final tangent = geometry.tangentAt(0.25);
+      final mount = painter.sensorMount(_size,
+          position: 0.25, side: GateSide.left, kind: SensorKind.redLight);
+
+      expect((mount.rect.center - tangent.position).distance, lessThan(1e-6),
+          reason: 'on the centreline, straddling it');
+      expect(mount.rect.width * 0.7,
+          closeTo(geometry.beltWidth, geometry.beltWidth * 0.05));
+    });
+  });
+
+  group('a single housing', () {
+    test('stands off the band edge, its cone over the belt', () {
+      final painter = _painter(beltWidth: 40);
+      final belt = painter.beltRect(_size);
+      final top = _housing(painter);
 
       expect(top.rect.center.dy, lessThan(belt.top),
-          reason: 'a sensor is beside the belt, not on it');
+          reason: 'a housing is beside the belt, not on it');
       expect(top.rect.bottom, greaterThan(belt.top),
-          reason: 'but it looks over the edge, so the beam crosses it');
+          reason: 'but it looks over the edge, so the cone crosses it');
       expect(top.rect.width, closeTo(top.rect.height, 1e-9),
           reason: 'square, like a gate');
       expect(top.rect.center.dx, closeTo(belt.center.dx, 1e-9));
@@ -102,10 +197,8 @@ void main() {
     test('the other side is the other edge, and each faces the belt', () {
       final painter = _painter(beltWidth: 40);
       final belt = painter.beltRect(_size);
-      final top =
-          painter.sensorMount(_size, position: 0.5, side: GateSide.left);
-      final bottom =
-          painter.sensorMount(_size, position: 0.5, side: GateSide.right);
+      final top = _housing(painter);
+      final bottom = _housing(painter, side: GateSide.right);
 
       expect(bottom.rect.center.dy, greaterThan(belt.bottom));
       expect(bottom.rect.top, lessThan(belt.bottom));
@@ -118,8 +211,7 @@ void main() {
     test('position slides it along the belt', () {
       final painter = _painter(beltWidth: 40);
       final belt = painter.beltRect(_size);
-      Rect at(double p) =>
-          painter.sensorMount(_size, position: p, side: GateSide.left).rect;
+      Rect at(double p) => _housing(painter, position: p).rect;
       expect(at(0.25).center.dx, lessThan(at(0.75).center.dx));
       expect(at(0.25).center.dx, closeTo(belt.left + 0.25 * belt.width, 1e-9));
       // At the very end the glyph is pulled back into the box rather than
@@ -130,13 +222,12 @@ void main() {
     });
 
     test('a belt that fills its box keeps the glyph inside the box', () {
-      // No air beside the band to stand in: the glyph hugs the belt's edge
+      // No air beside the band to stand in: the housing hugs the belt's edge
       // rather than hanging outside the box, where it would be clipped and
       // answer no tap.
       final painter = _painter();
       final belt = painter.beltRect(_size);
-      final mount =
-          painter.sensorMount(_size, position: 0.5, side: GateSide.left);
+      final mount = _housing(painter);
       expect(belt, Offset.zero & _size, reason: 'the belt is the whole box');
       expect(mount.rect.top, closeTo(0, 1e-9));
       expect((Offset.zero & _size).contains(mount.rect.bottomRight), isTrue);
@@ -148,10 +239,9 @@ void main() {
       // The bracket is bolted where it is bolted. Unlike a wagon's dock
       // "front", this placement is the picture on screen, not the running
       // direction.
-      final forward = _painter(beltWidth: 40)
-          .sensorMount(_size, position: 0.2, side: GateSide.left);
-      final reversed = _painter(beltWidth: 40, reverse: true)
-          .sensorMount(_size, position: 0.2, side: GateSide.left);
+      final forward = _housing(_painter(beltWidth: 40), position: 0.2);
+      final reversed =
+          _housing(_painter(beltWidth: 40, reverse: true), position: 0.2);
       expect(reversed.rect, forward.rect);
       expect(reversed.facing, forward.facing);
     });
@@ -160,10 +250,8 @@ void main() {
         () {
       final painter = _painter(onRails: true);
       final belt = painter.beltRect(_size);
-      final left =
-          painter.sensorMount(_size, position: 0.9, side: GateSide.left);
-      final right =
-          painter.sensorMount(_size, position: 0.9, side: GateSide.right);
+      final left = _housing(painter, position: 0.9);
+      final right = _housing(painter, position: 0.9, side: GateSide.right);
 
       expect(left.rect.center.dx, lessThan(belt.left));
       expect(right.rect.center.dx, greaterThan(belt.right));
@@ -172,31 +260,25 @@ void main() {
       // Position runs down the screen: 0.9 is near the bottom end, and near
       // enough that the glyph is pulled back inside the box.
       expect(left.rect.bottom, closeTo(_size.height, 1e-9));
-      expect(
-          painter
-              .sensorMount(_size, position: 0.25, side: GateSide.left)
-              .rect
-              .center
-              .dy,
+      expect(_housing(painter, position: 0.25).rect.center.dy,
           closeTo(belt.top + 0.25 * belt.height, 1e-9));
     });
 
     test('along the rails the edges are top and bottom again', () {
       final painter = _painter(onRails: true, across: false, beltWidth: 40);
       final belt = painter.beltRect(_size);
-      final mount =
-          painter.sensorMount(_size, position: 0.5, side: GateSide.left);
+      final mount = _housing(painter);
       expect(mount.rect.center.dy, lessThan(belt.top));
       expect(mount.rect.center.dx, closeTo(belt.center.dx, 1e-9));
       expect(mount.facing, closeTo(pi / 2, 1e-9));
     });
 
-    test('a sensor rides the wagon along the rail', () {
-      double at(double wagon) => _painter(onRails: true, wagonPosition: wagon)
-          .sensorMount(_size, position: 0.5, side: GateSide.left)
-          .rect
-          .center
-          .dx;
+    test('rides the wagon along the rail', () {
+      double at(double wagon) =>
+          _housing(_painter(onRails: true, wagonPosition: wagon))
+              .rect
+              .center
+              .dx;
       expect(at(1), greaterThan(at(0) + _size.width / 2));
     });
 
@@ -209,8 +291,7 @@ void main() {
       final tangent = geometry.tangentAt(0.25);
       // Inside the bend, where the box leaves room: a turned belt is fitted
       // to its box, so the outside of a bend is up against the box edge.
-      final mount =
-          painter.sensorMount(_size, position: 0.25, side: GateSide.right);
+      final mount = _housing(painter, position: 0.25, side: GateSide.right);
 
       final offset = mount.rect.center - tangent.position;
       expect(offset.distance, greaterThan(geometry.beltWidth / 2),
@@ -401,7 +482,7 @@ void main() {
       final belt = wagon.painter.beltRect(wagon.painter.paintSize!);
       final glyph = wagon.painter
           .sensorMount(wagon.painter.paintSize!,
-              position: 0.5, side: GateSide.left)
+              position: 0.5, side: GateSide.left, kind: SensorKind.opticField)
           .rect;
       expect(glyph.center.dx, lessThan(belt.left));
     });
@@ -421,7 +502,7 @@ void main() {
       ]);
       final rect = conveyor.painter
           .sensorMount(conveyor.painter.paintSize!,
-              position: 0.3, side: GateSide.left)
+              position: 0.3, side: GateSide.left, kind: SensorKind.opticField)
           .rect;
       await tester.tapAt(conveyor.origin + rect.center);
       await tester.pump();

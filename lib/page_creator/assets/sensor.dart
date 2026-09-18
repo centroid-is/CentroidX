@@ -340,6 +340,18 @@ enum SensorKind {
   inductiveField,
 }
 
+/// How a kind is mounted on the thing it watches.
+extension SensorKindMounting on SensorKind {
+  /// Whether this kind is a through-beam pair — a sender on one side of what
+  /// it watches and a receiver on the other, with the beam between them —
+  /// rather than one housing looking out from a single side.
+  ///
+  /// It decides where the glyph goes when a sensor is placed on something
+  /// else's geometry: a pair straddles a conveyor's belt, a single housing
+  /// stands beside it (see `ConveyorPainter.sensorMount`).
+  bool get isThroughBeam => this == SensorKind.redLight;
+}
+
 /// Configuration for a sensor asset.
 ///
 /// Pure data model — JSON-serialisable, no widget/painter wiring. The widget,
