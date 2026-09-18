@@ -253,7 +253,7 @@ void main() {
         await tester.tap(find.text('New product'));
         await tester.pumpAndSettle();
         await tester.enterText(
-            find.byKey(const ValueKey('recipes.newGroupName')), 'Large');
+            find.byKey(const ValueKey('recipes.newGroupName')), 'Small');
       });
 
       await expectLater(
