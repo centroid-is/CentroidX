@@ -323,4 +323,112 @@ void main() {
       expect(json['value'], isA<Map<String, dynamic>>());
     });
   });
+
+  group('one name kept on several lines', () {
+    // How operators actually keep them: "Standard" saved on each line, each
+    // for its own line, with the same name.
+    Recipe onLine(String name, String lineKey, {String? group}) =>
+        Recipe(name: name, value: line(), line: lineKey, group: group);
+
+    test('becomes one product', () {
+      final recipes = [
+        onLine('Standard', l1),
+        onLine('Standard', l2),
+        onLine('Standard', l3),
+      ];
+
+      final proposal = proposeRecipeGrouping(recipes, 'Line', lineIds);
+
+      expect([
+        for (final p in proposal) (p.line, p.group)
+      ], [
+        (l1, 'Standard'),
+        (l2, 'Standard'),
+        (l3, 'Standard'),
+      ]);
+    });
+
+    test('a name on one line only is not a product by itself', () {
+      final proposal = proposeRecipeGrouping(
+          [onLine('Trial', l1), onLine('Standard', l1)], 'Line', lineIds);
+
+      expect(proposal, isEmpty);
+    });
+
+    test('a product that already covers a line keeps its recipe there', () {
+      // The shape a station had: per-line recipes named for the product, and
+      // a product made separately that already holds a recipe on every line.
+      final filed = [
+        onLine('Standard', l1, group: 'Standard'),
+        onLine('Standard', l2, group: 'Standard'),
+        onLine('Standard', l3, group: 'Standard'),
+      ];
+      final loose = [
+        onLine('Standard', l1),
+        onLine('Standard', l2),
+        onLine('Large', l1),
+        onLine('Large', l2),
+      ];
+
+      final proposal =
+          proposeRecipeGrouping([...filed, ...loose], 'Line', lineIds);
+
+      expect({for (final p in proposal) p.group}, {'Large'},
+          reason: 'never displaces what is already filed');
+    });
+  });
+
+  group('picking a line\'s recipe for a product', () {
+    test('offers the line\'s loose recipes, not another product\'s', () {
+      final mine = Recipe(name: 'Mine', value: line(), line: l1);
+      final legacy = Recipe(name: 'Old', value: line());
+      final elsewhere =
+          Recipe(name: 'Elsewhere', value: line(), line: l1, group: 'Other');
+      final otherLine = Recipe(name: 'Theirs', value: line(), line: l2);
+
+      expect(
+        recipeCandidatesFor(
+            [mine, legacy, elsewhere, otherLine], 'Standard', l1),
+        [mine, legacy],
+      );
+    });
+
+    test('the recipe it replaces is kept, out of the product', () {
+      final current = inGroup('Standard', l1);
+      final chosen = Recipe(name: 'Better', value: line(), line: l1);
+      final recipes = [current, chosen];
+
+      useRecipeInGroup(recipes, 'Standard', l1, chosen);
+
+      expect(recipeInGroup(recipes, 'Standard', l1), same(chosen));
+      expect(current.group, isNull);
+      expect(recipes, contains(current), reason: 'replaced, not deleted');
+    });
+
+    test('a recipe saved before lines is made this line\'s when picked', () {
+      final legacy = Recipe(name: 'Old', value: line());
+
+      useRecipeInGroup([legacy], 'Standard', l2, legacy);
+
+      expect(legacy.line, l2);
+      expect(legacy.group, 'Standard');
+    });
+  });
+
+  group('reordering a filtered list', () {
+    test('moves only what the list shows; everything else keeps its slot', () {
+      final a = Recipe(name: 'a', value: line(), line: l1);
+      final x = Recipe(name: 'x', value: line(), line: l2);
+      final b = Recipe(name: 'b', value: line(), line: l1);
+      final y = Recipe(name: 'y', value: line(), line: l2);
+      final c = Recipe(name: 'c', value: line(), line: l1);
+      final recipes = [a, x, b, y, c];
+      final lineOne = [a, b, c];
+
+      reorderWithin(recipes, lineOne, 2, 0);
+
+      expect(recipes.map((r) => r.name), ['c', 'x', 'a', 'y', 'b'],
+          reason: "line 2's recipes stay exactly where they were");
+    });
+  });
 }

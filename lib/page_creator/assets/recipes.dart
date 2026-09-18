@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:json_annotation/json_annotation.dart';
 import 'package:rxdart/rxdart.dart';
@@ -292,6 +293,54 @@ void moveRecipeGroup(List<Recipe> recipes, String group, int newIndex) {
   recipes.insertAll(before, members);
 }
 
+/// Moves one of [visible] from [oldIndex] to [newIndex] among them, then
+/// writes the visible recipes back into [recipes] in their new order,
+/// leaving every recipe NOT in [visible] in the slot it already held.
+///
+/// A drag in a filtered list — one line's loose recipes — must rearrange
+/// only what that list shows. Without the slot mapping, moving a recipe on
+/// Line 1 would renumber Line 2's, or move a product.
+void reorderWithin(
+    List<Recipe> recipes, List<Recipe> visible, int oldIndex, int newIndex) {
+  final slots = <int>[
+    for (var i = 0; i < recipes.length; i++)
+      if (visible.any((v) => identical(v, recipes[i]))) i
+  ];
+  final moved = visible.removeAt(oldIndex);
+  visible.insert(newIndex, moved);
+  for (var i = 0; i < slots.length && i < visible.length; i++) {
+    recipes[slots[i]] = visible[i];
+  }
+}
+
+/// The recipes that could be [group]'s recipe for [lineId]: the ones kept
+/// for that line, and the ones saved before recipes knew their line, that are
+/// not already in a product.
+///
+/// A recipe in another product is not offered. It belongs to that product,
+/// and taking it would leave that product's line empty without anyone
+/// having asked for that.
+List<Recipe> recipeCandidatesFor(
+        List<Recipe> recipes, String group, String lineId) =>
+    [
+      for (final r in recipes)
+        if (r.group == null && (r.line == null || r.line == lineId)) r
+    ];
+
+/// Makes [recipe] [group]'s recipe for [lineId].
+///
+/// The recipe it replaces, if any, is taken out of the product and KEPT —
+/// still in the line's list, just not in a product. Replacing is a choice of
+/// which recipe the product sends, not a deletion.
+void useRecipeInGroup(
+    List<Recipe> recipes, String group, String lineId, Recipe recipe) {
+  final current = recipeInGroup(recipes, group, lineId);
+  if (current != null && !identical(current, recipe)) current.group = null;
+  recipe
+    ..line = lineId
+    ..group = group;
+}
+
 /// One recipe the first-open grouping would file, and where.
 @immutable
 class RecipeGrouping {
@@ -324,13 +373,22 @@ class RecipeGrouping {
   return (number: int.parse(match.group(1)!), group: match.group(2)!);
 }
 
-/// What the first-open grouping proposes: every recipe that names a line in
-/// its name and has not been filed yet, grouped by the rest of its name.
+/// What the grouping offer proposes: recipes that already say which product
+/// they belong to, filed into products.
+///
+/// Two conventions say it, and stations have used both:
+///
+///  * **one name kept on several lines** — "Standard" saved on Line 1, on
+///    Line 2 and on Line 3, each for its own line. The name IS the product.
+///    Only a name found on two or more lines counts: a one-off recipe on one
+///    line is not a product by itself.
+///  * **a name that says its line** — "Line 2 - Standard" in a list that
+///    predates recipes knowing their line.
 ///
 /// Never applied by itself. A name is the operator's own words, so this is
 /// shown, and applied by one press, and nothing is sent to a line either way —
-/// only the list is rearranged. A second recipe for a line already taken in
-/// the same group is left alone rather than guessed between.
+/// only the list is rearranged. A product that already holds a recipe for a
+/// line keeps it: the proposal never displaces what is already filed.
 List<RecipeGrouping> proposeRecipeGrouping(
     List<Recipe> recipes, String lineNoun, List<String> lineIds) {
   final found = <RecipeGrouping>[];
@@ -343,6 +401,27 @@ List<RecipeGrouping> proposeRecipeGrouping(
   final spelling = <String, String>{
     for (final g in recipeGroups(recipes)) g.toLowerCase(): g,
   };
+  String spell(String name) =>
+      spelling.putIfAbsent(name.toLowerCase(), () => name);
+
+  // One name on several lines.
+  final linesByName = <String, Set<String>>{};
+  for (final r in recipes) {
+    if (r.group != null || r.line == null) continue;
+    final name = r.name.trim();
+    if (name.isEmpty) continue;
+    linesByName.putIfAbsent(name.toLowerCase(), () => {}).add(r.line!);
+  }
+  for (final recipe in recipes) {
+    if (recipe.group != null || recipe.line == null) continue;
+    final name = recipe.name.trim();
+    if ((linesByName[name.toLowerCase()]?.length ?? 0) < 2) continue;
+    final group = spell(name);
+    if (!taken.add((group, recipe.line!))) continue;
+    found.add(RecipeGrouping(recipe, recipe.line!, group));
+  }
+
+  // A name that says its line.
   for (final recipe in recipes) {
     if (recipe.group != null || recipe.line != null) continue;
     final parsed = parseLineRecipeName(recipe.name, lineNoun);
@@ -350,8 +429,7 @@ List<RecipeGrouping> proposeRecipeGrouping(
     if (parsed.number < 1 || parsed.number > lineIds.length) continue;
     final line = lineIds[parsed.number - 1];
     if (line.isEmpty) continue;
-    final group =
-        spelling.putIfAbsent(parsed.group.toLowerCase(), () => parsed.group);
+    final group = spell(parsed.group);
     if (!taken.add((group, line))) continue;
     found.add(RecipeGrouping(recipe, line, group));
   }

@@ -8,6 +8,7 @@
 //   * the LINES view, one line at a time, with the recipe's values editable
 //     beside what the line holds now and the rows a send would change tinted;
 //   * the new-group panel, every line that has reported ticked;
+//   * the pick panel: which of a line's own recipes a product sends it;
 //   * the first-open panel that files "Line N - X" presets into groups.
 //
 // Each lives in the pane rather than in a dialog of its own: a modal opened
@@ -144,20 +145,24 @@ _FakeStateMan _plant() => _FakeStateMan()
 
 List<Recipe> _grouped() => [
       Recipe(
-          name: 'Line 1 - Standard',
+          name: 'Standard',
           value: _line(gapLength: 2500, belts: 2),
           line: 'line_a',
           group: 'Standard'),
       Recipe(
-          name: 'Line 2 - Standard',
+          name: 'Standard',
           value: _line(gapLength: 2500, belts: 3),
           line: 'line_b',
           group: 'Standard'),
       Recipe(
-          name: 'Line 1 - Large',
+          name: 'Large',
           value: _line(gapLength: 1800, belts: 2),
           line: 'line_a',
           group: 'Large'),
+      Recipe(
+          name: 'Standard, tuned',
+          value: _line(gapLength: 2000, bypassTrim: true, belts: 2),
+          line: 'line_a'),
     ];
 
 void main() {
@@ -186,7 +191,7 @@ void main() {
           then: (tester) async {
         await tester.tap(find.text('Lines'));
         await tester.pumpAndSettle();
-        await tester.tap(find.text('Standard'));
+        await tester.tap(find.text('Standard').first);
       });
 
       await expectLater(
@@ -207,6 +212,19 @@ void main() {
       await expectLater(
         find.byType(StandardDialog),
         matchesGoldenFile('goldens/recipes_new_group_panel.png'),
+      );
+    });
+
+    testWidgets('picking which of a line\'s recipes a product sends',
+        (tester) async {
+      await _pump(tester, _threeLines, _plant(), recipes: _grouped(),
+          then: (tester) async {
+        await tester.tap(find.text('Change').first);
+      });
+
+      await expectLater(
+        find.byType(StandardDialog),
+        matchesGoldenFile('goldens/recipes_pick_panel.png'),
       );
     });
 

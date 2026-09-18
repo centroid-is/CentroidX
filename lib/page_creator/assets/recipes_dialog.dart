@@ -15,7 +15,7 @@ enum _RecipesView { groups, lines }
 
 /// What the right-hand pane of the groups view is showing, when it is not
 /// the selected group.
-enum _Panel { none, newGroup, grouping, rename, delete }
+enum _Panel { none, newGroup, grouping, rename, delete, pick }
 
 /// One line as the dialog sees it.
 @immutable
@@ -74,11 +74,19 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
   _Panel _panel = _Panel.none;
   String? _panelGroup;
 
+  /// The line a panel is about — the pick panel's — by id.
+  String? _panelLine;
+
   /// The name being typed in a panel.
   final _panelName = TextEditingController();
 
   /// The lines ticked in the new-group panel, by id.
   final Set<String> _ticked = {};
+
+  /// The recipe whose name is being edited in the lines view's header, if
+  /// any, and what is being typed for it.
+  Recipe? _renaming;
+  final _renameText = TextEditingController();
 
   /// The recipe list the open dialog works on. Fetched once per opening, not
   /// once per rebuild: a fresh future on every rebuild re-read the
@@ -102,6 +110,7 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
   void dispose() {
     _newRecipeName.dispose();
     _panelName.dispose();
+    _renameText.dispose();
     super.dispose();
   }
 
@@ -437,13 +446,15 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
 
   // -- changing the list ---------------------------------------------------
 
-  /// A recipe for [line], named so that a station still on an older build —
-  /// which reads this same list and knows nothing of groups — shows it as
-  /// what it is.
+  /// A recipe for [line], captured from what it runs now.
+  ///
+  /// Named after its product when it is made for one — the convention
+  /// operators already keep by hand: "Standard" on every line, each line's
+  /// own.
   Recipe _captured(_Line line, DynamicValue live,
           {String? group, String? name}) =>
       Recipe(
-        name: name ?? '${line.name} - ${group ?? 'recipe'}',
+        name: name ?? group ?? 'Recipe',
         value: DynamicValue.from(live),
         line: line.id,
         group: group,
@@ -467,7 +478,12 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
       // Placed straight after the group's other recipes, so the group stays
       // one block in the list.
       final after = recipes.lastIndexWhere((r) => r.group == group);
-      recipes.insert(after + 1, _captured(line, live, group: group));
+      final copy = _captured(line, live, name: group);
+      recipes.insert(after + 1, copy);
+      // Through the same door as picking: a recipe the line already had in
+      // this product is taken out of it and kept, never overwritten.
+      useRecipeInGroup(recipes, group, line.id, copy);
+      _panel = _Panel.none;
       _report = null;
       _saveRecipes(recipes);
     });
@@ -654,6 +670,11 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
     switch (_panel) {
       case _Panel.newGroup:
         return _newGroupPanel(context, recipes, lines, live);
+      case _Panel.pick:
+        final at = lines.indexWhere((l) => l.id == _panelLine);
+        if (about != null && groups.contains(about) && at >= 0) {
+          return _pickPanel(context, recipes, about, lines[at], live[at]);
+        }
       case _Panel.grouping:
         final proposal = proposeRecipeGrouping(
             recipes, _config.lineNoun, [for (final l in lines) l.id]);
@@ -908,19 +929,18 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
                 ],
               ),
             ),
-            PopupMenuButton<String>(
-              tooltip: 'More',
-              onSelected: (action) => action == 'rename'
-                  ? _openRename(group)
-                  : _openPanel(_Panel.delete, group: group),
-              itemBuilder: (context) => [
-                PopupMenuItem(
-                    value: 'rename',
-                    child: Text('Rename ${_config.groupNoun.toLowerCase()}')),
-                PopupMenuItem(
-                    value: 'delete',
-                    child: Text('Delete ${_config.groupNoun.toLowerCase()}')),
-              ],
+            // Buttons, not a ⋮ menu: a menu is a route, and a route opened
+            // from inside a floating window lands UNDER it — the ⋮ opened
+            // nothing anyone could see.
+            IconButton(
+              icon: const Icon(Icons.edit_outlined),
+              tooltip: 'Rename ${_config.groupNoun.toLowerCase()}',
+              onPressed: () => _openRename(group),
+            ),
+            IconButton(
+              icon: const Icon(Icons.delete_outline),
+              tooltip: 'Delete ${_config.groupNoun.toLowerCase()}',
+              onPressed: () => _openPanel(_Panel.delete, group: group),
             ),
             const SizedBox(width: 8),
             FilledButton.icon(
@@ -1050,14 +1070,30 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
               _statusChip(context, status),
             ],
           ),
-          const SizedBox(height: 2),
-          Text(
-            line.index == null ? line.key : '${line.key}[${line.index}]',
-            style: theme.textTheme.labelSmall
-                ?.copyWith(color: scheme.onSurfaceVariant),
-            overflow: TextOverflow.ellipsis,
+          // Which recipe this product sends this line, by the recipe's own
+          // name — the link between the product and the line's recipes has
+          // to be visible to be trusted — and the way to change it.
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  recipe?.name ?? 'None picked',
+                  style: recipe == null
+                      ? theme.textTheme.bodyMedium?.copyWith(
+                          fontStyle: FontStyle.italic,
+                          color: scheme.onSurfaceVariant)
+                      : theme.textTheme.bodyMedium,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              TextButton(
+                onPressed: () => _openPick(group, line),
+                child: const Text('Change'),
+              ),
+            ],
           ),
-          const Divider(height: 20),
+          const Divider(height: 12),
           if (recipe == null) ...[
             Text('No recipe for ${line.name} in $group.',
                 style: theme.textTheme.bodySmall),
@@ -1292,10 +1328,10 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
         children: [
           Text(
             count == 1
-                ? '1 saved recipe is named for a '
-                    '${_config.lineNoun.toLowerCase()}.'
-                : '$count saved recipes are named for a '
-                    '${_config.lineNoun.toLowerCase()}.',
+                ? '1 saved recipe can go into a '
+                    '${_config.groupNoun.toLowerCase()}.'
+                : '$count saved recipes can be grouped into '
+                    '${_config.groupNounPlural.toLowerCase()}.',
             style: theme.textTheme.bodySmall,
           ),
           Align(
@@ -1379,8 +1415,10 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
       context,
       title:
           'Group your saved recipes into ${_config.groupNounPlural.toLowerCase()}',
-      lead: 'These recipes are named for a $lineWord. Grouped by the name '
-          'after it, they make ${groups.length} $groupWord.',
+      lead: 'These recipes share a name across '
+          '${_config.lineNounPlural.toLowerCase()}, or have the $lineWord in '
+          'their name. Grouped by that name, they make ${groups.length} '
+          '$groupWord.',
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -1500,11 +1538,8 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
                       ? _ticked.add(lines[i].id)
                       : _ticked.remove(lines[i].id)),
               title: Text(lines[i].name),
-              subtitle: Text(live[i] == null
-                  ? 'waiting for a value'
-                  : (lines[i].index == null
-                      ? lines[i].key
-                      : '${lines[i].key}[${lines[i].index}]')),
+              subtitle:
+                  live[i] == null ? const Text('waiting for a value') : null,
             ),
           Text(
             'Untick a $lineWord that does not make this $groupWord. You can '
@@ -1518,9 +1553,14 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
         FilledButton(
           onPressed: ready
               ? () {
+                  // Read now, not from this build — see _renameField.
+                  final typed = _panelName.text.trim();
+                  if (typed.isEmpty || existing.contains(typed.toLowerCase())) {
+                    return;
+                  }
                   _panel = _Panel.none;
                   _createGroup(
-                      name,
+                      typed,
                       [
                         for (var i = 0; i < lines.length; i++)
                           if (_ticked.contains(lines[i].id) && live[i] != null)
@@ -1531,6 +1571,109 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
               : null,
           child: Text('Create $groupWord'),
         ),
+      ],
+    );
+  }
+
+  void _openPick(String group, _Line line) => setState(() {
+        _panel = _Panel.pick;
+        _panelGroup = group;
+        _panelLine = line.id;
+        _report = null;
+      });
+
+  /// Which of a line's recipes a product sends it.
+  ///
+  /// The line's own recipes are offered — the ones kept for it and the ones
+  /// saved before recipes knew their line — with how each stands against the
+  /// line right now, so the choice is made knowing what a send would change.
+  /// A recipe replaced here is kept in the line's list, never deleted.
+  Widget _pickPanel(BuildContext context, List<Recipe> recipes, String group,
+      _Line line, DynamicValue? live) {
+    final theme = Theme.of(context);
+    final states = _states(context);
+    final current = recipeInGroup(recipes, group, line.id);
+    final candidates = recipeCandidatesFor(recipes, group, line.id);
+
+    Widget standing(Recipe recipe) {
+      final status = lineRecipeStatus(recipe, live);
+      final (text, color) = switch (status.state) {
+        LineRecipeState.running => ('Running on ${line.name}', states.green),
+        LineRecipeState.differs => (
+            '${status.changes} value${status.changes == 1 ? '' : 's'} '
+                'differ${status.changes == 1 ? 's' : ''} from ${line.name}',
+            states.orange
+          ),
+        LineRecipeState.doesNotFit => (
+            'Does not fit ${line.name}',
+            states.orange
+          ),
+        _ => ('', theme.colorScheme.onSurfaceVariant),
+      };
+      return Text(text,
+          style: theme.textTheme.labelSmall?.copyWith(color: color));
+    }
+
+    void use(Recipe recipe) => setState(() {
+          useRecipeInGroup(recipes, group, line.id, recipe);
+          _panel = _Panel.none;
+          _saveRecipes(recipes);
+        });
+
+    return _panelFrame(
+      context,
+      title: "${line.name}'s recipe in $group",
+      lead: 'The recipe $group sends to ${line.name}. One that is replaced '
+          "stays in ${line.name}'s list, not in a "
+          '${_config.groupNoun.toLowerCase()}.',
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (current != null)
+            ListTile(
+              leading: Icon(Icons.check_circle, color: states.green),
+              title: Text(current.name),
+              subtitle: standing(current),
+              trailing: TextButton(
+                onPressed: () => setState(() {
+                  current.group = null;
+                  _panel = _Panel.none;
+                  _saveRecipes(recipes);
+                }),
+                child: Text('Take out of $group'),
+              ),
+            ),
+          if (candidates.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              child: Text(
+                'No other recipes on ${line.name} that are not in a '
+                '${_config.groupNoun.toLowerCase()}.',
+                style: theme.textTheme.bodySmall,
+              ),
+            ),
+          for (final recipe in candidates)
+            ListTile(
+              key: ValueKey(recipe),
+              leading: const Icon(Icons.radio_button_unchecked),
+              title: Text(recipe.name),
+              subtitle: standing(recipe),
+              onTap: () => use(recipe),
+            ),
+          const Divider(),
+          ListTile(
+            leading: const Icon(Icons.add),
+            title: Text('Copy from ${line.name} now'),
+            subtitle: const Text('A new recipe, from what the line runs'),
+            enabled: live != null,
+            onTap: live == null
+                ? null
+                : () => _copyIntoGroup(group, line, live, recipes),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(onPressed: _closePanel, child: const Text('Cancel')),
       ],
     );
   }
@@ -1566,25 +1709,41 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
         FilledButton(
           onPressed: (name.isEmpty || clash || name == group)
               ? null
-              : () => setState(() {
-                    for (final recipe in recipes) {
-                      if (recipe.group != group) continue;
-                      recipe.group = name;
-                      // Keep the name an older build shows in step, when it
-                      // still has the shape this dialog gave it.
-                      if (recipe.name.endsWith(' - $group')) {
-                        recipe.name =
-                            '${recipe.name.substring(0, recipe.name.length - group.length)}$name';
-                      }
-                    }
-                    _selectedGroup = name;
+              : () {
+                  // Read now, not from this build — see _renameField.
+                  final typed = _panelName.text.trim();
+                  if (typed.isEmpty || typed == group) return;
+                  if (others.contains(typed.toLowerCase())) return;
+                  setState(() {
+                    _renameGroup(recipes, group, typed);
                     _panel = _Panel.none;
                     _saveRecipes(recipes);
-                  }),
+                  });
+                },
           child: const Text('Rename'),
         ),
       ],
     );
+  }
+
+  /// Renames [from] to [to] on every recipe in it.
+  ///
+  /// Also keeps the stored name in step when it still has the shape this
+  /// dialog gave it (`Line 2 - <product>`): a station still on an older build
+  /// knows nothing of products and shows that name, so it should say the new
+  /// one too.
+  void _renameGroup(List<Recipe> recipes, String from, String to) {
+    for (final recipe in recipes) {
+      if (recipe.group != from) continue;
+      recipe.group = to;
+      if (recipe.name == from) {
+        recipe.name = to;
+      } else if (recipe.name.endsWith(' - $from')) {
+        recipe.name =
+            '${recipe.name.substring(0, recipe.name.length - from.length)}$to';
+      }
+    }
+    if (_selectedGroup == from) _selectedGroup = to;
   }
 
   Widget _deletePanel(
@@ -1666,6 +1825,7 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
                 onTap: () => setState(() {
                   _selectedLine = i;
                   _selectedRecipe = null;
+                  _renaming = null;
                   _report = null;
                 }),
                 child: Container(
@@ -1681,24 +1841,11 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
                       ),
                     ),
                   ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        lines[i].name,
-                        style: theme.textTheme.titleSmall?.copyWith(
-                          fontWeight:
-                              i == at ? FontWeight.bold : FontWeight.normal,
-                        ),
-                      ),
-                      Text(
-                        lines[i].index == null
-                            ? lines[i].key
-                            : '${lines[i].key}[${lines[i].index}]',
-                        style: theme.textTheme.labelSmall?.copyWith(
-                            color: theme.colorScheme.onSurfaceVariant),
-                      ),
-                    ],
+                  child: Text(
+                    lines[i].name,
+                    style: theme.textTheme.titleSmall?.copyWith(
+                      fontWeight: i == at ? FontWeight.bold : FontWeight.normal,
+                    ),
                   ),
                 ),
               ),
@@ -1711,10 +1858,15 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
   Widget _lineRail(BuildContext context, List<Recipe> recipes,
       List<Recipe> onLine, Recipe? selected, _Line line, DynamicValue? live) {
     final theme = Theme.of(context);
+    // A product's recipes come first, in the products' own order: that order
+    // is set by dragging in the products view, and a drag here that moved a
+    // product's recipe would quietly reshuffle that list too.
+    final order = recipeGroups(recipes);
     final grouped = [
       for (final r in onLine)
         if (r.group != null) r
-    ];
+    ]..sort(
+        (a, b) => order.indexOf(a.group!).compareTo(order.indexOf(b.group!)));
     final loose = [
       for (final r in onLine)
         if (r.group == null) r
@@ -1730,24 +1882,48 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
                   child: Text('No recipes for ${line.name} yet.',
                       style: theme.textTheme.bodySmall),
                 )
-              : ListView(
+              // One scroll for both sections. The recipes that are not in a
+              // product are this view's to arrange, so they alone drag.
+              : CustomScrollView(
                   primary: false,
-                  children: [
-                    for (final recipe in grouped)
-                      _lineRecipeCard(
-                          context, recipe, selected, line, live, recipes),
-                    if (loose.isNotEmpty) ...[
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(8, 12, 8, 4),
-                        child: Text(
-                          'Not in a ${_config.groupNoun.toLowerCase()}',
-                          style: theme.textTheme.labelSmall?.copyWith(
-                              color: theme.colorScheme.onSurfaceVariant),
-                        ),
-                      ),
-                      for (final recipe in loose)
+                  slivers: [
+                    SliverList.list(children: [
+                      for (final recipe in grouped)
                         _lineRecipeCard(
                             context, recipe, selected, line, live, recipes),
+                    ]),
+                    if (loose.isNotEmpty) ...[
+                      SliverToBoxAdapter(
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(8, 12, 8, 4),
+                          child: Text(
+                            'Not in a ${_config.groupNoun.toLowerCase()}',
+                            style: theme.textTheme.labelSmall?.copyWith(
+                                color: theme.colorScheme.onSurfaceVariant),
+                          ),
+                        ),
+                      ),
+                      SliverReorderableList(
+                        itemCount: loose.length,
+                        // The move is made among this line's loose recipes and
+                        // written back into the slots they already held, so a
+                        // drag here cannot move another line's recipe or a
+                        // product's.
+                        onReorderItem: (oldIndex, newIndex) => setState(() {
+                          reorderWithin(recipes, loose, oldIndex, newIndex);
+                          _saveRecipes(recipes);
+                        }),
+                        itemBuilder: (context, i) => _lineRecipeCard(
+                          context,
+                          loose[i],
+                          selected,
+                          line,
+                          live,
+                          recipes,
+                          key: ObjectKey(loose[i]),
+                          dragIndex: i,
+                        ),
+                      ),
                     ],
                   ],
                 ),
@@ -1781,7 +1957,8 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
   }
 
   Widget _lineRecipeCard(BuildContext context, Recipe recipe, Recipe? selected,
-      _Line line, DynamicValue? live, List<Recipe> recipes) {
+      _Line line, DynamicValue? live, List<Recipe> recipes,
+      {Key? key, int? dragIndex}) {
     final theme = Theme.of(context);
     final states = _states(context);
     final isSelected = identical(recipe, selected);
@@ -1798,9 +1975,14 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
         ),
       _ => ('', theme.colorScheme.onSurfaceVariant),
     };
-    final title = recipe.group ?? recipe.name;
+    final title = recipe.name;
+    // The product, when the name alone does not already say it.
+    final inGroup = recipe.group != null && recipe.group != recipe.name
+        ? recipe.group
+        : null;
 
     return Material(
+      key: key,
       color: isSelected
           ? theme.colorScheme.primary.withValues(alpha: 0.14)
           : Colors.transparent,
@@ -1809,12 +1991,23 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
         borderRadius: BorderRadius.circular(8),
         onTap: () => setState(() {
           _selectedRecipe = recipe;
+          _renaming = null;
           _report = null;
         }),
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(10, 8, 0, 8),
+          padding: EdgeInsets.fromLTRB(dragIndex == null ? 10 : 2, 8, 0, 8),
           child: Row(
             children: [
+              // An explicit handle, as on the products list: a long press is
+              // also how an operator steadies a finger on a touchscreen.
+              if (dragIndex != null)
+                ReorderableDragStartListener(
+                  index: dragIndex,
+                  child: const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+                    child: Icon(Icons.drag_indicator, size: 18),
+                  ),
+                ),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -1831,6 +2024,10 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
                         ),
                       ),
                     ),
+                    if (inGroup != null)
+                      Text('in $inGroup',
+                          style: theme.textTheme.labelSmall?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant)),
                     if (note.isNotEmpty)
                       Text(note,
                           style: theme.textTheme.labelSmall
@@ -1862,57 +2059,81 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text.rich(
-                TextSpan(children: [
-                  TextSpan(
-                      text: recipe == null
-                          ? line.name
-                          : (recipe.group ?? recipe.name)),
-                  if (recipe != null)
-                    TextSpan(
-                      text: ' on ${line.name}',
-                      style: TextStyle(
-                          color: theme.colorScheme.onSurfaceVariant,
-                          fontWeight: FontWeight.normal),
+              if (recipe != null && identical(_renaming, recipe))
+                _renameField(context, recipe, recipes)
+              else
+                Row(
+                  children: [
+                    Flexible(
+                      child: Text.rich(
+                        TextSpan(children: [
+                          TextSpan(
+                              text: recipe == null ? line.name : recipe.name),
+                          if (recipe != null)
+                            TextSpan(
+                              text: ' on ${line.name}',
+                              style: TextStyle(
+                                  color: theme.colorScheme.onSurfaceVariant,
+                                  fontWeight: FontWeight.normal),
+                            ),
+                        ]),
+                        style: theme.textTheme.titleLarge,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
-                ]),
-                style: theme.textTheme.titleLarge,
-                overflow: TextOverflow.ellipsis,
-              ),
+                    if (recipe != null)
+                      IconButton(
+                        icon: const Icon(Icons.edit_outlined, size: 18),
+                        // Said plainly: in a product the title IS the
+                        // product's name, so this renames it on every line —
+                        // which a bare "Rename" beside one line's recipe
+                        // would hide.
+                        tooltip: 'Rename recipe',
+                        onPressed: () => setState(() {
+                          _renaming = recipe;
+                          _renameText.text = recipe.name;
+                        }),
+                      ),
+                  ],
+                ),
               if (recipe != null) ...[
                 const SizedBox(height: 6),
                 Row(
                   children: [
                     Text(_config.groupNoun, style: theme.textTheme.bodySmall),
                     const SizedBox(width: 8),
-                    DropdownButton<String?>(
-                      value: recipe.group,
-                      isDense: true,
-                      items: [
-                        for (final group in groups)
-                          DropdownMenuItem<String?>(
-                            value: group,
-                            // One recipe per line in a group: a group that
-                            // already holds this line's recipe is offered,
-                            // but cannot be picked.
-                            enabled: group == recipe.group ||
-                                recipeInGroup(recipes, group, line.id) == null,
-                            child: Text(
-                              group == recipe.group ||
+                    // Chips, not a dropdown: a dropdown's menu is a route,
+                    // and from inside a floating window it opens underneath.
+                    Expanded(
+                      child: Wrap(
+                        spacing: 6,
+                        runSpacing: 4,
+                        children: [
+                          for (final group in groups)
+                            ChoiceChip(
+                              label: Text(group),
+                              selected: recipe.group == group,
+                              visualDensity: VisualDensity.compact,
+                              // One recipe per line in a group: a group that
+                              // already holds this line's recipe is shown,
+                              // but cannot be picked here — Change on its
+                              // card is where one is swapped for another.
+                              onSelected: group == recipe.group ||
                                       recipeInGroup(recipes, group, line.id) ==
                                           null
-                                  ? group
-                                  : '$group (${line.name} has one)',
+                                  ? (_) =>
+                                      _setGroup(recipe, group, line, recipes)
+                                  : null,
                             ),
+                          ChoiceChip(
+                            label: Text('None'),
+                            selected: recipe.group == null,
+                            visualDensity: VisualDensity.compact,
+                            onSelected: (_) =>
+                                _setGroup(recipe, null, line, recipes),
                           ),
-                        DropdownMenuItem<String?>(
-                          value: null,
-                          child: Text(
-                              'Not in a ${_config.groupNoun.toLowerCase()}'),
-                        ),
-                      ],
-                      onChanged: (group) =>
-                          _setGroup(recipe, group, line, recipes),
+                        ],
+                      ),
                     ),
                   ],
                 ),
@@ -1958,6 +2179,67 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
                   ),
                 )
               : _valuesTable(context, rows, recipe, line, live, recipes),
+        ),
+      ],
+    );
+  }
+
+  /// The recipe's name, as a field: Enter or the tick keeps it, Escape or
+  /// the cross puts it back.
+  ///
+  /// Renames this recipe and nothing else. Two recipes may share a name — one
+  /// product kept on several lines usually does — so there is nothing to
+  /// clash with. A product is renamed in the products view.
+  Widget _renameField(
+      BuildContext context, Recipe recipe, List<Recipe> recipes) {
+    final name = _renameText.text.trim();
+    final ready = name.isNotEmpty;
+
+    void commit() {
+      // The field's text NOW, not the `name` this build captured: a commit
+      // can run from a callback built before the last keystroke landed, and
+      // it then saved the old name while the field showed the new one.
+      final typed = _renameText.text.trim();
+      if (typed.isEmpty) return;
+      setState(() {
+        recipe.name = typed;
+        _renaming = null;
+        _saveRecipes(recipes);
+      });
+    }
+
+    void cancel() => setState(() => _renaming = null);
+
+    return Row(
+      children: [
+        Expanded(
+          child: CallbackShortcuts(
+            bindings: {
+              const SingleActivator(LogicalKeyboardKey.escape): cancel,
+            },
+            child: TextField(
+              key: const ValueKey('recipes.renameField'),
+              controller: _renameText,
+              autofocus: true,
+              decoration: const InputDecoration(
+                isDense: true,
+                border: OutlineInputBorder(),
+                labelText: 'Recipe name',
+              ),
+              onChanged: (_) => setState(() {}),
+              onSubmitted: (_) => commit(),
+            ),
+          ),
+        ),
+        IconButton(
+          icon: const Icon(Icons.check),
+          tooltip: 'Keep this name',
+          onPressed: ready ? commit : null,
+        ),
+        IconButton(
+          icon: const Icon(Icons.close),
+          tooltip: 'Cancel',
+          onPressed: cancel,
         ),
       ],
     );

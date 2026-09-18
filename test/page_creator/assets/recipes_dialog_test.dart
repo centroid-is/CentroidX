@@ -335,7 +335,7 @@ void main() {
         Recipe(name: 'Trial', value: lineValue(belts: 1)),
       ]);
 
-      expect(find.textContaining('2 saved recipes are named for a line'),
+      expect(find.textContaining('2 saved recipes can be grouped'),
           findsOneWidget);
       await tester.tap(find.text('Group into products'));
       await tester.pumpAndSettle();
@@ -351,7 +351,7 @@ void main() {
         (null, null),
       ]);
       expect(stateMan.writes, isEmpty);
-      expect(find.textContaining('named for a line'), findsNothing,
+      expect(find.textContaining('can be grouped'), findsNothing,
           reason: 'nothing left to offer');
     });
 
@@ -550,6 +550,149 @@ void main() {
       expect(write.value[0]['gapLength'].asDouble, 2000,
           reason: 'the other line is written back exactly as it was read');
       expect(write.value[1]['gapLength'].asDouble, 2500);
+    });
+  });
+
+  group('a product points at a recipe the line already has', () {
+    testWidgets('each card names the recipe it sends', (tester) async {
+      pushThreeLines();
+      await pumpDialog(tester, threeLines, recipes: standardGroup());
+
+      expect(find.text('Line 1 - Standard'), findsOneWidget);
+      expect(find.text('Line 2 - Standard'), findsOneWidget);
+      expect(find.text('No recipe'), findsWidgets);
+    });
+
+    testWidgets(
+        'Change picks one of the line\'s own recipes, and keeps the '
+        'one it replaces', (tester) async {
+      pushThreeLines();
+      await pumpDialog(tester, threeLines, recipes: [
+        ...standardGroup(),
+        Recipe(
+            name: 'Line 1 own',
+            value: lineValue(gapLength: 2000, belts: 1),
+            line: 'line_a'),
+      ]);
+
+      await tester.tap(find.text('Change').first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Line 1 own'));
+      await tester.pumpAndSettle();
+
+      final all = await saved(threeLines);
+      final own = all.singleWhere((r) => r['name'] == 'Line 1 own');
+      final old = all.singleWhere((r) => r['name'] == 'Line 1 - Standard');
+      expect(own['group'], 'Standard');
+      expect(old['group'], isNull, reason: 'replaced, not deleted');
+      expect(find.text('Running'), findsNWidgets(2),
+          reason: "line 1's own recipe is what it runs, so it is running now");
+    });
+  });
+
+  group('products are renamed and deleted with buttons, not a menu', () {
+    // A ⋮ menu is a route, and a route opened from inside the floating window
+    // lands underneath it. These were a menu once and opened nothing.
+    testWidgets('rename', (tester) async {
+      pushThreeLines();
+      await pumpDialog(tester, threeLines, recipes: standardGroup());
+
+      await tester.tap(find.byTooltip('Rename product'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+          find.descendant(
+              of: find.byType(StandardDialog),
+              matching: find.byType(TextField)),
+          'Renamed');
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Rename'));
+      await tester.pumpAndSettle();
+
+      expect(
+          {for (final r in await saved(threeLines)) r['group']}, {'Renamed'});
+    });
+
+    testWidgets('delete', (tester) async {
+      pushThreeLines();
+      await pumpDialog(tester, threeLines, recipes: standardGroup());
+
+      await tester.tap(find.byTooltip('Delete product'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Delete'));
+      await tester.pumpAndSettle();
+
+      expect(await saved(threeLines), isEmpty);
+      expect(stateMan.writes, isEmpty);
+    });
+  });
+
+  group('the lines view, by recipe name', () {
+    Future<void> openLines(WidgetTester tester) async {
+      await tester.tap(find.text('Lines'));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('a recipe is put into a product with a chip', (tester) async {
+      pushThreeLines();
+      await pumpDialog(tester, threeLines, recipes: [
+        Recipe(
+            name: 'A', value: lineValue(belts: 1), line: 'line_b', group: 'P'),
+        Recipe(name: 'Mine', value: lineValue(belts: 1), line: 'line_a'),
+      ]);
+      await openLines(tester);
+      await tester.tap(find.text('Mine'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.widgetWithText(ChoiceChip, 'P'));
+      await tester.pumpAndSettle();
+
+      final mine =
+          (await saved(threeLines)).singleWhere((r) => r['name'] == 'Mine');
+      expect(mine['group'], 'P');
+    });
+
+    testWidgets('renaming a recipe renames that recipe and nothing else',
+        (tester) async {
+      pushThreeLines();
+      await pumpDialog(tester, threeLines, recipes: standardGroup());
+      await openLines(tester);
+      await tester.tap(find.text('Line 1 - Standard'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byTooltip('Rename recipe'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+          find.byKey(const ValueKey('recipes.renameField')), 'Standard');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pumpAndSettle();
+
+      final all = await saved(threeLines);
+      expect(
+          [for (final r in all) r['name']], ['Standard', 'Line 2 - Standard']);
+      expect({for (final r in all) r['group']}, {'Standard'},
+          reason: 'the product is renamed in the products view, not here');
+    });
+
+    testWidgets('loose recipes are arranged by dragging', (tester) async {
+      pushThreeLines();
+      await pumpDialog(tester, threeLines, recipes: [
+        Recipe(name: 'First', value: lineValue(belts: 1), line: 'line_a'),
+        Recipe(name: 'Other line', value: lineValue(belts: 1), line: 'line_b'),
+        Recipe(name: 'Second', value: lineValue(belts: 1), line: 'line_a'),
+      ]);
+      await openLines(tester);
+
+      await tester.drag(
+          find.byIcon(Icons.drag_indicator).last, const Offset(0, -400));
+      await tester.pumpAndSettle();
+
+      expect([
+        for (final r in await saved(threeLines)) r['name']
+      ], [
+        'Second',
+        'Other line',
+        'First'
+      ], reason: "line 2's recipe keeps its slot");
     });
   });
 }
