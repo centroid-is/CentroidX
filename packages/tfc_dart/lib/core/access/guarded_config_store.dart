@@ -21,7 +21,14 @@ import '../config/config_store_errors.dart';
 import '../config/key_mapping_codec.dart' as codec;
 import '../config/key_mapping_migration.dart'
     show kKeyMappingsMigratedMarkerId;
-import '../state_man.dart' show KeyMappingEntry, KeyMappings, OpcUANodeConfig;
+// The three config types, from the FFI-free barrel and not from
+// `state_man.dart`. That library also holds `OpcUaStateMan`, so naming it
+// here put open62541 — and so `dart:ffi` — into the closure of every screen
+// that reaches the configuration store, which is the key repository, the page
+// editor and the alarm editor. `test/web/web_closure_guard_test.dart` is what
+// found it; the three classes live in the pure barrel and always did.
+import '../state_man_types.dart'
+    show KeyMappingEntry, KeyMappings, OpcUANodeConfig;
 
 /// The `who` of a row written with nobody signed in. Matches
 /// `GuardedPreferences`, because it is the same trail.

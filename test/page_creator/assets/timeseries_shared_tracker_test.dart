@@ -16,9 +16,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/page_creator/assets/helper/timeseries_notify_mixin.dart';
 import 'package:tfc/providers/database.dart';
+import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/providers/state_man.dart';
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/database_drift.dart';
+import 'package:tfc_dart/core/preferences.dart' show InMemoryPreferences;
 import 'package:tfc_dart/core/state_man.dart';
 
 const _key = 'line/packs';
@@ -181,6 +183,12 @@ void main() {
   Widget harness(List<Widget> readouts) => ProviderScope(
         overrides: [
           databaseProvider.overrideWith((ref) async => database),
+          // The device-local store: `timeseriesSourceProvider` consults the
+          // transport row before it decides where history comes from, and an
+          // empty in-memory store reads as direct mode — the station these
+          // arms are about. Same override, for the same reason,
+          // `audit_trail_test.dart` carries.
+          localPreferencesProvider.overrideWithValue(InMemoryPreferences()),
           stateManProvider.overrideWith((ref) async => stateMan),
         ],
         child: MaterialApp(home: Scaffold(body: Column(children: readouts))),

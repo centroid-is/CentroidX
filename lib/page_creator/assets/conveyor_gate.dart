@@ -9,7 +9,7 @@ import 'package:tfc/widgets/number_slider.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:json_annotation/json_annotation.dart';
-import 'package:open62541/open62541.dart' show DynamicValue, NodeId;
+import 'package:open62541/open62541_types.dart' show DynamicValue, NodeId;
 import 'package:rxdart/rxdart.dart';
 import '../../theme.dart';
 import '../../widgets/hit_boundary.dart';
@@ -23,6 +23,7 @@ import 'package:tfc/providers/state_man.dart';
 import 'package:tfc/widgets/tag_access_guard.dart';
 import '../../widgets/duration_field.dart';
 import '../../widgets/memo_stream_builder.dart';
+import '../../widgets/hmi_motion.dart';
 
 part 'conveyor_gate.g.dart';
 
@@ -220,6 +221,7 @@ class _ConveyorGateState extends ConsumerState<ConveyorGate>
     super.initState();
     _controller = AnimationController(
       vsync: this,
+      animationBehavior: kHmiAnimationBehavior,
       duration: Duration(milliseconds: widget.config.openTimeMs),
     );
     _progress = ValueNotifier<double>(0.0);
@@ -729,6 +731,7 @@ class _ConveyorGateConfigEditorState extends State<_ConveyorGateConfigEditor>
     _previewProgress = ValueNotifier<double>(0.5);
     _animController = AnimationController(
       vsync: this,
+      animationBehavior: kHmiAnimationBehavior,
       duration: const Duration(milliseconds: 1200),
     )..addListener(() {
         // Forward 0->1 then reverse 1->0 via a ping-pong curve.

@@ -1,7 +1,7 @@
 import 'package:test/test.dart';
 import 'package:tfc_dart/core/alarm.dart';
 import 'package:tfc_dart/core/boolean_expression.dart';
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 
 void main() {
   group('Alarm expression', () {

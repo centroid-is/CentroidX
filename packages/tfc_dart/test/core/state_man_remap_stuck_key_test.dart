@@ -32,6 +32,7 @@ class TwoNodeClientApi implements ClientApi {
     Duration samplingInterval = const Duration(milliseconds: 100),
     bool discardOldest = true,
     int queueSize = 1,
+    bool deliverBadStatus = false,
   }) {
     final name = nodeId.toString();
     monitored.add(name);
@@ -50,6 +51,7 @@ class TwoNodeClientApi implements ClientApi {
     Duration samplingInterval = const Duration(milliseconds: 100),
     bool discardOldest = true,
     int queueSize = 1,
+    bool deliverBadStatus = false,
   }) =>
       const Stream<Map<NodeId, DynamicValue>>.empty();
 
@@ -67,7 +69,7 @@ void main() {
   test('re-pointing a key that is stuck in subscribe-retry makes it live '
       'and keeps it live', () async {
     final fake = TwoNodeClientApi();
-    final sm = await StateMan.create(
+    final sm = await OpcUaStateMan.create(
       config: StateManConfig(opcua: []),
       keyMappings: KeyMappings(nodes: {'k': entryFor('BAD')}),
     );

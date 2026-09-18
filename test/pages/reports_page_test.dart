@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/models/menu_item.dart';
 import 'package:tfc/pages/reports_page.dart';
 import 'package:tfc/providers/alarm.dart';
+import 'package:tfc_dart/core/alarm.dart' as shared show filterAlarms;
 import 'package:tfc/providers/report.dart';
 import 'package:tfc/providers/state_man.dart';
 import 'package:tfc/route_registry.dart';
@@ -19,6 +20,14 @@ class _Db extends AppDatabase {
 class _FakeAlarmMan implements AlarmMan {
   @override
   Stream<Set<AlarmActive>> activeAlarms() => Stream.value(const {});
+
+  /// Delegates to the shared top-level function, which is what both real
+  /// implementations do. Implemented rather than left to [noSuchMethod]
+  /// because the alarm banner `BaseScaffold` brings calls it on every build,
+  /// and `super.noSuchMethod` throws.
+  @override
+  List<AlarmActive> filterAlarms(List<AlarmActive> alarms, String query) =>
+      shared.filterAlarms(alarms, query);
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);

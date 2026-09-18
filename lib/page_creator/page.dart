@@ -339,6 +339,53 @@ class PageManager {
     _source = PageSource.builtInDefault;
   }
 
+  /// [load], with the rows handed in rather than read from [store].
+  ///
+  /// The entry point for a client with no mirror: its rows arrive over the
+  /// relay (`providers/page_manager.dart`, `relayed_config_items.dart`), and
+  /// this lands exactly where [_loadFromRows] lands — pages from the rows,
+  /// the baseline set, [PageSource.rows] — with the top-level order read out
+  /// of the preference row the same set carries, because there is no store
+  /// to ask and this client's shared store is the relay. No page rows at all
+  /// is the ordinary [load]: the blob, then the built-in default.
+  Future<void> loadFromItems(Iterable<ConfigItem> items) async {
+    final rows = items.toList(growable: false);
+    Map<String, AssetPage> fromRows;
+    try {
+      fromRows = pagesOf(rows);
+    } catch (e) {
+      _logger.e('The relayed page rows could not be read; this client falls '
+          'back to its stored layout: $e');
+      fromRows = const {};
+    }
+    if (fromRows.isEmpty) {
+      await load();
+      return;
+    }
+    pages = fromRows;
+    baselineItems = rows;
+    _source = PageSource.rows;
+
+    String? orderJson;
+    for (final item in rows) {
+      if (item.kind != ConfigKind.preference || item.id != orderStorageKey) {
+        continue;
+      }
+      final value = decodePreferencePayload(item.payload);
+      if (value is String) orderJson = value;
+    }
+    orderJson ??= await prefs.getString(orderStorageKey);
+    if (orderJson == null) {
+      topLevelOrder = [];
+      return;
+    }
+    try {
+      topLevelOrder = (jsonDecode(orderJson) as List).cast<String>();
+    } catch (_) {
+      topLevelOrder = [];
+    }
+  }
+
   /// Serves [pages] out of [store]'s mirror, or answers false so [load] falls
   /// through to the blob.
   ///

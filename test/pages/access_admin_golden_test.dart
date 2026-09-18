@@ -92,8 +92,6 @@ import 'package:tfc/widgets/access_admin_notice.dart';
 import 'package:tfc/widgets/access_gate.dart';
 import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/access/access_repository.dart';
-import 'package:drift/drift.dart' show Value;
-import 'package:tfc_dart/core/database_drift.dart' show AppUserData;
 
 import '../helpers/golden_tolerance.dart';
 import '../helpers/golden_platform.dart';
@@ -154,10 +152,10 @@ List<AccessRole> _roles() => const [
       ),
     ];
 
-/// An account row. The hash and the salt are inert placeholders — nothing on this screen
-/// renders either, and a real PBKDF2 pair would be a credential in a test fixture for no
-/// gain.
-AppUserData _user(
+/// An account row. There is no credential in it at all: `UserSummary` declares
+/// none, so the placeholder hash and salt this fixture used to carry have
+/// nowhere left to go — and nothing on this screen ever rendered them.
+UserSummary _user(
   String username,
   String roleName, {
   required DateTime createdAt,
@@ -166,17 +164,37 @@ AppUserData _user(
   String? homePage,
   bool alarmAutoNavigate = false,
 }) =>
-    AppUserData(
+    UserSummary(
       username: username,
       roleName: roleName,
-      additionalRoles: encodeAdditionalRoles(alsoHolds),
-      passwordHash: 'not-a-hash',
-      salt: 'not-a-salt',
+      // The decoded list, not the column: the roster speaks [UserSummary],
+      // which carries the extra roles already read back — there is no
+      // `encodeAdditionalRoles` here and no credential columns either, because
+      // the type has nowhere to put one.
+      additionalRoles: alsoHolds,
       createdAt: createdAt,
       lastLoginAt: lastLoginAt,
       stationAccount: false,
       homePage: homePage,
       alarmAutoNavigate: alarmAutoNavigate,
+    );
+
+/// [u] with alarm auto-navigation on. By hand because [UserSummary] is the
+/// roster DTO and has no `copyWith` — the drift row main's fixture used here
+/// did.
+UserSummary _navigating(UserSummary u) => UserSummary(
+      username: u.username,
+      roleName: u.roleName,
+      displayName: u.displayName,
+      stationAccount: u.stationAccount,
+      hasPassword: u.hasPassword,
+      createdAt: u.createdAt,
+      lastLoginAt: u.lastLoginAt,
+      allowedPages: u.allowedPages,
+      additionalRoles: u.additionalRoles,
+      inactivityTimeoutMinutes: u.inactivityTimeoutMinutes,
+      homePage: u.homePage,
+      alarmAutoNavigate: true,
     );
 
 /// The roster, in the order the repository returns it: by username.
@@ -193,7 +211,7 @@ AppUserData _user(
 /// invent a combinatorial "Shift Leader + Maintenance" role for. The roster cell has to
 /// show both, and it has to read as one person rather than as two — see
 /// [kRoleLabelSeparator].
-List<AppUserData> _users() => [
+List<UserSummary> _users() => [
       _user('admin', 'Engineering',
           createdAt: DateTime(2026, 6, 2, 8, 15),
           lastLoginAt: DateTime(2026, 8, 31, 7, 5)),
@@ -225,13 +243,13 @@ class _AnsweringStore extends Fake implements AccessAdminStore {
   _AnsweringStore({required this.roleRows, required this.userRows});
 
   final List<AccessRole> roleRows;
-  final List<AppUserData> userRows;
+  final List<UserSummary> userRows;
 
   @override
   Future<List<AccessRole>> roles() async => roleRows;
 
   @override
-  Future<List<AppUserData>> listUsers() async => userRows;
+  Future<List<UserSummary>> listUsers() async => userRows;
 }
 
 /// A repository that is merely *present*. Only the locked image's [AccessGate] asks,
@@ -1020,9 +1038,17 @@ void main() {
           ],
         ));
 
+        // The roster speaks UserSummary on this branch (the wire's row), so
+        // the home page is set the way the other rows are built.
         final users = [
           for (final u in _users())
-            u.username == 'linar' ? u.copyWith(homePage: const Value('/halls/freezer')) : u,
+            u.username == 'linar'
+                ? _user('linar', 'Shift Leader',
+                    alsoHolds: const ['Maintenance'],
+                    createdAt: DateTime(2026, 7, 14, 6, 30),
+                    lastLoginAt: DateTime(2026, 8, 30, 22, 10),
+                    homePage: '/halls/freezer')
+                : u,
         ];
         await tester.pumpWidget(_dialogHost(
           theme: light,
@@ -1065,7 +1091,7 @@ void main() {
 
         final users = [
           for (final u in _users())
-            u.username == 'linar' ? u.copyWith(alarmAutoNavigate: true) : u,
+            u.username == 'linar' ? _navigating(u) : u,
         ];
         await tester.pumpWidget(_dialogHost(
           theme: light,

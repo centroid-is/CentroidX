@@ -58,6 +58,7 @@ class StealScriptClientApi implements ClientApi {
     Duration samplingInterval = const Duration(milliseconds: 100),
     bool discardOldest = true,
     int queueSize = 1,
+    bool deliverBadStatus = false,
   }) {
     final name = nodeId.toString();
     monitorCalls.add(name);
@@ -79,6 +80,7 @@ class StealScriptClientApi implements ClientApi {
     Duration samplingInterval = const Duration(milliseconds: 100),
     bool discardOldest = true,
     int queueSize = 1,
+    bool deliverBadStatus = false,
   }) =>
       const Stream<Map<NodeId, DynamicValue>>.empty();
 
@@ -97,7 +99,7 @@ void main() {
       'a superseded _monitorLoop waking from backoff must not tear down the '
       'live stream of the loop that replaced it', () async {
     final fake = StealScriptClientApi();
-    final sm = await StateMan.create(
+    final sm = await OpcUaStateMan.create(
       config: StateManConfig(opcua: []),
       keyMappings: KeyMappings(nodes: {'k': entryFor('HANG')}),
     );

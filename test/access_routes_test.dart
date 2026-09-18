@@ -140,7 +140,7 @@ void main() {
     });
   });
 
-  group('routeAllowedWhenRepositoryUnavailable', () {
+  group('routeAllowedWhenNobodyCanSignIn', () {
     test('kServerConfigRoute is itself a raised route', () {
       // The exemption must name a route that is actually raised, or it
       // exempts nothing and the real Server Config route stays gated.
@@ -154,7 +154,7 @@ void main() {
     });
 
     test('answers true for the server config route', () {
-      expect(routeAllowedWhenRepositoryUnavailable(kServerConfigRoute), isTrue);
+      expect(routeAllowedWhenNobodyCanSignIn(kServerConfigRoute), isTrue);
     });
 
     test('answers true for the IP settings route', () {
@@ -163,14 +163,16 @@ void main() {
       // group only a working database can grant. Exempting Server Config
       // without this one leaves a loop with no entry: the page naming the
       // server opens, the page that lets the machine reach it does not.
-      expect(routeAllowedWhenRepositoryUnavailable(kIpSettingsRoute), isTrue);
+      expect(routeAllowedWhenNobodyCanSignIn(kIpSettingsRoute), isTrue);
     });
 
     test('answers false for every other raised route', () {
       for (final path in kRaisedRoutes.keys) {
         if (path == kServerConfigRoute || path == kIpSettingsRoute) continue;
-        expect(routeAllowedWhenRepositoryUnavailable(path), isFalse,
-            reason: '$path must stay denied while the repository is down');
+        expect(routeAllowedWhenNobodyCanSignIn(path), isFalse,
+            reason: '$path must stay denied while nothing on the station can '
+                'verify a credential — an absent authority, or a relay '
+                'authority with no link under it');
       }
     });
 
@@ -179,7 +181,7 @@ void main() {
       // of "reachable with no access control at all", and it should only ever
       // grow by someone editing this line on purpose.
       final exempt =
-          kRaisedRoutes.keys.where(routeAllowedWhenRepositoryUnavailable);
+          kRaisedRoutes.keys.where(routeAllowedWhenNobodyCanSignIn);
 
       expect(exempt, unorderedEquals([kServerConfigRoute, kIpSettingsRoute]));
     });
@@ -190,30 +192,30 @@ void main() {
       // the repository, so with the database down both still do exactly what
       // they claim. The admin page would edit nothing while looking like it
       // worked, and the audit trail *is* the database.
-      expect(routeAllowedWhenRepositoryUnavailable(kAccessAdminRoute), isFalse);
-      expect(routeAllowedWhenRepositoryUnavailable(kAuditTrailRoute), isFalse);
+      expect(routeAllowedWhenNobodyCanSignIn(kAccessAdminRoute), isFalse);
+      expect(routeAllowedWhenNobodyCanSignIn(kAuditTrailRoute), isFalse);
     });
 
     test('answers false for the admin screen', () {
       // The page where an exemption would be worst: with no repository there
       // is no role table, so an exempt admin page would edit nothing while
       // looking like it worked.
-      expect(routeAllowedWhenRepositoryUnavailable(kAccessAdminRoute), isFalse);
+      expect(routeAllowedWhenNobodyCanSignIn(kAccessAdminRoute), isFalse);
     });
 
     test('answers false for the audit trail', () {
       // No exemption, and the reason is not symmetry: the trail *is* the
       // database, so "readable while the database is down" would be
       // incoherent as well as unsafe.
-      expect(routeAllowedWhenRepositoryUnavailable(kAuditTrailRoute), isFalse);
+      expect(routeAllowedWhenNobodyCanSignIn(kAuditTrailRoute), isFalse);
     });
 
     test('answers false for an unraised path', () {
-      expect(routeAllowedWhenRepositoryUnavailable('/alarm-view'), isFalse);
+      expect(routeAllowedWhenNobodyCanSignIn('/alarm-view'), isFalse);
     });
 
     test('answers false for null', () {
-      expect(routeAllowedWhenRepositoryUnavailable(null), isFalse);
+      expect(routeAllowedWhenNobodyCanSignIn(null), isFalse);
     });
   });
 

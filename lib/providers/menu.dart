@@ -51,16 +51,15 @@ library;
 import 'package:riverpod/riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:tfc_access/tfc_access.dart' show AccessSession;
-import 'package:tfc_dart/core/access/access_repository.dart'
-    show AccessRepository;
-
 import '../access_routes.dart';
+import '../core/access_authority.dart';
 import '../models/menu_item.dart';
 import '../page_creator/page.dart';
 import '../route_registry.dart';
 import '../widgets/access_gate.dart';
 import '../widgets/page_access_gate.dart';
 import 'access.dart';
+import 'gateway_link.dart';
 import 'page_manager.dart';
 
 part 'menu.g.dart';
@@ -316,8 +315,11 @@ class VisibleMenu {
 @Riverpod(keepAlive: true)
 VisibleMenu visibleMenu(Ref ref) {
   final tree = ref.watch(menuTreeProvider);
-  final repository = ref.watch(accessRepositoryProvider);
+  final authority = ref.watch(accessAuthorityProvider);
   final session = ref.watch(accessSessionProvider);
+  // Watched, not assumed: on a gateway panel with a dead link nobody can sign
+  // in, and the menu has to reach the same verdict the gate and the badge do.
+  final relayCanAuthenticate = ref.watch(relayCanAuthenticateProvider);
   final routable = ref.watch(routablePathsProvider);
 
   bool visible(String path) {
@@ -325,7 +327,7 @@ VisibleMenu visibleMenu(Ref ref) {
     // cannot serve must not be offered, whoever is standing at the panel. See
     // [routablePathsProvider].
     if (routable != null && !routable.contains(path)) return false;
-    return _mayOpen(path, repository, session);
+    return _mayOpen(path, authority, session, relayCanAuthenticate);
   }
 
   MenuItem? filter(MenuItem item) {
@@ -378,14 +380,16 @@ VisibleMenu visibleMenu(Ref ref) {
 /// and the window ends the moment the session answers.
 bool _mayOpen(
   String path,
-  AsyncValue<AccessRepository?> repository,
+  AsyncValue<AccessAuthority> authority,
   AsyncValue<AccessSession> session,
+  bool relayCanAuthenticate,
 ) =>
     resolvePageAccess(
       group: accessGroupForRoute(path),
       path: path,
-      repository: repository,
+      authority: authority,
       session: session,
+      relayCanAuthenticate: relayCanAuthenticate,
     ) ==
     AccessGateState.allowed;
 

@@ -3,6 +3,7 @@ import 'package:tfc_dart/core/alarm.dart';
 
 import 'alarm.dart' show alarmLevelColors;
 import 'alarm_pulse.dart';
+import 'hmi_motion.dart';
 
 /// A navigation icon that pulses when an alarm is active on the page behind
 /// it.
@@ -59,6 +60,7 @@ class _NavAlarmBadgeState extends State<NavAlarmBadge>
     super.initState();
     _controller = AnimationController(
       vsync: this,
+      animationBehavior: kHmiAnimationBehavior,
       duration: NavAlarmBadge.period,
     );
     _syncAnimation();

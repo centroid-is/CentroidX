@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:json_annotation/json_annotation.dart';
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 import 'package:rxdart/rxdart.dart';
 import 'package:tfc/widgets/panes/standard_dialog.dart';
 
@@ -479,10 +479,57 @@ class _ChecklistStepRow extends StatelessWidget {
           ),
           if (done) ...[
             const SizedBox(width: 8),
-            Icon(Icons.check, size: 16, color: doneColor),
+            ChecklistDoneTick(color: doneColor),
           ],
         ],
       ),
     );
   }
+}
+
+/// The tick after a finished step, drawn rather than set from the icon font.
+///
+/// `Icons.check` at 16 px is a filled outline about 1.3 px thick. Native text
+/// rendering snaps a glyph to the pixel grid; the browser's does not, so on
+/// the web client the same glyph landed on a fractional position and read as
+/// a grey smudge beside a crisp one on the station. A stroked path is drawn
+/// the same way everywhere, and at 2 px it holds its colour at this size.
+class ChecklistDoneTick extends StatelessWidget {
+  const ChecklistDoneTick({super.key, required this.color});
+
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) => SizedBox.square(
+        dimension: 16,
+        child: CustomPaint(painter: _DoneTickPainter(color)),
+      );
+}
+
+class _DoneTickPainter extends CustomPainter {
+  const _DoneTickPainter(this.color);
+
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final s = size.shortestSide / 16;
+    final path = Path()
+      ..moveTo(3.0 * s, 8.5 * s)
+      ..lineTo(6.5 * s, 12.0 * s)
+      ..lineTo(13.0 * s, 4.5 * s);
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = color
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.0 * s
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round,
+    );
+  }
+
+  @override
+  bool shouldRepaint(_DoneTickPainter oldDelegate) =>
+      oldDelegate.color != color;
 }

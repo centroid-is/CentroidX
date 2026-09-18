@@ -36,8 +36,8 @@ import 'package:tfc/widgets/panes/standard_dialog.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:logger/logger.dart';
 import 'package:rxdart/rxdart.dart';
-import 'package:open62541/open62541.dart' show DynamicValue;
-import 'package:tfc_dart/core/state_man.dart';
+import 'package:open62541/open62541_types.dart' show DynamicValue;
+import 'package:tfc_dart/core/state_man_types.dart';
 
 import 'common.dart';
 import '../page.dart' show AssetListConverter;
@@ -1087,7 +1087,9 @@ class STBNIP2311Config extends BaseAsset {
     final cfg = _$STBNIP2311ConfigFromJson(json);
     final before = cfg.subdevices.length;
     cfg.subdevices.retainWhere(
-      (s) => _kAllowedSTBSubdeviceTypeNames.contains(s.runtimeType.toString()),
+      // `assetName`, not `runtimeType.toString()`: dart2js minifies the
+      // latter, and this filter would then drop every subdevice in a browser.
+      (s) => _kAllowedSTBSubdeviceTypeNames.contains(s.assetName),
     );
     final dropped = before - cfg.subdevices.length;
     if (dropped > 0) {
@@ -1374,10 +1376,10 @@ class _STBNIP2311ConfigContentState extends State<_STBNIP2311ConfigContent> {
                               index: index,
                               child: const Icon(Icons.drag_indicator),
                             ),
-                            title: Text(sub.runtimeType.toString()),
+                            title: Text(sub.assetName),
                             onTap: () => showStandardDialog<void>(
                               context: context,
-                              title: sub.runtimeType.toString(),
+                              title: sub.assetName,
                               subtitle: 'Configuration',
                               builder: (_) => sub.configure(context),
                             ),

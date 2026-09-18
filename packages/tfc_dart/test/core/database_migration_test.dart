@@ -117,10 +117,12 @@ void main() {
       }
     });
 
-    test('schema version is 9', () async {
+    test('schema version is 13', () async {
       final db = AppDatabase.inMemoryForTest();
       addTearDown(() => db.close());
-      expect(db.schemaVersion, 12);
+      // 13 is 14-01's alarm_history arm, renumbered three times as main took
+      // 7-9 and then 10-12 — see the arm's own comment in database_drift.dart.
+      expect(db.schemaVersion, 13);
     });
 
     test('fresh install creates the config tables and their indexes',

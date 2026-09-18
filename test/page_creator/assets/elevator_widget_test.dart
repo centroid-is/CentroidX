@@ -93,7 +93,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/widgets/number_slider.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:json_annotation/json_annotation.dart';
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 
 import 'package:tfc/page_creator/assets/common.dart';
 import 'package:tfc/page_creator/assets/conveyor.dart';

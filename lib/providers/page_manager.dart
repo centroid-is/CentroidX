@@ -2,11 +2,17 @@ import 'dart:async';
 
 import 'package:riverpod/riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
+import 'package:tfc_dart/core/access/guarded_config_store.dart'
+    show GuardedConfigStore;
 import 'package:tfc_dart/core/config/config_item.dart';
+import 'package:tfc_dart/core/config/config_store.dart'
+    show ConfigWriteResult;
 import 'package:tfc_dart/core/preferences.dart';
 
+import '../core/relayed_config_items.dart';
 import '../page_creator/page.dart';
 import 'config_store.dart';
+import 'device_local_store_open.dart';
 import 'preferences.dart';
 
 part 'page_manager.g.dart';
@@ -52,40 +58,98 @@ Future<PageManager> pageManager(Ref ref) async {
   // attached across every reconnect. Writes are not this field's business:
   // `save()` stays on the guarded object, because the page editor's save is a
   // person editing pages and is exactly what `configure` is for.
-  final guarded = await ref.watch(configStoreProvider.future);
-  final store = guarded.inner;
+  //
+  // **On a platform that has one.** A browser has no SQLite, so it has no
+  // mirror of the plant's page and asset rows — `configStoreProvider` cannot
+  // be built there. Its rows come over the relay instead
+  // (`relayed_config_items.dart`): read from the device-local cache at boot,
+  // refreshed once a signed-in session can fetch them, and re-read here on
+  // every change the backend announces. A save is still refused by name —
+  // the row route is reads only, and the doc below says why that is a
+  // boundary. The check is a compile-time constant: the station build
+  // keeps exactly one read of the store and no branch.
+  final GuardedConfigStore? guarded = kHasDeviceLocalMirror
+      ? await ref.watch(configStoreProvider.future)
+      : null;
+  final store = guarded?.inner;
+  // The device-local store, where the one-shot import put `page_editor_data`.
+  // A process with no device-local store open — a test container that did
+  // not set one — reads `prefs` instead, which is where such a test put its
+  // blob.
+  final local = _localPreferencesOrNull(ref);
+
+  // The save, and the only route pages take to the shared rows. Both kinds
+  // are in the replace set because a page and its assets move together —
+  // leave `asset` out and an asset the operator deleted would be inserted
+  // and never removed — while `checkKind` names the single
+  // `kConfigWriteKeys` row that decides who may do it. One gesture, one
+  // check, one audit row under `page_editor_data`: 02-05's C-8 is explicit
+  // that a new surface or a per-entity item key falls closed to
+  // `administer` and locks every operator and shift leader out of the page
+  // editor, and the failure reads as a permissions bug rather than a typo.
+  //
+  // Without a mirror the binding is [_refuseWriteWithoutMirror], and it is
+  // bound rather than left null on purpose — see that function.
+  Future<ConfigWriteResult> Function(List<ConfigItem> wanted,
+      {String? reason, List<ConfigItem>? derivedFrom}) writeItems =
+      _refuseWriteWithoutMirror;
+  // The access check, before the fallback gate in `save()`: an anonymous
+  // session on a station still waiting for the plant's pages is refused
+  // and recorded as a refusal, not told to wait.
+  Future<void> Function()? preflight;
+  if (guarded != null) {
+    writeItems = (wanted, {reason, derivedFrom}) => guarded.write(
+          wanted,
+          kinds: _pageKinds,
+          checkKind: ConfigKind.page,
+          reason: reason,
+          derivedFrom: derivedFrom,
+        );
+    preflight = () => guarded.refuseUnlessCan(ConfigKind.page);
+  }
 
   final pageManager = PageManager(
     pages: {},
-    prefs: prefs,
+    // The shared store — except where there is no mirror. `load()` reads the
+    // top-level order out of `prefs` whenever the store cannot answer it, and
+    // a browser's shared store is the relay: it parks until the client exists,
+    // fails when that client could not be built, and refuses until somebody
+    // signs in. Every one of those made the home page error on a read for a
+    // row the plant cannot serve this client anyway (the order is a
+    // preference over page rows the browser cannot receive). The device-local
+    // store answers null, which is the built-in layout, which is what the
+    // browser has.
+    prefs: store == null ? (local ?? prefs) : prefs,
     store: store,
-    // The save, and the only route pages take to the shared rows. Both kinds
-    // are in the replace set because a page and its assets move together —
-    // leave `asset` out and an asset the operator deleted would be inserted
-    // and never removed — while `checkKind` names the single
-    // `kConfigWriteKeys` row that decides who may do it. One gesture, one
-    // check, one audit row under `page_editor_data`: 02-05's C-8 is explicit
-    // that a new surface or a per-entity item key falls closed to
-    // `administer` and locks every operator and shift leader out of the page
-    // editor, and the failure reads as a permissions bug rather than a typo.
-    writeItems: (wanted, {reason, derivedFrom}) => guarded.write(
-      wanted,
-      kinds: _pageKinds,
-      checkKind: ConfigKind.page,
-      reason: reason,
-      derivedFrom: derivedFrom,
-    ),
-    // The blob fallback reads the device-local store, where the one-shot
-    // import put `page_editor_data`; `prefs` is the shared row store, which
-    // never holds that key. A process with no device-local store open — a
-    // test container that did not set one — falls back to `prefs`, which is
-    // where such a test put its blob.
-    blobPrefs: _localPreferencesOrNull(ref),
-    // The access check, before the fallback gate in `save()`: an anonymous
-    // session on a station still waiting for the plant's pages is refused
-    // and recorded as a refusal, not told to wait.
-    preflight: () => guarded.refuseUnlessCan(ConfigKind.page),
+    writeItems: writeItems,
+    blobPrefs: local,
+    preflight: preflight,
   );
+
+  if (store == null) {
+    final relayed = await ref.watch(relayedConfigItemsProvider.future);
+    // Rows first, when there are any; the ordinary load otherwise — the
+    // blob this client has never held and then the built-in default, which
+    // is what a fresh browser shows until it signs in and fetches.
+    await pageManager.loadFromItems(relayed.itemsOf(kRelayedConfigKinds));
+    // Freshness: each replaced snapshot is loaded whole and announced. The
+    // same object, re-filled, so everything watching this provider sees
+    // the plant's pages as they now are — the page view keys its assets by
+    // instance and rebuilds what actually changed.
+    final follow = relayed.changed.listen((_) {
+      unawaited(pageManager
+          .loadFromItems(relayed.itemsOf(kRelayedConfigKinds))
+          .then((_) => ref.notifyListeners())
+          .catchError((Object e) {
+        // `loadFromItems` does not throw; an unawaited future with no
+        // handler is an unhandled asynchronous error if that ever stops
+        // being true.
+        return;
+      }));
+    });
+    ref.onDispose(() => unawaited(follow.cancel()));
+    return pageManager;
+  }
 
   await pageManager.load();
 
@@ -109,7 +173,7 @@ Future<PageManager> pageManager(Ref ref) async {
   // The re-load cannot clobber an open editing session: the editor works on
   // `PageManager.copyPages` output, not on this object's map. That session's
   // own save is covered by 03-06's identity adoption — the other half.
-  if (pageManager.servingFallback) {
+  if (store != null && pageManager.servingFallback) {
     late final StreamSubscription<void> subscription;
     subscription = store.keyMappingChanges.listen((diff) {
       final touchesPages = [
@@ -136,4 +200,34 @@ Future<PageManager> pageManager(Ref ref) async {
   }
 
   return pageManager;
+}
+
+/// The save a platform with no mirror answers: a refusal by name, and nothing
+/// written anywhere.
+///
+/// **A boundary, not an oversight.** The row route the browser reads its
+/// pages through (`configItems.*`) carries no write, on purpose: a save is
+/// a merge against the plant's current rows, a `configure` check, and a
+/// `config_change` row attributed through the relay's audit — the discipline
+/// `ConfigStore` applies against a mirror, and a design of its own for a
+/// client that has none. Until it exists, editing pages is station work.
+///
+/// The alternative — leaving `writeItems` unbound — takes `PageManager.save`
+/// down its legacy path and writes the whole layout as a blob into the
+/// device-local store, which in a browser is `localStorage`: the operator
+/// would watch a save succeed, this one tab would serve the edited layout on
+/// its next load, and no other screen on the plant would ever see it. That
+/// is the silent-divergence class `relayed_preferences.dart` opens by
+/// describing, and a refusal is the only honest answer until page rows
+/// travel the relay.
+Future<ConfigWriteResult> _refuseWriteWithoutMirror(
+  List<ConfigItem> wanted, {
+  String? reason,
+  List<ConfigItem>? derivedFrom,
+}) async {
+  throw UnsupportedError(
+      'This client reads the plant\'s pages over the relay and cannot write '
+      'them back: the row route is reads only, and a browser holds no '
+      'mirror to merge a save against. Nothing was written. Edit the pages '
+      'on a station.');
 }

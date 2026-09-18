@@ -5,11 +5,12 @@ import 'package:rxdart/rxdart.dart' show Rx;
 
 import 'package:tfc_dart/core/alarm.dart';
 import 'package:tfc_dart/core/boolean_expression.dart';
-import '../chat/ai_context_action.dart';
-import '../chat/asset_context_menu.dart' show buildAlarmContextBlock;
-import '../chat/chat_overlay.dart' show ChatContextType;
+// Chat is not compiled for the browser; see `chat/editor_ai.dart`.
+import '../chat/editor_ai.dart';
+import '../chat/chat_context_types.dart' show ChatContextType;
 import '../core/feature_flags.dart';
 import '../providers/alarm.dart';
+import '../providers/local_gateway_alarm.dart';
 import '../theme.dart';
 import 'base_scaffold.dart';
 import 'boolean_expression.dart';
@@ -866,10 +867,10 @@ class _ListActiveAlarmsState extends ConsumerState<ListActiveAlarms> {
   /// The list's stream, made once per mode (active / history). Built inline
   /// it was a new object on every rebuild -- every search keystroke -- and
   /// StreamBuilder answered each with its spinner.
-  Stream<(AlarmMan, List<(AlarmActive, DateTime?)>)>? _stream;
+  Stream<(AlarmSource, List<(AlarmActive, DateTime?)>)>? _stream;
   bool? _streamShowsHistory;
 
-  Stream<(AlarmMan, List<(AlarmActive, DateTime?)>)> _streamFor(
+  Stream<(AlarmSource, List<(AlarmActive, DateTime?)>)> _streamFor(
       bool showHistory) {
     final cached = _stream;
     if (cached != null && _streamShowsHistory == showHistory) return cached;
@@ -881,7 +882,7 @@ class _ListActiveAlarmsState extends ConsumerState<ListActiveAlarms> {
       // too -- see [alarmHistoryEntries].
       (alarmMan) => showHistory
           ? Rx.combineLatest2<List<AlarmActive?>, Set<AlarmActive>,
-              (AlarmMan, List<(AlarmActive, DateTime?)>)>(
+              (AlarmSource, List<(AlarmActive, DateTime?)>)>(
               alarmMan.history(),
               alarmMan.activeAlarms(),
               (history, active) =>
@@ -894,16 +895,66 @@ class _ListActiveAlarmsState extends ConsumerState<ListActiveAlarms> {
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<(AlarmMan, List<(AlarmActive, DateTime?)>)>(
+    // The panel's own gateway alarm, or null on every direct station and on
+    // a healthy link. It is merged HERE, as a value beside whatever the
+    // AlarmSource says — never into the source itself, which is what keeps
+    // it out of ackAlarm, out of the history buffer and out of TimescaleDB
+    // (lib/core/local_gateway_alarm.dart owns that argument). It rides above
+    // the search and level filters on purpose: while the gateway is down
+    // every plant row on this page may be stale, and the row that says so
+    // must not be filterable away. It is NOT in the history list — history
+    // is the persisted record, and this alarm is deliberately not a record.
+    final localAlarm = ref.watch(localGatewayAlarmProvider);
+    return StreamBuilder<(AlarmSource, List<(AlarmActive, DateTime?)>)>(
       stream: _streamFor(_showHistory),
       builder: (context, snapshot) {
-        if (!snapshot.hasData) {
+        // An error is not a loading state. `alarmManProvider` throws for
+        // real reasons — a gateway client with no alarm transport says so by
+        // name — and every one of them arrived here as a stream error, which
+        // `hasData == false` renders as a spinner that never stops. Reported
+        // on the plant (2026-09-17) as "alarm view is constantly loading",
+        // with nothing in the console, because a provider error is not an
+        // uncaught exception and nothing printed it.
+        if (snapshot.hasError && localAlarm == null) {
+          return Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.error_outline,
+                      color: Theme.of(context).colorScheme.error),
+                  const SizedBox(height: 8),
+                  Text('The alarm list could not be loaded',
+                      style: Theme.of(context).textTheme.titleMedium),
+                  const SizedBox(height: 8),
+                  // The cause, verbatim and selectable. Whoever is standing at
+                  // the panel is the person who can say whether it is the link
+                  // or the plant, and they cannot do that from a spinner.
+                  SelectableText('${snapshot.error}',
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.bodySmall),
+                ],
+              ),
+            ),
+          );
+        }
+        if (!snapshot.hasData && localAlarm == null) {
           return const Center(child: CircularProgressIndicator());
         }
 
-        var (alarmMan, alarms) = snapshot.data!;
+        // No data with a standing local alarm is not a loading state worth a
+        // spinner: in gateway mode the alarm source itself rides the
+        // transport, so the one condition that takes the source away is the
+        // condition the local alarm reports. Render what the panel knows.
+        final alarmMan = snapshot.data?.$1;
+        var alarms =
+            snapshot.data?.$2 ?? const <(AlarmActive, DateTime?)>[];
         if (!_showHistory && widget.onActiveAlarms != null) {
-          final active = [for (final a in alarms) a.$1];
+          final active = [
+            if (localAlarm != null) localAlarm,
+            for (final a in alarms) a.$1,
+          ];
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted) widget.onActiveAlarms!(active);
           });
@@ -913,11 +964,21 @@ class _ListActiveAlarmsState extends ConsumerState<ListActiveAlarms> {
             (e) => e.$1.alarm.config.title,
             (e) => e.$1.alarm.config.description,
           ]);
-        } else {
+        } else if (alarmMan != null) {
           alarms = alarmMan
               .filterAlarms(alarms.map((a) => a.$1).toList(), _searchQuery)
               .map((a) => (a, null as DateTime?))
               .toList();
+        }
+
+        // Prepended AFTER the search filter (a query must not be able to
+        // hide the reason its own results may be stale) and BEFORE the
+        // counts (a red error card beside an "Error 0" chip would read as a
+        // broken counter). The level filter below exempts it for the same
+        // reason the search does. Active view only — see the comment on
+        // localAlarm above.
+        if (!_showHistory && localAlarm != null) {
+          alarms = [(localAlarm, null), ...alarms];
         }
 
         // Counted before the level filter is applied, so a chip states what
@@ -930,7 +991,9 @@ class _ListActiveAlarmsState extends ConsumerState<ListActiveAlarms> {
         };
         if (_levelFilter.isNotEmpty) {
           alarms = alarms
-              .where((a) => _levelFilter.contains(a.$1.notification.rule.level))
+              .where((a) =>
+                  identical(a.$1, localAlarm) ||
+                  _levelFilter.contains(a.$1.notification.rule.level))
               .toList();
         }
 
@@ -976,6 +1039,22 @@ class _ListActiveAlarmsState extends ConsumerState<ListActiveAlarms> {
                               color: textColor.withAlpha(178),
                             ),
                           ),
+                          // The D-3 hold, named and dated. A held alarm can
+                          // neither clear nor re-fire, so a row without this
+                          // line is a warning the operator will wait on
+                          // forever — the rig-measured cooler defect
+                          // (2026-09-08). Bold on purpose: this is the row's
+                          // one actionable fact.
+                          if (alarm.notification.staleInputs.isNotEmpty)
+                            Text(
+                              'Input stale'
+                              '${alarm.notification.staleSince != null ? ' since ${formatTimestamp(alarm.notification.staleSince!)}' : ''}'
+                              ' — ${alarm.notification.staleInputs.join(', ')}',
+                              style: TextStyle(
+                                color: textColor,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
                           if (deactivationTime != null)
                             Text(
                               'Deactivated: ${formatTimestamp(deactivationTime)}',
@@ -1224,6 +1303,24 @@ class ViewActiveAlarm extends ConsumerWidget {
                 style: TextStyle(color: textColor, fontWeight: FontWeight.bold),
               ),
             ],
+            if (alarm.notification.staleInputs.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              // The hold, and its consequence. "Cannot change state" is the
+              // sentence that stops an operator waiting for a held alarm to
+              // clear on its own: the state shown is remembered, not being
+              // re-earned, until the named input delivers again.
+              Text(
+                'Input stale'
+                '${alarm.notification.staleSince != null ? ' since ${formatTimestamp(alarm.notification.staleSince!)}' : ''}'
+                ': ${alarm.notification.staleInputs.join(', ')}. '
+                'This alarm cannot change state until the input returns — '
+                'check the sensor.',
+                style: TextStyle(
+                  color: textColor,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
             if (requiresAck) ...[
               const SizedBox(height: 16),
               Text(
@@ -1237,9 +1334,29 @@ class ViewActiveAlarm extends ConsumerWidget {
             if (canAck) ...[
               const SizedBox(height: 16),
               ElevatedButton.icon(
+                // Drawn and enabled in both transports. `canAck` above is the
+                // only thing that decides whether an operator sees this
+                // control; how the acknowledge travels is not a reason to hide
+                // an action they are allowed to take (Q-1, ruled 2026-09-06).
                 onPressed: () async {
                   final alarmMan = await ref.read(alarmManProvider.future);
-                  alarmMan.ackAlarm(alarm);
+                  try {
+                    // Awaited, because in gateway mode this crosses the pipe.
+                    // Direct mode completes immediately -- there the local
+                    // removal is the whole effect.
+                    await alarmMan.ackAlarm(alarm);
+                  } catch (error) {
+                    // Shown, never swallowed: a refusal the operator cannot
+                    // see is the silent loss this project exists to prevent.
+                    // And the card stays open -- one that closed here would
+                    // have told them it worked.
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Acknowledge failed: $error')),
+                      );
+                    }
+                    return;
+                  }
                   if (context.mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(content: Text('Alarm acknowledged')),

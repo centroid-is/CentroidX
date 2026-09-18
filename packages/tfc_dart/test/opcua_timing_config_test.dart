@@ -4,7 +4,7 @@ import 'package:tfc_dart/core/state_man.dart';
 /// The two timing knobs on [OpcUAConfig]: how fast the server publishes to
 /// us, and how long the SecureChannel is asked to live. Both used to be
 /// hardcoded — the publishing interval as open62541's 100 ms default, the
-/// lifetime as a bare `Duration(minutes: 1)` in `StateMan.create` left over
+/// lifetime as a bare `Duration(minutes: 1)` in `OpcUaStateMan.create` left over
 /// from reproducing the frozen-session bug.
 void main() {
   group('OpcUAConfig timing defaults', () {

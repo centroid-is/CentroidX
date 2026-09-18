@@ -1,7 +1,7 @@
 /// The audit trail list item: one row, and one human action, rendered the way
 /// an engineer reads them.
 ///
-/// Two widgets live here. [AuditEntryLine] draws one `AuditEntryData` — the
+/// Two widgets live here. [AuditEntryLine] draws one `AuditRecord` — the
 /// collapsed line, and also every child of an expanded action, so a member row
 /// and a scalar row cannot drift apart. `AuditActionTile` (plan 05-04 task 3)
 /// draws one `AuditAction` on top of it.
@@ -58,7 +58,7 @@
 library;
 
 import 'package:flutter/material.dart';
-import 'package:tfc_dart/core/database_drift.dart';
+import 'package:tfc_access/tfc_access.dart';
 
 import '../core/audit_trail_grouping.dart';
 import '../theme.dart';
@@ -257,7 +257,7 @@ class AuditEntryLine extends StatelessWidget {
 
   /// The row to draw. Rendered whatever its `surface` says — see the
   /// open-vocabulary contract in the library doc.
-  final AuditEntryData row;
+  final AuditRecord row;
 
   /// Whether to put `station`, `origin`, `actionId` and `reason` under the
   /// line.

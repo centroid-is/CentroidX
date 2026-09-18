@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 import 'package:rxdart/rxdart.dart';
 
 import 'm2400.dart';
@@ -72,11 +72,28 @@ class M2400ClientWrapper {
   /// Set of valid top-level subscribe keys.
   static const _validKeys = {batchKey, statKey, introKey, luaKey};
 
+  /// How this device's bytes become text.
+  ///
+  /// **Optional, and its default is exactly what this class always did** —
+  /// `parseM2400Frame`'s own `utf8.decode(bytes, allowMalformed: true)`.
+  /// Nothing in this package supplies it.
+  ///
+  /// It exists because the *caller* knows which device the bytes came from and
+  /// this class does not: the server alias is not in scope here and should not
+  /// be. A weigher that speaks Latin-1 sends `Þorskflök í raspi` as bytes that
+  /// `allowMalformed` silently replaces with U+FFFD, under a good quality,
+  /// with nothing in any log — and at this plant the weighers are exactly the
+  /// Latin-1 devices. See
+  /// `packages/tfc_relay_local/lib/src/string_encoding.dart`, which owns the
+  /// per-alias policy and passes one of these in.
+  final String Function(List<int> bytes)? decodeBytes;
+
   /// Create a wrapper for an M2400 device at [host]:[port].
   ///
-  /// Optionally accepts a [socketFactory] for test injection.
+  /// Optionally accepts a [socketFactory] for test injection, and a
+  /// [decodeBytes] for a device that does not speak UTF-8.
   M2400ClientWrapper(this.host, this.port,
-      {MSocket Function(String, int)? socketFactory})
+      {MSocket Function(String, int)? socketFactory, this.decodeBytes})
       : _socketFactory = socketFactory ?? MSocket.new;
 
   /// Current connection status (synchronous).
@@ -106,7 +123,7 @@ class M2400ClientWrapper {
     //     -> _route (dispatch to per-type streams)
     _pipelineSubscription = _socket!.dataStream
         .transform(M2400FrameParser())
-        .map(parseM2400Frame)
+        .map((frame) => parseM2400Frame(frame, decodeBytes: decodeBytes))
         .where((r) => r != null)
         .map((r) => parseTypedRecord(r!))
         .map(convertRecordToDynamicValue)

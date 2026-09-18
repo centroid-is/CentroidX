@@ -18,14 +18,24 @@ import 'package:drift/drift.dart'
         Variable;
 // Prefixed: drift's `Expression` collides with this package's own.
 import 'package:drift/drift.dart' as drift show Constant, Expression;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 
-import 'database.dart' show Database;
+import 'alarm_stamp.dart';
 import 'database_drift.dart' show $AlarmHistoryTable;
 import 'preferences.dart';
-import 'state_man.dart';
+// The interface only. `state_man.dart` also holds the OPC UA client, which is
+// `dart:ffi`, and the alarm editor is a web route — the rule model has no
+// business linking a protocol stack to name the thing it reads values from.
+import 'state_man_types.dart' show StateMan;
 import 'ring_buffer.dart';
 import 'boolean_expression.dart';
 import 'fuzzy_match.dart';
+
+// A self-import, with a prefix, for exactly one reason: `AlarmMan` declares a
+// `filterAlarms` member, and inside the class body that name shadows the
+// top-level `filterAlarms` it has to delegate to. This is how the one-line
+// delegation reaches the shared function instead of calling itself.
+import 'alarm.dart' as shared;
 
 part 'alarm.g.dart';
 
@@ -247,15 +257,102 @@ class AlarmManConfig {
   Map<String, dynamic> toJson() => _$AlarmManConfigToJson(this);
 }
 
-@JsonSerializable()
-class AlarmManLocalConfig {
-  final bool historyToDb;
+/// Where a panel gets its alarms from.
+///
+/// One surface, two implementations. [AlarmMan] evaluates the rules itself
+/// against a local `StateMan` — the direct-mode station, wired straight to the
+/// PLCs. A gateway-mode station is *told* the active set by the backend over
+/// the pipe and evaluates nothing. The widgets must not know which they have,
+/// or "which alarms does the operator see" becomes two answers that can
+/// disagree on the same screen.
+///
+/// This is the set of members the app actually calls, and no more.
+abstract interface class AlarmSource {
+  /// The configured alarms, as loaded.
+  AlarmManConfig get config;
 
-  AlarmManLocalConfig({required this.historyToDb});
+  /// One [Alarm] per entry of [config].
+  Set<Alarm> get alarms;
 
-  factory AlarmManLocalConfig.fromJson(Map<String, dynamic> json) =>
-      _$AlarmManLocalConfigFromJson(json);
-  Map<String, dynamic> toJson() => _$AlarmManLocalConfigToJson(this);
+  /// The alarms standing right now, re-emitted on every change.
+  Stream<Set<AlarmActive>> activeAlarms();
+
+  /// Recently cleared alarms, newest last, as a rolling buffer.
+  Stream<List<AlarmActive?>> history();
+
+  /// Closed and open activations from `alarm_history`, newest first.
+  Future<List<AlarmActive>> getRecentAlarms({
+    int limit,
+    DateTime? from,
+    DateTime? to,
+  });
+
+  /// The operator's view of [alarms]: one row per alarm, worst rule first.
+  ///
+  /// Delegates to the top-level [filterAlarms] — see there for why the
+  /// behaviour is not allowed to be per-implementation.
+  List<AlarmActive> filterAlarms(List<AlarmActive> alarms, String searchQuery);
+
+  /// Acknowledges [alarm].
+  ///
+  /// `Future<void>`, not `void`, and that is the one signature on this
+  /// interface that is not the shape [AlarmMan] had before. A gateway-mode
+  /// implementation has to cross a wire to acknowledge (`Methods.ackAlarm`),
+  /// and a `void` member would oblige it to fire and forget — which is the
+  /// silent-loss failure this project exists to prevent. In direct mode the
+  /// panel owns the active set and the local removal *is* the effect, so
+  /// [AlarmMan] completes immediately.
+  Future<void> ackAlarm(AlarmActive alarm);
+
+  void addAlarm(AlarmConfig alarm);
+  void removeAlarm(AlarmConfig alarm);
+  void updateAlarm(AlarmConfig alarm);
+
+  // No `setAutoNavigate` here any more. Whether a raising alarm pulls the
+  // screen to its page is per account now (`app_user.alarm_auto_navigate`,
+  // #575), not a flag in `alarm_man_config`, so neither implementation has
+  // anything to set.
+}
+
+/// The operator's view of [alarms]: one row per alarm, worst rule first.
+///
+/// A top-level function rather than a method, because both [AlarmSource]
+/// implementations have to answer the same question and two implementations of
+/// "which alarms does the operator see" is two lists that can disagree on the
+/// same screen. Nothing here reads instance state — the collapse, the sort and
+/// the fuzzy filter are all pure over their arguments.
+///
+/// Alarms are grouped by [AlarmConfig.uid] and only the highest-priority rule
+/// of each survives: an operator wants one row per thing that is wrong, not
+/// one per rule that noticed. The survivors sort by level and then by recency,
+/// and [searchQuery] fuzzy-matches title and description.
+List<AlarmActive> filterAlarms(List<AlarmActive> alarms, String searchQuery) {
+  // Group alarms by uid and keep only the highest priority one for each
+  final Map<String, AlarmActive> highestPriorityAlarms = {};
+  for (final alarm in alarms) {
+    final existing = highestPriorityAlarms[alarm.alarm.config.uid];
+    if (existing == null ||
+        alarm.notification.rule.level.index >
+            existing.notification.rule.level.index) {
+      highestPriorityAlarms[alarm.alarm.config.uid] = alarm;
+    }
+  }
+
+  var filteredAlarms = highestPriorityAlarms.values.toList()
+    ..sort((a, b) {
+      // First sort by priority (error > warning > info)
+      final priorityCompare = b.notification.rule.level.index
+          .compareTo(a.notification.rule.level.index);
+      if (priorityCompare != 0) return priorityCompare;
+
+      // If same priority, sort by most recent timestamp
+      return b.notification.timestamp.compareTo(a.notification.timestamp);
+    });
+
+  return fuzzyFilter(filteredAlarms, searchQuery, [
+    (a) => a.alarm.config.title,
+    (a) => a.alarm.config.description,
+  ]);
 }
 
 /// Whether an `alarm_history` row overlaps the window [from]..[to].
@@ -297,13 +394,14 @@ drift.Expression<bool> alarmHistoryOverlaps(
 /// comparison.
 ///
 /// Postgres therefore gets a plain comparison, with both sides cast to
-/// `timestamp` the way `AlarmMan._addToDb`'s insert casts what it writes.
+/// `timestamp` the way `AlarmHistoryWriter`'s statements cast what they write
+/// (`core/relay/backend_alarm_history.dart`).
 /// Both casts are needed: storing datetimes as text makes drift declare these
 /// columns `text` on Postgres too, and drift_postgres types a mapped `String`
 /// variable as `Type.text`, so without the casts neither side is a timestamp
 /// and the comparison is `text <= text` — lexicographic, and wrong the moment
 /// two rows were written in different formats. `alarm_history` holds both:
-/// `_addToDb` inserts through a `::timestamp` cast, which Postgres
+/// the writer inserts through a `::timestamp` cast, which Postgres
 /// writes back out as `2026-08-29 10:00:00`, while drift's own insert stores
 /// ISO-8601. `::timestamp` parses either. On a database whose columns really
 /// are `timestamp` the cast is a no-op.
@@ -338,31 +436,45 @@ class _DateTimeBound extends drift.Expression<bool> {
   }
 }
 
-class AlarmMan {
+/// The direct-mode alarm engine: it subscribes to the plant itself, evaluates
+/// every configured rule, and publishes what is standing right now.
+///
+/// **This class has no write path, and that is deliberate (D-6).** It used to
+/// carry an `AlarmManLocalConfig` with a `historyToDb` boolean and an
+/// `_addToDb` insert behind it, which `bin/main.dart` turned on. Persistence
+/// now belongs to the backend's `AlarmEngine`/`AlarmHistoryWriter`
+/// (`core/relay/backend_alarm_history.dart`), which always writes, and the row
+/// exists for as long as the alarm does rather than appearing only once it
+/// clears.
+///
+/// The flag is not merely unused here — it is *gone*, along with the statement
+/// it guarded. A configuration switch that decides whether an object writes to
+/// a shared database is a switch somebody eventually sets wrong, and the cost
+/// of that mistake is two processes writing the same plant's history into the
+/// same table with no way to tell the copies apart. A class that contains no
+/// insert cannot be configured into performing one. If you are here looking for
+/// where the insert went: it is `AlarmHistoryWriter`, and it should not come
+/// back.
+class AlarmMan implements AlarmSource {
+  @override
   final AlarmManConfig config;
-  final AlarmManLocalConfig localConfig;
-
-  /// The store [addAlarm], [removeAlarm] and [updateAlarm] save through, or
-  /// null in a process that has none.
-  ///
-  /// Null is the headless case ([AlarmMan.headless]): the acquisition backend
-  /// reads the configuration as a value and never edits it. Those three
-  /// methods are the alarm editor's, reached only from behind a
-  /// `configure`-gated page, so a process with no editor needs no writer —
-  /// and giving it one would make it a second author of shared configuration
-  /// with none of a station's machinery behind the write. Calling them anyway
-  /// throws; it does not quietly do nothing.
-  final Preferences? preferences;
-
-  /// Where `alarm_history` lives, or null when there is nowhere to record.
-  ///
-  /// Separate from [preferences] since 04-12. It used to be reached through
-  /// `preferences.database` — the escape hatch that obliged every caller
-  /// wanting alarm history to hold a preferences object it otherwise had no
-  /// use for.
-  final Database? database;
+  final Preferences preferences;
   final StateMan stateMan;
+  @override
   final Set<Alarm> alarms;
+
+  /// The wall clock, injected.
+  ///
+  /// Never `DateTime.now()` in this file: an alarm instant is a fact two
+  /// panels have to agree on, so it comes from the plant where the plant said
+  /// so and from a clock the composition root supplied where it did not. See
+  /// [resolveAlarmStamp].
+  final DateTime Function() _clock;
+
+  /// How far a plant instant may sit from this station's own clock before the
+  /// disagreement is reported (CD-3). Reported, never clamped.
+  final Duration _skewWarnAfter;
+
   final Set<AlarmActive> _activeAlarms;
   final StreamController<Set<AlarmActive>> _activeAlarmsController;
   final RingBuffer<AlarmActive> _history;
@@ -370,17 +482,20 @@ class AlarmMan {
   AlarmMan._(
       {required this.config,
       required this.preferences,
-      required this.database,
       required this.stateMan,
-      required this.localConfig})
-      : alarms = config.alarms.map((e) => Alarm(config: e)).toSet(),
+      required DateTime Function() clock,
+      Duration skewWarnAfter = kAlarmSkewWarnAfter})
+      : _clock = clock,
+        _skewWarnAfter = skewWarnAfter,
+        alarms = config.alarms.map((e) => Alarm(config: e)).toSet(),
         _activeAlarms = {},
         _activeAlarmsController = BehaviorSubject<Set<AlarmActive>>.seeded({}),
         _history = RingBuffer<AlarmActive>(1000),
         _historyController = BehaviorSubject<List<AlarmActive?>>.seeded([]) {
     _activeAlarmsController.onListen = () async {
       for (final alarm in alarms) {
-        final stream = alarm.onChange(stateMan);
+        final stream = alarm.onChange(stateMan,
+            clock: _clock, skewWarnAfter: _skewWarnAfter);
         stream.listen((alarmNotification) {
           final existing = _activeAlarms.firstWhereOrNull((e) =>
               // the uid must match, we are in correct closure
@@ -388,15 +503,21 @@ class AlarmMan {
               // the rule must match
               e.notification.rule == alarmNotification.rule);
 
+          // The instant this notification says the transition happened at,
+          // with the provenance it was resolved under. Whatever this
+          // notification closes, closes at the same instant it opened its
+          // successor -- there is no second reading of anything.
+          final stamp = alarmNotification.stamp;
+
           if (alarmNotification.active) {
             if (existing != null) {
-              _removeActiveAlarm(existing);
+              _removeActiveAlarm(existing, stamp);
             }
             _activeAlarms.add(
                 AlarmActive(alarm: alarm, notification: alarmNotification));
           } else if (!alarmNotification.rule.acknowledgeRequired) {
             if (existing != null) {
-              _removeActiveAlarm(existing);
+              _removeActiveAlarm(existing, stamp);
             } else {
               _log.w(
                   'Did not find existing active alarm for alarmNotification: $alarmNotification');
@@ -407,11 +528,23 @@ class AlarmMan {
                   e.notification.rule == alarmNotification.rule) {
                 e.pendingAck = true;
                 e.notification.active = false;
-                // The condition cleared *now*; the ack, whenever it comes, is
-                // paperwork. Recording the clear time here is what lets the
-                // downtime analysis end the stop when the machine restarted
-                // rather than when somebody got around to pressing OK.
-                e.deactivated = DateTime.now();
+                // The condition cleared when the PLANT says it cleared, and
+                // the ack — whenever it comes — is paperwork. Recording the
+                // clear time here is what lets the downtime analysis end the
+                // stop when the machine restarted rather than when somebody
+                // got around to pressing OK.
+                //
+                // `stamp.at`, never `DateTime.now()`. The stamp is resolved
+                // once above, from the reading's own `sourceTimestamp` where
+                // there is one, and it carries the provenance it was resolved
+                // under. Reading this machine's clock here would replace a
+                // fact about the plant with a fact about this station — and
+                // it would disagree with the two sibling edges a dozen lines
+                // up, which both hand the same `stamp` to
+                // [_removeActiveAlarm]. That is D-2, and it is the reason
+                // `alarm_structure_test.dart` arm 6 permits exactly one
+                // `DateTime.now` on this path, at the composition root.
+                e.deactivated = stamp.at;
                 break;
               }
             }
@@ -427,8 +560,13 @@ class AlarmMan {
     _activeAlarmsController.onCancel = () async {};
   }
 
-  /// The app's constructor: the configuration comes out of the store, and the
-  /// store stays for the editor to save through.
+  /// Loads the configuration and builds the engine.
+  ///
+  /// [clock] is required and has no default *here*. Composition roots supply
+  /// `DateTime.now` — the app's alarm provider for a panel — and this file
+  /// spells the literal nowhere, which is the mechanism that keeps a second,
+  /// hidden reading of the machine clock from creeping back onto an alarm
+  /// instant (D-2).
   ///
   /// **A missing `alarm_man_config` is an empty configuration, and nothing is
   /// written here.** This used to seed the empty default through the checked
@@ -439,61 +577,27 @@ class AlarmMan {
   /// every alarm widget down with it. Seeding is the app layer's, through the
   /// system path (`lib/providers/alarm.dart`), which knows when "absent" means
   /// the plant has none and when it means this station has not read it yet.
-  static Future<AlarmMan> create(Preferences preferences, StateMan stateMan,
-      {historyToDb = false}) async {
-    final configJson = await preferences.getString('alarm_man_config');
-    return _build(
-      config: configJson == null
-          ? AlarmManConfig(alarms: [])
-          : AlarmManConfig.fromJson(jsonDecode(configJson)),
-      preferences: preferences,
-      database: preferences.database,
-      stateMan: stateMan,
-      historyToDb: historyToDb,
-    );
-  }
-
-  /// The constructor for a process that has no store: the configuration
-  /// arrives as a value, already read.
   ///
-  /// The acquisition backend's, and the shape the rest of its boot already
-  /// uses — `KeyMappings` reaches `StateMan.create` the same way. It takes
-  /// [database] on its own because alarm history is a different thing from
-  /// alarm configuration and only ever shared a route by accident.
-  ///
-  /// There is deliberately no read here and no default written. A process
-  /// with one boot read and no reconcile cannot tell an empty configuration
-  /// from one whose migration has not run, so the decision about what absence
-  /// means belongs to the caller, who can ask the migration marker; and a
-  /// backend writing the plant's default would be a second author with none
-  /// of a station's checked group, `origin` or audit row behind it.
-  static Future<AlarmMan> headless({
-    required AlarmManConfig config,
-    required StateMan stateMan,
-    Database? database,
-    bool historyToDb = false,
-  }) =>
-      _build(
-        config: config,
-        preferences: null,
-        database: database,
-        stateMan: stateMan,
-        historyToDb: historyToDb,
-      );
-
-  static Future<AlarmMan> _build({
-    required AlarmManConfig config,
-    required Preferences? preferences,
-    required Database? database,
-    required StateMan stateMan,
-    required bool historyToDb,
+  /// There is no headless twin of this constructor, and there must not be one:
+  /// the backend does not run an `AlarmMan` at all (D-6, ALRM-01). Its engine
+  /// is `AlarmEngine` over the pipe's own value source, and its history is
+  /// `AlarmHistoryWriter`.
+  static Future<AlarmMan> create(
+    Preferences preferences,
+    StateMan stateMan, {
+    required DateTime Function() clock,
+    Duration skewWarnAfter = kAlarmSkewWarnAfter,
   }) async {
+    final configJson = await preferences.getString('alarm_man_config');
+    final config = configJson == null
+        ? AlarmManConfig(alarms: [])
+        : AlarmManConfig.fromJson(jsonDecode(configJson));
     final alarmMan = AlarmMan._(
         config: config,
         preferences: preferences,
-        database: database,
         stateMan: stateMan,
-        localConfig: AlarmManLocalConfig(historyToDb: historyToDb));
+        clock: clock,
+        skewWarnAfter: skewWarnAfter);
     try {
       alarmMan._history.addAll(await alarmMan.getRecentAlarms());
       alarmMan._historyController.add(alarmMan._history.buffer);
@@ -503,29 +607,49 @@ class AlarmMan {
     return alarmMan;
   }
 
+  @override
   Stream<Set<AlarmActive>> activeAlarms() {
     return _activeAlarmsController.stream;
   }
 
+  @override
   Stream<List<AlarmActive?>> history() {
     return _historyController.stream;
   }
 
-  void ackAlarm(AlarmActive alarm) {
-    // Guarded: an instance that already left the active set (double-tap on
-    // the ack button, a stale reference from the history list) must not be
+  /// Acknowledges [alarm] and takes it out of the active set.
+  ///
+  /// `async` for [AlarmSource]'s sake, not for its own: in direct mode the
+  /// panel owns the active set and the local removal is the whole effect, so
+  /// there is nothing to await. A gateway-mode implementation sends an RPC,
+  /// and the caller must be able to await *that*.
+  ///
+  /// The deactivation instant is this station's own clock, resolved through
+  /// [resolveAlarmStamp] over an empty set of source times so it comes out
+  /// labelled [AlarmTsSource.backendReceipt]. That is the truthful provenance:
+  /// an acknowledgement is an act of the panel, not something the plant
+  /// reported, and no value in the plant carries the instant it happened at.
+  @override
+  Future<void> ackAlarm(AlarmActive alarm) async {
+    // Guarded (#467): an instance that already left the active set (double-tap
+    // on the ack button, a stale reference from the history list) must not be
     // pushed into the history a second time.
     if (!_activeAlarms.contains(alarm)) return;
-    _removeActiveAlarm(alarm);
+    _removeActiveAlarm(
+      alarm,
+      resolveAlarmStamp(sourceTimes: const [], clock: _clock),
+    );
     _activeAlarmsController.add(_activeAlarms);
   }
 
+  @override
   void addAlarm(AlarmConfig alarm) {
     config.alarms.add(alarm);
     _saveConfig();
     alarms.add(Alarm(config: alarm));
   }
 
+  @override
   void removeAlarm(AlarmConfig alarm) {
     config.alarms.removeWhere((e) => e.uid == alarm.uid);
     _saveConfig();
@@ -544,6 +668,7 @@ class AlarmMan {
   /// An alarm whose uid is not here yet is appended, which is how the
   /// proposal flow creates one: the editor routes both create and update
   /// through this method.
+  @override
   void updateAlarm(AlarmConfig alarm) {
     final index = config.alarms.indexWhere((e) => e.uid == alarm.uid);
     if (index == -1) {
@@ -575,66 +700,46 @@ class AlarmMan {
       ..addAll(rebuilt);
   }
 
-  List<AlarmActive> filterAlarms(List<AlarmActive> alarms, String searchQuery) {
-    // Group alarms by uid and keep only the highest priority one for each
-    final Map<String, AlarmActive> highestPriorityAlarms = {};
-    for (final alarm in alarms) {
-      final existing = highestPriorityAlarms[alarm.alarm.config.uid];
-      if (existing == null ||
-          alarm.notification.rule.level.index >
-              existing.notification.rule.level.index) {
-        highestPriorityAlarms[alarm.alarm.config.uid] = alarm;
-      }
-    }
-
-    var filteredAlarms = highestPriorityAlarms.values.toList()
-      ..sort((a, b) {
-        // First sort by priority (error > warning > info)
-        final priorityCompare = b.notification.rule.level.index
-            .compareTo(a.notification.rule.level.index);
-        if (priorityCompare != 0) return priorityCompare;
-
-        // If same priority, sort by most recent timestamp
-        return b.notification.timestamp.compareTo(a.notification.timestamp);
-      });
-
-    return fuzzyFilter(filteredAlarms, searchQuery, [
-      (a) => a.alarm.config.title,
-      (a) => a.alarm.config.description,
-    ]);
-  }
+  /// See the top-level [filterAlarms] — the behaviour lives there so a
+  /// gateway-mode panel cannot answer the same question differently.
+  @override
+  List<AlarmActive> filterAlarms(
+          List<AlarmActive> alarms, String searchQuery) =>
+      shared.filterAlarms(alarms, searchQuery);
 
   /// Saves the configuration the editor just changed.
   ///
-  /// **The refusal is synchronous, and deliberately.** The write itself is
-  /// fire-and-forget, as it has always been — but a body declared `async`
-  /// turns even a throw on its first line into a future error, which
-  /// [addAlarm] and its siblings do not await and no caller would ever see.
-  /// The one condition worth telling the caller about is checked before that
-  /// gap, so a headless process that reaches an editor gets a stack trace at
-  /// the call site rather than a quiet success.
+  /// Main grew a nullable [preferences] here and a synchronous
+  /// `UnsupportedError` in front of this write, for a headless `AlarmMan` in
+  /// the acquisition backend. Neither is carried across: on this line there is
+  /// no headless `AlarmMan` to guard against, because the backend runs
+  /// `AlarmEngine` and never constructs this class at all (D-6). A store is
+  /// therefore always present, and a null check on a non-nullable field would
+  /// be a guard against a caller that cannot exist.
   void _saveConfig() {
-    final prefs = preferences;
-    if (prefs == null) {
-      throw UnsupportedError(
-          'This AlarmMan was built headless (AlarmMan.headless), so it has no '
-          'store to save through. addAlarm/removeAlarm/updateAlarm belong to '
-          "the alarm editor; a process without one must not edit the plant's "
-          'alarm configuration.');
-    }
-    _writeConfig(prefs);
+    _writeConfig(preferences);
   }
 
   Future<void> _writeConfig(Preferences prefs) =>
       prefs.setString('alarm_man_config', jsonEncode(config.toJson()));
 
-  void _removeActiveAlarm(AlarmActive alarm) {
+  /// Closes [alarm] at [stamp] and moves it into the history buffer.
+  ///
+  /// The parameter is a whole [AlarmStamp] rather than a bare [DateTime] on
+  /// purpose: this method used to invent the instant with `DateTime.now()`,
+  /// and taking the resolved stamp means a caller cannot reach here without
+  /// having decided *where the instant came from*. The clearing notification
+  /// carries one for a measured clear; [ackAlarm] resolves a receipt stamp for
+  /// an acknowledgement.
+  void _removeActiveAlarm(AlarmActive alarm, AlarmStamp stamp) {
     alarm.notification.active = false;
-    // `??=`: an ack-required alarm already carries its clear time from the
-    // moment the condition dropped; stamping again here would silently turn
-    // "cleared at 03:12, acked at 07:40" into four and a half hours of
-    // invented downtime.
-    alarm.deactivated ??= DateTime.now();
+    // `??=` (#467): an ack-required alarm already carries its clear time from
+    // the moment the condition dropped; stamping again here would silently
+    // turn "cleared at 03:12, acked at 07:40" into four and a half hours of
+    // invented downtime. The value when it IS unset stays this station's
+    // resolved stamp rather than a bare `DateTime.now()`, so the provenance
+    // the relay work introduced survives the fix.
+    alarm.deactivated ??= stamp.at;
     // Leaving the set means there is nothing left to acknowledge. Clearing
     // the flag (before the row is written) is what keeps a restored history
     // row from ever growing an ack button again.
@@ -642,50 +747,6 @@ class AlarmMan {
     _history.add(alarm);
     _activeAlarms.remove(alarm);
     _historyController.add(_history.buffer);
-    if (localConfig.historyToDb) {
-      _addToDb(alarm);
-    }
-  }
-
-  Future<void> _addToDb(AlarmActive alarm) async {
-    // todo this should work but timestamp does not propagate correctly through drift
-    // see the casting below
-    // await db.into(db.alarmHistory).insert(AlarmHistoryCompanion.insert(
-    //   alarmUid: alarm.alarm.config.uid,
-    //   alarmTitle: alarm.alarm.config.title,
-    //   alarmDescription: alarm.alarm.config.description,
-    //   alarmLevel: alarm.notification.rule.level.name,
-    //   expression: alarm.notification.expression != null
-    //       ? Value(alarm.notification.expression!)
-    //       : const Value.absent(),
-    //   active: alarm.notification.active,
-    //   pendingAck: alarm.pendingAck,
-    //   createdAt: alarm.notification.timestamp,
-    //   deactivatedAt: alarm.deactivated != null
-    //       ? Value(alarm.deactivated!)
-    //       : const Value.absent(),
-    // ));
-
-    if (database == null) return;
-    final db = database!.db;
-
-    // Use custom SQL with proper timestamp casting for PostgreSQL
-    await db.customInsert(r'''
-      INSERT INTO alarm_history (
-        alarm_uid, alarm_title, alarm_description, alarm_level, 
-        expression, active, pending_ack, created_at, deactivated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::timestamp, $9::timestamp)
-    ''', variables: [
-      Variable.withString(alarm.alarm.config.uid),
-      Variable.withString(alarm.alarm.config.title),
-      Variable.withString(alarm.alarm.config.description),
-      Variable.withString(alarm.notification.rule.level.name),
-      Variable.withString(alarm.notification.expression ?? ''),
-      Variable.withBool(alarm.notification.active),
-      Variable.withBool(alarm.pendingAck),
-      Variable.withString(alarm.notification.timestamp.toIso8601String()),
-      Variable.withString(alarm.deactivated?.toIso8601String() ?? ''),
-    ]);
   }
 
   /// Closed activations from `alarm_history`, newest first.
@@ -695,14 +756,19 @@ class AlarmMan {
   /// that window's downtime, and a query that dropped it would report a stop
   /// as shorter than it was. One still standing has no deactivation time and
   /// so overlaps every window it started before.
+  @override
   Future<List<AlarmActive>> getRecentAlarms({
     int limit = 1000,
     DateTime? from,
     DateTime? to,
   }) async {
-    if (database == null) return [];
+    // Through the store, as before. Main split alarm history onto a
+    // `database` field of its own so a headless `AlarmMan` could be given one
+    // without a store; there is no headless `AlarmMan` on this line (D-6), so
+    // the split has nothing to buy and the field is not carried.
+    if (preferences.database == null) return [];
 
-    final db = database!.db;
+    final db = preferences.database!.db;
 
     final query = db.select(db.alarmHistory);
     if (from != null || to != null) {
@@ -728,7 +794,19 @@ class AlarmMan {
             return null;
           }
 
-          // Create AlarmRule from stored data
+          // The row names which rule fired (schema v7), so the real rule can
+          // be resolved out of the current configuration rather than
+          // reconstructed with a guess. This used to hardcode
+          // `acknowledgeRequired: false` with the comment "we don't store
+          // this in history" — which made every historical alarm look like
+          // one nobody had to acknowledge.
+          final ruleIndex = row.ruleIndex;
+          final configuredRule = ruleIndex != null &&
+                  ruleIndex >= 0 &&
+                  ruleIndex < alarmConfig.config.rules.length
+              ? alarmConfig.config.rules[ruleIndex]
+              : null;
+
           final rule = AlarmRule(
             level: AlarmLevel.values.firstWhere(
               (l) => l.name == row.alarmLevel,
@@ -736,16 +814,22 @@ class AlarmMan {
             expression: ExpressionConfig(
               value: Expression(formula: row.expression ?? ''),
             ),
-            acknowledgeRequired: false, // We don't store this in history
+            // A pre-v7 row states no rule index, and a row whose index no
+            // longer exists in the configuration names a rule that has been
+            // deleted. Neither can be resolved, and matching such a row to
+            // rule 0 would be a guess dressed as a fact — so it keeps the old
+            // `false` and says nothing it cannot support.
+            acknowledgeRequired: configuredRule?.acknowledgeRequired ?? false,
           );
 
-          // Create AlarmNotification
           final notification = AlarmNotification(
             uid: row.alarmUid,
             active: row.active,
             expression: row.expression,
             rule: rule,
             timestamp: row.createdAt,
+            ruleIndex: ruleIndex,
+            tsSource: _tsSourceOf(row.tsSource),
           );
 
           // Create and return AlarmActive
@@ -759,22 +843,58 @@ class AlarmMan {
         .whereType<AlarmActive>()
         .toList();
   }
+
+  /// What a stored `ts_source` means, or null when the row states nothing.
+  ///
+  /// Null is not the same as [AlarmTsSource.backendReceipt] on a row: a pre-v7
+  /// row predates the column entirely and nobody recorded anything, which is
+  /// worth being able to tell apart from a row that positively says the
+  /// backend guessed.
+  static AlarmTsSource? _tsSourceOf(String? stored) {
+    if (stored == null) return null;
+    return stored == AlarmTsSource.plant.wireName
+        ? AlarmTsSource.plant
+        : AlarmTsSource.backendReceipt;
+  }
 }
 
 class Alarm {
   final AlarmConfig config;
-  final List<String?> _lastEvaluations;
+
+  /// Whether each rule was satisfied at its last evaluation.
+  ///
+  /// A **bool**, not the formatted expression string. Comparing the formatted
+  /// string meant comparing something that embeds the bound VALUES, so a rule
+  /// that stayed true while its inputs moved emitted a fresh notification on
+  /// every tag update — which in `AlarmMan` closes the standing activation and
+  /// opens a new one each time (P-3). An alarm changes when its verdict
+  /// changes; the text is a description of the verdict, not the verdict.
+  ///
+  /// Seeded `false`, which is what the old `null` meant: a first evaluation
+  /// that is unsatisfied is not a transition and emits nothing.
+  final List<bool> _lastEvaluations;
 
   Alarm({required this.config})
-      : _lastEvaluations = List.filled(config.rules.length, null);
+      : _lastEvaluations = List.filled(config.rules.length, false);
 
-  Stream<AlarmNotification> onChange(StateMan stateMan) {
+  /// One notification per rule transition, stamped from the plant.
+  ///
+  /// [clock] is required and is only reached when an evaluation binds no
+  /// source timestamp — see [resolveAlarmStamp]. It is injected rather than
+  /// read so that two panels watching one plant cannot disagree about when a
+  /// stop began, and so that this file spells `DateTime.now` nowhere.
+  Stream<AlarmNotification> onChange(
+    StateMan stateMan, {
+    required DateTime Function() clock,
+    Duration skewWarnAfter = kAlarmSkewWarnAfter,
+  }) {
     final streamController = StreamController<AlarmNotification>.broadcast();
     final evaluators = <Evaluator>[];
     // Per rule: the on-delay running for a condition that is true but has not
-    // held long enough yet, and the text it will raise with.
+    // held long enough yet, and the bindings it will raise with.
     final pending = List<Timer?>.filled(config.rules.length, null);
-    final pendingText = List<String?>.filled(config.rules.length, null);
+    final pendingBindings =
+        List<Map<String, DynamicValue>?>.filled(config.rules.length, null);
 
     streamController.onListen = () async {
       for (var i = 0; i < config.rules.length; i++) {
@@ -783,45 +903,70 @@ class Alarm {
             Evaluator(stateMan: stateMan, expression: rule.expression);
         evaluators.add(evaluator);
 
-        void emit(String? state) {
-          _lastEvaluations[i] = state;
+        // One emission, stamped by the caller: the plant's instant for a
+        // watched transition, the end of the delay for a delayed raise.
+        void emit(bool satisfied, AlarmStamp stamp,
+            Map<String, DynamicValue> bindings) {
+          _lastEvaluations[i] = satisfied;
           streamController.add(AlarmNotification(
               uid: config.uid,
-              // If this rule is true, the alarm is active
-              active: state != null,
-              expression: state,
+              active: satisfied,
+              // Built on the satisfied branch only: formatting walks every
+              // bound value's toString(), and the unsatisfied branch has no
+              // text to show (T-14-07).
+              expression: satisfied
+                  ? rule.expression.value.formatWithValues(bindings)
+                  : null,
               rule: rule,
-              timestamp: DateTime.now()));
+              timestamp: stamp.at,
+              ruleIndex: i,
+              tsSource: stamp.source));
         }
 
-        evaluator.state().listen((state) {
-          if (state == null) {
+        // evaluations(), not state(): the false branch carries its bindings
+        // too (14-02), and without them a deactivation has no plant instant
+        // to be stamped from and would silently take this machine's clock.
+        evaluator.evaluations().listen((evaluation) {
+          final satisfied = evaluation.satisfied;
+
+          if (!satisfied) {
             // Cleared inside the delay: it never went active, so there is
-            // nothing to clear either.
+            // nothing to clear either — `_lastEvaluations[i]` is still false
+            // and the transition check below emits nothing.
             pending[i]?.cancel();
             pending[i] = null;
-            pendingText[i] = null;
-            if (_lastEvaluations[i] != null) emit(null);
+            pendingBindings[i] = null;
+          } else if (!_lastEvaluations[i] && rule.onDelay > Duration.zero) {
+            // True, not yet raised: hold it for the delay (#571). Later
+            // evaluations while the timer runs only refresh the bindings, so
+            // the alarm raises with the values as they are when it does —
+            // rendered then, once, not on every tick of the delay (T-14-07).
+            pendingBindings[i] = evaluation.bindings;
+            if (pending[i] != null) return;
+            // The raise is stamped where the delay ENDS, measured from the
+            // plant's instant for the evaluation that started it, and keeps
+            // that instant's provenance. Stamping it from this station's clock
+            // when the timer fires would pair a receipt-time activation with a
+            // plant-time clear, and a skewed PLC clock would then give the
+            // stop a negative or inflated duration.
+            final started = _stampOf(evaluation, i, clock, skewWarnAfter);
+            final raisedAt = AlarmStamp(
+                at: started.at.add(rule.onDelay), source: started.source);
+            pending[i] = Timer(rule.onDelay, () {
+              pending[i] = null;
+              final bindings = pendingBindings[i];
+              pendingBindings[i] = null;
+              if (bindings != null && !streamController.isClosed) {
+                emit(true, raisedAt, bindings);
+              }
+            });
             return;
           }
 
-          final raised = _lastEvaluations[i] != null;
-          if (raised || rule.onDelay <= Duration.zero) {
-            // Only emit if state has changed for this rule
-            if (state != _lastEvaluations[i]) emit(state);
-            return;
-          }
-
-          // True, not yet raised: hold it for the delay. Later evaluations
-          // while the timer runs only refresh the text, so the alarm raises
-          // with the values as they are when it does.
-          pendingText[i] = state;
-          pending[i] ??= Timer(rule.onDelay, () {
-            pending[i] = null;
-            final text = pendingText[i];
-            pendingText[i] = null;
-            if (text != null && !streamController.isClosed) emit(text);
-          });
+          // Only emit on a transition of the VERDICT for this rule.
+          if (satisfied == _lastEvaluations[i]) return;
+          emit(satisfied, _stampOf(evaluation, i, clock, skewWarnAfter),
+              evaluation.bindings);
         }, onError: (error, stack) {
           streamController.addError(error, stack);
         });
@@ -832,7 +977,7 @@ class Alarm {
       for (var i = 0; i < pending.length; i++) {
         pending[i]?.cancel();
         pending[i] = null;
-        pendingText[i] = null;
+        pendingBindings[i] = null;
       }
       for (final evaluator in evaluators) {
         evaluator.cancel();
@@ -841,6 +986,24 @@ class Alarm {
 
     return streamController.stream;
   }
+
+  /// [evaluation]'s instant, resolved from the plant's source timestamps over
+  /// the injected [clock] — see [resolveAlarmStamp].
+  AlarmStamp _stampOf(Evaluation evaluation, int ruleIndex,
+          DateTime Function() clock, Duration skewWarnAfter) =>
+      resolveAlarmStamp(
+        sourceTimes: evaluation.bindings.values.map((v) => v.sourceTimestamp),
+        clock: clock,
+        skewWarnAfter: skewWarnAfter,
+        // Was `stderr.writeln`; main moved this file to the logger in #477
+        // for the reason recorded there — on a windowed MSIX build with no
+        // console, stderr is discarded, and a clock fault that reports
+        // nowhere is the one this warning exists to surface.
+        onSkew: (skew, sourceTime) => _log.w(
+            'Alarm ${config.uid} rule $ruleIndex: the plant instant '
+            '$sourceTime is ${skew.inSeconds}s from this station\'s clock. '
+            'Recorded unchanged — clamping it would hide a clock fault.'),
+      );
 }
 
 class AlarmNotification {
@@ -850,16 +1013,59 @@ class AlarmNotification {
   final AlarmRule rule;
   final DateTime timestamp;
 
+  /// Which rule of [AlarmConfig.rules] this is about, or null when nobody
+  /// said.
+  ///
+  /// Optional with **no default**: this type is constructed at a dozen call
+  /// sites, most of them test fixtures, and it is read back off pre-v7
+  /// `alarm_history` rows that predate the `rule_index` column. Null therefore
+  /// honestly means "not stated" — a default of 0 would quietly claim every
+  /// one of them was the first rule.
+  final int? ruleIndex;
+
+  /// Whether [timestamp] came from the plant or from a clock, or null when
+  /// nobody said. See [AlarmTsSource].
+  final AlarmTsSource? tsSource;
+
+  /// The keys whose bad quality is HOLDING this alarm's state, or empty.
+  ///
+  /// Filled only from the backend's `ALARM.active` payload
+  /// (`AlarmActiveEntry.staleInputs`): a non-empty list means D-3's quality
+  /// gate has suspended the rule, the boolean on screen is remembered rather
+  /// than being re-earned, and it can neither clear nor re-fire until the
+  /// named inputs return. Direct-mode notifications leave it empty — the old
+  /// evaluator has no gate and therefore no hold to report.
+  final List<String> staleInputs;
+
+  /// When the hold began, UTC, or null when [staleInputs] is empty.
+  final DateTime? staleSince;
+
   AlarmNotification(
       {required this.uid,
       required this.active,
       required this.expression,
       required this.rule,
-      required this.timestamp});
+      required this.timestamp,
+      this.ruleIndex,
+      this.tsSource,
+      this.staleInputs = const [],
+      this.staleSince});
+
+  /// [timestamp] with its provenance, as one value.
+  ///
+  /// A notification produced by [Alarm.onChange] always states a [tsSource].
+  /// One that does not — a fixture, or a row written before the column
+  /// existed — reads as [AlarmTsSource.backendReceipt], because nobody
+  /// recorded that the plant supplied the instant, and that is the same
+  /// reading 14-06 gives an adopted pre-v7 row.
+  AlarmStamp get stamp => AlarmStamp(
+        at: timestamp,
+        source: tsSource ?? AlarmTsSource.backendReceipt,
+      );
 
   @override
   String toString() {
-    return 'AlarmNotification(uid: $uid, active: $active, expression: $expression, rule: $rule, timestamp: $timestamp)';
+    return 'AlarmNotification(uid: $uid, active: $active, expression: $expression, rule: $rule, timestamp: $timestamp, ruleIndex: $ruleIndex, tsSource: $tsSource)';
   }
 
   @override

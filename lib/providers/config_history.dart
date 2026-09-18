@@ -41,7 +41,6 @@ import 'package:tfc_dart/core/access/guarded_config_store.dart'
 import 'package:tfc_dart/core/config/config_store.dart' show ConfigWriteResult;
 import 'package:tfc_dart/core/config/config_store_errors.dart';
 import 'package:tfc_dart/core/config/config_undo.dart';
-import 'package:tfc_dart/core/database_drift.dart';
 
 import '../core/audit_trail_grouping.dart';
 import '../core/config_change_store.dart';
@@ -170,7 +169,7 @@ Future<ConfigHistoryResult?> configHistoryActions(
   // not: every action renders parentless rather than the page failing.
   final auditStore = await ref.watch(auditTrailStoreProvider.future);
   final auditRows = auditStore == null
-      ? const <AuditEntryData>[]
+      ? const <AuditRecord>[]
       : await auditStore.entriesByAction(actionIds);
 
   final changeTotals = await store.changeCountsByAction(actionIds);

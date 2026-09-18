@@ -343,7 +343,7 @@ class AccessRolesSection extends ConsumerWidget {
               // that missed it would tell somebody a role was unused a moment
               // before the delete is refused for having holders.
               role.name: roster
-                  .where((u) => AccessRepository.rolesOf(u).contains(role.name))
+                  .where((u) => u.roles.contains(role.name))
                   .length,
           };
 
@@ -352,9 +352,12 @@ class AccessRolesSection extends ConsumerWidget {
     // costs less than a banner on the wrong role.
     final anonymousRow =
         roster?.firstWhereOrNull((u) => u.username == kAnonymousUsername);
-    final heldByAnonymous = anonymousRow == null
-        ? const <String>{}
-        : AccessRepository.rolesOf(anonymousRow).toSet();
+    // `UserSummary.roles`, not `AccessRepository.rolesOf` — the roster answers
+    // the DTO, and the DTO composes the same pair through the same
+    // normaliser. Two derivations of "which roles does this account hold" is
+    // how the roster and the session start disagreeing about one person.
+    final heldByAnonymous =
+        anonymousRow == null ? const <String>{} : anonymousRow.roles.toSet();
 
     return _frame(
       context,
@@ -1225,7 +1228,7 @@ class _DeleteRoleDialogState extends State<_DeleteRoleDialog> {
       if (!mounted) return;
       setState(() => _decide(roles, [
             for (final user in users)
-              (user.username, AccessRepository.rolesOf(user)),
+              (user.username, user.roles),
           ]));
     } on Object {
       // "Cannot tell" must not read as "nobody holds it".

@@ -7,7 +7,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:logger/logger.dart';
 import 'package:tfc_access/tfc_access.dart' show AccessSession, kAnonymousUsername;
 
+import '../core/access_authority.dart';
 import 'access.dart';
+import 'access_admin.dart' show relayedAccountSummary;
 
 /// A home-page lookup's answer.
 ///
@@ -30,7 +32,25 @@ typedef HomePageLookup = Future<HomePageAnswer> Function(AccessSession session);
 /// boot, sign-in and a session ending.
 final homePageLookupProvider = Provider<HomePageLookup>((ref) {
   return (session) async {
+    // The transport question first, and asked of the authority rather than
+    // resolved out of a null repository — the rule `guard_wiring_test` states
+    // and the three defects it names were each a caller deciding what a null
+    // repository meant on its own. A gateway panel has no repository **by
+    // design and permanently**, so "nobody could say yet" would be a debt it
+    // can never settle: the boot navigation would stay owed for the life of
+    // the process, waiting on a database that is not coming.
+    //
+    // On the relay the account's row is read from the gateway's roster
+    // (`UserSummary.homePage`). A session the gateway will not show the
+    // roster to — see [relayedAccountSummary] — is answered KNOWN, page null:
+    // the panel opens on Home and stops owing anybody a move, rather than
+    // owing one that no later answer can settle.
+    final authority = await ref.read(accessAuthorityProvider.future);
     try {
+      if (authority == AccessAuthority.relay) {
+        final row = await relayedAccountSummary(ref, session);
+        return (known: true, page: row?.homePage);
+      }
       final repo = await ref.read(accessRepositoryProvider.future);
       if (repo == null) return (known: false, page: null);
       final row = await repo.user(session.user?.username ?? kAnonymousUsername);

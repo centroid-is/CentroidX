@@ -111,8 +111,20 @@ ProviderContainer _container({
 
 /// Settles the session future so the filter is answering on a real session
 /// rather than on the boot-window floor.
-Future<void> _settle(ProviderContainer container) =>
-    container.read(accessSessionProvider.future);
+/// Resolves everything `visibleMenuProvider` asks before the filter is read.
+///
+/// **The authority, not just the session.** `resolvePageAccess` answers
+/// `waiting` — which the filter treats as visible, deliberately, so a booting
+/// panel does not blink its menu — while `accessAuthorityProvider` is still
+/// loading. A test that read the filter before it resolved would see every
+/// raised entry regardless of the whitelist, and would pass or fail on
+/// scheduling rather than on the rule under test. `operate` routes
+/// short-circuit ahead of the authority, so only the raised ones were
+/// affected: exactly the ones these tests are about.
+Future<void> _settle(ProviderContainer container) async {
+  await container.read(accessAuthorityProvider.future);
+  await container.read(accessSessionProvider.future);
+}
 
 void main() {
   const home = MenuItem(label: 'Home', path: '/', icon: Icons.home);

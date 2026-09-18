@@ -37,7 +37,8 @@ void main() {
       'alarms': [alarm('a').toJson()],
       'auto_navigate': true,
     }));
-    final man = await AlarmMan.create(prefs, _NoStateMan());
+    final man =
+        await AlarmMan.create(prefs, _NoStateMan(), clock: DateTime.now);
 
     expect(man.config.alarms.map((a) => a.uid), ['a']);
   });
@@ -47,7 +48,8 @@ void main() {
       'alarms': [alarm('a').toJson()],
       'auto_navigate': true,
     }));
-    final man = await AlarmMan.create(prefs, _NoStateMan());
+    final man =
+        await AlarmMan.create(prefs, _NoStateMan(), clock: DateTime.now);
 
     man.updateAlarm(alarm('b'));
 

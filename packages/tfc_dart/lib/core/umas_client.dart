@@ -340,8 +340,24 @@ class UmasClient {
     this.projectCrcCheckInterval = const Duration(seconds: 30),
     Future<void> Function(Duration)? backoffDelay,
     bool useMonitorPlc = false,
+    this.decodeString,
   })  : _delayFn = backoffDelay ?? ((d) => Future.delayed(d)),
         _useMonitorPlc = useMonitorPlc;
+
+  /// How this PLC's STRING / BYTE_STRING bytes become text.
+  ///
+  /// **Optional, and its default is what this client always did** — see
+  /// [parseVariableValue]'s own `decodeString`, which falls back to
+  /// `utf8.decode(bytes, allowMalformed: true)`. It is threaded through
+  /// straight to the parser and used nowhere else.
+  ///
+  /// It exists because the *caller* knows which server the bytes came from and
+  /// this class does not. A Saia-over-Modbus device speaking Latin-1 sends
+  /// `Þorskflök` as bytes `allowMalformed` silently turns into U+FFFD, under a
+  /// good quality, with nothing in any log. The per-alias policy lives in
+  /// `packages/tfc_relay_local/lib/src/string_encoding.dart`, which is the one
+  /// layer that knows both the alias and the decode.
+  final UmasStringDecoder? decodeString;
 
   /// Start periodic keep-alive timer. Cancels any existing timer first.
   ///
@@ -2232,7 +2248,8 @@ class UmasClient {
         types.add(dataType);
       }
       final result = await readVariable(refs);
-      return parseVariableValues(result.rawBytes, types);
+      return parseVariableValues(result.rawBytes, types,
+          decodeString: decodeString);
     } on UmasException catch (e) {
       // TD-017 (v1.1.x): the Schneider M580 marker for "use MonitorPlc
       // instead of ReadVariable" is the 2-byte sequence 0xA1 0xA1 in
@@ -2617,7 +2634,8 @@ class UmasClient {
 
       final responseBytes =
           await _sendMonitorPlc(Uint8List.fromList([0x07]));
-      return _monitorTable.parseReadAllResponse(responseBytes);
+      return _monitorTable.parseReadAllResponse(responseBytes,
+          decodeString: decodeString);
     });
   }
 
@@ -2652,7 +2670,8 @@ class UmasClient {
       }
 
       // Parse response using the just-registered types
-      return _monitorTable.parseReadAllResponse(responseBytes);
+      return _monitorTable.parseReadAllResponse(responseBytes,
+          decodeString: decodeString);
     });
   }
 

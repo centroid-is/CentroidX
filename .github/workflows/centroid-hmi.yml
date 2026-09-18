@@ -636,3 +636,125 @@ jobs:
           file: docker/profiler/Dockerfile
           tags: |
             ghcr.io/${{ github.repository_owner }}/hmi-profiler:pr-${{ github.event.pull_request.number }}
+
+  # The browser client. Built here rather than inside `docker/web/Dockerfile`
+  # because `flutter build web` wants the whole SDK and a pub cache: baking that
+  # into an image whose runtime is nginx would be a 2 GB build stage for 51 MB
+  # of static files. Same split as the eLinux bundle above.
+  web-build:
+    name: Web Bundle
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        id: checkout
+        continue-on-error: true
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Checkout repository (retry)
+        if: steps.checkout.outcome == 'failure'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Set up Flutter
+        uses: ./.github/actions/setup-flutter
+
+      - name: Get Flutter packages
+        uses: ./.github/actions/pub-get
+        with:
+          working-directory: centroid-hmi
+
+      # `lib/main_web.dart`, never `lib/main.dart`: the browser entrypoint
+      # registers the eight routes of `docs/web-client-scope.md` and leaves the
+      # rest out of the compile, D-Bus and the local database included.
+      # `--no-tree-shake-icons`: the web icon shaker keeps only the glyphs it
+      # can find as bare IconData constants, and Font Awesome's are wrapped in
+      # FaIconData — so it dropped glyphs the bundle draws (the palette and
+      # the update-channel arrows in Preferences rendered as blanks). The
+      # native builds do not shake fonts this way and were unaffected.
+      - name: Build web client
+        working-directory: centroid-hmi
+        run: flutter build web -t lib/main_web.dart --release --no-tree-shake-icons --dart-define=CENTROIDX_CHAT=false --dart-define=CENTROIDX_KNOWLEDGE=false
+
+      # The gateway declaration must still be a placeholder here. If a build
+      # ever substitutes it, every station serving this image would dial
+      # whatever CI happened to have in the environment.
+      - name: Check the bundle carries an un-substituted declaration
+        working-directory: centroid-hmi
+        run: |
+          if ! grep -q 'content="$CENTROIDX_GATEWAY"' build/web/index.html; then
+            echo "::error::build/web/index.html lost its centroidx-gateway placeholder"
+            exit 1
+          fi
+
+      - name: Upload web bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: centroid-web-bundle
+          path: centroid-hmi/build/web
+
+  web-image:
+    name: Web Image
+    runs-on: ubuntu-latest
+    needs: web-build
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        id: checkout
+        continue-on-error: true
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Checkout repository (retry)
+        if: steps.checkout.outcome == 'failure'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Get commit SHA
+        id: get_sha
+        run: |
+          SHA=$(git rev-parse --short HEAD) || exit 1
+          test -n "$SHA" || (echo "Empty SHA"; exit 1)
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Download web bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: centroid-web-bundle
+          path: docker/web/bundle
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push web image (main)
+        if: github.ref == 'refs/heads/main'
+        uses: ./.github/actions/docker-build-push
+        with:
+          context: docker/web
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/centroid-web:${{ steps.get_sha.outputs.sha }}
+            ghcr.io/${{ github.repository_owner }}/centroid-web:latest
+
+      - name: Build and push web image (tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: ./.github/actions/docker-build-push
+        with:
+          context: docker/web
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/centroid-web:${{ steps.get_sha.outputs.sha }}
+            ghcr.io/${{ github.repository_owner }}/centroid-web:stable
+
+      - name: Build and push web image (PR)
+        if: github.event_name == 'pull_request'
+        uses: ./.github/actions/docker-build-push
+        with:
+          context: docker/web
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/centroid-web:pr-${{ github.event.pull_request.number }}

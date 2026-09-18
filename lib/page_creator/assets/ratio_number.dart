@@ -11,8 +11,9 @@ import 'option_variable.dart';
 import 'helper/database_recovery.dart';
 import 'helper/timeseries_notify_mixin.dart';
 import '../../providers/current_page_assets.dart';
-import '../../providers/database.dart';
+import '../../core/timeseries_source.dart';
 import '../../providers/timeseries.dart';
+import '../../providers/timeseries_source.dart';
 import '../../widgets/graph.dart';
 import 'package:tfc/converter/color_converter.dart';
 import 'package:tfc_dart/converter/duration_converter.dart';
@@ -627,7 +628,7 @@ class _RatioAnalysisViewState extends ConsumerState<RatioAnalysisView> {
   /// short. Null once the queues are the database's answer.
   DateTime? _coverageStart;
 
-  Database? _db;
+  TimeseriesSource? _source;
 
   // Cache: interval → (key1Data, key2Data)
   final Map<Duration,
@@ -648,10 +649,10 @@ class _RatioAnalysisViewState extends ConsumerState<RatioAnalysisView> {
     // Opened before the database was up — a power cut brings the HMI back
     // well ahead of Postgres — the window fills in when it arrives instead
     // of staying on the seed. Same contract as the BPM window.
-    reinitOnDatabaseAvailable(
+    reinitOnTimeseriesSourceAvailable(
       ref,
-      currentDatabase: () => _db,
-      onDatabaseAvailable: (_) {
+      currentSource: () => _source,
+      onSourceAvailable: (_) {
         if (mounted) _fill();
       },
     );
@@ -709,9 +710,9 @@ class _RatioAnalysisViewState extends ConsumerState<RatioAnalysisView> {
   /// so nothing is kept and nothing is counted twice. Then the other
   /// presets, in the background, as before.
   Future<void> _fill() async {
-    final db = await ref.read(databaseProvider.future);
+    final db = await ref.read(timeseriesSourceProvider.future);
     if (db == null || !mounted) return;
-    _db = db;
+    _source = db;
     final interval = _selectedInterval;
     if (!_cache.containsKey(interval)) {
       setState(() => _filling = true);
@@ -731,7 +732,7 @@ class _RatioAnalysisViewState extends ConsumerState<RatioAnalysisView> {
   }
 
   Future<void> _prefetchAll() async {
-    final db = await ref.read(databaseProvider.future);
+    final db = await ref.read(timeseriesSourceProvider.future);
     if (db == null || !mounted) return;
     final presets =
         widget.config.intervalPresets.map((m) => Duration(minutes: m)).toList();
@@ -744,7 +745,7 @@ class _RatioAnalysisViewState extends ConsumerState<RatioAnalysisView> {
   }
 
   Future<(List<TimeseriesData<dynamic>>, List<TimeseriesData<dynamic>>)>
-      _fetchForInterval(Database db, Duration interval) async {
+      _fetchForInterval(TimeseriesSource db, Duration interval) async {
     final endTime = _endFor(interval);
     final since = interval * widget.config.howMany;
     Future<List<TimeseriesData<dynamic>>> safeQuery(String key) async {
@@ -766,7 +767,7 @@ class _RatioAnalysisViewState extends ConsumerState<RatioAnalysisView> {
   Future<void> _fetchData() async {
     setState(() => _isLoading = true);
     try {
-      final db = await ref.read(databaseProvider.future);
+      final db = await ref.read(timeseriesSourceProvider.future);
       if (db == null) {
         // Left spinning, the refresh button stayed disabled for good.
         if (mounted) setState(() => _isLoading = false);

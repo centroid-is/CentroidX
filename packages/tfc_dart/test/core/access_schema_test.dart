@@ -48,6 +48,25 @@ Future<Set<String>> _indexNames(GeneratedDatabase db) async {
 /// The three tables added by the v5→v6 migration.
 const _accessTables = ['app_role', 'app_user', 'audit_entry'];
 
+/// Undoes what schema **v13** added to `alarm_history`.
+///
+/// The old-version fixtures in this repository are built by creating the
+/// CURRENT schema and removing what came later, so every future version has to
+/// add its own rollback here or the fixture is not the shape it claims to be.
+/// Without these, the SQLite arm of `onUpgrade(5, 13)` — and of
+/// `onUpgrade(6, 13)` — aborts on `duplicate column name: rule_index`. That is
+/// the fixture, not the migration: `alarm_history` is created once, in
+/// `onCreate`, and no upgrade arm re-creates it, so a real pre-v13 database has
+/// none of these columns and the unguarded `ADD COLUMN` is correct.
+///
+/// The index goes first. SQLite refuses to drop a column an index refers to.
+const _v13Rollback = [
+  'DROP INDEX IF EXISTS idx_alarm_history_open',
+  'ALTER TABLE alarm_history DROP COLUMN rule_index',
+  'ALTER TABLE alarm_history DROP COLUMN ts_source',
+  'ALTER TABLE alarm_history DROP COLUMN deactivated_reason',
+];
+
 /// The `audit_entry` indexes.
 const _auditIndexes = [
   'idx_audit_entry_at',
@@ -233,6 +252,9 @@ void main() {
       await db.customStatement('DROP TABLE audit_entry');
       await db.customStatement('DROP TABLE app_user');
       await db.customStatement('DROP TABLE app_role');
+      for (final stmt in _v13Rollback) {
+        await db.customStatement(stmt);
+      }
       await db.customStatement('PRAGMA user_version = 5');
       await db.close();
     }
@@ -505,6 +527,11 @@ void main() {
 
       await db.customStatement('ALTER TABLE app_role DROP COLUMN allowed_pages');
       await db.customStatement('ALTER TABLE app_user DROP COLUMN allowed_pages');
+      // v10 is above 6 as well, so the fixture has to shed it too — see
+      // `_v13Rollback`.
+      for (final stmt in _v13Rollback) {
+        await db.customStatement(stmt);
+      }
       await db.customStatement('PRAGMA user_version = 6');
       await db.close();
     }
@@ -623,6 +650,9 @@ void main() {
       await db.customStatement('DROP TABLE audit_entry');
       await db.customStatement('DROP TABLE app_user');
       await db.customStatement('DROP TABLE app_role');
+      for (final stmt in _v13Rollback) {
+        await db.customStatement(stmt);
+      }
       await db.customStatement('PRAGMA user_version = 5');
       await db.close();
 
@@ -1259,13 +1289,15 @@ void main() {
     });
 
     test('the seed needs no schema version of its own', () async {
-      // Main shipped the seed at 9 and the config branch carries 12; the
-      // seed added an arm to neither. Pinned to the number the branch owns
-      // rather than to `db.schemaVersion`, because a seed that quietly took
-      // an arm would move that too.
+      // Main shipped the seed at 9, the config branch carried it to 12, and
+      // the alarm arm makes it 13 here. The seed added an arm to none of
+      // them. Pinned to a literal rather than to `db.schemaVersion`, because
+      // a seed that quietly took an arm would move that too — which is why
+      // this number has to be edited by hand on every merge, and is the whole
+      // value of the arm.
       final db = await open();
       addTearDown(() => db.close());
-      expect(db.schemaVersion, 12);
+      expect(db.schemaVersion, 13);
     });
   });
 

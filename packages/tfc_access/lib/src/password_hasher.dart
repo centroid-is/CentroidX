@@ -279,6 +279,38 @@ const String _argon2idTag = 'argon2id';
 /// the wrong answer.
 const String _argon2idVersionField = 'v=19';
 
+/// What `AppUser.passwordHash` holds for an account with **no password**.
+///
+/// A panel account that signs in on its username alone still needs a value in
+/// that column — it is `TEXT NOT NULL` — and it must not be one that could ever
+/// be confused for a credential. This is that value.
+///
+/// Three properties, and each is deliberate:
+///
+///  * **It contains a `$`.** A `$`-less value is a legacy bare-base64 PBKDF2
+///    hash ([PasswordHash.decode]), so an empty string or a bare word would be
+///    read as a hash of *something* and silently derived against.
+///  * **`none` is not a [PasswordHashAlgorithm].** [PasswordHash.decode]
+///    therefore throws on it and [PasswordHash.tryDecode] answers null, which
+///    the login path already treats as a failed credential. So a caller that
+///    forgets to ask [isPasswordless] first **fails the sign-in** rather than
+///    letting it through — the safe direction for the one mistake this
+///    constant makes possible.
+///  * **It is a whole-string match, not a prefix.** There are no parameters to
+///    carry and nothing to parse, so there is nothing to get wrong.
+///
+/// The account's `salt` column is written empty alongside it. Nothing derives
+/// against either value.
+const String kNoPasswordMarker = r'none$v=1';
+
+/// Whether [storedPasswordHash] is the [kNoPasswordMarker] — the account has no
+/// password and signs in on its username alone.
+///
+/// Ask this **before** decoding. It is a fact about the row, not a credential
+/// check, and it is the only thing in this package that answers it.
+bool isPasswordless(String storedPasswordHash) =>
+    storedPasswordHash == kNoPasswordMarker;
+
 /// Which derivation produced a [PasswordHash].
 enum PasswordHashAlgorithm {
   pbkdf2Sha256(_pbkdf2Sha256Tag),

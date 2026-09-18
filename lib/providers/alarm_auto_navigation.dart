@@ -23,9 +23,11 @@ import 'package:tfc_access/tfc_access.dart'
     show AccessSession, kAnonymousUsername;
 import 'package:tfc_dart/core/alarm.dart';
 
+import '../core/access_authority.dart';
 import '../page_creator/assets/alarm_visibility.dart' show AlarmVisibilityConfig;
 import '../page_creator/page.dart';
 import 'access.dart';
+import 'access_admin.dart' show relayedAccountSummary;
 import 'alarm.dart';
 import 'page_manager.dart';
 
@@ -69,7 +71,19 @@ typedef AlarmAutoNavigateLookup = Future<bool> Function(AccessSession session);
 final alarmAutoNavigateLookupProvider =
     Provider<AlarmAutoNavigateLookup>((ref) {
   return (session) async {
+    // The transport question first, asked of the authority rather than
+    // resolved out of a null repository — the rule `guard_wiring_test` states,
+    // and the shape `homePageLookupProvider` already has. A gateway panel has
+    // no repository by design; it reads the account's row from the gateway's
+    // roster (`UserSummary.alarmAutoNavigate`) instead. A session the gateway
+    // will not show the roster to — see [relayedAccountSummary] — cannot be
+    // read, and answers no.
     try {
+      final authority = await ref.read(accessAuthorityProvider.future);
+      if (authority == AccessAuthority.relay) {
+        final row = await relayedAccountSummary(ref, session);
+        return row?.alarmAutoNavigate ?? false;
+      }
       final repo = await ref.read(accessRepositoryProvider.future);
       if (repo == null) return false;
       final row = await repo.user(session.user?.username ?? kAnonymousUsername);
@@ -404,7 +418,11 @@ class AlarmAutoNavigation extends _$AlarmAutoNavigation {
 
     () async {
       final PageManager pageManager;
-      final AlarmMan alarmMan;
+      // `AlarmSource`, not `AlarmMan`: a gateway panel is told its active set
+      // over the pipe and has a `RelayAlarmSource`. Naming the concrete class
+      // here would have made auto-navigation a direct-mode-only feature by
+      // a type annotation.
+      final AlarmSource alarmMan;
       try {
         pageManager = await pagesFuture;
         alarmMan = await alarmFuture;

@@ -13,6 +13,8 @@ import 'dart:io';
 import 'package:drift/drift.dart' show Value;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:riverpod/riverpod.dart';
+import 'package:tfc_dart/core/preferences.dart';
+import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/providers/config_history.dart';
 import 'package:tfc/providers/database.dart';
 import 'package:tfc/core/audit_trail_store.dart';
@@ -113,6 +115,13 @@ Future<void> _seedAudit(
 }
 
 void main() {
+  // `configHistoryActions` reaches `auditTrailStoreProvider`, which on this
+  // branch consults the transport row and so reaches the device-local store.
+  // Main's #465 made that a singleton `main()` opens before `runApp`; seeding
+  // it in memory is what a test does instead of opening a file.
+  setUp(() => setDeviceLocalPreferencesForTest(InMemoryPreferences()));
+  tearDown(resetDeviceLocalPreferencesForTest);
+
   late AppDatabase db;
   late ConfigChangeStore store;
 

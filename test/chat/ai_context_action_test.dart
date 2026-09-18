@@ -476,7 +476,8 @@ void main() {
   });
 
   group('Refactoring: all callers use centralized utility', () {
-    test('all callers import ai_context_action.dart', () {
+    test('all callers reach ai_context_action.dart, directly or by the seam',
+        () {
       final files = [
         'lib/widgets/alarm.dart',
         'lib/plc/plc_detail_panel.dart',
@@ -485,8 +486,25 @@ void main() {
       ];
       for (final path in files) {
         final source = File(projectFile(path)).readAsStringSync();
-        expect(source.contains('ai_context_action'), true,
-            reason: '$path must import ai_context_action.dart');
+        // Two spellings, one invariant. `editor_ai.dart` is the io/web seam
+        // the browser build needs — `providers/chat.dart` reaches `mcp_dart`,
+        // which has no web implementation, so the choice has to be made at
+        // import time rather than by `kChatEnabled` at runtime — and its io
+        // arm re-exports `AiContextAction` and friends from
+        // `ai_context_action.dart` unchanged. A caller that goes through it is
+        // still using the centralised utility, which is what this group is
+        // about; naming only the direct import would make the arm fail on the
+        // web seam while the thing it guards is perfectly intact.
+        //
+        // What is still refused is the old way round, and the arm below is
+        // where that lives: reaching `chat_overlay.dart` and
+        // `providers/chat.dart` to assemble an AI action by hand.
+        expect(
+            source.contains('ai_context_action') ||
+                source.contains('editor_ai.dart'),
+            true,
+            reason: '$path must reach ai_context_action.dart, either '
+                'directly or through the editor_ai.dart seam');
       }
     });
 

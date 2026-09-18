@@ -33,6 +33,7 @@ library;
 
 import 'dart:convert';
 
+import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc/core/config_change_store.dart';
 import 'package:tfc_dart/core/config/config_change.dart';
 import 'package:tfc_dart/core/config/config_item.dart';
@@ -113,7 +114,12 @@ ConfigChangeRecord configGoldenChange({
 
 /// One `audit_entry` header, in the shape `groupHistoryRows` merges beside the
 /// change rows.
-AuditEntryData configGoldenHeader({
+///
+/// `AuditRecord`, not drift's `AuditEntryData`: `AuditTrailStore` answers the
+/// value type on this line, so a fixture that built the generated row would be
+/// pinning a shape no store returns. It carries no `id` — [id] survives as a
+/// parameter because it is what spaces the instants apart.
+AuditRecord configGoldenHeader({
   required int id,
   Duration? ago,
   String who = 'jon',
@@ -125,8 +131,7 @@ AuditEntryData configGoldenHeader({
   String groupRequired = 'configure',
   String actionId = kConfigGoldenActionId,
 }) =>
-    AuditEntryData(
-      id: id,
+    AuditRecord(
       at: kConfigGoldenBase.subtract(ago ?? Duration(seconds: id)),
       who: who,
       station: station,
@@ -222,7 +227,7 @@ List<ConfigChangeRecord> configGoldenPopulatedChanges() => <ConfigChangeRecord>[
 
 /// The one header the populated set has. Nothing carries
 /// [kConfigGoldenOrphanActionId], which is the whole point.
-List<AuditEntryData> configGoldenPopulatedHeaders() => <AuditEntryData>[
+List<AuditRecord> configGoldenPopulatedHeaders() => <AuditRecord>[
       configGoldenHeader(id: 1),
     ];
 
@@ -271,7 +276,7 @@ List<ConfigChangeRecord> configGoldenFieldDiffChanges() =>
     ];
 
 /// The header for the field-diff action.
-List<AuditEntryData> configGoldenFieldDiffHeaders() => <AuditEntryData>[
+List<AuditRecord> configGoldenFieldDiffHeaders() => <AuditRecord>[
       configGoldenHeader(id: 1, newValue: '/baader'),
     ];
 
@@ -311,7 +316,7 @@ List<ConfigChangeRecord> configGoldenInsertDeleteChanges() =>
     ];
 
 /// The header for the insert/delete action.
-List<AuditEntryData> configGoldenInsertDeleteHeaders() => <AuditEntryData>[
+List<AuditRecord> configGoldenInsertDeleteHeaders() => <AuditRecord>[
       configGoldenHeader(
         id: 1,
         itemKey: 'page.save',

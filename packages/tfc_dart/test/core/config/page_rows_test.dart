@@ -463,12 +463,30 @@ void main() {
           ]));
     });
 
-    test('the walk still catches the pull D-3 arrived through', () {
-      // The positive control. `config_service.dart` imports
-      // `key_mapping_codec.dart` -> `state_man.dart` -> open62541, one import
-      // deep, and that is exactly the shape a source-text check on the entry
-      // file alone would miss. If this ever comes back empty the two tests
-      // above are measuring nothing.
+    test('the walk still catches a pull several imports deep', () {
+      // The positive control: a walk that only ever came back empty would make
+      // the two tests above measure nothing, so one entry point has to produce
+      // a violation *with the chain that reaches it*.
+      //
+      // **Its subject moved, and the move is the point.** It used to be
+      // `key_mapping_codec.dart` -> `state_man.dart` -> open62541, one hop,
+      // named as the shape D-3 arrived through. That edge is gone: the codec
+      // takes `KeyMappings` from `state_man_types.dart` now, because
+      // `state_man.dart` also holds `OpcUaStateMan` and the configuration
+      // store is in the closure of every screen that edits configuration —
+      // including in a browser (`test/web/web_closure_guard_test.dart`).
+      //
+      // What is left is a *longer* chain and therefore a better control:
+      // `key_mapping_codec.dart` -> `state_man_types.dart` ->
+      // `collect_config.dart` -> `boolean_expression.dart` -> open62541, three
+      // hops, which no source-text check on the entry file could ever see.
+      //
+      // Note this walk counts **any** `package:open62541/` as native, which is
+      // stricter than the web build needs — `open62541_types.dart` is the
+      // FFI-free barrel and compiles for the browser. The strictness belongs
+      // to `lib/tfc_dart_core.dart`'s own promise, which the arm above pins,
+      // and it is why this file is still a violation here while being web-safe
+      // there. Two different questions, deliberately asked differently.
       final walk = _walk('lib/core/config/key_mapping_codec.dart');
 
       expect(walk.violations, isNotEmpty);
@@ -476,11 +494,18 @@ void main() {
           contains(startsWith('package:open62541/')));
       expect(
           walk.violations.any((v) =>
-              v.reachedThrough('core/state_man.dart') &&
+              v.reachedThrough('core/state_man_types.dart') &&
               v.startedAt('key_mapping_codec.dart')),
           isTrue,
           reason: 'the violation has to be reported with the chain that '
               'reaches it, or nobody can act on it. ${walk.report}');
+      expect(
+          walk.violations.any((v) =>
+              v.reachedThrough('core/state_man.dart')),
+          isFalse,
+          reason: 'and the edge this control used to be about must stay gone: '
+              'the codec reaching `state_man.dart` is what put an OPC UA '
+              'client in the page editor\'s closure. ${walk.report}');
     });
 
     test('the chain matches on a Windows trail, from a POSIX machine', () {

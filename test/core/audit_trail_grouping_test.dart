@@ -28,9 +28,15 @@ int _nextChangeId = 1;
 /// One `audit_entry` row, with only the fields a grouping assertion cares about
 /// spelled at the call site.
 ///
-/// `id` is auto-assigned and ascending so two rows built with the same arguments
-/// are still distinguishable; nothing in `groupAuditRows` reads it.
-AuditEntryData row({
+/// This used to auto-assign an ascending `id` so that two rows built with the
+/// same arguments stayed distinguishable. `AuditRecord` carries no id — it is a
+/// database identity and the store stopped handing one out — and `AuditRecord`
+/// compares by value, so two calls with identical arguments now produce equal
+/// rows. Every assertion in this file distinguishes rows by `actionId` or
+/// `member`, which is what `groupAuditRows` actually reads; if a future case
+/// needs two otherwise-identical rows told apart, vary one of those rather than
+/// reaching for a surrogate.
+AuditRecord row({
   required String actionId,
   DateTime? at,
   String itemKey = 'CN04.MOT01.Speed',
@@ -40,8 +46,7 @@ AuditEntryData row({
   String surface = 'tag',
   String who = 'olafur',
 }) =>
-    AuditEntryData(
-      id: _nextId++,
+    AuditRecord(
       at: at ?? _at,
       who: who,
       station: 'ST101',

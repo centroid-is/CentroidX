@@ -23,6 +23,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/access_routes.dart';
+import 'package:tfc/core/access_authority.dart';
 import 'package:tfc/providers/access.dart';
 import 'package:tfc/models/menu_item.dart';
 import 'package:tfc/route_registry.dart';
@@ -34,9 +35,18 @@ import 'package:tfc_dart/core/access/access_repository.dart';
 
 class _StubRepository extends Fake implements AccessRepository {}
 
-const _loadingRepo = AsyncValue<AccessRepository?>.loading();
+/// The gate asks [AccessAuthority] — "can anything here verify a credential?"
+/// — rather than "is there a repository?". The two answers coincide on a
+/// direct station and part company on a gateway panel, which is the whole
+/// reason the question was renamed; these three stand for the three states the
+/// unit half exercises.
+const _loadingAuthority = AsyncValue<AccessAuthority>.loading();
+const _presentAuthority = AsyncValue<AccessAuthority>.data(AccessAuthority.local);
+const _absentAuthority = AsyncValue<AccessAuthority>.data(AccessAuthority.none);
+
+/// Still a repository, because the widget half drives the real
+/// `accessAuthorityProvider`, which derives the authority from this one.
 final _presentRepo = AsyncValue<AccessRepository?>.data(_StubRepository());
-const _absentRepo = AsyncValue<AccessRepository?>.data(null);
 
 const _loadingSession = AsyncValue<AccessSession>.loading();
 
@@ -70,10 +80,14 @@ void main() {
       // whitelist half's business — see 'the boot window waits' below.
       expect(
         resolveAccessGate(
+          // No `path`: the group half does not take one. `resolvePageAccess`
+          // is what turns a path into `allowWhenNobodyCanSignIn`, and asking
+          // the group half "on its own terms" means handing it that answer
+          // directly, which is what the `false` below is.
           group: AccessGroup.operate,
-          repository: _loadingRepo,
+          authority: _loadingAuthority,
           session: _loadingSession,
-          allowWhenRepositoryUnavailable: false,
+          allowWhenNobodyCanSignIn: false,
         ),
         AccessGateState.allowed,
       );
@@ -84,7 +98,7 @@ void main() {
         resolvePageAccess(
           group: AccessGroup.configure,
           path: '/fillet',
-          repository: _loadingRepo,
+          authority: _loadingAuthority,
           session: _loadingSession,
         ),
         AccessGateState.waiting,
@@ -96,7 +110,7 @@ void main() {
         resolvePageAccess(
           group: AccessGroup.configure,
           path: '/fillet',
-          repository: _presentRepo,
+          authority: _presentAuthority,
           session: _session(),
         ),
         AccessGateState.denied,
@@ -108,7 +122,7 @@ void main() {
         resolvePageAccess(
           group: AccessGroup.configure,
           path: '/fillet',
-          repository: _presentRepo,
+          authority: _presentAuthority,
           session:
               _session(groups: {AccessGroup.operate, AccessGroup.configure}),
         ),
@@ -124,7 +138,7 @@ void main() {
         resolvePageAccess(
           group: AccessGroup.administer,
           path: kServerConfigRoute,
-          repository: _absentRepo,
+          authority: _absentAuthority,
           session: _session(),
         ),
         AccessGateState.allowed,
@@ -133,7 +147,7 @@ void main() {
         resolvePageAccess(
           group: AccessGroup.configure,
           path: '/advanced/page-editor',
-          repository: _absentRepo,
+          authority: _absentAuthority,
           session: _session(),
         ),
         AccessGateState.denied,
@@ -148,7 +162,7 @@ void main() {
         resolvePageAccess(
           group: AccessGroup.operate,
           path: '/anything',
-          repository: _presentRepo,
+          authority: _presentAuthority,
           session: _session(pages: null),
         ),
         AccessGateState.allowed,
@@ -161,7 +175,7 @@ void main() {
         resolvePageAccess(
           group: AccessGroup.operate,
           path: '/fillet',
-          repository: _presentRepo,
+          authority: _presentAuthority,
           session: session,
         ),
         AccessGateState.allowed,
@@ -170,7 +184,7 @@ void main() {
         resolvePageAccess(
           group: AccessGroup.operate,
           path: '/packing',
-          repository: _presentRepo,
+          authority: _presentAuthority,
           session: session,
         ),
         AccessGateState.denied,
@@ -182,7 +196,7 @@ void main() {
         resolvePageAccess(
           group: AccessGroup.operate,
           path: '/fillet',
-          repository: _presentRepo,
+          authority: _presentAuthority,
           session: _session(pages: const <String>{}),
         ),
         AccessGateState.denied,
@@ -197,7 +211,7 @@ void main() {
         resolvePageAccess(
           group: AccessGroup.configure,
           path: '/fillet',
-          repository: _presentRepo,
+          authority: _presentAuthority,
           session: _session(pages: const {'/fillet'}),
         ),
         AccessGateState.denied,
@@ -214,7 +228,7 @@ void main() {
           resolvePageAccess(
             group: AccessGroup.users,
             path: kAccessAdminRoute,
-            repository: _presentRepo,
+            authority: _presentAuthority,
             session: _session(groups: const {AccessGroup.users}, pages: pages),
           ),
           AccessGateState.allowed,
@@ -231,7 +245,7 @@ void main() {
         resolvePageAccess(
           group: AccessGroup.users,
           path: kAccessAdminRoute,
-          repository: _presentRepo,
+          authority: _presentAuthority,
           session: _session(groups: const {AccessGroup.operate}),
         ),
         AccessGateState.denied,
@@ -250,7 +264,7 @@ void main() {
         resolvePageAccess(
           group: AccessGroup.configure,
           path: '/advanced/alarm-editor',
-          repository: _presentRepo,
+          authority: _presentAuthority,
           session: session,
         ),
         AccessGateState.allowed,
@@ -259,7 +273,7 @@ void main() {
         resolvePageAccess(
           group: AccessGroup.configure,
           path: '/advanced/page-editor',
-          repository: _presentRepo,
+          authority: _presentAuthority,
           session: session,
         ),
         AccessGateState.denied,
@@ -279,7 +293,7 @@ void main() {
         resolvePageAccess(
           group: AccessGroup.operate,
           path: '/fillet',
-          repository: _loadingRepo,
+          authority: _loadingAuthority,
           session: _loadingSession,
         ),
         AccessGateState.waiting,
@@ -294,7 +308,7 @@ void main() {
         resolvePageAccess(
           group: AccessGroup.operate,
           path: '/fillet',
-          repository: _presentRepo,
+          authority: _presentAuthority,
           session: _loadingSession,
         ),
         AccessGateState.waiting,
@@ -311,7 +325,7 @@ void main() {
         resolvePageAccess(
           group: AccessGroup.operate,
           path: '/fillet',
-          repository: _presentRepo,
+          authority: _presentAuthority,
           session: AsyncValue<AccessSession>.error('no', StackTrace.empty),
         ),
         AccessGateState.allowed,
@@ -470,6 +484,14 @@ void main() {
         'refuse', (tester) async {
       // The whole transition, in one test: loading -> resolved-with-an-empty
       // whitelist. The page must not appear at any point between them.
+      //
+      // The refusal it lands on is the SIGN-IN-FIRST one, not "not available",
+      // and that is the distinction [anonymousSeesNothing] draws: nobody is
+      // signed in and no page was granted, so the useful first sentence is the
+      // sign-in rather than an explanation of a whitelist the operator cannot
+      // see. The case below is the same transition for somebody who IS signed
+      // in, where "not available" is the honest voice. What both arms assert
+      // is the same property the name states: the page never appears.
       final controller = _SwitchableSession(_loadingSession);
       await tester.pumpWidget(host(
         path: '/fillet',
@@ -483,7 +505,33 @@ void main() {
       controller.resolve(_session(pages: const <String>{}).requireValue);
       await tester.pumpAndSettle();
 
+      expect(find.byKey(kAccessSignInFirstBodyKey), findsOneWidget);
+      expect(find.byKey(kPageNotAvailableBodyKey), findsNothing);
+      expect(find.text('the page itself'), findsNothing);
+    });
+
+    testWidgets('a signed-in account outside the whitelist gets the '
+        'not-available refusal, and still never the page', (tester) async {
+      // The other voice of the same refusal. An account somebody signed in to
+      // has a whitelist that simply does not carry this page, and telling that
+      // person to sign in would send them hunting for a credential that
+      // changes nothing.
+      final controller = _SwitchableSession(_loadingSession);
+      await tester.pumpWidget(host(
+        path: '/fillet',
+        session: _loadingSession,
+        controller: controller,
+      ));
+      await tester.pump();
+      expect(find.text('the page itself'), findsNothing);
+
+      controller.resolve(
+          _session(pages: const <String>{'/other'}, elevated: true)
+              .requireValue);
+      await tester.pumpAndSettle();
+
       expect(find.byKey(kPageNotAvailableBodyKey), findsOneWidget);
+      expect(find.byKey(kAccessSignInFirstBodyKey), findsNothing);
       expect(find.text('the page itself'), findsNothing);
     });
 
@@ -505,6 +553,64 @@ void main() {
       await tester.pump();
 
       expect(taps, 1);
+    });
+
+    testWidgets('nobody signed in and nothing shown to nobody: the sign-in '
+        'leads', (tester) async {
+      // The browser's first frame, and a walk-up station whose `anonymous`
+      // row lists no pages. "This page is not available" is written for a
+      // page somebody was not given; here no page was given to anyone, and
+      // the honest first sentence is the one act that changes it.
+      await tester.pumpWidget(host(
+        path: '/fillet',
+        session: _session(groups: const {}, pages: const <String>{}),
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(kAccessSignInFirstBodyKey), findsOneWidget);
+      expect(find.text(kAccessSignInFirstHeadline), findsOneWidget);
+      expect(find.byKey(kAccessSignInFirstSignInKey), findsOneWidget);
+      expect(find.byKey(kPageNotAvailableBodyKey), findsNothing);
+      expect(find.byKey(kAccessLockedBodyKey), findsNothing);
+      expect(find.text('the page itself'), findsNothing,
+          reason: 'a different first sentence, the same refusal: the page '
+              'behind it is still never built');
+    });
+
+    testWidgets('the sign-in-first body calls the injected opener',
+        (tester) async {
+      var opened = 0;
+      await tester.pumpWidget(host(
+        path: '/fillet',
+        session: _session(groups: const {}, pages: const <String>{}),
+        openSignIn: (context, ref) async {
+          opened++;
+        },
+      ));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(kAccessSignInFirstSignInKey));
+      await tester.pump();
+      expect(opened, 1);
+    });
+
+    test('anonymousSeesNothing is exactly anonymous with an empty whitelist',
+        () {
+      AccessSession session({Set<String>? pages, bool elevated = false}) =>
+          _session(pages: pages, elevated: elevated).requireValue;
+      expect(anonymousSeesNothing(session(pages: const <String>{})), isTrue);
+      expect(anonymousSeesNothing(session(pages: null)), isFalse,
+          reason: 'no whitelist admits every page — there is nothing to '
+              'lead with a sign-in about');
+      expect(anonymousSeesNothing(session(pages: const {'/packing'})), isFalse,
+          reason: 'some pages were given; a page outside them is not '
+              'available, which is the other body\'s sentence');
+      expect(
+          anonymousSeesNothing(
+              session(pages: const <String>{}, elevated: true)),
+          isFalse,
+          reason: 'somebody DID sign in; telling them to is the confusion '
+              'kPageNotAvailableRoleNote exists to avoid');
+      expect(anonymousSeesNothing(null), isFalse);
     });
 
     testWidgets('the not-available body names who is signed in', (tester) async {

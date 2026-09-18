@@ -15,7 +15,6 @@
 library;
 
 import 'package:tfc_access/tfc_access.dart';
-import 'package:tfc_dart/core/database_drift.dart';
 
 import 'config_change_store.dart';
 
@@ -85,7 +84,7 @@ class AuditAction {
 
   /// The rows of this action that survived the filters, in the order the store
   /// returned them — newest-first, and never re-sorted here.
-  final List<AuditEntryData> rows;
+  final List<AuditRecord> rows;
 
   /// How many rows this action has in the table, filters aside.
   ///
@@ -102,7 +101,7 @@ class AuditAction {
   final int totalRowCount;
 
   /// The row the collapsed line is drawn from.
-  AuditEntryData get lead => rows.first;
+  AuditRecord get lead => rows.first;
 
   /// How many of this action's rows the filters excluded.
   ///
@@ -165,10 +164,10 @@ class AuditAction {
 /// the reason [totalsByActionId] is passed in at all is that the excluded rows
 /// are not available to be re-included.
 List<AuditAction> groupAuditRows(
-  List<AuditEntryData> rows, {
+  List<AuditRecord> rows, {
   Map<String, int> totalsByActionId = const {},
 }) {
-  final byAction = _groupByKey<AuditEntryData>(rows, (row) => row.actionId);
+  final byAction = _groupByKey<AuditRecord>(rows, (row) => row.actionId);
 
   return [
     for (final entry in byAction.entries)
@@ -186,9 +185,9 @@ List<AuditAction> groupAuditRows(
 /// One child of an action: either an `audit_entry` member row or a
 /// `config_change` row.
 ///
-/// ## Why a union and not a widened [AuditEntryData]
+/// ## Why a union and not a widened [AuditRecord]
 ///
-/// The obvious cheap move is to synthesise an [AuditEntryData] for each change
+/// The obvious cheap move is to synthesise an [AuditRecord] for each change
 /// row and reuse everything below unchanged. It does not survive contact with
 /// the data: `audit_entry` has no `kind` and no `entity_id`, so the flattening
 /// would throw away precisely the identity 04-07's undo has to name — *which*
@@ -218,7 +217,7 @@ sealed class ActionChild {
 final class AuditMemberChild extends ActionChild {
   const AuditMemberChild(this.row);
 
-  final AuditEntryData row;
+  final AuditRecord row;
 
   @override
   String get actionId => row.actionId;
@@ -289,7 +288,7 @@ class HistoryAction {
   final int totalChangeCount;
 
   /// The `audit_entry` rows among [children], in order.
-  List<AuditEntryData> get auditRows =>
+  List<AuditRecord> get auditRows =>
       [for (final child in children) if (child is AuditMemberChild) child.row];
 
   /// The `config_change` rows among [children], in order.
@@ -304,7 +303,7 @@ class HistoryAction {
   /// See [isParentless]. Nullable where [AuditAction.lead] is not, because
   /// synthesising a header would put a fabricated author and a fabricated
   /// permission on the page.
-  AuditEntryData? get lead {
+  AuditRecord? get lead {
     for (final child in children) {
       if (child is AuditMemberChild) return child.row;
     }
@@ -397,7 +396,7 @@ class HistoryAction {
 /// which is why the two totals are passed in: the excluded rows are not
 /// available to be re-included.
 List<HistoryAction> groupHistoryRows({
-  required List<AuditEntryData> auditRows,
+  required List<AuditRecord> auditRows,
   required List<ConfigChangeRecord> changes,
   Map<String, int> auditTotalsByActionId = const {},
   Map<String, int> changeTotalsByActionId = const {},
@@ -524,7 +523,12 @@ String strictestGroupName(Iterable<String> names) {
 /// `old → new` instead of failing loudly.
 ///
 /// `AuditRecord.isAuthEvent` (`packages/tfc_access/lib/src/audit.dart`) is the
-/// same predicate on the writer's type. The two must stay in step.
+/// same predicate on the writer's type, and this function now **delegates to
+/// it** rather than restating it. Before the store answered in `AuditRecord`
+/// there were two literals to keep in step and a comment here asking a reader
+/// to do it by hand; there is one now, and it lives with the type. The name
+/// stays because three widgets and the source-grep test below read better for
+/// it — what went away is the second definition, not the second spelling.
 ///
 /// ## Why it keys on `surface` and not on an empty `group_required`
 ///
@@ -536,7 +540,7 @@ String strictestGroupName(Iterable<String> names) {
 /// diverging: the row that breaks it is an unbound tag write, which carries an
 /// empty `group_required` too (`guarded_state_man.dart` writes
 /// `strictestRequired?.name ?? ''`).
-bool isAuthEntry(AuditEntryData row) => row.surface == 'auth';
+bool isAuthEntry(AuditRecord row) => row.isAuthEvent;
 
 /// Consecutive halves of one action, from two pages, as one action.
 ///

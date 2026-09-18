@@ -16,6 +16,7 @@ import '../../widgets/hit_boundary.dart';
 import '../../widgets/panes/pane_chrome.dart';
 import '../../widgets/panes/side_pane.dart';
 import 'common.dart';
+import '../../widgets/hmi_motion.dart';
 
 /// The beacon's painters live in `widgets/alarm_pulse.dart` so the navigation
 /// bar can draw the same pulse without depending on the asset library. Re-
@@ -190,6 +191,7 @@ class _AlarmVisibilityState extends ConsumerState<AlarmVisibility>
     super.initState();
     _controller = AnimationController(
       vsync: this,
+      animationBehavior: kHmiAnimationBehavior,
       duration: const Duration(milliseconds: 1800),
     );
     _subscribe();
@@ -472,7 +474,7 @@ class _AlarmVisibilityPaneState extends ConsumerState<AlarmVisibilityPane> {
   /// Subscribed once, not per build: a stream object made in `build` makes
   /// `StreamBuilder` start over on every rebuild, and the pane flashed
   /// "Connecting" for a frame each time.
-  late final Stream<(AlarmMan, List<AlarmActive>)> _stream =
+  late final Stream<(AlarmSource, List<AlarmActive>)> _stream =
       ref.read(alarmManProvider.future).asStream().switchMap(
             (alarmMan) => alarmMan.activeAlarms().map(
                 (set) => (alarmMan, matchingActiveAlarms(set, config.alarmUids))),
@@ -480,7 +482,7 @@ class _AlarmVisibilityPaneState extends ConsumerState<AlarmVisibilityPane> {
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<(AlarmMan, List<AlarmActive>)>(
+    return StreamBuilder<(AlarmSource, List<AlarmActive>)>(
       stream: _stream,
       builder: (context, snapshot) {
         if (snapshot.hasError) {
@@ -805,6 +807,7 @@ class _AlarmVisibilityConfigEditorState
     super.initState();
     _previewController = AnimationController(
       vsync: this,
+      animationBehavior: kHmiAnimationBehavior,
       duration: const Duration(milliseconds: 1800),
     );
   }
@@ -827,7 +830,7 @@ class _AlarmVisibilityConfigEditorState
   }
 
   Widget _alarmPicker(BuildContext context) {
-    return FutureBuilder<AlarmMan>(
+    return FutureBuilder<AlarmSource>(
       future: ref.watch(alarmManProvider.future),
       builder: (context, snapshot) {
         if (snapshot.hasError) {

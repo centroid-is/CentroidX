@@ -21,8 +21,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/page_creator/assets/bpm.dart';
 import 'package:tfc/page_creator/assets/graph.dart';
+import 'package:tfc/core/timeseries_source.dart';
 import 'package:tfc/page_creator/assets/ratio_number.dart';
 import 'package:tfc/providers/database.dart';
+import 'package:tfc/providers/timeseries_source.dart';
 import 'package:tfc/providers/state_man.dart';
 import 'package:tfc/widgets/panes/standard_dialog.dart';
 import 'package:tfc_dart/core/database.dart';
@@ -115,6 +117,14 @@ Widget _harness(Database database, Widget child) {
   return ProviderScope(
     overrides: [
       databaseProvider.overrideWith((ref) async => database),
+      // The charts read history through the source seam, not through
+      // `databaseProvider` — a gateway panel has no local database and gets
+      // its history over the pipe. Overridden here as well as the database so
+      // resolution never reaches `gatewayConfigProvider`, which would want a
+      // device-local preferences platform this test has no reason to stand
+      // up. Same handle behind both, so the gated fake is still what answers.
+      timeseriesSourceProvider
+          .overrideWith((ref) async => DatabaseTimeseriesSource(database)),
       stateManProvider.overrideWith((ref) async => _FakeStateMan()),
     ],
     child: MaterialApp(
@@ -291,6 +301,9 @@ void main() {
     await tester.pumpWidget(ProviderScope(
       overrides: [
         databaseProvider.overrideWith((ref) async => database),
+        // See `_harness` — the source seam, for the same reason.
+        timeseriesSourceProvider
+            .overrideWith((ref) async => DatabaseTimeseriesSource(database)),
         stateManProvider.overrideWith((ref) async => _FakeStateMan()),
       ],
       child: MaterialApp(
