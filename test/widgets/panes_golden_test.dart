@@ -1154,7 +1154,7 @@ void main() {
   final (light, dark) = solarized();
 
   // `flutter_test_config.dart` registers the font as 'Roboto' (Material's
-  // default). The app themes ask for 'roboto-mono' by name, so register it
+  // default). The app themes ask for 'dejavu-sans' by name, so register it
   // under that family too — otherwise these goldens render as Ahem blocks.
   setUpAll(() async {
     Future<void> loadFont(String family, String path) async {
@@ -1165,7 +1165,7 @@ void main() {
     }
 
     await loadFont(
-        'roboto-mono', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+        'dejavu-sans', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
 
     // Icons are load-bearing in these goldens (every header and tile carries
     // one), and the test environment does not register MaterialIcons. Pull it

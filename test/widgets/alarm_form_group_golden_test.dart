@@ -13,15 +13,15 @@ import '../helpers/golden_platform.dart';
 
 /// Text in a golden needs a real font, or every glyph is an Ahem box.
 ///
-/// It has to be registered under `roboto-mono` as well as `Roboto`: the muted
-/// theme sets `fontFamily: 'roboto-mono'`, so registering only the default
+/// It has to be registered under `dejavu-sans` as well as `Roboto`: the muted
+/// theme sets `fontFamily: 'dejavu-sans'`, so registering only the default
 /// family leaves every themed `Text` unresolved and boxed.
 Future<void> loadRealFont() async {
-  final data = File('lib/fonts/roboto-mono/RobotoMono-Regular.ttf')
+  final data = File('lib/fonts/dejavu-sans/DejaVuSans.ttf')
       .readAsBytesSync()
       .buffer
       .asByteData();
-  for (final family in ['Roboto', 'roboto-mono']) {
+  for (final family in ['Roboto', 'dejavu-sans']) {
     await (FontLoader(family)..addFont(Future.value(data))).load();
   }
 

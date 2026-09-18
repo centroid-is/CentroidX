@@ -121,10 +121,10 @@ Future<void> _loadFonts() async {
         .load();
   }
 
-  // The Solarized theme sets fontFamily 'roboto-mono'; register the file under
+  // The Solarized theme sets fontFamily 'dejavu-sans'; register the file under
   // the default family too so unthemed text matches.
-  await load('Roboto', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
-  await load('roboto-mono', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+  await load('Roboto', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
+  await load('dejavu-sans', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
 
   final flutterRoot = Platform.environment['FLUTTER_ROOT'];
   if (flutterRoot != null) {

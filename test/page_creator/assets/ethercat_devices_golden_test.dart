@@ -30,11 +30,11 @@ abstract final class _Col {
 /// A table is nothing but words and figures; under Ahem every cell is a
 /// solid block and the golden proves the grid while saying nothing about it.
 Future<void> loadRealFont() async {
-  final data = File('lib/fonts/roboto-mono/RobotoMono-Regular.ttf')
+  final data = File('lib/fonts/dejavu-sans/DejaVuSans.ttf')
       .readAsBytesSync()
       .buffer
       .asByteData();
-  for (final family in ['Roboto', 'roboto-mono']) {
+  for (final family in ['Roboto', 'dejavu-sans']) {
     await (FontLoader(family)..addFont(Future.value(data))).load();
   }
 }

@@ -21,7 +21,7 @@
 ///
 /// **Fonts are loaded here, twice.** `test/widgets/flutter_test_config.dart`
 /// registers the TTF under `'Roboto'` alone, but `lib/theme.dart:349` names
-/// `'roboto-mono'` as the theme's family; an unregistered family falls back to
+/// `'dejavu-sans'` as the theme's family; an unregistered family falls back to
 /// Ahem, so every themed `Text` would capture as solid rectangles. Same helper
 /// as `test/page_creator/assets/aircab_golden_test.dart:105-125`.
 ///
@@ -432,9 +432,9 @@ void main() {
 
     // Both families, deliberately. `flutter_test_config.dart` registers only
     // the first; `lib/theme.dart:349` asks for the second.
-    await loadFont('Roboto', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+    await loadFont('Roboto', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
     await loadFont(
-        'roboto-mono', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+        'dejavu-sans', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
 
     final flutterRoot = Platform.environment['FLUTTER_ROOT'];
     for (final candidate in <String>[

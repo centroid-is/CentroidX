@@ -17,11 +17,11 @@ const _key = Key('ethercat_link_pane');
 /// Ahem box and the golden proves the layout while saying nothing about what
 /// it says.
 Future<void> loadRealFont() async {
-  final data = File('lib/fonts/roboto-mono/RobotoMono-Regular.ttf')
+  final data = File('lib/fonts/dejavu-sans/DejaVuSans.ttf')
       .readAsBytesSync()
       .buffer
       .asByteData();
-  for (final family in ['Roboto', 'roboto-mono']) {
+  for (final family in ['Roboto', 'dejavu-sans']) {
     await (FontLoader(family)..addFont(Future.value(data))).load();
   }
 }

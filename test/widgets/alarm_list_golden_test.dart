@@ -55,8 +55,8 @@ Future<void> _loadFonts() async {
         .load();
   }
 
-  await load('Roboto', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
-  await load('roboto-mono', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+  await load('Roboto', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
+  await load('dejavu-sans', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
 
   // Without this the Active/History toggle and the search field capture as
   // empty boxes, and the bar under review is half unreadable.

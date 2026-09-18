@@ -86,7 +86,7 @@ merely "passes" is not review.
   the test dir's `goldens/`.
 - **Text in the golden?** Load a real font or every glyph renders as a solid
   box — copy `loadRealFont()` from
-  `test/page_creator/assets/third_party_golden_test.dart` (RobotoMono from
+  `test/page_creator/assets/third_party_golden_test.dart` (DejaVu Sans from
   `lib/fonts/`, registered as 'Roboto').
 - **The container pins the Flutter version for you** — it reads
   `.flutter-version` when it builds, so there is no longer an SDK to get wrong

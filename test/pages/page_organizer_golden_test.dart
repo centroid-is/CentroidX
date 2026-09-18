@@ -142,7 +142,7 @@ Future<void> _loadFonts() async {
         .load();
   }
 
-  await load('Roboto', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+  await load('Roboto', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
   // Not every Material codepoint is in the cached icon font this test loads —
   // a page's own icon lands on the fallback glyph. The subject of these
   // goldens is the wording and the red rows, so it is left alone.

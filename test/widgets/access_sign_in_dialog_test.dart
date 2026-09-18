@@ -194,15 +194,21 @@ void main() {
       expect(note.maxLines, isNull);
       expect(note.overflow, isNot(TextOverflow.ellipsis));
 
-      // And it is genuinely painted on more than one line at the dialog's real
-      // width, which is the observation the golden makes.
+      // And the whole sentence is genuinely painted at the dialog's real
+      // width, which is the observation the golden makes: wrapped, or fitting
+      // on one line outright. In DejaVu Sans it fits on one.
       final rendered = tester.renderObject<RenderParagraph>(
         find.descendant(
           of: find.byKey(kAccessSignInHonestyKey),
           matching: find.byType(RichText),
         ),
       );
-      expect(rendered.size.height, greaterThan(rendered.preferredLineHeight));
+      final wraps = rendered.size.height > rendered.preferredLineHeight;
+      final fitsOnOneLine =
+          rendered.getMaxIntrinsicWidth(double.infinity) <= rendered.size.width;
+      expect(wraps || fitsOnOneLine, isTrue,
+          reason: 'one line, narrower than the sentence: the painter clipped '
+              'it');
     });
 
     testWidgets('valid credentials close the dialog', (tester) async {

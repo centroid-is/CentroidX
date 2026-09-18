@@ -1,7 +1,7 @@
 /// Real fonts for golden tests, so frames render readable text and actual
 /// glyphs instead of Ahem blocks and empty icon boxes.
 ///
-/// `test/widgets/flutter_test_config.dart` already registers roboto-mono as
+/// `test/widgets/flutter_test_config.dart` already registers DejaVu Sans as
 /// `Roboto` for everything beneath it, but not the icon fonts, and tests
 /// elsewhere under `test/` get no font at all. Call [loadGoldenFonts] from a
 /// `setUpAll` in any golden test that shows icons.
@@ -37,13 +37,13 @@ String? packageRoot(String package) {
 
 /// Registers the text and icon fonts golden frames need.
 Future<void> loadGoldenFonts() async {
-  await _load('Roboto', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
-  // Under the app's own themes `fontFamily` is 'roboto-mono', not 'Roboto', so
+  await _load('Roboto', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
+  // Under the app's own themes `fontFamily` is 'dejavu-sans', not 'Roboto', so
   // a themed frame that registers only the latter renders every string as Ahem
   // boxes. Registering both is what `base_scaffold_appbar_golden_test.dart`
   // does with its private loader; this is the same two lines, in the shared
   // helper, so the next themed golden does not have to rediscover it.
-  await _load('roboto-mono', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+  await _load('dejavu-sans', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
 
   final flutterRoot = Platform.environment['FLUTTER_ROOT'];
   if (flutterRoot != null) {

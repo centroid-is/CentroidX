@@ -1028,8 +1028,8 @@ String? _currentPath(BeamerDelegate router) {
 /// The Phase 1 lesson, copied deliberately: `find.text` passes on a string the
 /// painter has clipped to "…not a security bo…", which is how an ellipsised
 /// honesty line shipped past a green assertion. Pin the properties that decide
-/// legibility, then check the paragraph really is taller than one line at the
-/// width the page renders it at.
+/// legibility, then check the whole sentence is painted at the width the page
+/// renders it at: wrapped onto more than one line, or fitting on one outright.
 void _expectWrapsLegibly(WidgetTester tester, Key key, String expected) {
   final text = tester.widget<Text>(find.byKey(key));
   expect(text.data, expected);
@@ -1039,5 +1039,9 @@ void _expectWrapsLegibly(WidgetTester tester, Key key, String expected) {
   final rendered = tester.renderObject<RenderParagraph>(
     find.descendant(of: find.byKey(key), matching: find.byType(RichText)),
   );
-  expect(rendered.size.height, greaterThan(rendered.preferredLineHeight));
+  final wraps = rendered.size.height > rendered.preferredLineHeight;
+  final fitsOnOneLine =
+      rendered.getMaxIntrinsicWidth(double.infinity) <= rendered.size.width;
+  expect(wraps || fitsOnOneLine, isTrue,
+      reason: 'one line, narrower than the sentence: the painter clipped it');
 }

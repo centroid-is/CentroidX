@@ -99,7 +99,7 @@ exists so a Mac or a Windows box can reach the same renderer. It builds
 Flutter version from `.flutter-version` so the image cannot drift from CI.
 
 Why Linux rather than macOS, where these used to be authored: our goldens load
-RobotoMono from repo bytes, so the font data is already pinned and the host's
+DejaVu Sans from repo bytes, so the font data is already pinned and the host's
 installed fonts are never consulted. What is left is the glyph rasteriser. On
 macOS, Skia rasterises glyphs through CoreText — part of the operating system
 — so a golden authored on macOS 15 could fail on CI's macOS 26 under an

@@ -92,25 +92,17 @@ flutter:
   uses-material-design: true
 
   # The theme's typeface (`kAppFontFamily` in lib/theme.dart), bundled so
-  # every build draws it. It was never declared, so each platform fell back
-  # to its own default: DejaVu Sans on a station, the Windows default on
-  # Windows, Roboto in a browser. The files live in the tfc package's lib/,
-  # which is why they are addressed as packages/tfc/.
+  # every build draws it. DejaVu Sans is what stations have always drawn: it
+  # is the only sans in their debian:trixie-slim container, which is where
+  # fontconfig fell back to before any font was bundled. These are the files
+  # fonts-dejavu-core 2.37-8 installs there, Regular and Bold only, as on a
+  # station. The files live in the tfc package's lib/, which is why they are
+  # addressed as packages/tfc/.
   fonts:
-    - family: roboto-mono
+    - family: dejavu-sans
       fonts:
-        - asset: packages/tfc/fonts/roboto-mono/RobotoMono-Thin.ttf
-          weight: 100
-        - asset: packages/tfc/fonts/roboto-mono/RobotoMono-ExtraLight.ttf
-          weight: 200
-        - asset: packages/tfc/fonts/roboto-mono/RobotoMono-Light.ttf
-          weight: 300
-        - asset: packages/tfc/fonts/roboto-mono/RobotoMono-Regular.ttf
-        - asset: packages/tfc/fonts/roboto-mono/RobotoMono-Medium.ttf
-          weight: 500
-        - asset: packages/tfc/fonts/roboto-mono/RobotoMono-SemiBold.ttf
-          weight: 600
-        - asset: packages/tfc/fonts/roboto-mono/RobotoMono-Bold.ttf
+        - asset: packages/tfc/fonts/dejavu-sans/DejaVuSans.ttf
+        - asset: packages/tfc/fonts/dejavu-sans/DejaVuSans-Bold.ttf
           weight: 700
 
 assets:

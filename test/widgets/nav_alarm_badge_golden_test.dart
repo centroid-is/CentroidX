@@ -126,8 +126,8 @@ Future<void> _loadFonts() async {
         .load();
   }
 
-  await load('Roboto', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
-  await load('roboto-mono', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+  await load('Roboto', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
+  await load('dejavu-sans', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
 
   final flutterRoot = Platform.environment['FLUTTER_ROOT'];
   if (flutterRoot != null) {

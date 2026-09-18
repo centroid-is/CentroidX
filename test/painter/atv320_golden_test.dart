@@ -15,7 +15,7 @@ import '../helpers/golden_platform.dart';
 /// the goldens also reflect how much label really fits across the body.
 Future<void> _loadCourier() async {
   final bytes =
-      await File('lib/fonts/roboto-mono/RobotoMono-Regular.ttf').readAsBytes();
+      await File('lib/fonts/dejavu-sans/DejaVuSans.ttf').readAsBytes();
   await (FontLoader('Courier')
         ..addFont(Future.value(ByteData.sublistView(bytes))))
       .load();
