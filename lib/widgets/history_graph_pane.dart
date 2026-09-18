@@ -147,7 +147,7 @@ class _HistoryGraphPaneState extends ConsumerState<HistoryGraphPane> {
         final liveStream = collector.collectStream(k, since: since);
         final cutoff = DateTime.now().toUtc().subtract(since);
         final dbStream = Stream.fromFuture(
-          collector.database
+          collector.history
               .queryTimeseriesData(k, DateTime.now().toUtc(), from: cutoff)
               // An empty backfill, not a failed one. `combineLatest2` emits
               // nothing until every source has emitted at least once, so a
@@ -176,7 +176,7 @@ class _HistoryGraphPaneState extends ConsumerState<HistoryGraphPane> {
           },
         );
       } else {
-        return Stream.fromFuture(collector.database
+        return Stream.fromFuture(collector.history
             .queryTimeseriesDataDownsampled(
                 k, fetchRange!.start, fetchRange!.end,
                 maxPoints: kGraphMaxPoints));

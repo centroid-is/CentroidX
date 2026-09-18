@@ -73,7 +73,7 @@ typedef TimeseriesInsert = ({DateTime time, Object? value});
 /// `tfc_relay_protocol`'s `TimeseriesApi`; that is not a coincidence, it is
 /// what makes the relayed implementation a translation rather than a
 /// re-interpretation.
-abstract interface class TimeseriesSource {
+abstract interface class TimeseriesSource implements db.TimeseriesReader {
   /// Samples for one series from [to] onwards, or within `[from, to]` when
   /// [from] is given.
   ///
@@ -82,6 +82,7 @@ abstract interface class TimeseriesSource {
   /// `time >= to`). Confusing, carried verbatim on purpose: the app, the wire
   /// and the backend all mean the same thing by it, and renaming it here would
   /// make this the one place they disagree.
+  @override
   Future<List<db.TimeseriesData<dynamic>>> queryTimeseriesData(
       String tableName, DateTime to,
       {String? orderBy = 'time ASC', DateTime? from});
@@ -92,12 +93,14 @@ abstract interface class TimeseriesSource {
   /// different answers, and a chart that iterates the names it asked for drops
   /// a missing one from its legend — which an operator reads as "this tag is
   /// flat" rather than as "nothing was recorded".
+  @override
   Future<Map<String, List<db.TimeseriesData<dynamic>>>>
       queryTimeseriesDataMultiple(List<String> tableNames, DateTime to,
           {String? orderBy = 'time ASC', DateTime? from});
 
   /// At most [maxPoints] samples spanning the window, bucketed where the data
   /// is.
+  @override
   Future<List<db.TimeseriesData<dynamic>>> queryTimeseriesDataDownsampled(
       String tableName, DateTime from, DateTime to, {int maxPoints = 1000});
 

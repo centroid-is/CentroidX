@@ -67,6 +67,9 @@ class FakeHistoryCollector extends Fake implements Collector {
   @override
   final Database database;
 
+  @override
+  TimeseriesReader get history => database;
+
   final Map<String, List<TimeseriesData<dynamic>>> samples;
 
   @override

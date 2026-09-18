@@ -237,7 +237,31 @@ String buildDownsampleSql(
       ''';
 }
 
-class Database {
+/// The three historical reads, and nothing that writes.
+///
+/// [Database] answers them from the station's own TimescaleDB. A gateway panel
+/// has no database, and answers them over the relay instead (the app's
+/// `RelayedTimeseriesSource`). What reads stored rows — a trend's backfill,
+/// the history panes — takes this rather than a [Database], so the same code
+/// draws on either transport.
+///
+/// The signatures are [Database]'s own, verbatim: the second positional
+/// argument of [queryTimeseriesData] is a *lower* bound when `from` is null.
+abstract interface class TimeseriesReader {
+  Future<List<TimeseriesData<dynamic>>> queryTimeseriesData(
+      String tableName, DateTime to,
+      {String? orderBy = 'time ASC', DateTime? from});
+
+  Future<Map<String, List<TimeseriesData<dynamic>>>>
+      queryTimeseriesDataMultiple(List<String> tableNames, DateTime to,
+          {String? orderBy = 'time ASC', DateTime? from});
+
+  Future<List<TimeseriesData<dynamic>>> queryTimeseriesDataDownsampled(
+      String tableName, DateTime from, DateTime to,
+      {int maxPoints = 1000});
+}
+
+class Database implements TimeseriesReader {
   Database(
     this.db, {
     this.healthTimeout = const Duration(seconds: 30),

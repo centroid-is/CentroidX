@@ -34,6 +34,7 @@ import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/core/gateway_config.dart';
+import 'package:tfc/core/gateway_state_man.dart';
 import 'package:tfc/core/timeseries_source.dart';
 import 'package:tfc/pages/history_view.dart';
 import 'package:tfc/providers/access.dart';
@@ -43,7 +44,10 @@ import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/providers/state_man.dart';
 import 'package:tfc/providers/timeseries_source.dart';
 import 'package:tfc_access/tfc_access.dart';
+import 'package:tfc_dart/core/access/guarded_state_man.dart';
+import 'package:tfc_dart/core/collector.dart' show CollectEntry;
 import 'package:tfc_dart/core/database.dart' show Database;
+import 'package:tfc_dart/core/retention_policy.dart' show RetentionPolicy;
 import 'package:tfc_dart/core/database_drift.dart' show AppDatabase;
 import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc_dart/core/state_man.dart';
@@ -69,7 +73,15 @@ const int _handlerFailed = -32011;
 /// construction.
 final KeyMappings _mappings = KeyMappings(nodes: {
   kScriptedSeededKey: KeyMappingEntry(
-      opcuaNode: OpcUANodeConfig(namespace: 2, identifier: 'Connected')),
+    opcuaNode: OpcUANodeConfig(namespace: 2, identifier: 'Connected'),
+    // Collected, so gap C has a trend to draw: a key with no collect entry
+    // has no table, and the collector refuses it by name.
+    collect: CollectEntry(
+      key: kScriptedSeededKey,
+      retention: const RetentionPolicy(
+          dropAfter: Duration(days: 30), scheduleInterval: null),
+    ),
+  ),
 });
 
 typedef _Answer = void Function(ScriptedLink link, int id);
@@ -140,6 +152,7 @@ Map<String, _Answer> _servedData() => {
 Future<ProviderContainer> _gatewayPanel(
   ScriptedGateway gateway, {
   required Future<Database?> Function() database,
+  bool realCollector = false,
 }) async {
   final store = InMemoryPreferences();
   await writeGatewayConfig(
@@ -159,7 +172,7 @@ Future<ProviderContainer> _gatewayPanel(
       localPreferencesProvider.overrideWithValue(store),
       databaseProvider.overrideWith((ref) => database()),
       stationNameProvider.overrideWithValue('phase18-panel'),
-      collectorProvider.overrideWith((ref) async => null),
+      if (!realCollector) collectorProvider.overrideWith((ref) async => null),
       // A gateway station building a *local* StateMan is a defect in itself.
       stateManFactoryProvider.overrideWithValue(({
         required StateManConfig config,
@@ -488,5 +501,52 @@ void main() {
               'shows one now. The gateway branch is the one that must never '
               'answer empty');
     });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Gap C — the collector
+  // ---------------------------------------------------------------------------
+
+  // Every pane trend — conveyor, sensor, analog box, box erector — and both
+  // history panes read through `collectorProvider`, which answered null on a
+  // gateway panel because it would not start without a database. The trend
+  // said "No collector available" on a plant that had been recording all
+  // along.
+  group('gap C: the collector reads over the relay, with NO database', () {
+    for (final (name, database) in <(String, Future<Database?> Function())>[
+      ('null', () async => null),
+      ('throwing', _throwingDatabase),
+    ]) {
+      test('database $name: a trend draws what the gateway recorded',
+          () async {
+        final gateway = await _gateway(_servedData());
+        final container = await _gatewayPanel(gateway,
+            database: database, realCollector: true);
+
+        final collector = await container.read(collectorProvider.future);
+        expect(collector, isNotNull,
+            reason: 'null is what every pane trend draws as "No collector '
+                'available"');
+        expect(collector!.history, isA<RelayedTimeseriesSource>(),
+            reason: 'history comes over the relay, never from a database');
+        expect(() => collector.database, throwsStateError,
+            reason: 'a gateway panel has no database to write to, and says '
+                'so rather than handing one back');
+
+        // The mappings arrive after the collector exists, the way a
+        // browser's first visit takes them: its boot set is the empty cache.
+        final guarded =
+            await container.read(stateManProvider.future) as GuardedStateMan;
+        await guarded.innerAs<GatewayStateMan>()!.adoptKeyMappings(_mappings);
+
+        final first = await collector
+            .collectStream(kScriptedSeededKey)
+            .first
+            .timeout(const Duration(seconds: 10));
+        expect(first.take(2).map((row) => row.value), [41, 42],
+            reason: 'the backfill is the rows the gateway served, first; '
+                'a live sample may already be appended behind them');
+      });
+    }
   });
 }

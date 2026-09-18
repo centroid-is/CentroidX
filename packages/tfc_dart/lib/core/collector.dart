@@ -21,7 +21,21 @@ export 'collect_config.dart';
 class Collector {
   final CollectorConfig config;
   final StateMan stateMan;
-  final Database database;
+
+  /// Where stored rows are read from — [collectStream]'s backfill, and the
+  /// history panes'. The [database] itself where this process has one; the
+  /// relay's timeseries reads on a gateway panel ([Collector.readOnly]).
+  final TimeseriesReader history;
+
+  final Database? _database;
+
+  /// The database this collector writes to. Only the process that collects
+  /// has one: a [Collector.readOnly] never inserts, and asking it for a
+  /// database is a defect in the caller rather than a state to handle.
+  Database get database =>
+      _database ??
+      (throw StateError('this collector reads history over the relay and '
+          'has no database; collecting needs one'));
   final Map<String, CollectEntry> _collectEntries = {};
   final Map<CollectEntry, StreamSubscription<DynamicValue>> _subscriptions = {};
   final Map<CollectEntry, Stream<DynamicValue>> _realTimeStreams = {};
@@ -44,8 +58,26 @@ class Collector {
   Collector({
     required this.config,
     required this.stateMan,
-    required this.database,
-  }) {
+    required Database database,
+  })  : _database = database,
+        history = database {
+    _start();
+  }
+
+  /// A collector that records nothing and reads its history from [history] —
+  /// a gateway panel's, whose rows live behind the backend.
+  ///
+  /// [config] must not collect: there is nothing here to insert into.
+  Collector.readOnly({
+    required this.config,
+    required this.stateMan,
+    required this.history,
+  })  : assert(!config.collect, 'a read-only collector cannot collect'),
+        _database = null {
+    _start();
+  }
+
+  void _start() {
     _uptime.start();
     _lastStatsReset = DateTime.now();
     final keyMappings = stateMan.keyMappings;
@@ -261,7 +293,7 @@ class Collector {
   Stream<List<TimeseriesData<dynamic>>> collectStream(String key,
       {Duration since = const Duration(days: 1)}) {
     key = stateMan.resolveKey(key);
-    final entry = _collectEntries[key];
+    final entry = _entryFor(key);
 
     if (entry == null) {
       return Stream.error(StateError('No collection configured for key: $key'));
@@ -353,7 +385,7 @@ class Collector {
       }());
 
       try {
-        final rows = await database.queryTimeseriesData(
+        final rows = await this.history.queryTimeseriesData(
             collectTableName(entry), sinceTime);
         if (cancelled) return;
         final history = Queue<TimeseriesData<dynamic>>.from(rows)
@@ -397,6 +429,22 @@ class Collector {
     };
 
     return subscriptionEntry.stream;
+  }
+
+  /// The collect entry for [key]: the one registered at construction, or —
+  /// failing that — the one the StateMan's mappings carry **now**.
+  ///
+  /// The second half is for a gateway panel. Its mappings arrive over the
+  /// relay and are taken in place after the StateMan is built (on a browser's
+  /// first visit the boot set is empty), so a collector that only knew the
+  /// entries it was constructed with would refuse every trend until a reload.
+  /// Only reads come this way: nothing here starts collecting.
+  CollectEntry? _entryFor(String key) {
+    final known = _collectEntries[key];
+    if (known != null) return known;
+    final adopted = stateMan.keyMappings.nodes[key]?.collect;
+    if (adopted != null) _collectEntries[key] = adopted;
+    return adopted;
   }
 
   /// Stop a collection.
