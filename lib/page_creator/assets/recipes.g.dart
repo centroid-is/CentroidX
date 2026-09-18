@@ -13,6 +13,9 @@ RecipesConfig _$RecipesConfigFromJson(Map<String, dynamic> json) =>
       keys:
           (json['keys'] as List<dynamic>?)?.map((e) => e as String).toList() ??
               [],
+      labelPlural: json['labelPlural'] as String? ?? '',
+      groupLabel: json['groupLabel'] as String? ?? 'Product',
+      groupLabelPlural: json['groupLabelPlural'] as String? ?? '',
     )
       ..variant = json['asset_name'] as String
       ..id = json['id'] as String?
@@ -37,6 +40,9 @@ Map<String, dynamic> _$RecipesConfigToJson(RecipesConfig instance) =>
       'key': instance.key,
       'keys': instance.keys,
       'label': instance.label,
+      'labelPlural': instance.labelPlural,
+      'groupLabel': instance.groupLabel,
+      'groupLabelPlural': instance.groupLabelPlural,
     };
 
 const _$TextPosEnumMap = {
@@ -50,9 +56,13 @@ const _$TextPosEnumMap = {
 Recipe _$RecipeFromJson(Map<String, dynamic> json) => Recipe(
       name: json['name'] as String,
       value: const DynamicValueConverter().fromJson(json['value']),
+      line: json['line'] as String?,
+      group: json['group'] as String?,
     );
 
 Map<String, dynamic> _$RecipeToJson(Recipe instance) => <String, dynamic>{
       'name': instance.name,
       'value': const DynamicValueConverter().toJson(instance.value),
+      'line': instance.line,
+      'group': instance.group,
     };
