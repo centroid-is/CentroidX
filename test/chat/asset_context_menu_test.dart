@@ -380,6 +380,7 @@ void main() {
               value: Expression(formula: 'pump3.speed > 80'),
             ),
             acknowledgeRequired: true,
+            onDelay: const Duration(seconds: 15),
           ),
         ],
       );
@@ -396,6 +397,9 @@ void main() {
       expect(block, contains('Level: error'));
       expect(block, contains('Expression: pump3.speed > 80'));
       expect(block, contains('Acknowledge required: true'));
+      expect('Active after'.allMatches(block), hasLength(1),
+          reason: 'only the delayed rule says so');
+      expect(block, contains('Active after: 15.0 s held'));
       expect(block, contains('[END ALARM CONTEXT]'));
     });
 

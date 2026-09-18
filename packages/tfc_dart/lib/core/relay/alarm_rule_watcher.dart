@@ -67,6 +67,34 @@
 /// [AlarmRuleWatcher.clock] is **required and has no default**. The default
 /// belongs at the composition root in `bin/main.dart` and nowhere else (D-2),
 /// which is why the string `DateTime.now(` does not appear in this file.
+///
+/// ## 5. A rule's on-delay holds the raise, never the clear (#571)
+///
+/// `AlarmRule.onDelay` is how long the expression must hold, without a break,
+/// before the alarm goes active. This is where the backend honours it — the
+/// backend evaluates the plant's rules here, not in `Alarm.onChange`, so a
+/// delay honoured only there would be a field the editor saves and production
+/// ignores.
+///
+///  * A true verdict that has not yet raised starts the delay and emits
+///    nothing. Later true verdicts only refresh the bindings the raise will
+///    render, so it raises with the values as they are when it does.
+///  * A false verdict inside the delay cancels it. Nothing went active, so
+///    there is nothing to clear — unless it is this watcher's first verdict,
+///    which is always reported (see [AlarmRuleTransition.isFirstEvaluation]).
+///  * An active rule clears on the first false verdict, undelayed.
+///  * A suspension (D-3) inside the delay cancels it too: an input that is not
+///    good cannot vouch that the condition held, and a raise the plant never
+///    confirmed is exactly what the gate exists to prevent. The delay starts
+///    again from the first good true verdict after the input returns.
+///  * The raise is stamped where the delay ends, measured from the plant
+///    instant of the verdict that started it and keeping its provenance — not
+///    from this backend's clock when the timer fires, which would pair a
+///    receipt-time activation with a plant-time clear.
+///
+/// A rule with an open `alarm_history` row from a previous process is adopted
+/// when its delay completes, or closed if the condition drops inside it: the
+/// first transition this watcher reports is still its first verdict.
 library;
 
 import 'dart:async';
@@ -154,10 +182,12 @@ final class AlarmRuleWatcher {
     required void Function(AlarmRuleTransition transition) onTransition,
     void Function()? onSuspensionChanged,
     Duration skewWarnAfter = kAlarmSkewWarnAfter,
+    Duration onDelay = Duration.zero,
     String Function(String variable)? resolveKey,
     Logger? logger,
   })  : _values = values,
         _expression = expression,
+        _onDelay = onDelay,
         _clock = clock,
         _onTransition = onTransition,
         _onSuspensionChanged = onSuspensionChanged,
@@ -169,6 +199,9 @@ final class AlarmRuleWatcher {
 
   final BackendValueSource _values;
   final ExpressionConfig _expression;
+
+  /// The rule's `AlarmRule.onDelay`. See the library doc, property 5.
+  final Duration _onDelay;
   final DateTime Function() _clock;
   final void Function(AlarmRuleTransition transition) _onTransition;
 
@@ -201,6 +234,13 @@ final class AlarmRuleWatcher {
   int _evaluations = 0;
   bool? _last;
   String? _refusal;
+
+  /// The on-delay running for a true verdict that has not raised yet, or null.
+  Timer? _pending;
+
+  /// The bindings the pending raise will render, refreshed by every true
+  /// verdict while [_pending] runs.
+  Map<String, DynamicValue>? _pendingBindings;
   int _refusalCount = 0;
 
   /// The variables the formula names, in first-appearance order, deduplicated.
@@ -255,6 +295,9 @@ final class AlarmRuleWatcher {
 
   /// How many times [refusal] has been reported. At most one.
   int get refusalCount => _refusalCount;
+
+  /// Whether a true verdict is being held for the rule's on-delay.
+  bool get delaying => _pending != null;
 
   /// Resolves the rule's variables, subscribes to each, and begins evaluating.
   ///
@@ -319,6 +362,7 @@ final class AlarmRuleWatcher {
 
   /// Releases the subscriptions this watcher holds.
   Future<void> dispose() async {
+    _cancelDelay();
     await _subscription?.cancel();
     _subscription = null;
   }
@@ -344,6 +388,9 @@ final class AlarmRuleWatcher {
       // is tracked so the badge stays true, but it is not a new suspension —
       // edges are entries and exits, not membership changes (T-14-14).
       _suspendedInputs = List.unmodifiable(refusedKeys);
+      // A raise in its delay is not held across a suspension: the input that
+      // is not good cannot vouch that the condition held (property 5).
+      _cancelDelay();
       if (!_suspended) {
         _suspended = true;
         _suspensions++;
@@ -390,28 +437,45 @@ final class AlarmRuleWatcher {
     final afterSuspension = _resumePending;
     _resumePending = false;
 
-    // ---- 4. transition on the BOOLEAN (P-3), or on the first verdict at all.
+    // ---- 4. the on-delay (#571, property 5): hold a raise, never a clear.
+    if (!satisfied) {
+      // Dropped inside the delay: it never went active. Falls through, so a
+      // first verdict is still reported and anything else is no transition.
+      _cancelDelay();
+    } else if (_last != true && _onDelay > Duration.zero) {
+      _pendingBindings = bindings;
+      if (_pending != null) return;
+      final started = _stamp(bound);
+      final raisedAt =
+          AlarmStamp(at: started.at.add(_onDelay), source: started.source);
+      _pending = Timer(_onDelay, () {
+        _pending = null;
+        final held = _pendingBindings;
+        _pendingBindings = null;
+        if (held == null) return;
+        final first = _last == null;
+        _last = true;
+        _onTransition(AlarmRuleTransition(
+          ruleIndex: ruleIndex,
+          active: true,
+          stamp: raisedAt,
+          isFirstEvaluation: first,
+          afterSuspension: afterSuspension,
+          expressionText: _expression.value.formatWithValues(held),
+        ));
+      });
+      return;
+    }
+
+    // ---- 5. transition on the BOOLEAN (P-3), or on the first verdict at all.
     final isFirstEvaluation = _last == null;
     if (!isFirstEvaluation && _last == satisfied) return;
     _last = satisfied;
 
-    // ---- 5. stamp from the plant (D-1/D-2), over the injected clock.
-    final stamp = resolveAlarmStamp(
-      // `sourceTimeIfSourced`, NOT `value.sourceTime`. Both are non-null for a
-      // substituted instant and look identical; only the flag that rode the
-      // pipe tells them apart, and a null here is what makes D-2 label the row
-      // `backend_receipt` instead of vouching for a clock the plant never saw.
-      sourceTimes: [for (final value in bound) value.sourceTimeIfSourced],
-      clock: _clock,
-      skewWarnAfter: _skewWarnAfter,
-      onSkew: (skew, sourceTime) => _logger.w(
-        'alarm rule $ruleIndex: the plant instant $sourceTime is '
-        '${skew.inSeconds}s from this backend\'s clock. Written unchanged — '
-        'clamping would hide a PLC clock fault.',
-      ),
-    );
+    // ---- 6. stamp from the plant (D-1/D-2), over the injected clock.
+    final stamp = _stamp(bound);
 
-    // ---- 6. render only on activation (T-14-07).
+    // ---- 7. render only on activation (T-14-07).
     _onTransition(AlarmRuleTransition(
       ruleIndex: ruleIndex,
       active: satisfied,
@@ -421,6 +485,31 @@ final class AlarmRuleWatcher {
       expressionText:
           satisfied ? _expression.value.formatWithValues(bindings) : null,
     ));
+  }
+
+  /// The plant's instant for one combined emission (D-1/D-2), over the
+  /// injected clock.
+  AlarmStamp _stamp(List<StampedValue> bound) => resolveAlarmStamp(
+        // `sourceTimeIfSourced`, NOT `value.sourceTime`. Both are non-null for
+        // a substituted instant and look identical; only the flag that rode
+        // the pipe tells them apart, and a null here is what makes D-2 label
+        // the row `backend_receipt` instead of vouching for a clock the plant
+        // never saw.
+        sourceTimes: [for (final value in bound) value.sourceTimeIfSourced],
+        clock: _clock,
+        skewWarnAfter: _skewWarnAfter,
+        onSkew: (skew, sourceTime) => _logger.w(
+          'alarm rule $ruleIndex: the plant instant $sourceTime is '
+          '${skew.inSeconds}s from this backend\'s clock. Written unchanged — '
+          'clamping would hide a PLC clock fault.',
+        ),
+      );
+
+  /// Drops a raise waiting out its on-delay, if there is one.
+  void _cancelDelay() {
+    _pending?.cancel();
+    _pending = null;
+    _pendingBindings = null;
   }
 
   /// Records that this rule cannot be evaluated, once, by name.

@@ -664,6 +664,41 @@ class AuditRecord {
         reason: reason,
       );
 
+  /// Whether a raising alarm takes one account's screen to the alarm's page
+  /// was changed: `user.alarm_auto_navigate`, subject in `member`, `true` or
+  /// `false` in the value columns — the `user.station_account` convention.
+  /// For the reserved anonymous account this is what every logged-out panel
+  /// does.
+  factory AuditRecord.userAlarmAutoNavigate({
+    required String who,
+    required String station,
+    required String roleName,
+    required String actionId,
+    required String subject,
+    required bool oldValue,
+    required bool newValue,
+    required bool allowed,
+    DateTime? at,
+    String? reason,
+    String origin = 'operator',
+  }) =>
+      AuditRecord(
+        at: at ?? clock.now(),
+        who: who,
+        station: station,
+        roleName: roleName,
+        surface: _adminSurface,
+        itemKey: 'user.alarm_auto_navigate',
+        member: subject,
+        oldValue: '$oldValue',
+        newValue: '$newValue',
+        groupRequired: AccessGroup.users.name,
+        allowed: allowed,
+        origin: origin,
+        actionId: actionId,
+        reason: reason,
+      );
+
   /// One account's inactivity timeout was changed:
   /// `user.inactivity_timeout`, subject in `member`, minutes in the value
   /// columns.

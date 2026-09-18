@@ -40,9 +40,14 @@ import 'access_users_section.dart';
 /// One string, declared once, because 06-10 has to repeat it in three places —
 /// the route table, the menu entry and the gate's locked scaffold — and three
 /// spellings of one screen's name is how a locked page stops looking like the
-/// page it locks. Short and unambiguous: "Access" is what the milestone is
-/// called everywhere else in this tree.
-const String kAccessAdminTitle = 'Access';
+/// page it locks.
+///
+/// Named for what an administrator comes here to do rather than for the
+/// milestone that built it: accounts — with what each one's panels do — and
+/// the roles they hold. It was "Access" until accounts grew settings of their
+/// own (home page, alarm navigation). The route is still `/advanced/access`:
+/// that path is stored in role whitelists and home pages.
+const String kAccessAdminTitle = 'Users & roles';
 
 // ---------------------------------------------------------------------------
 // Keys

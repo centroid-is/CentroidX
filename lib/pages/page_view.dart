@@ -965,6 +965,11 @@ class _OpenPaneMarkState extends State<_OpenPaneMark>
     super.dispose();
   }
 
+  /// Where [subject] sits: its own frame, or its owner's for an [AssetPart].
+  _AssetFrame? _frameOf(Object subject) =>
+      widget.frames[subject] ??
+      (subject is AssetPart ? widget.frames[subject.owner] : null);
+
   /// Runs the crawl only while a traced ring is showing.
   void _driveMarch() {
     final wanted = _shown && _answered;
@@ -988,7 +993,7 @@ class _OpenPaneMarkState extends State<_OpenPaneMark>
     final subject = SidePaneHost.subject.value;
     // An unknown subject — the page editor's config pane, the database stats
     // pane, anything opened from outside an asset — leaves the page unmarked.
-    final live = subject == null ? null : widget.frames[subject];
+    final live = subject == null ? null : _frameOf(subject);
     final shown = live != null;
     // By value, not identity: every rebuild mints a new frame, and only a
     // frame that says something different is worth re-tracing for.
@@ -1034,7 +1039,7 @@ class _OpenPaneMarkState extends State<_OpenPaneMark>
     final target = _target;
     final from = _frame;
     if (target == null || from == null) return;
-    final to = widget.frames[target];
+    final to = _frameOf(target);
     if (to == from) return;
 
     void apply() {

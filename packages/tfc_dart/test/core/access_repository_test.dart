@@ -2063,6 +2063,58 @@ void main() {
     });
   });
 
+  group('alarm auto-navigation on a user', () {
+    setUp(() async {
+      await repo.createFirstUser(username: 'jon', password: 'pw');
+    });
+
+    test('a fresh account is off', () async {
+      expect((await repo.user('jon'))!.alarmAutoNavigate, isFalse);
+    });
+
+    test('setAlarmAutoNavigate round-trips both ways', () async {
+      await repo.setAlarmAutoNavigate('jon', true);
+      expect((await repo.user('jon'))!.alarmAutoNavigate, isTrue);
+
+      await repo.setAlarmAutoNavigate('jon', false);
+      expect((await repo.user('jon'))!.alarmAutoNavigate, isFalse);
+    });
+
+    test('the anonymous account may have it — it is every logged-out panel\'s',
+        () async {
+      await repo.setAlarmAutoNavigate(kAnonymousUsername, true);
+      expect((await repo.user(kAnonymousUsername))!.alarmAutoNavigate, isTrue);
+    });
+
+    test('re-seeding a drifted anonymous account keeps it', () async {
+      await repo.setAlarmAutoNavigate(kAnonymousUsername, true);
+      await db.customStatement(
+          "UPDATE app_user SET station_account = 1 WHERE username = 'anonymous'");
+      await db.seedAnonymousAccountForTest();
+      final row = (await repo.user(kAnonymousUsername))!;
+      expect(row.stationAccount, isFalse);
+      expect(row.alarmAutoNavigate, isTrue);
+    });
+
+    test('naming no account throws', () async {
+      expect(
+        () => repo.setAlarmAutoNavigate('nobody', true),
+        throwsA(isA<UserNotFoundException>()),
+      );
+    });
+
+    test('setRole preserves it', () async {
+      await repo.createUser(
+        username: 'ann',
+        password: 'pw',
+        roleName: 'Engineering',
+      );
+      await repo.setAlarmAutoNavigate('jon', true);
+      await repo.setRole('jon', kOperatorRoleName);
+      expect((await repo.user('jon'))!.alarmAutoNavigate, isTrue);
+    });
+  });
+
   group('anonymousAccount pages', () {
     test('carries the held role whole — groups and pages together', () async {
       await repo.setRoleAllowedPages(kOperatorRoleName, {'/'});

@@ -50,17 +50,9 @@ class _RecordingAlarmMan implements AlarmMan {
   @override
   final Set<Alarm> alarms = {};
 
-  /// Auto-navigation off, and an empty alarm list.
-  ///
-  /// Read by the alarm editor's own switch and by
-  /// `alarmAutoNavigationProvider`, which any [BaseScaffold] in the tree
-  /// subscribes to. Off, so no test in this file navigates itself somewhere
-  /// else mid-assertion.
+  /// An empty alarm list.
   @override
   final AlarmManConfig config = AlarmManConfig(alarms: []);
-
-  @override
-  void setAutoNavigate(bool value) => config.autoNavigate = value;
 
   /// A plant with nothing wrong with it. `alarmAutoNavigationProvider`
   /// subscribes to this the moment a [BaseScaffold] is in the tree.

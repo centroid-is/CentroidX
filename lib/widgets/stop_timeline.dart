@@ -450,11 +450,11 @@ class _StopTimelineViewState extends State<StopTimelineView> {
   Duration get _liveSpan =>
       widget.interval ?? Duration(hours: widget.config.periodHours);
 
-  /// Where the view starts out. A picked range is shown whole — that is what
-  /// picking it asked for — and so is a picked rolling span: "Last 24 hours"
-  /// answered with the same three hours as before looks like a dead control.
-  /// Only the configured default opens on its last three hours, the
-  /// shift-so-far rather than a day squeezed into a lane.
+  /// Where the view starts out: the whole period, always. A picked range is
+  /// shown whole — that is what picking it asked for — and so is a rolling
+  /// span, picked or configured. The header read-out names the window and the
+  /// period menu ticks the span, so the two have to agree on open: a
+  /// three-hour zoom under a "Last 12 hours" tick reads as the menu lying.
   TimelineWindow _openingWindow() {
     final range = widget.range;
     if (range != null) {
@@ -466,12 +466,8 @@ class _StopTimelineViewState extends State<StopTimelineView> {
       }
       return TimelineWindow(range.start, end);
     }
-    final span = widget.interval ??
-        (_liveSpan < const Duration(hours: 3)
-            ? _liveSpan
-            : const Duration(hours: 3));
     return TimelineWindow(
-        _now.subtract(span), _now.add(livePad(_liveSpan)));
+        _now.subtract(_liveSpan), _now.add(livePad(_liveSpan)));
   }
 
   @override

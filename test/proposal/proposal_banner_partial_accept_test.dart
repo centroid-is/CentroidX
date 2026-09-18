@@ -49,9 +49,6 @@ class _RecordingAlarmMan implements AlarmMan {
   final AlarmManConfig config = AlarmManConfig(alarms: []);
 
   @override
-  void setAutoNavigate(bool value) => config.autoNavigate = value;
-
-  @override
   Stream<Set<AlarmActive>> activeAlarms() =>
       const Stream<Set<AlarmActive>>.empty();
 

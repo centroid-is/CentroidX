@@ -1231,6 +1231,20 @@ class AccessRepository {
     if (updated == 0) throw UserNotFoundException(username);
   }
 
+  /// Sets whether a raising alarm takes [username]'s screen to the page its
+  /// beacon is on.
+  ///
+  /// The anonymous account is allowed it, like a home page: its value is what
+  /// every logged-out panel does. No lockout guard — it is not a permission.
+  ///
+  /// Throws [UserNotFoundException] when there is no such account.
+  Future<void> setAlarmAutoNavigate(String username, bool value) async {
+    final updated = await (db.update(db.appUser)
+          ..where((t) => t.username.equals(username)))
+        .write(AppUserCompanion(alarmAutoNavigate: Value(value)));
+    if (updated == 0) throw UserNotFoundException(username);
+  }
+
   /// Replace [username]'s roles with [roleNames], the first becoming the
   /// account's primary role.
   ///
@@ -1417,5 +1431,6 @@ class AccessRepository {
         additionalRoles: rolesOf(row).skip(1).toList(growable: false),
         inactivityTimeoutMinutes: row.inactivityTimeoutMinutes,
         homePage: row.homePage,
+        alarmAutoNavigate: row.alarmAutoNavigate,
       );
 }

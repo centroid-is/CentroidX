@@ -31,7 +31,8 @@ to the PLC -- there is no tool that does it.
 ### AlarmMan (Alarm Manager)
 Rule-based alarm system. Each alarm has a UID, title, description, severity
 level, and one or more rules defined as boolean expressions over tag values.
-When a rule evaluates to true, the alarm activates. Operators can acknowledge
+When a rule evaluates to true, the alarm activates -- or, when the rule has
+an on-delay, once it has stayed true for that long. Operators can acknowledge
 and snooze alarms. The AI can READ alarm state, history and definitions, and
 can PROPOSE new, changed or deleted alarm definitions (create_alarm,
 update_alarm, delete_alarm) for the operator to accept. It cannot acknowledge

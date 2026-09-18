@@ -1118,6 +1118,91 @@ void main() {
     });
   });
 
+  // `alarm_auto_navigate` on app_user — whether a raising alarm takes this
+  // account's screen to the alarm's page. No schema arm, like `home_page`.
+  group('the alarm_auto_navigate column (no schema arm)', () {
+    late Directory tempDir;
+    late File dbFile;
+
+    setUp(() {
+      tempDir = Directory.systemTemp.createTempSync('tfc_alarm_nav_test');
+      dbFile = File('${tempDir.path}/app.sqlite');
+    });
+
+    tearDown(() {
+      if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+    });
+
+    Future<Set<String>> columnNames(GeneratedDatabase db) async {
+      final rows = await db.customSelect('PRAGMA table_info(app_user)').get();
+      return rows.map((r) => r.read<String>('name')).toSet();
+    }
+
+    Future<AppDatabase> reopen() async {
+      final db = AppDatabase.forTest(
+        DatabaseConfig(),
+        NativeDatabase(dbFile, logStatements: false),
+      );
+      await db.customSelect('SELECT 1').getSingle();
+      return db;
+    }
+
+    test('a fresh install has it', () async {
+      final db = await reopen();
+      addTearDown(() => db.close());
+      expect(await columnNames(db), contains('alarm_auto_navigate'));
+    });
+
+    test('a database without it gains it on the next open, every account off, '
+        'and the anonymous seed still runs', () async {
+      final first = await reopen();
+      await first.customStatement(
+        "INSERT INTO app_user "
+        "(username, role_name, password_hash, salt, created_at, station_account) "
+        "VALUES ('jon', 'Engineering', 'hash', 'salt', '2026-09-01T00:00:00Z', 0)",
+      );
+      await first
+          .customStatement("DELETE FROM app_user WHERE username = 'anonymous'");
+      await first.customStatement(
+          'ALTER TABLE app_user DROP COLUMN alarm_auto_navigate');
+      final version = (await first
+              .customSelect('PRAGMA user_version')
+              .getSingle())
+          .read<int>('user_version');
+      await first.close();
+
+      final db = await reopen();
+      addTearDown(() => db.close());
+      expect(await columnNames(db), contains('alarm_auto_navigate'));
+      final users = await db.select(db.appUser).get();
+      expect(users.map((u) => u.username), containsAll(['jon', 'anonymous']));
+      for (final user in users) {
+        expect(user.alarmAutoNavigate, isFalse,
+            reason: 'nobody is navigated by an upgrade');
+      }
+      expect(
+          (await db.customSelect('PRAGMA user_version').getSingle())
+              .read<int>('user_version'),
+          version,
+          reason: 'no schema arm');
+    });
+
+    test('a second open over the column is harmless', () async {
+      await (await reopen()).close();
+      final db = await reopen();
+      addTearDown(() => db.close());
+      expect(await columnNames(db), contains('alarm_auto_navigate'));
+    });
+
+    test('the Postgres statement adds it idempotently', () {
+      final source = File('lib/core/database_drift.dart').readAsStringSync();
+      expect(
+          source,
+          contains(
+              'ALTER TABLE app_user ADD COLUMN IF NOT EXISTS alarm_auto_navigate BOOLEAN NOT NULL DEFAULT FALSE'));
+    });
+  });
+
   group('the anonymous account seed', () {
     Future<AppDatabase> open() async {
       final db = AppDatabase.inMemoryForTest();

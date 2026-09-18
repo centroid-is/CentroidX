@@ -169,10 +169,31 @@ class WagonStation {
     return WagonStationState.idle;
   }
 
-  /// The position as a pane prints it, or an em dash when the PLC has not
-  /// published a number.
+  /// The position as a pane prints it, in metres, or an em dash when the PLC
+  /// has not published a number. Metres, not the PLC's millimetres: an
+  /// operator reads `9.0 m` along a rail, not `9000 mm`.
   String get positionLabel =>
-      position.isFinite ? '${position.round()} mm' : '—';
+      position.isFinite ? '${(position / 1000).toStringAsFixed(1)} m' : '—';
+
+  /// What the station does, in the words a pane prints.
+  String get jobLabel => role == WagonStationRole.source
+      ? 'Sends pallets to the wagon'
+      : 'Takes pallets from the wagon';
+
+  /// Where this station's pallet is, in one or two words.
+  String get palletLabel {
+    if (role == WagonStationRole.source) {
+      if (outfeed) return 'Going onto the wagon';
+      if (atStation && outfeedComplete) return 'On the wagon';
+      if (ready) return 'Ready to send';
+      if (order) return 'Not ready yet';
+      return 'None';
+    }
+    if (outfeed) return 'Coming in';
+    if (deliveryComplete) return 'Received';
+    if (order) return ready ? 'Needed, ready for it' : 'Needed, not ready';
+    return 'Not needed';
+  }
 
   /// Where along the rail this station stands, 0..1, on the same scale as
   /// the wagon's own `p_stat_rPosition_percentage`.
@@ -300,6 +321,124 @@ double wagonRailLength(DynamicValue? array) {
   }
   return longest;
 }
+
+/// What is happening at one station, told as a sentence an operator reads,
+/// with what the rest of the row adds to it.
+///
+/// The pane is handed every station the wagon serves, not only the one
+/// tapped, so the sentence can say *who*: which station the pallet is going
+/// to, which one the wagon is busy at, which one is queued behind. That is
+/// the question an operator standing at a station actually has, and seven
+/// lamps could not answer it.
+///
+/// Everything here is seen from one wagon: [all] is that wagon's own array.
+/// A rail can carry two wagons, and a destination can be served by both, so
+/// the sentence never speaks for the whole rail — "none of *this* wagon's
+/// stations has one ready", not "no station has one". [wagon] is what the
+/// sentence calls the wagon; with two on a rail, "the wagon" does not say
+/// which.
+///
+/// One part is inference, and the words are chosen so it never reads as more
+/// than that. `FB_Wagon` does not publish where the wagon is heading, so a
+/// destination is named only when exactly one station on this wagon is
+/// asking for a pallet; with two asking, the sentence leaves the destination
+/// out rather than guess.
+typedef WagonStationStory = ({String headline, List<String> notes});
+
+WagonStationStory wagonStationStory(
+  WagonStation station,
+  List<WagonStation> all, {
+  String wagon = 'the wagon',
+}) {
+  final asking = all
+      .where((s) => s.role == WagonStationRole.destination && s.order)
+      .toList();
+  final destination = asking.length == 1 ? asking.single.name : null;
+  final forDestination = destination == null ? '' : ' for $destination';
+  final startWagon = capitalizeFirst(wagon);
+
+  // The source the wagon is taking a pallet from: rollers running, or the
+  // wagon parked at a source that has one to give.
+  final loading = all
+      .where((s) =>
+          s.role == WagonStationRole.source &&
+          (s.outfeed || (s.atStation && (s.order || s.ready))))
+      .firstOrNull;
+
+  // Sources with a pallet ready that the wagon is not at yet, in rail order.
+  List<WagonStation> queued({int? except}) => all
+      .where((s) =>
+          s.role == WagonStationRole.source &&
+          s.ready &&
+          !s.outfeed &&
+          !s.atStation &&
+          s.index != except)
+      .toList();
+
+  final name = station.name;
+  final notes = <String>[];
+  final String headline;
+
+  if (station.role == WagonStationRole.source) {
+    if (station.outfeed) {
+      headline = '$name is loading a pallet onto $wagon$forDestination.';
+    } else if (station.atStation && station.outfeedComplete) {
+      headline = 'The pallet from $name is on $wagon'
+          '${destination == null ? '' : ', on its way to $destination'}.';
+    } else if (station.atStation && (station.order || station.ready)) {
+      headline = '$startWagon is at $name, about to take the pallet.';
+    } else if (station.ready) {
+      headline = '$name has a pallet ready$forDestination.';
+      notes.add(loading != null
+          ? 'Waiting for $wagon. It is busy at ${loading.name} first.'
+          : 'Waiting for $wagon to come.');
+    } else if (station.order) {
+      headline = '$name has a pallet on the way. Not ready to send yet.';
+    } else {
+      headline = '$name has no pallet to send.';
+    }
+    if (station.outfeed || station.atStation) {
+      for (final next in queued(except: station.index)) {
+        notes.add('${next.name} is next. It has a pallet ready and is waiting.');
+      }
+    }
+  } else {
+    final waiting = queued();
+    // The source the headline already names, so the notes do not repeat it.
+    int? named;
+    if (station.outfeed) {
+      headline = 'A pallet is going into $name now.';
+    } else if (station.deliveryComplete) {
+      headline = '$name has received its pallet.';
+    } else if (station.waitingForInterlock) {
+      headline = '$startWagon has a pallet for $name, but may not go in yet.';
+    } else if (station.order) {
+      if (loading != null) {
+        headline = '$name needs a pallet. '
+            '${loading.name} is loading one onto $wagon for it now.';
+      } else if (waiting.isNotEmpty) {
+        named = waiting.first.index;
+        headline = '$name needs a pallet. ${waiting.first.name} has one ready.';
+      } else {
+        headline = '$name needs a pallet. '
+            "None of $wagon's stations has one ready yet.";
+      }
+    } else {
+      headline = '$name does not need a pallet right now.';
+    }
+    for (final other in waiting) {
+      if (other.index == named) continue;
+      notes.add('${other.name} also has a pallet waiting.');
+    }
+  }
+  return (headline: headline, notes: notes);
+}
+
+/// [text] with its first letter upper-cased, for a name that starts a
+/// sentence ("the wagon" -> "The wagon"). A name that is already capitalised
+/// is left as it is.
+String capitalizeFirst(String text) =>
+    text.isEmpty ? text : text[0].toUpperCase() + text.substring(1);
 
 /// A row of stations for goldens and for tests that want a plausible rail
 /// without building an array — a picture of the thing.

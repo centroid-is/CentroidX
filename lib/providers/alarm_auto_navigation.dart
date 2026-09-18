@@ -6,18 +6,27 @@
 /// that pulses is a page this can navigate to, and one that was deliberately
 /// left quiet (`announceInNavigation` off) is never navigated to either.
 ///
-/// The whole feature is behind [AlarmManConfig.autoNavigate], off by default,
-/// flipped from the Alarm Editor.
+/// Whether it happens at all is the account's: `app_user.alarm_auto_navigate`,
+/// off by default and set per account on the Users & roles page. The session
+/// on the
+/// decides — the signed-in account's value, the reserved anonymous account's
+/// when nobody is signed in. See [alarmAutoNavigateLookupProvider].
 library;
 
 import 'dart:async';
 
 import 'package:clock/clock.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart' show Provider;
+import 'package:logger/logger.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
+import 'package:tfc_access/tfc_access.dart'
+    show AccessSession, kAnonymousUsername;
 import 'package:tfc_dart/core/alarm.dart';
 
+import '../core/access_authority.dart';
 import '../page_creator/assets/alarm_visibility.dart' show AlarmVisibilityConfig;
 import '../page_creator/page.dart';
+import 'access.dart';
 import 'alarm.dart';
 import 'page_manager.dart';
 
@@ -40,6 +49,47 @@ const Duration kAlarmAutoNavigateSettle = Duration(seconds: 15);
 /// running for an hour".
 final alarmAutoNavigateSettleProvider =
     Provider<Duration>((ref) => kAlarmAutoNavigateSettle);
+
+/// Whether the account [session] answers as wants to be taken to a raising
+/// alarm's page: the signed-in account, or the reserved anonymous account when
+/// nobody is.
+typedef AlarmAutoNavigateLookup = Future<bool> Function(AccessSession session);
+
+/// The [AlarmAutoNavigateLookup] the scaffold asks before it moves. A provider
+/// so tests can answer without a database.
+///
+/// Read at the moment a raise is taken rather than carried on the session, for
+/// the reason `homePageLookupProvider` gives: a session is rebuilt on every
+/// activity extension, and this is only needed on the rare moment an alarm
+/// raises. It also means an administrator's change on another station applies
+/// to the very next raise here, with no sign-in in between.
+///
+/// **An account that cannot be read answers no.** No database, or one that
+/// will not answer, is exactly the window in which a panel must not start
+/// moving an operator between screens on its own.
+final alarmAutoNavigateLookupProvider =
+    Provider<AlarmAutoNavigateLookup>((ref) {
+  return (session) async {
+    // The transport question first, asked of the authority rather than
+    // resolved out of a null repository — the rule `guard_wiring_test` states,
+    // and the shape `homePageLookupProvider` already has. A gateway panel has
+    // no repository by design, and this transport carries no per-account
+    // setting yet (the relay has no method for it — see
+    // `RelayedAccessAdminStore.setUserAlarmAutoNavigate`), so the answer there
+    // is the safe one: stay put.
+    try {
+      final authority = await ref.read(accessAuthorityProvider.future);
+      if (authority == AccessAuthority.relay) return false;
+      final repo = await ref.read(accessRepositoryProvider.future);
+      if (repo == null) return false;
+      final row = await repo.user(session.user?.username ?? kAnonymousUsername);
+      return row?.alarmAutoNavigate ?? false;
+    } on Object catch (e) {
+      Logger().w('Could not read alarm auto-navigation for $session: $e');
+      return false;
+    }
+  };
+});
 
 /// A page an alarm wants on screen, and why.
 class AlarmNavigationTarget {
@@ -141,10 +191,12 @@ class AlarmAutoNavigator {
   ///
   /// Returns true when this snapshot queued at least one raise, so a caller
   /// driving a stream can emit only on the snapshots that matter.
+  ///
+  /// Queues whether or not anybody on this panel wants to be moved: that is a
+  /// question about the session, which only [take] is asked in time to answer.
   bool onActive(
     Iterable<AlarmActive> active, {
     required Map<String, AssetPage> pages,
-    required bool enabled,
   }) {
     final keys = <String>{};
     final uids = <String>{};
@@ -167,9 +219,6 @@ class AlarmAutoNavigator {
       return false;
     }
     if (now.difference(since) < settle) return false;
-    // Read late, and not watched: flipping the switch on must not queue the
-    // alarms that were already standing when it was flipped.
-    if (!enabled) return false;
 
     var queued = false;
     for (final a in active) {
@@ -193,6 +242,12 @@ class AlarmAutoNavigator {
   /// signed in for is not a page to be dropped on, and a locked page would
   /// swap itself for the locked notice the moment they arrived.
   ///
+  /// [enabled] is whether the session's account wants to be moved at all. Off
+  /// drains the queue and claims **no** hold: the raise is spent, so somebody
+  /// who signs in with the setting on a minute later is not thrown to an alarm
+  /// that was news before they arrived, and a hold nobody jumped for must not
+  /// block the next raise from moving a person who does want it.
+  ///
   /// [suppressed] is the caller's veto for where the operator is standing now.
   /// It still claims the hold: an engineer who spends an hour in the page
   /// editor should not be ambushed by a queued jump the moment they leave, and
@@ -201,10 +256,12 @@ class AlarmAutoNavigator {
     required String? currentPath,
     required bool Function(String path) canOpen,
     required bool suppressed,
+    required bool enabled,
   }) {
     if (_queue.isEmpty) return null;
     final queued = List<_Raise>.of(_queue);
     _queue.clear();
+    if (!enabled) return null;
 
     AlarmNavigationTarget? best;
     for (final raise in queued) {
@@ -375,11 +432,7 @@ class AlarmAutoNavigation extends _$AlarmAutoNavigation {
       subscription = alarmMan.activeAlarms().listen(
         (active) {
           if (disposed) return;
-          final queued = _navigator.onActive(
-            active,
-            pages: pageManager.pages,
-            enabled: alarmMan.config.autoNavigate,
-          );
+          final queued = _navigator.onActive(active, pages: pageManager.pages);
           if (queued) state = state + 1;
         },
         // Same ruling as the beacon: a stream error is not a raise.

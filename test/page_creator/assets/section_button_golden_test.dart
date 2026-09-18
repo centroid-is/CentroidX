@@ -290,7 +290,6 @@ void main() {
         bool enabled = false,
         bool cleaning = false,
         bool permissive = true,
-        String? holdReason,
       }) async {
         tester.view.physicalSize = const Size(1400, 1100);
         tester.view.devicePixelRatio = 1.0;
@@ -311,7 +310,7 @@ void main() {
                   child: SectionButton(
                     config: SectionButtonConfig(
                       sections: [
-                        SectionRef(key: 'sec/after', holdReason: holdReason),
+                        SectionRef(key: 'sec/after'),
                       ],
                     )..text = name,
                   ),
@@ -363,9 +362,9 @@ void main() {
                   child: SectionButton(
                     config: SectionButtonConfig(
                       sections: [
-                        SectionRef(key: 'sec/101', label: 'ST101'),
-                        SectionRef(key: 'sec/201', label: 'ST201'),
-                        SectionRef(key: 'sec/301', label: 'ST301'),
+                        SectionRef(key: 'sec/101', label: 'Station 1'),
+                        SectionRef(key: 'sec/201', label: 'Station 2'),
+                        SectionRef(key: 'sec/301', label: 'Station 3'),
                       ],
                     )..text = 'Before freezers',
                   ),
@@ -386,10 +385,8 @@ void main() {
 
       testWidgets('a group where one member is not allowed to start',
           (tester) async {
-        // The state the summary row exists for. Two members running, the
-        // third idle and held: the row reads `No for 1 of 3`, the held
-        // member's own row reads `Can't start`, and the explanation names
-        // which one it is and what to do about it.
+        // Two members running, the third idle and held: the held member's
+        // own row reads `Can't start`, and nothing else claims to know why.
         tester.view.physicalSize = const Size(1400, 1100);
         tester.view.devicePixelRatio = 1.0;
         addTearDown(tester.view.reset);
@@ -410,14 +407,9 @@ void main() {
                   child: SectionButton(
                     config: SectionButtonConfig(
                       sections: [
-                        SectionRef(key: 'sec/101', label: 'ST101'),
-                        SectionRef(key: 'sec/201', label: 'ST201'),
-                        SectionRef(
-                          key: 'sec/301',
-                          label: 'ST301',
-                          holdReason: 'The washdown interlock on ST301 is '
-                              'open. Close the guard and it is free.',
-                        ),
+                        SectionRef(key: 'sec/101', label: 'Station 1'),
+                        SectionRef(key: 'sec/201', label: 'Station 2'),
+                        SectionRef(key: 'sec/301', label: 'Station 3'),
                       ],
                     )..text = 'Before freezers',
                   ),
@@ -440,10 +432,7 @@ void main() {
         // The block this feature adds, and there is no substitute for looking
         // at it: the two members drawn together under the name of the choice
         // and stripped of their own `Run`, the mode with the line filled and
-        // inert, the alternative live because the hand-over is switched on,
-        // and — the point of the whole exercise — `Allowed to start` reading
-        // `Yes` rather than the permanent `No for 1 of 2` the interlock used
-        // to produce.
+        // inert, and the alternative live because the hand-over is switched on.
         tester.view.physicalSize = const Size(1400, 1100);
         tester.view.devicePixelRatio = 1.0;
         addTearDown(tester.view.reset);
@@ -561,14 +550,8 @@ void main() {
         );
       });
 
-      testWidgets("can't start, with a configured reason", (tester) async {
-        // The per-section sentence is the point of this golden: the asset
-        // ships only the generic line, and the page author supplies what
-        // actually holds this one.
-        await pumpPane(tester, 'Box packing film',
-            permissive: false,
-            holdReason: 'The vacuum mode has the line. Stop it and this one '
-                'is free.');
+      testWidgets("can't start", (tester) async {
+        await pumpPane(tester, 'Box packing film', permissive: false);
         await expectLater(
           find.byType(MaterialApp),
           matchesGoldenFile('goldens/section_pane_blocked.png'),

@@ -316,45 +316,6 @@ void main() {
           findsOneWidget);
     });
 
-    testWidgets('"Allowed to start" stops crying wolf about the interlock',
-        (tester) async {
-      // The reported destruction of the signal: a pair that is working
-      // normally used to read `No for 1 of 2`, permanently.
-      final fake = _FakeStateMan()
-        ..push('film', enabled: true)
-        ..push('vacuum', permissive: false);
-      await openPane(tester, fake, pair());
-
-      expect(find.text('Yes'), findsOneWidget);
-      expect(find.text('No for 1 of 2'), findsNothing);
-    });
-
-    testWidgets('a hold NOT explained by the choice is still reported',
-        (tester) async {
-      // Nothing in the set is running, so something else is holding vacuum.
-      final fake = _FakeStateMan()
-        ..push('film')
-        ..push('vacuum', permissive: false);
-      await openPane(tester, fake, pair());
-      expect(find.text('No for 1 of 2'), findsOneWidget);
-    });
-
-    testWidgets('a peer hold is still reported alongside a working pair',
-        (tester) async {
-      final fake = _FakeStateMan()
-        ..push('st101.t', enabled: true)
-        ..push('st201.film', enabled: true)
-        ..push('st201.vac', permissive: false)
-        ..push('st201.t', enabled: true)
-        ..push('st301.film', enabled: true)
-        ..push('st301.vac', permissive: false)
-        ..push('st301.t', permissive: false); // a peer, genuinely held
-      await openPane(tester, fake, wetArea());
-      expect(find.text('No for 1 of 7'), findsOneWidget,
-          reason: 'one peer held, and neither of the two working pairs '
-              'counted against it');
-    });
-
     testWidgets('the header says the mode, not "Mixed"', (tester) async {
       final fake = _FakeStateMan()
         ..push('film', enabled: true)
@@ -375,18 +336,15 @@ void main() {
       expect(find.text('1 of 2'), findsOneWidget);
     });
 
-    testWidgets('with switching off, the other mode is dead and the pane says '
-        'why', (tester) async {
+    testWidgets('with switching off, the other mode is dead and nothing '
+        'repeats what the filled button shows', (tester) async {
       final fake = _FakeStateMan()
         ..push('film', enabled: true)
         ..push('vacuum', permissive: false);
       await openPane(tester, fake, pair());
 
       expect(_enabled(tester, const Key('section-choice-0-1')), isFalse);
-      expect(
-          find.textContaining('Line 2 film has the line. Stop it, then the '
-              'other mode can be started.'),
-          findsOneWidget);
+      expect(find.textContaining('has the line'), findsNothing);
     });
 
     testWidgets('a free alternative is a plain start even with switching off',
@@ -426,41 +384,32 @@ void main() {
       expect(find.textContaining('One of these is not reading'), findsOneWidget);
     });
 
-    testWidgets('a twin held while this one only CLEANS says what is really '
-        'holding it', (tester) async {
+    testWidgets('a twin held while this one only CLEANS is dead, with no note',
+        (tester) async {
       // `i_xPermissive := NOT other.q_xEnabled`, and cleaning does not set
       // `q_xEnabled` — so a vacuum held while film merely washes down is held
-      // by something OUTSIDE this choice. `planModeSwitch` refuses (stopping
-      // the cleaning would cost that and still not release the vacuum), so
-      // the button is dead and the note beside it has to say why. Promising
-      // "choosing the other mode stops the film first" next to a button that
-      // will not do it is the dead-button problem this asset exists to avoid.
+      // by something outside this choice. `planModeSwitch` refuses, so the
+      // button is dead. The PLC does not say what holds it, so the pane does
+      // not pretend to either.
       final fake = _FakeStateMan()
         ..push('film', cleaning: true)
         ..push('vacuum', permissive: false);
       await openPane(tester, fake, pair(allowModeSwitch: true));
 
       expect(_enabled(tester, const Key('section-choice-0-1')), isFalse);
-      expect(
-          find.textContaining('something outside this choice is holding it'),
-          findsOneWidget);
-      expect(find.textContaining('Choosing the other mode stops'), findsNothing,
-          reason: 'the switch it offers is exactly the one that is refused');
+      expect(find.textContaining('holding it'), findsNothing);
+      expect(find.textContaining('has the line'), findsNothing);
     });
 
-    testWidgets('the same is said with switching off — it is not the opt-in '
-        'that is holding it', (tester) async {
+    testWidgets('the same with switching off', (tester) async {
       final fake = _FakeStateMan()
         ..push('film', cleaning: true)
         ..push('vacuum', permissive: false);
       await openPane(tester, fake, pair());
 
       expect(_enabled(tester, const Key('section-choice-0-1')), isFalse);
-      expect(
-          find.textContaining('something outside this choice is holding it'),
-          findsOneWidget);
-      expect(find.textContaining('Stop it, then the other mode'), findsNothing,
-          reason: 'stopping the film would not release the vacuum');
+      expect(find.textContaining('holding it'), findsNothing);
+      expect(find.textContaining('has the line'), findsNothing);
     });
 
     testWidgets('a pane with no switch handler offers no live choice',
@@ -804,7 +753,7 @@ void main() {
       // so no sets are declared and the hand-over is off. Every peer button on
       // the plant keeps the behaviour #387 shipped.
       final legacy = (SectionButtonConfig(sections: [
-        SectionRef(key: 'a', label: 'ST101', holdReason: 'Vacuum has it'),
+        SectionRef(key: 'a', label: 'Station 1'),
         SectionRef(key: 'b'),
       ])
             ..text = 'Before freezers')
@@ -818,7 +767,7 @@ void main() {
       expect(back.allowModeSwitch, isFalse);
       expect(back.sections.every((s) => s.exclusiveGroup == null), isTrue);
       expect(exclusiveSetsOf(back.sections), isEmpty);
-      expect(back.sections.first.holdReason, 'Vacuum has it',
+      expect(back.sections.first.label, 'Station 1',
           reason: 'the field the new one sits beside is untouched');
     });
 

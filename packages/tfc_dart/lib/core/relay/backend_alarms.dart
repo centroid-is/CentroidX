@@ -787,6 +787,9 @@ final class AlarmEngine implements GatewayAlarmEngine {
               ruleIndex: index,
               clock: _clock,
               skewWarnAfter: _skewWarnAfter,
+              // #571: the backend is where production evaluates the rule, so
+              // this is where its on-delay has to be honoured.
+              onDelay: rule.onDelay,
               resolveKey: _resolveKey,
               logger: _logger,
               onTransition: (transition) =>

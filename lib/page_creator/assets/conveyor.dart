@@ -1112,7 +1112,43 @@ class ConveyorConfig extends BaseAsset {
   bool get mirrorsWithPage => true;
 
   String? key;
+
+  /// The conveyor's settings node, which carries the belt length the batch
+  /// overlay measures slot positions against.
+  ///
+  /// Only the length is read from it. The name is historical: the settings
+  /// struct used to carry the batch array too, and the array is now read from
+  /// [batchArrayKey] alone. The overlay needs both keys bound.
   String? batchesKey;
+
+  /// The node carrying the batch array: the conveyor function block's
+  /// `p_stat_Batches`.
+  ///
+  /// This is the only place the array is read from. A settings struct that
+  /// still carries an array member is ignored, so a page that binds only
+  /// [batchesKey] draws no batches.
+  ///
+  /// May be bound either at the array node itself or at the function block
+  /// holding it — both shapes decode.
+  String? batchArrayKey;
+
+  /// The node carrying the line recipe's batch length, in millimetres: how
+  /// much belt one occupied slot takes up.
+  ///
+  /// This used to be a fixed 500 mm with a `todo` next to it, because the PLC
+  /// did not publish it. It does now, on the recipe the line runs. Unset, the
+  /// overlay keeps that same [defaultBatchLengthMm], so nothing already on a
+  /// page changes until the key is bound.
+  ///
+  /// May be bound at the recipe struct or straight at its length member.
+  String? batchLengthKey;
+
+  /// The batch length used when [batchLengthKey] is unbound or unreadable.
+  ///
+  /// The constant the overlay was hard-coded to before the recipe published
+  /// one. Keeping it as the fallback is what makes [batchLengthKey] optional.
+  static const double defaultBatchLengthMm = 500;
+
   String? frequencyKey;
   String? tripKey;
 
@@ -1193,6 +1229,28 @@ class ConveyorConfig extends BaseAsset {
   /// rail (see `wagon_station_docks.dart`), and the track narrows to the
   /// middle. Only read while [railsActive].
   String? stationsKey;
+
+  /// What the station panes call this wagon: "Full-pallet wagon is at
+  /// Infeed 1". Two wagons can share one rail, and then "the wagon" does not
+  /// say which. Null or empty falls back to the asset's label, then to
+  /// "the wagon" — see [wagonDisplayName].
+  String? wagonName;
+
+  /// An extra line under "... is keeping the wagon out" in a station's pane,
+  /// for what that usually means on this line and what to do about it — "The
+  /// other wagon is usually at the station." `FB_Wagon` publishes the lock
+  /// but not why, and the why is a fact about the installation, so it is
+  /// configured here rather than guessed in code. Null or empty adds nothing.
+  String? stationLockHelp;
+
+  /// The name the station panes use for this wagon.
+  String get wagonDisplayName {
+    final configured = wagonName?.trim();
+    if (configured != null && configured.isNotEmpty) return configured;
+    final label = text?.trim();
+    if (label != null && label.isNotEmpty) return label;
+    return 'the wagon';
+  }
 
   /// Reads both safety edges as **normally closed**: true while the edge is
   /// healthy, false when it is pressed or the cable breaks. That is how a
@@ -1292,6 +1350,8 @@ class ConveyorConfig extends BaseAsset {
   ConveyorConfig(
       {this.key,
       this.batchesKey,
+      this.batchArrayKey,
+      this.batchLengthKey,
       this.frequencyKey,
       this.tripKey,
       this.runningKey,
@@ -1311,6 +1371,8 @@ class ConveyorConfig extends BaseAsset {
       this.safetyLeftKey,
       this.safetyRightKey,
       this.stationsKey,
+      this.wagonName,
+      this.stationLockHelp,
       this.invertSafetyPolarity = false,
       this.wagonLength,
       this.beltThickness,
@@ -1393,6 +1455,8 @@ class RollerConveyorConfig extends ConveyorConfig {
   RollerConveyorConfig(
       {super.key,
       super.batchesKey,
+      super.batchArrayKey,
+      super.batchLengthKey,
       super.frequencyKey,
       super.tripKey,
       super.runningKey,
@@ -1412,6 +1476,8 @@ class RollerConveyorConfig extends ConveyorConfig {
       super.safetyLeftKey,
       super.safetyRightKey,
       super.stationsKey,
+      super.wagonName,
+      super.stationLockHelp,
       super.invertSafetyPolarity,
       super.wagonLength,
       super.beltThickness,
@@ -1487,7 +1553,20 @@ class _ConveyorConfigContentState extends State<_ConveyorConfigContent> {
         KeyField(
           initialValue: widget.config.batchesKey,
           onChanged: (val) => setState(() => widget.config.batchesKey = val),
-          label: 'Batches key',
+          label: 'Batches key (conveyor settings: belt length)',
+        ),
+        const SizedBox(height: 8),
+        KeyField(
+          initialValue: widget.config.batchArrayKey,
+          onChanged: (val) => setState(() => widget.config.batchArrayKey = val),
+          label: 'Batch array key (needs the batches key too)',
+        ),
+        const SizedBox(height: 8),
+        KeyField(
+          initialValue: widget.config.batchLengthKey,
+          onChanged: (val) =>
+              setState(() => widget.config.batchLengthKey = val),
+          label: 'Batch length key (recipe, mm)',
         ),
         const SizedBox(height: 8),
         KeyField(
@@ -1671,6 +1750,32 @@ class _ConveyorConfigContentState extends State<_ConveyorConfigContent> {
                 setState(() => widget.config.stationsKey = val),
             label: 'Wagon stations key (ARRAY OF ST_WagonStation)',
           ),
+          if (widget.config.stationsKey?.isNotEmpty ?? false) ...[
+            const SizedBox(height: 8),
+            TextFormField(
+              key: const Key('conveyor_wagon_name'),
+              initialValue: widget.config.wagonName,
+              decoration: const InputDecoration(
+                labelText: 'Wagon name in station panes',
+                helperText: 'Empty uses the label, then "the wagon"',
+              ),
+              onChanged: (val) => setState(() => widget.config.wagonName =
+                  val.trim().isEmpty ? null : val),
+            ),
+            const SizedBox(height: 8),
+            TextFormField(
+              key: const Key('conveyor_station_lock_help'),
+              initialValue: widget.config.stationLockHelp,
+              minLines: 1,
+              maxLines: 3,
+              decoration: const InputDecoration(
+                labelText: 'Help when a station keeps the wagon out',
+                helperText: 'Shown under that message in the station pane',
+              ),
+              onChanged: (val) => setState(() => widget.config
+                  .stationLockHelp = val.trim().isEmpty ? null : val),
+            ),
+          ],
           const SizedBox(height: 8),
           NumberSlider(
             labelAbove: true,
@@ -2172,6 +2277,17 @@ class _ConveyorState extends ConsumerState<Conveyor>
   );
   final Map<String, Batch> _batches = {};
   final RepeatedErrorGate _errorGate = RepeatedErrorGate();
+
+  /// Gates the batch overlay's own complaints.
+  ///
+  /// [_errorGate] covers a failure the builder can see. This one covers the
+  /// quieter case: a batches key that answers perfectly well, with something
+  /// the overlay cannot use.
+  final RepeatedErrorGate _batchGate = RepeatedErrorGate();
+
+  /// One gate per optional binding, so a decorative node that is not there is
+  /// named once rather than on every reconnect attempt.
+  final Map<String, RepeatedErrorGate> _optionalGates = {};
   Stream<Map<String, DynamicValue>>? _cachedValues;
   int? _cachedValuesSignature;
   // periodic timer for batches
@@ -2321,6 +2437,14 @@ class _ConveyorState extends ConsumerState<Conveyor>
         (label: 'drive', key: widget.config.key!, optional: false),
       if (_bound(widget.config.batchesKey))
         (label: 'batches', key: widget.config.batchesKey!, optional: true),
+      // Both halves of the overlay are optional in their own right: a dead
+      // array or recipe node must cost the overlay and nothing else.
+      if (_bound(widget.config.batchArrayKey))
+        (label: 'batchArray', key: widget.config.batchArrayKey!,
+            optional: true),
+      if (_bound(widget.config.batchLengthKey))
+        (label: 'batchLength', key: widget.config.batchLengthKey!,
+            optional: true),
       if (_bound(widget.config.frequencyKey))
         (label: 'frequency', key: widget.config.frequencyKey!, optional: true),
       if (_bound(widget.config.runningKey))
@@ -2417,9 +2541,17 @@ class _ConveyorState extends ConsumerState<Conveyor>
         // _updateBatches here prevents an incoming snapshot (e.g. a configured
         // batchesKey emitting unoccupied slots) from clobbering the simulator
         // on every stream tick.
-        if (!(widget.config.simulateBatches ?? false) &&
-            dynValue['batches'] != null) {
-          _updateBatches(dynValue['batches']!);
+        if (!(widget.config.simulateBatches ?? false)) {
+          // The length comes off the settings node and the array off its own
+          // node, and there is deliberately no reading the array out of the
+          // settings. `_updateBatches` clears the overlay when either half is
+          // missing, so a node that goes dead blanks the batches instead of
+          // freezing the last ones it drew.
+          _updateBatches(
+            dynValue['batches'],
+            dynValue['batchArray'],
+            batchLength: _batchLengthIn(dynValue['batchLength']),
+          );
         }
 
         // Wagon position: raw 0..100% like the elevator's position key,
@@ -2534,7 +2666,9 @@ class _ConveyorState extends ConsumerState<Conveyor>
         CombineLatestStream<DynamicValue?, Map<String, DynamicValue>>(
       [
         for (final s in sources)
-          s.binding.optional ? _optional(s.source) : s.source,
+          s.binding.optional
+              ? _optional(s.binding.label, s.source)
+              : s.source,
       ],
       (values) {
         final result = <String, DynamicValue>{};
@@ -2578,35 +2712,192 @@ class _ConveyorState extends ConsumerState<Conveyor>
   /// So: swallow the error to null, and seed a null up front. A dead
   /// optional stream now costs its own overlay and nothing else, and it
   /// starts working again by itself when the PLC serves that node.
-  Stream<DynamicValue?> _optional(Stream<DynamicValue> source) => source
-      .map<DynamicValue?>((value) => value)
-      .transform(
-        StreamTransformer<DynamicValue?, DynamicValue?>.fromHandlers(
-          handleError: (error, stackTrace, sink) => sink.add(null),
-        ),
-      )
-      .startWith(null);
+  ///
+  /// Swallowed is not the same as unrecorded, though. A key bound one node
+  /// off answers with an error nobody ever sees: the overlay simply stops
+  /// being drawn, on an asset that otherwise looks entirely correct.
+  /// [label] names which binding gave up, once per distinct failure — and
+  /// again if the same failure returns after the node has answered in
+  /// between, which is the case most worth seeing.
+  Stream<DynamicValue?> _optional(String label, Stream<DynamicValue> source) =>
+      source
+          .map<DynamicValue?>((value) {
+            _optionalGates[label]?.recovered();
+            return value;
+          })
+          .transform(
+            StreamTransformer<DynamicValue?, DynamicValue?>.fromHandlers(
+              handleError: (error, stackTrace, sink) {
+                final gate =
+                    _optionalGates.putIfAbsent(label, RepeatedErrorGate.new);
+                if (gate.shouldReport(error)) {
+                  _log.w('Conveyor "${widget.config.key}": the $label node '
+                      'failed, so that overlay is off until it reports '
+                      'again: $error');
+                }
+                sink.add(null);
+              },
+            ),
+          )
+          .startWith(null);
 
-  void _updateBatches(DynamicValue dynConveyor) {
-    final conveyorLength = dynConveyor['p_stat_Length'].asDouble;
-    const batchLength = 500; // todo variable mm
-    var idx = 0;
-    final batches = dynConveyor['p_stat_Batches'].asArray;
-    for (final batchInfo in batches) {
-      final occupied = batchInfo['xOccupied'].asBool;
-      final backendOfBatch = batchInfo['position'].asDouble;
-      final relativeStart = backendOfBatch / conveyorLength;
-      final relativeEnd = (backendOfBatch + batchLength) / conveyorLength;
-      if (occupied) {
-        _batches[idx.toString()] =
-            Batch(start: relativeStart, end: relativeEnd);
-      } else {
-        _batches.remove(idx.toString());
-      }
-      idx++;
+  /// The batch array carried by [value], or null if there is not one.
+  ///
+  /// A key can be mapped at the array node itself or at the function block
+  /// that holds it, so accept either shape. Anything else yields null and the
+  /// overlay is cleared rather than thrown out of `build`, which would be a
+  /// red box over an asset whose drive was reading fine.
+  static List<DynamicValue>? _batchArrayIn(DynamicValue value) {
+    if (value.isArray) return value.asArray;
+    if (value.contains(_batchArrayMember)) {
+      final member = value[_batchArrayMember];
+      if (member.isArray) return member.asArray;
     }
-    if (mounted) {
-      // setState(() {});
+    return null;
+  }
+
+  /// The member the function block publishes the array under.
+  static const _batchArrayMember = 'p_stat_Batches';
+
+  /// The belt length [value] reports, or null when it does not carry one.
+  static double? _conveyorLengthIn(DynamicValue value) {
+    if (!value.contains(_lengthMember)) return null;
+    final length = value[_lengthMember].asDouble;
+    // A zero length would divide every slot position by nothing.
+    return length > 0 ? length : null;
+  }
+
+  /// The batch length the recipe node reports, in millimetres, or null when
+  /// the key is unbound, its node dead, or the value unusable.
+  ///
+  /// Accepts the recipe struct or the length member on its own, the same way
+  /// [_batchArrayIn] accepts either shape. A non-positive length is refused
+  /// rather than used: it would give every slot zero width and empty the
+  /// overlay without saying why.
+  static double? _batchLengthIn(DynamicValue? value) {
+    if (value == null) return null;
+    final member =
+        value.contains(_batchLengthMember) ? value[_batchLengthMember] : value;
+    if (!member.isDouble && !member.isInteger) return null;
+    final mm = member.asDouble;
+    return mm > 0 ? mm : null;
+  }
+
+  /// The member the line recipe publishes the batch length under.
+  static const _batchLengthMember = 'batchLength';
+
+  /// Rebuilds the batch overlay.
+  ///
+  /// [settings] is the conveyor settings value bound to
+  /// [ConveyorConfig.batchesKey], which carries the belt length the slot
+  /// positions are measured against. [arrayValue] is the node bound to
+  /// [ConveyorConfig.batchArrayKey]. Either one null or undecodable clears
+  /// the overlay: `_batches` outlives a frame, so returning early would leave
+  /// the last batches drawn on a belt nobody is reporting any more.
+  ///
+  /// [batchLength] is the recipe's slot length in millimetres;
+  /// null falls back to [ConveyorConfig.defaultBatchLengthMm].
+  void _updateBatches(DynamicValue? settings, DynamicValue? arrayValue,
+      {double? batchLength}) {
+    final next = _decodeBatches(settings, arrayValue, batchLength: batchLength);
+    // Decoded into a map of its own and swapped in whole, rather than edited
+    // in place. Edited in place, an array that came back shorter left every
+    // slot past its new end drawn forever, because nothing ever removed an
+    // index the new array no longer reaches; and a value that turned out to
+    // be undecodable partway down left the belt showing some slots from this
+    // reading and the rest from the last one. The overlay is a picture of one
+    // reading, so it is replaced by one reading.
+    _batches
+      ..clear()
+      ..addAll(next);
+  }
+
+  /// The overlay [settings] and [arrayValue] describe, or an empty map when
+  /// they do not describe one.
+  ///
+  /// Nothing in here throws: every read is either shape-checked first or goes
+  /// through an accessor that falls back rather than raising. That is the
+  /// whole point of it. [_updateBatches] is called straight out of the
+  /// `StreamBuilder` builder, so a throw here does not cost the overlay — it
+  /// takes the builder with it, and Flutter replaces the entire conveyor with
+  /// a `RenderErrorBox`, which in a release build paints as a flat grey
+  /// rectangle where the asset used to be. The belt, its colour, its
+  /// frequency and its taps would all still have been perfectly readable;
+  /// only the decoration drawn on top of them was not.
+  Map<String, Batch> _decodeBatches(
+      DynamicValue? settings, DynamicValue? arrayValue,
+      {double? batchLength}) {
+    if (settings == null || arrayValue == null) {
+      // Nothing to decode, and nothing to say about it: an unbound key, a node
+      // that has not answered yet and one whose stream failed all arrive here
+      // as null, and [_optional] has already named the failing one.
+      _batchGate.recovered();
+      return const {};
+    }
+
+    final conveyorLength = _conveyorLengthIn(settings);
+    if (conveyorLength == null) {
+      _complain('the batches node carries no usable $_lengthMember — missing, '
+          'or not a positive length — so the slot positions have nothing to '
+          'be measured against');
+      return const {};
+    }
+
+    final batches = _batchArrayIn(arrayValue);
+    if (batches == null) {
+      _complain('the batch array node answers with neither an array of slots '
+          'nor a struct carrying $_batchArrayMember');
+      return const {};
+    }
+
+    final slotLength = batchLength ?? ConveyorConfig.defaultBatchLengthMm;
+    final decoded = <String, Batch>{};
+    var undecodable = 0;
+    for (var idx = 0; idx < batches.length; idx++) {
+      final batchInfo = batches[idx];
+      // Guarded per entry because a key bound one node off still yields an
+      // array, and one slot of the wrong thing should cost that slot rather
+      // than the whole overlay — the other slots are still a true reading.
+      if (!batchInfo.contains(_occupiedMember) ||
+          !batchInfo.contains(_positionMember)) {
+        undecodable++;
+        continue;
+      }
+      if (!batchInfo[_occupiedMember].asBool) continue;
+      final backOfBatch = batchInfo[_positionMember].asDouble;
+      decoded['$idx'] = Batch(
+        start: backOfBatch / conveyorLength,
+        end: (backOfBatch + slotLength) / conveyorLength,
+      );
+    }
+
+    if (undecodable > 0) {
+      _complain('$undecodable of ${batches.length} slots are missing '
+          '$_occupiedMember or $_positionMember');
+    } else {
+      _batchGate.recovered();
+    }
+    return decoded;
+  }
+
+  /// The members a slot publishes its state under.
+  static const _occupiedMember = 'xOccupied';
+  static const _positionMember = 'position';
+
+  /// The member the conveyor settings publish the belt length under.
+  static const _lengthMember = 'p_stat_Length';
+
+  /// Writes [complaint] down once, and again only when it changes or comes
+  /// back after the overlay has read cleanly.
+  ///
+  /// This runs from inside a `StreamBuilder` builder, which is re-run on every
+  /// rebuild and not only when the PLC says something new — so an ungated line
+  /// here would be written once a frame per conveyor. Gated, a batches key
+  /// pointed at the wrong node is diagnosable from the log instead of being
+  /// invisible, which it was: the overlay just stopped being drawn.
+  void _complain(String complaint) {
+    if (_batchGate.shouldReport(complaint)) {
+      _log.w('Conveyor "${widget.config.key}" draws no batches: $complaint');
     }
   }
 
@@ -2688,6 +2979,8 @@ class _ConveyorState extends ConsumerState<Conveyor>
       return child;
     }
     final beltArea = painter.beltRect(size);
+    final docks =
+        onStationTap == null ? const <WagonDock>[] : painter.docks(size);
     return GestureDetector(
       onTapUp: (details) {
         final p = details.localPosition;
@@ -2696,7 +2989,7 @@ class _ConveyorState extends ConsumerState<Conveyor>
         // Anything else falls through to the wagon's own regions below, the
         // rail included.
         if (onStationTap != null) {
-          for (final dock in painter.docks(size)) {
+          for (final dock in docks) {
             if (dock.body.contains(p)) {
               onStationTap(dock.station);
               return;
@@ -2747,7 +3040,47 @@ class _ConveyorState extends ConsumerState<Conveyor>
         }
         (onBeltTap ?? onMotorTap)?.call();
       },
-      child: child,
+      child: docks.isEmpty ? child : _withStationSubjects(child, docks, size),
+    );
+  }
+
+  Widget _stationSubjectBox(WagonDock dock) {
+    final subject = _stationSubject(dock.station.index);
+    final dockSize = dock.body.size;
+    return KeyedSubtree(
+      key: ObjectKey(subject.part),
+      child: AssetHitShape(
+        shape: () => Path()..addRect(Offset.zero & dockSize),
+        child: SidePaneSubject(
+          subject: subject.part,
+          child: SizedBox.expand(key: subject.anchor),
+        ),
+      ),
+    );
+  }
+
+  /// Lays an empty box over each dock that names the station as its pane's
+  /// subject and publishes the dock as the shape to ring.
+  ///
+  /// The boxes take no taps — a childless box hit-tests nothing — so the
+  /// dispatch above and [ConveyorPainter.hitTest] still decide every one.
+  /// Laid over the belt rather than under it so the belt's own
+  /// [AssetHitShape] is still the first one the plant view finds for the
+  /// conveyor itself.
+  Widget _withStationSubjects(Widget child, List<WagonDock> docks, Size size) {
+    return SizedBox.fromSize(
+      size: size,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          child,
+          for (final dock in docks)
+            Positioned.fromRect(
+              rect: dock.body,
+              child: _stationSubjectBox(dock),
+            ),
+        ],
+      ),
     );
   }
 
@@ -3006,22 +3339,49 @@ class _ConveyorState extends ConsumerState<Conveyor>
   String _stationPaneId(int index) =>
       _paneIdFor('${widget.config.stationsKey}#$index');
 
+  /// Each station slot's pane subject, and the context its pane opens from.
+  ///
+  /// One per slot for the life of this state, so the subject stays the same
+  /// object while the array's flags change under it. Re-minted when the
+  /// config is swapped, since the part names its owner.
+  final Map<int, ({AssetPart part, GlobalKey anchor})> _stationSubjects = {};
+
+  ({AssetPart part, GlobalKey anchor}) _stationSubject(int index) {
+    final known = _stationSubjects[index];
+    if (known != null && identical(known.part.owner, widget.config)) {
+      return known;
+    }
+    return _stationSubjects[index] =
+        (part: AssetPart(widget.config), anchor: GlobalKey());
+  }
+
   /// Opens the pane for one station the wagon serves. It follows the array
   /// itself rather than holding the [WagonStation] it was opened from, so the
-  /// lamps keep moving while it is open.
+  /// sentence keeps up while it is open, and it is handed the whole row so the
+  /// sentence can name the other stations involved.
   void _showStationPane(BuildContext context, WagonStation opened) {
     final stationsKey = widget.config.stationsKey!;
+    // Opened from inside the dock's own subject, so the plant view rings the
+    // tapped station rather than the wagon and every dock with it. The
+    // conveyor's context is the fallback for a dock not laid out yet.
+    final anchor = _stationSubject(opened.index).anchor.currentContext;
     SidePane pane(WagonStation station, PaneStatus Function(BuildContext) status,
-            {Widget? body}) =>
+            {Widget? body, List<WagonStation> stations = const []}) =>
         SidePane(
           title: station.name,
           subtitle: 'Wagon station',
           icon: Icons.pallet,
           status: status(context),
-          child: body ?? WagonStationPaneBody(station: station),
+          child: body ??
+              WagonStationPaneBody(
+                station: station,
+                stations: stations,
+                wagon: widget.config.wagonDisplayName,
+                lockHelp: widget.config.stationLockHelp,
+              ),
         );
     showSidePane(
-      context: context,
+      context: anchor ?? context,
       id: _stationPaneId(opened.index),
       builder: (paneContext) => StateManValueBuilder(
         keyName: stationsKey,
@@ -3033,9 +3393,8 @@ class _ConveyorState extends ConsumerState<Conveyor>
               ),
             ])),
         builder: (context, _, dynValue) {
-          final live = wagonStationsFromValue(dynValue)
-              .where((s) => s.index == opened.index)
-              .firstOrNull;
+          final row = wagonStationsFromValue(dynValue);
+          final live = row.where((s) => s.index == opened.index).firstOrNull;
           if (live == null) {
             // Disabled or renamed away while the pane was open: say so rather
             // than go on showing the last flags as if they were current.
@@ -3047,8 +3406,8 @@ class _ConveyorState extends ConsumerState<Conveyor>
                   ),
                 ]));
           }
-          return pane(
-              live, (context) => wagonStationPaneStatus(context, live.state));
+          return pane(live, (context) => wagonStationPaneStatus(context, live),
+              stations: row);
         },
       ),
     );

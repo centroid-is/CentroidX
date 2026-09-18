@@ -514,6 +514,11 @@ void main() {
         // settle is worse than an answer. Same standing as
         // `access_admin.dart`, for the same reason.
         'lib/providers/home_page.dart',
+        // The same standing as `home_page.dart`, for the same reason: it
+        // reads one row — the account's alarm auto-navigation (#575) — after
+        // asking the AUTHORITY, and answers `relay` without touching the
+        // repository.
+        'lib/providers/alarm_auto_navigation.dart',
       };
 
       final offenders = <String>[];

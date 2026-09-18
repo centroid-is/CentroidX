@@ -80,7 +80,8 @@ typedef _RowBuilder = AuditRecord Function(
 /// Writes — [createRole], [updateRole], [deleteRole], [renameRole],
 /// [setRolePages], [setRoleOrder], [createUser], [deleteUser], [setUserRole],
 /// [setUserStationAccount], [setUserInactivityTimeout], [setUserHomePage],
-/// [setUserPassword], [setUserPages], [setUserOrder] — all ask for
+/// [setUserAlarmAutoNavigate], [setUserPassword], [setUserPages],
+/// [setUserOrder] — all ask for
 /// [kAccessAdminGroup] and all leave a row, denials included. Reads — [roles]
 /// and [listUsers] — are ungated and unaudited: looking at the roster is not an
 /// authorization change, and a row per render would bury the writes that
@@ -747,6 +748,45 @@ class AccessAdminStore {
     await _recordAllowed(actionId, row);
   }
 
+  /// Sets whether a raising alarm takes [username]'s screen to the alarm's
+  /// page. Requires [kAccessAdminGroup].
+  ///
+  /// Gated like the home page rather than left to the account's holder: it
+  /// decides what a panel does on its own, and a panel signed in as a station
+  /// or the anonymous account has no holder to ask. Allowed for the anonymous
+  /// account for that reason. Not a permission, so no lockout guard.
+  ///
+  /// Throws [UserNotFoundException] when there is no such account.
+  Future<void> setUserAlarmAutoNavigate(
+    String username,
+    bool value, {
+    String origin = _operatorOrigin,
+    String? reason,
+  }) async {
+    final existing = await _repository.user(username);
+
+    AuditRecord row(AccessSession session, String actionId, bool allowed) =>
+        AuditRecord.userAlarmAutoNavigate(
+          who: _who(session),
+          station: _station,
+          roleName: session.roleLabel,
+          actionId: actionId,
+          subject: username,
+          oldValue: existing?.alarmAutoNavigate ?? false,
+          newValue: value,
+          allowed: allowed,
+          reason: reason,
+          origin: origin,
+        );
+
+    final actionId =
+        await _requireUsers(itemKey: _userAlarmAutoNavigate, row: row);
+
+    if (existing == null) throw UserNotFoundException(username);
+    await _repository.setAlarmAutoNavigate(username, value);
+    await _recordAllowed(actionId, row);
+  }
+
   /// Replaces [username]'s personal page whitelist. Requires
   /// [kAccessAdminGroup].
   ///
@@ -961,6 +1001,7 @@ class AccessAdminStore {
   static const String _userStationAccount = 'user.station_account';
   static const String _userInactivityTimeout = 'user.inactivity_timeout';
   static const String _userHomePage = 'user.home_page';
+  static const String _userAlarmAutoNavigate = 'user.alarm_auto_navigate';
   static const String _rolePages = 'role.pages';
   static const String _userPages = 'user.pages';
   static const String _roleOrder = 'role.order';

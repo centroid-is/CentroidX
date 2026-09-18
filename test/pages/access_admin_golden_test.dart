@@ -105,7 +105,7 @@ import '../helpers/golden_platform.dart';
 /// Deliberately a string here rather than the route map's constant: the map is written
 /// in the same wave as this plan and may not exist when this file is compiled. The route
 /// test is what pins the route's real group and title; this file's job is a picture.
-const String _kRouteTitle = 'Access';
+const String _kRouteTitle = 'Users & roles';
 
 /// The instant the shell header is frozen at.
 ///
@@ -162,6 +162,7 @@ UserSummary _user(
   DateTime? lastLoginAt,
   List<String> alsoHolds = const [],
   String? homePage,
+  bool alarmAutoNavigate = false,
 }) =>
     UserSummary(
       username: username,
@@ -175,6 +176,25 @@ UserSummary _user(
       lastLoginAt: lastLoginAt,
       stationAccount: false,
       homePage: homePage,
+      alarmAutoNavigate: alarmAutoNavigate,
+    );
+
+/// [u] with alarm auto-navigation on. By hand because [UserSummary] is the
+/// roster DTO and has no `copyWith` — the drift row main's fixture used here
+/// did.
+UserSummary _navigating(UserSummary u) => UserSummary(
+      username: u.username,
+      roleName: u.roleName,
+      displayName: u.displayName,
+      stationAccount: u.stationAccount,
+      hasPassword: u.hasPassword,
+      createdAt: u.createdAt,
+      lastLoginAt: u.lastLoginAt,
+      allowedPages: u.allowedPages,
+      additionalRoles: u.additionalRoles,
+      inactivityTimeoutMinutes: u.inactivityTimeoutMinutes,
+      homePage: u.homePage,
+      alarmAutoNavigate: true,
     );
 
 /// The roster, in the order the repository returns it: by username.
@@ -1059,6 +1079,54 @@ void main() {
         await expectLater(
           find.byType(MaterialApp),
           matchesGoldenFile('goldens/access_admin_home_page.png'),
+        );
+      });
+    });
+
+    testWidgets('the alarm navigation confirmation, over a roster with one '
+        'account already on', (tester) async {
+      await withClock(Clock.fixed(_frozen), () async {
+        const size = Size(900, 900);
+        _sizeView(tester, size);
+
+        final users = [
+          for (final u in _users())
+            u.username == 'linar' ? _navigating(u) : u,
+        ];
+        await tester.pumpWidget(_dialogHost(
+          theme: light,
+          store: _AnsweringStore(roleRows: _roles(), userRows: users),
+          session: _withUsers(),
+        ));
+        await tester.pumpAndSettle();
+
+        // The row states: linar on, everybody else off.
+        String? tooltip(String username) => tester
+            .widget<IconButton>(find.byKey(kAccessUserAlarmNavigateKey(username)))
+            .tooltip;
+        expect(tooltip('linar'), kAccessUserAlarmNavigateOnTooltip);
+        expect(tooltip('admin'), kAccessUserAlarmNavigateOffTooltip);
+        expect(tooltip(kAnonymousUsername), kAccessUserAlarmNavigateOffTooltip);
+        // Eight actions still leave the timestamps their gap at 900 px.
+        _expectTimestampColumnsHaveAGap(tester);
+
+        await tester
+            .tap(find.byKey(kAccessUserAlarmNavigateKey(kAnonymousUsername)));
+        await tester.pumpAndSettle();
+
+        expect(
+            find.text(kAccessUserAlarmNavigateTitle(kAnonymousUsername, true)),
+            findsOneWidget);
+        expect(
+            find.text(kAccessUserAlarmNavigateMessage(
+                turningOn: true, anonymous: true)),
+            findsOneWidget);
+        expect(find.text(kAccessUserAlarmNavigateConfirmOn), findsOneWidget);
+        expect(tester.takeException(), isNull);
+
+        await expectLater(
+          find.byType(MaterialApp),
+          matchesGoldenFile('goldens/access_admin_alarm_navigate.png'),
         );
       });
     });

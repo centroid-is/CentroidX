@@ -18,6 +18,7 @@ import 'package:tfc/models/menu_item.dart';
 import 'package:tfc/page_creator/assets/alarm_visibility.dart';
 import 'package:tfc/page_creator/page.dart';
 import 'package:tfc/providers/alarm.dart';
+import 'package:tfc/providers/alarm_auto_navigation.dart';
 import 'package:tfc/providers/page_manager.dart';
 import 'package:tfc/route_registry.dart';
 import 'package:tfc/widgets/base_scaffold.dart';
@@ -57,10 +58,6 @@ AlarmActive _active(String uid, {AlarmLevel level = AlarmLevel.error}) {
 class _FakeAlarmMan implements AlarmMan {
   final subject = BehaviorSubject<Set<AlarmActive>>.seeded({});
 
-  /// Auto-navigation off. This file is about the *pulse*; with the jump on,
-  /// the alarm it fires would beam the scaffold to /baader/overview and the
-  /// badge under test would be the one page the bar deliberately leaves
-  /// quiet. See `test/widgets/alarm_auto_navigation_end_to_end_test.dart`.
   @override
   final AlarmManConfig config = AlarmManConfig(alarms: []);
 
@@ -138,6 +135,13 @@ void main() {
         overrides: [
           pageManagerProvider.overrideWith((ref) async => manager),
           alarmManProvider.overrideWith((ref) async => alarmMan),
+          // Nobody on this panel is moved by a raise. This file is about the
+          // *pulse*; with the jump on, the alarm it fires would beam the
+          // scaffold to /baader/overview and the badge under test would be the
+          // one page the bar deliberately leaves quiet. See
+          // `test/widgets/alarm_auto_navigation_end_to_end_test.dart`.
+          alarmAutoNavigateLookupProvider
+              .overrideWithValue((_) async => false),
         ],
         child: BeamerProvider(
           routerDelegate: delegate,

@@ -109,6 +109,21 @@ void main() {
               'it, because there is no key for one');
     });
 
+    test('alarmAutoNavigate crosses when on, and is absent when off', () {
+      final on = userSummaryToJson(const UserSummary(
+          username: 'line1', roleName: 'Operator', alarmAutoNavigate: true));
+      expect(on['alarmAutoNavigate'], isTrue);
+      expect(userSummaryFromJson(on).alarmAutoNavigate, isTrue);
+
+      final off = userSummaryToJson(
+          const UserSummary(username: 'jon', roleName: 'Engineering'));
+      expect(off.containsKey('alarmAutoNavigate'), isFalse,
+          reason: 'off is the default and every account starts there; the '
+              'frame an account sent before #575 must not change');
+      expect(userSummaryFromJson(off).alarmAutoNavigate, isFalse,
+          reason: 'a backend older than the field moves nobody');
+    });
+
     test('hasPassword crosses, and an older backend reads as protected', () {
       final open = userSummaryToJson(const UserSummary(
           username: 'line', roleName: 'Operator', hasPassword: false));

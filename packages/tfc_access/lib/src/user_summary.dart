@@ -45,6 +45,7 @@ final class UserSummary {
     this.additionalRoles = const <String>[],
     this.inactivityTimeoutMinutes,
     this.homePage,
+    this.alarmAutoNavigate = false,
   });
 
   /// The account name — `app_user.username`, the primary key.
@@ -112,6 +113,16 @@ final class UserSummary {
   /// so the roster can say it wherever the roster is rendered, the gateway
   /// panel included; setting it is `AccessAdminStore.setUserHomePage`.
   final String? homePage;
+
+  /// Whether a raising alarm takes this account's screen to the page its
+  /// beacon is on (`app_user.alarm_auto_navigate`, #575). Carried for the
+  /// same reason as [homePage]: the roster shows it wherever the roster is
+  /// rendered; setting it is `AccessAdminStore.setUserAlarmAutoNavigate`.
+  ///
+  /// Defaults to false, which is also what a backend older than this field
+  /// means: every account started off when the column arrived, and assuming
+  /// "stays put" for an unknown is the direction that moves nobody.
+  final bool alarmAutoNavigate;
 
   /// This account's personal page whitelist, decoded — `app_user.allowed_pages`.
   ///

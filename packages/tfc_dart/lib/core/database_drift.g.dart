@@ -7155,6 +7155,14 @@ class $AppUserTable extends AppUser with TableInfo<$AppUserTable, AppUserData> {
   late final GeneratedColumn<String> homePage = GeneratedColumn<String>(
       'home_page', aliasedName, true,
       type: DriftSqlType.string, requiredDuringInsert: false);
+  static const VerificationMeta _alarmAutoNavigateMeta =
+      const VerificationMeta('alarmAutoNavigate');
+  @override
+  late final GeneratedColumn<bool> alarmAutoNavigate = GeneratedColumn<bool>(
+      'alarm_auto_navigate', aliasedName, false,
+      type: DriftSqlType.bool,
+      requiredDuringInsert: false,
+      defaultValue: const Constant(false));
   @override
   List<GeneratedColumn> get $columns => [
         username,
@@ -7168,7 +7176,8 @@ class $AppUserTable extends AppUser with TableInfo<$AppUserTable, AppUserData> {
         allowedPages,
         inactivityTimeoutMinutes,
         sortOrder,
-        homePage
+        homePage,
+        alarmAutoNavigate
       ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -7251,6 +7260,12 @@ class $AppUserTable extends AppUser with TableInfo<$AppUserTable, AppUserData> {
       context.handle(_homePageMeta,
           homePage.isAcceptableOrUnknown(data['home_page']!, _homePageMeta));
     }
+    if (data.containsKey('alarm_auto_navigate')) {
+      context.handle(
+          _alarmAutoNavigateMeta,
+          alarmAutoNavigate.isAcceptableOrUnknown(
+              data['alarm_auto_navigate']!, _alarmAutoNavigateMeta));
+    }
     return context;
   }
 
@@ -7285,6 +7300,8 @@ class $AppUserTable extends AppUser with TableInfo<$AppUserTable, AppUserData> {
           .read(DriftSqlType.int, data['${effectivePrefix}sort_order']),
       homePage: attachedDatabase.typeMapping
           .read(DriftSqlType.string, data['${effectivePrefix}home_page']),
+      alarmAutoNavigate: attachedDatabase.typeMapping.read(
+          DriftSqlType.bool, data['${effectivePrefix}alarm_auto_navigate'])!,
     );
   }
 
@@ -7403,6 +7420,22 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
   /// Added on open by `_ensureHomePageColumn` rather than by a schema arm, for
   /// the reason [sortOrder] gives: every existing row is correct as NULL.
   final String? homePage;
+
+  /// Whether a raising alarm takes this account's screen to the page its
+  /// Alarm beacon is on.
+  ///
+  /// Per account rather than plant-wide: being pulled between screens suits
+  /// the person watching a line and ruins the afternoon of somebody working
+  /// through a report on the same panel. It replaced the single
+  /// `auto_navigate` switch in `alarm_man_config`, which was never carried
+  /// over — every account starts off, and an administrator opts accounts in
+  /// on the access page. The reserved anonymous account's value is what a
+  /// logged-out panel does, and a station account's is what that panel does.
+  ///
+  /// Added on open by `_ensureAlarmAutoNavigateColumn` rather than by a schema
+  /// arm, for the reason [sortOrder] gives: every existing row is correct as
+  /// the default.
+  final bool alarmAutoNavigate;
   const AppUserData(
       {required this.username,
       required this.roleName,
@@ -7415,7 +7448,8 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
       this.allowedPages,
       this.inactivityTimeoutMinutes,
       this.sortOrder,
-      this.homePage});
+      this.homePage,
+      required this.alarmAutoNavigate});
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
     final map = <String, Expression>{};
@@ -7444,6 +7478,7 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
     if (!nullToAbsent || homePage != null) {
       map['home_page'] = Variable<String>(homePage);
     }
+    map['alarm_auto_navigate'] = Variable<bool>(alarmAutoNavigate);
     return map;
   }
 
@@ -7473,6 +7508,7 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
       homePage: homePage == null && nullToAbsent
           ? const Value.absent()
           : Value(homePage),
+      alarmAutoNavigate: Value(alarmAutoNavigate),
     );
   }
 
@@ -7493,6 +7529,7 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
           serializer.fromJson<int?>(json['inactivityTimeoutMinutes']),
       sortOrder: serializer.fromJson<int?>(json['sortOrder']),
       homePage: serializer.fromJson<String?>(json['homePage']),
+      alarmAutoNavigate: serializer.fromJson<bool>(json['alarmAutoNavigate']),
     );
   }
   @override
@@ -7512,6 +7549,7 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
           serializer.toJson<int?>(inactivityTimeoutMinutes),
       'sortOrder': serializer.toJson<int?>(sortOrder),
       'homePage': serializer.toJson<String?>(homePage),
+      'alarmAutoNavigate': serializer.toJson<bool>(alarmAutoNavigate),
     };
   }
 
@@ -7527,7 +7565,8 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
           Value<String?> allowedPages = const Value.absent(),
           Value<int?> inactivityTimeoutMinutes = const Value.absent(),
           Value<int?> sortOrder = const Value.absent(),
-          Value<String?> homePage = const Value.absent()}) =>
+          Value<String?> homePage = const Value.absent(),
+          bool? alarmAutoNavigate}) =>
       AppUserData(
         username: username ?? this.username,
         roleName: roleName ?? this.roleName,
@@ -7546,6 +7585,7 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
             : this.inactivityTimeoutMinutes,
         sortOrder: sortOrder.present ? sortOrder.value : this.sortOrder,
         homePage: homePage.present ? homePage.value : this.homePage,
+        alarmAutoNavigate: alarmAutoNavigate ?? this.alarmAutoNavigate,
       );
   AppUserData copyWithCompanion(AppUserCompanion data) {
     return AppUserData(
@@ -7572,6 +7612,9 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
           : this.inactivityTimeoutMinutes,
       sortOrder: data.sortOrder.present ? data.sortOrder.value : this.sortOrder,
       homePage: data.homePage.present ? data.homePage.value : this.homePage,
+      alarmAutoNavigate: data.alarmAutoNavigate.present
+          ? data.alarmAutoNavigate.value
+          : this.alarmAutoNavigate,
     );
   }
 
@@ -7589,7 +7632,8 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
           ..write('allowedPages: $allowedPages, ')
           ..write('inactivityTimeoutMinutes: $inactivityTimeoutMinutes, ')
           ..write('sortOrder: $sortOrder, ')
-          ..write('homePage: $homePage')
+          ..write('homePage: $homePage, ')
+          ..write('alarmAutoNavigate: $alarmAutoNavigate')
           ..write(')'))
         .toString();
   }
@@ -7607,7 +7651,8 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
       allowedPages,
       inactivityTimeoutMinutes,
       sortOrder,
-      homePage);
+      homePage,
+      alarmAutoNavigate);
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
@@ -7623,7 +7668,8 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
           other.allowedPages == this.allowedPages &&
           other.inactivityTimeoutMinutes == this.inactivityTimeoutMinutes &&
           other.sortOrder == this.sortOrder &&
-          other.homePage == this.homePage);
+          other.homePage == this.homePage &&
+          other.alarmAutoNavigate == this.alarmAutoNavigate);
 }
 
 class AppUserCompanion extends UpdateCompanion<AppUserData> {
@@ -7639,6 +7685,7 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
   final Value<int?> inactivityTimeoutMinutes;
   final Value<int?> sortOrder;
   final Value<String?> homePage;
+  final Value<bool> alarmAutoNavigate;
   final Value<int> rowid;
   const AppUserCompanion({
     this.username = const Value.absent(),
@@ -7653,6 +7700,7 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
     this.inactivityTimeoutMinutes = const Value.absent(),
     this.sortOrder = const Value.absent(),
     this.homePage = const Value.absent(),
+    this.alarmAutoNavigate = const Value.absent(),
     this.rowid = const Value.absent(),
   });
   AppUserCompanion.insert({
@@ -7668,6 +7716,7 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
     this.inactivityTimeoutMinutes = const Value.absent(),
     this.sortOrder = const Value.absent(),
     this.homePage = const Value.absent(),
+    this.alarmAutoNavigate = const Value.absent(),
     this.rowid = const Value.absent(),
   })  : username = Value(username),
         roleName = Value(roleName),
@@ -7687,6 +7736,7 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
     Expression<int>? inactivityTimeoutMinutes,
     Expression<int>? sortOrder,
     Expression<String>? homePage,
+    Expression<bool>? alarmAutoNavigate,
     Expression<int>? rowid,
   }) {
     return RawValuesInsertable({
@@ -7703,6 +7753,7 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
         'inactivity_timeout_minutes': inactivityTimeoutMinutes,
       if (sortOrder != null) 'sort_order': sortOrder,
       if (homePage != null) 'home_page': homePage,
+      if (alarmAutoNavigate != null) 'alarm_auto_navigate': alarmAutoNavigate,
       if (rowid != null) 'rowid': rowid,
     });
   }
@@ -7720,6 +7771,7 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
       Value<int?>? inactivityTimeoutMinutes,
       Value<int?>? sortOrder,
       Value<String?>? homePage,
+      Value<bool>? alarmAutoNavigate,
       Value<int>? rowid}) {
     return AppUserCompanion(
       username: username ?? this.username,
@@ -7735,6 +7787,7 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
           inactivityTimeoutMinutes ?? this.inactivityTimeoutMinutes,
       sortOrder: sortOrder ?? this.sortOrder,
       homePage: homePage ?? this.homePage,
+      alarmAutoNavigate: alarmAutoNavigate ?? this.alarmAutoNavigate,
       rowid: rowid ?? this.rowid,
     );
   }
@@ -7779,6 +7832,9 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
     if (homePage.present) {
       map['home_page'] = Variable<String>(homePage.value);
     }
+    if (alarmAutoNavigate.present) {
+      map['alarm_auto_navigate'] = Variable<bool>(alarmAutoNavigate.value);
+    }
     if (rowid.present) {
       map['rowid'] = Variable<int>(rowid.value);
     }
@@ -7800,6 +7856,7 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
           ..write('inactivityTimeoutMinutes: $inactivityTimeoutMinutes, ')
           ..write('sortOrder: $sortOrder, ')
           ..write('homePage: $homePage, ')
+          ..write('alarmAutoNavigate: $alarmAutoNavigate, ')
           ..write('rowid: $rowid')
           ..write(')'))
         .toString();
@@ -15695,6 +15752,7 @@ typedef $$AppUserTableCreateCompanionBuilder = AppUserCompanion Function({
   Value<int?> inactivityTimeoutMinutes,
   Value<int?> sortOrder,
   Value<String?> homePage,
+  Value<bool> alarmAutoNavigate,
   Value<int> rowid,
 });
 typedef $$AppUserTableUpdateCompanionBuilder = AppUserCompanion Function({
@@ -15710,6 +15768,7 @@ typedef $$AppUserTableUpdateCompanionBuilder = AppUserCompanion Function({
   Value<int?> inactivityTimeoutMinutes,
   Value<int?> sortOrder,
   Value<String?> homePage,
+  Value<bool> alarmAutoNavigate,
   Value<int> rowid,
 });
 
@@ -15776,6 +15835,10 @@ class $$AppUserTableFilterComposer
 
   ColumnFilters<String> get homePage => $composableBuilder(
       column: $table.homePage, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<bool> get alarmAutoNavigate => $composableBuilder(
+      column: $table.alarmAutoNavigate,
+      builder: (column) => ColumnFilters(column));
 
   $$AppRoleTableFilterComposer get roleName {
     final $$AppRoleTableFilterComposer composer = $composerBuilder(
@@ -15845,6 +15908,10 @@ class $$AppUserTableOrderingComposer
   ColumnOrderings<String> get homePage => $composableBuilder(
       column: $table.homePage, builder: (column) => ColumnOrderings(column));
 
+  ColumnOrderings<bool> get alarmAutoNavigate => $composableBuilder(
+      column: $table.alarmAutoNavigate,
+      builder: (column) => ColumnOrderings(column));
+
   $$AppRoleTableOrderingComposer get roleName {
     final $$AppRoleTableOrderingComposer composer = $composerBuilder(
         composer: this,
@@ -15908,6 +15975,9 @@ class $$AppUserTableAnnotationComposer
   GeneratedColumn<String> get homePage =>
       $composableBuilder(column: $table.homePage, builder: (column) => column);
 
+  GeneratedColumn<bool> get alarmAutoNavigate => $composableBuilder(
+      column: $table.alarmAutoNavigate, builder: (column) => column);
+
   $$AppRoleTableAnnotationComposer get roleName {
     final $$AppRoleTableAnnotationComposer composer = $composerBuilder(
         composer: this,
@@ -15964,6 +16034,7 @@ class $$AppUserTableTableManager extends RootTableManager<
             Value<int?> inactivityTimeoutMinutes = const Value.absent(),
             Value<int?> sortOrder = const Value.absent(),
             Value<String?> homePage = const Value.absent(),
+            Value<bool> alarmAutoNavigate = const Value.absent(),
             Value<int> rowid = const Value.absent(),
           }) =>
               AppUserCompanion(
@@ -15979,6 +16050,7 @@ class $$AppUserTableTableManager extends RootTableManager<
             inactivityTimeoutMinutes: inactivityTimeoutMinutes,
             sortOrder: sortOrder,
             homePage: homePage,
+            alarmAutoNavigate: alarmAutoNavigate,
             rowid: rowid,
           ),
           createCompanionCallback: ({
@@ -15994,6 +16066,7 @@ class $$AppUserTableTableManager extends RootTableManager<
             Value<int?> inactivityTimeoutMinutes = const Value.absent(),
             Value<int?> sortOrder = const Value.absent(),
             Value<String?> homePage = const Value.absent(),
+            Value<bool> alarmAutoNavigate = const Value.absent(),
             Value<int> rowid = const Value.absent(),
           }) =>
               AppUserCompanion.insert(
@@ -16009,6 +16082,7 @@ class $$AppUserTableTableManager extends RootTableManager<
             inactivityTimeoutMinutes: inactivityTimeoutMinutes,
             sortOrder: sortOrder,
             homePage: homePage,
+            alarmAutoNavigate: alarmAutoNavigate,
             rowid: rowid,
           ),
           withReferenceMapper: (p0) => p0

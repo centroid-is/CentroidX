@@ -681,6 +681,24 @@ abstract class BaseAsset implements Asset {
   }
 }
 
+/// A piece of an asset that opens a pane of its own without being an asset.
+///
+/// A wagon's stations are the case: each dock is painted by the conveyor and
+/// answers a tap with its own pane, but it is a slot in a PLC array, not
+/// something on the page. Named as a pane's subject, it gets the plant view
+/// to ring that piece alone rather than the whole [owner].
+///
+/// Compared by identity, like every subject: the asset keeps one per piece
+/// for as long as it is mounted. The plant view tracks it by [owner]'s frame,
+/// the same way a rack's slices ride the rack's, and traces it from the
+/// [AssetHitShape] under `ObjectKey(part)` — publish one, or the owner's
+/// whole face is ringed.
+class AssetPart {
+  AssetPart(this.owner);
+
+  final Asset owner;
+}
+
 /// Scopes the side-pane subject — and the dashed open-pane mark — to one
 /// subdevice of a composite asset.
 ///

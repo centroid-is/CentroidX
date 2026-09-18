@@ -570,6 +570,41 @@ final String kAccessUserTimeoutRangeNote =
 
 const String kAccessUserTimeoutDefaultLabel = 'Use default';
 
+/// The alarm auto-navigation control on an account's row.
+Key kAccessUserAlarmNavigateKey(String username) =>
+    Key('access-user-alarm-navigate-$username');
+
+/// The two tooltips are the two states, each saying what a tap does.
+const String kAccessUserAlarmNavigateOffTooltip =
+    'Stays put when an alarm raises — tap to go to the alarm\'s page';
+const String kAccessUserAlarmNavigateOnTooltip =
+    'Goes to a raising alarm\'s page — tap to stay put';
+
+const String kAccessUserAlarmNavigateConfirmOn = 'Go to alarms';
+const String kAccessUserAlarmNavigateConfirmOff = 'Stay put';
+
+String kAccessUserAlarmNavigateTitle(String username, bool turningOn) =>
+    turningOn
+        ? 'Take "$username" to raising alarms?'
+        : 'Stop taking "$username" to raising alarms?';
+
+/// Who "this account" is on a panel differs for the anonymous one, so the
+/// sentence names the panel instead.
+String kAccessUserAlarmNavigateMessage({
+  required bool turningOn,
+  required bool anonymous,
+}) {
+  final who = anonymous
+      ? 'A panel nobody is signed in to'
+      : 'A panel signed in as this account';
+  return turningOn
+      ? '$who goes to the page an alarm\'s beacon is on when the alarm raises, '
+          'if it can open that page and is not in an editor. A second alarm '
+          'only takes over if it is more severe. The change is recorded.'
+      : '$who stays where it is when an alarm raises. Navigation entries '
+          'still pulse. The change is recorded.';
+}
+
 /// The home-page control on an account's row.
 Key kAccessUserHomePageKey(String username) =>
     Key('access-user-home-page-$username');
@@ -927,14 +962,28 @@ const int _kNameFlex = 5;
 const int _kRoleFlex = 5;
 const int _kWhenFlex = 6;
 
-/// Seven compact (40 px) icon buttons: station account, timeout, home page,
-/// pages, role, password, delete. Widened from 192 when the Pages control
-/// joined them and from 240 when the timeout did; the home page made seven,
-/// and seven at 48 px squeezed the timestamps below their gap at 900 px, so
-/// the buttons went compact instead of the columns going narrower. A fixed
-/// width with one more button than it was sized for overflows the row rather
-/// than wrapping, which is how this number earns a comment.
-const double _kActionsWidth = 280;
+/// Eight [_kActionSize] icon buttons: station account, timeout, home page,
+/// alarm navigation, pages, role, password, delete. Widened from 192 when the
+/// Pages control joined them and from 240 when the timeout did; the home page
+/// made seven, and seven at 48 px squeezed the timestamps below their gap at
+/// 900 px, so the buttons went compact instead of the columns going narrower.
+///
+/// Alarm navigation made eight, and eight at 40 px cost the four flex columns
+/// 40 px they did not have: at 900 px `commissioning` and `Engineering`
+/// wrapped **mid-word**. So the buttons shrank again rather than the columns —
+/// see [_kActionSize]. A fixed width with one more button than it was sized
+/// for overflows the row rather than wrapping, which is how this number earns
+/// a comment.
+const double _kActionsWidth = 288;
+
+/// One row action's box, both dimensions.
+///
+/// Below the 40 px a compact [IconButton] takes by itself, and set explicitly
+/// so eight of them fit the four text columns' budget rather than eating into
+/// it. The 18 px glyph is unchanged; what shrinks is the padding around it.
+/// This screen is read on a desk far more than it is tapped on a panel, and
+/// nothing here is an action an operator takes mid-shift.
+const double _kActionSize = 36;
 
 /// The drag handle's slot at the start of every row, in front of the four
 /// flex columns so its width comes out of all of them in proportion. Taken out
@@ -1231,27 +1280,21 @@ class _UserTileState extends ConsumerState<_UserTile> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     if (!_anonymous) ...[
-                      IconButton(
-                        visualDensity: VisualDensity.compact,
+                      _action(
                         key: kAccessUserStationAccountKey(user.username),
-                        icon: Icon(
-                            user.stationAccount
-                                ? Icons.desktop_windows
-                                : Icons.desktop_windows_outlined,
-                            size: 18),
+                        icon: user.stationAccount
+                            ? Icons.desktop_windows
+                            : Icons.desktop_windows_outlined,
                         tooltip: user.stationAccount
                             ? kAccessUserStationAccountOnTooltip
                             : kAccessUserStationAccountOffTooltip,
                         onPressed: _toggleStationAccount,
                       ),
-                      IconButton(
-                        visualDensity: VisualDensity.compact,
+                      _action(
                         key: kAccessUserTimeoutKey(user.username),
-                        icon: Icon(
-                            _ownTimeout != null
-                                ? Icons.timer
-                                : Icons.timer_outlined,
-                            size: 18),
+                        icon: _ownTimeout != null
+                            ? Icons.timer
+                            : Icons.timer_outlined,
                         tooltip: user.stationAccount
                             ? kAccessUserTimeoutStationTooltip
                             : kAccessUserTimeoutTooltip,
@@ -1264,47 +1307,50 @@ class _UserTileState extends ConsumerState<_UserTile> {
                     ],
                     // Every account, the anonymous one included: its home
                     // page is where a logged-out panel opens.
-                    IconButton(
-                      visualDensity: VisualDensity.compact,
+                    _action(
                       key: kAccessUserHomePageKey(user.username),
-                      icon: Icon(
-                          user.homePage != null
-                              ? Icons.home
-                              : Icons.home_outlined,
-                          size: 18),
+                      icon: user.homePage != null
+                          ? Icons.home
+                          : Icons.home_outlined,
                       tooltip: kAccessUserHomePageTooltip,
                       onPressed: _setHomePage,
                     ),
-                    IconButton(
-                      visualDensity: VisualDensity.compact,
+                    // Every account too: the anonymous account's value is
+                    // what a logged-out panel does when an alarm raises.
+                    _action(
+                      key: kAccessUserAlarmNavigateKey(user.username),
+                      icon: user.alarmAutoNavigate
+                          ? Icons.notifications_active
+                          : Icons.notifications_none,
+                      tooltip: user.alarmAutoNavigate
+                          ? kAccessUserAlarmNavigateOnTooltip
+                          : kAccessUserAlarmNavigateOffTooltip,
+                      onPressed: _toggleAlarmNavigate,
+                    ),
+                    _action(
                       key: kAccessUserPagesKey(user.username),
-                      icon: Icon(
-                          _overridesPages
-                              ? Icons.layers
-                              : Icons.layers_outlined,
-                          size: 18),
+                      icon: _overridesPages
+                          ? Icons.layers
+                          : Icons.layers_outlined,
                       tooltip: kAccessUserPagesTooltip,
                       onPressed: _togglePages,
                     ),
-                    IconButton(
-                      visualDensity: VisualDensity.compact,
+                    _action(
                       key: kAccessUserChangeRoleKey(user.username),
-                      icon: const Icon(Icons.badge_outlined, size: 18),
+                      icon: Icons.badge_outlined,
                       tooltip: 'Change role',
                       onPressed: _changeRole,
                     ),
                     if (!_anonymous) ...[
-                      IconButton(
-                        visualDensity: VisualDensity.compact,
+                      _action(
                         key: kAccessUserSetPasswordKey(user.username),
-                        icon: const Icon(Icons.password_outlined, size: 18),
+                        icon: Icons.password_outlined,
                         tooltip: 'Set password',
                         onPressed: _setPassword,
                       ),
-                      IconButton(
-                        visualDensity: VisualDensity.compact,
+                      _action(
                         key: kAccessUserDeleteKey(user.username),
-                        icon: const Icon(Icons.delete_outline, size: 18),
+                        icon: Icons.delete_outline,
                         tooltip: 'Delete account',
                         onPressed: _delete,
                       ),
@@ -1370,6 +1416,29 @@ class _UserTileState extends ConsumerState<_UserTile> {
       ],
     );
   }
+
+  /// One action in the row's trailing cluster, sized by [_kActionSize].
+  Widget _action({
+    required Key key,
+    required IconData icon,
+    required String tooltip,
+    required VoidCallback? onPressed,
+  }) =>
+      IconButton(
+        key: key,
+        // Through `styleFrom` rather than `constraints`: a Material 3
+        // IconButton sizes itself from its ButtonStyle and ignores the
+        // constraints, so the box below is the only thing that shrinks it.
+        style: IconButton.styleFrom(
+          padding: EdgeInsets.zero,
+          fixedSize: const Size.square(_kActionSize),
+          minimumSize: const Size.square(_kActionSize),
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        ),
+        icon: Icon(icon, size: 18),
+        tooltip: tooltip,
+        onPressed: onPressed,
+      );
 
   /// The username, with the no-password badge beside it and, under the
   /// name, what else identifies the row: the reserved account's tag, and the
@@ -1676,6 +1745,38 @@ class _UserTileState extends ConsumerState<_UserTile> {
     if (!wrote) return;
     if (mounted) setState(() => _refusal = null);
     await _afterWrite(ref);
+  }
+
+  /// Flips whether a raising alarm takes this account's panels to its page,
+  /// after a confirmation that says what that means on the floor.
+  ///
+  /// No session refresh: nothing a live session holds changes. The scaffold
+  /// reads the setting when the next alarm raises, on every station.
+  Future<void> _toggleAlarmNavigate() async {
+    if (_busy) return;
+    final turningOn = !user.alarmAutoNavigate;
+    final confirmed = await showConfirmDialog(
+      context: context,
+      title: kAccessUserAlarmNavigateTitle(user.username, turningOn),
+      message: kAccessUserAlarmNavigateMessage(
+          turningOn: turningOn, anonymous: _anonymous),
+      confirmLabel: turningOn
+          ? kAccessUserAlarmNavigateConfirmOn
+          : kAccessUserAlarmNavigateConfirmOff,
+    );
+    if (!confirmed || !mounted) return;
+
+    _busy = true;
+    final wrote = await _write(
+      context,
+      ref,
+      () => widget.store.setUserAlarmAutoNavigate(user.username, turningOn),
+      onRefused: _showRefusal,
+      vanished: user.username,
+    );
+    _busy = false;
+    if (!wrote) return;
+    if (mounted) setState(() => _refusal = null);
   }
 
   /// Deletes the account, after a confirmation that says the trail survives.

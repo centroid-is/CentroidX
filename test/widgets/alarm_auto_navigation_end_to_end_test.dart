@@ -7,7 +7,8 @@
 /// proven here is the wiring either side of it — that a raise reaches the
 /// scaffold, that the scaffold beams, and that the two vetoes only the widget
 /// can apply (where the operator is standing, and the route's access group)
-/// are actually applied.
+/// are actually applied — and that the account on the panel is asked whether
+/// it wants to be moved at all.
 library;
 
 import 'package:beamer/beamer.dart';
@@ -23,7 +24,7 @@ import 'package:tfc/providers/alarm_auto_navigation.dart';
 import 'package:tfc/providers/page_manager.dart';
 import 'package:tfc/route_registry.dart';
 import 'package:tfc/widgets/base_scaffold.dart';
-import 'package:tfc_access/tfc_access.dart' show AccessGroup;
+import 'package:tfc_access/tfc_access.dart' show AccessGroup, AccessSession;
 import 'package:tfc_dart/core/alarm.dart';
 import 'package:tfc_dart/core/boolean_expression.dart';
 
@@ -54,14 +55,10 @@ AlarmActive _active(String uid, {AlarmLevel level = AlarmLevel.error}) {
   );
 }
 
-/// The active-alarm stream and the auto-navigate flag: everything the chain
-/// reads off an [AlarmMan].
+/// The active-alarm stream: everything the chain reads off an [AlarmMan].
 class _FakeAlarmMan implements AlarmMan {
-  _FakeAlarmMan({bool autoNavigate = true})
-      : config = AlarmManConfig(alarms: [], autoNavigate: autoNavigate);
-
   @override
-  final AlarmManConfig config;
+  final AlarmManConfig config = AlarmManConfig(alarms: []);
 
   final subject = BehaviorSubject<Set<AlarmActive>>.seeded({});
 
@@ -74,9 +71,6 @@ class _FakeAlarmMan implements AlarmMan {
   @override
   List<AlarmActive> filterAlarms(List<AlarmActive> alarms, String query) =>
       alarms;
-
-  @override
-  void setAutoNavigate(bool value) => config.autoNavigate = value;
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
@@ -123,6 +117,8 @@ Future<void> _pumpApp(
   required PageManager manager,
   required _FakeAlarmMan alarmMan,
   required BeamerDelegate delegate,
+  bool accountWantsIt = true,
+  List<AccessSession>? asked,
 }) async {
   final registry = RouteRegistry();
   registry.menuItems.clear();
@@ -137,6 +133,11 @@ Future<void> _pumpApp(
         alarmManProvider.overrideWith((ref) async => alarmMan),
         // The plant has been running a while.
         alarmAutoNavigateSettleProvider.overrideWithValue(Duration.zero),
+        // The account on the panel, without a database.
+        alarmAutoNavigateLookupProvider.overrideWithValue((session) async {
+          asked?.add(session);
+          return accountWantsIt;
+        }),
       ],
       child: BeamerProvider(
         routerDelegate: delegate,
@@ -192,19 +193,27 @@ void main() {
     await alarmMan.subject.close();
   });
 
-  testWidgets('the flag off leaves the screen where it is', (tester) async {
-    final alarmMan = _FakeAlarmMan(autoNavigate: false);
+  testWidgets('an account without it leaves the screen where it is',
+      (tester) async {
+    final alarmMan = _FakeAlarmMan();
     final delegate = _delegate();
+    final asked = <AccessSession>[];
     await _pumpApp(
         tester,
         manager: _manager(),
         alarmMan: alarmMan,
-        delegate: delegate);
+        delegate: delegate,
+        accountWantsIt: false,
+        asked: asked);
 
     alarmMan.subject.add({_active('a1')});
     await _settle(tester);
 
     expect(_location(delegate), '/');
+    expect(asked, isNotEmpty,
+        reason: 'the raise reached the scaffold, and the account said no');
+    expect(asked.first.isElevated, isFalse,
+        reason: 'nobody signed in: the anonymous account is the one asked');
 
     await alarmMan.subject.close();
   });

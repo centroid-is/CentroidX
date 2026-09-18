@@ -11,12 +11,16 @@ AlarmRule _$AlarmRuleFromJson(Map<String, dynamic> json) => AlarmRule(
       expression:
           ExpressionConfig.fromJson(json['expression'] as Map<String, dynamic>),
       acknowledgeRequired: json['acknowledgeRequired'] as bool,
+      onDelay: json['onDelayMs'] == null
+          ? Duration.zero
+          : _durationFromMs((json['onDelayMs'] as num?)?.toInt()),
     );
 
 Map<String, dynamic> _$AlarmRuleToJson(AlarmRule instance) => <String, dynamic>{
       'level': _$AlarmLevelEnumMap[instance.level]!,
       'expression': instance.expression,
       'acknowledgeRequired': instance.acknowledgeRequired,
+      if (_durationToMs(instance.onDelay) case final value?) 'onDelayMs': value,
     };
 
 const _$AlarmLevelEnumMap = {
@@ -57,11 +61,9 @@ AlarmManConfig _$AlarmManConfigFromJson(Map<String, dynamic> json) =>
       alarms: (json['alarms'] as List<dynamic>)
           .map((e) => AlarmConfig.fromJson(e as Map<String, dynamic>))
           .toList(),
-      autoNavigate: json['auto_navigate'] as bool? ?? false,
     );
 
 Map<String, dynamic> _$AlarmManConfigToJson(AlarmManConfig instance) =>
     <String, dynamic>{
       'alarms': instance.alarms,
-      'auto_navigate': instance.autoNavigate,
     };

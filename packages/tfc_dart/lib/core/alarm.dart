@@ -18,6 +18,7 @@ import 'package:drift/drift.dart'
         Variable;
 // Prefixed: drift's `Expression` collides with this package's own.
 import 'package:drift/drift.dart' as drift show Constant, Expression;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 
 import 'alarm_stamp.dart';
 import 'database_drift.dart' show $AlarmHistoryTable;
@@ -55,15 +56,51 @@ class AlarmRule {
   final ExpressionConfig expression;
   final bool acknowledgeRequired;
 
+  /// How long [expression] must hold, without a break, before the alarm goes
+  /// active. Zero raises on the first true evaluation.
+  ///
+  /// An on-delay only: a condition that clears inside the delay never raises
+  /// (and so never clears either), and an active alarm clears the moment its
+  /// condition does. It filters the chatter of a signal that flickers — a
+  /// photo-eye blinking past a gap, a level riding its threshold — without
+  /// hiding a real fault for longer than the delay.
+  ///
+  /// Evaluated wherever the rule is, which in production is the backend's
+  /// headless [AlarmMan]; the activation is stamped when the delay ends.
+  ///
+  /// Stored as whole milliseconds and left out when zero, so a configuration
+  /// with no delays serialises exactly as it did before the field existed.
+  @JsonKey(
+    name: 'onDelayMs',
+    fromJson: _durationFromMs,
+    toJson: _durationToMs,
+    includeIfNull: false,
+  )
+  final Duration onDelay;
+
   AlarmRule({
     required this.level,
     required this.expression,
     required this.acknowledgeRequired,
+    this.onDelay = Duration.zero,
   });
+
+  AlarmRule copyWith({
+    AlarmLevel? level,
+    ExpressionConfig? expression,
+    bool? acknowledgeRequired,
+    Duration? onDelay,
+  }) =>
+      AlarmRule(
+        level: level ?? this.level,
+        expression: expression ?? this.expression,
+        acknowledgeRequired: acknowledgeRequired ?? this.acknowledgeRequired,
+        onDelay: onDelay ?? this.onDelay,
+      );
 
   @override
   String toString() {
-    return 'AlarmRule(level: $level, expression: $expression, acknowledgeRequired: $acknowledgeRequired)';
+    return 'AlarmRule(level: $level, expression: $expression, acknowledgeRequired: $acknowledgeRequired, onDelay: $onDelay)';
   }
 
   factory AlarmRule.fromJson(Map<String, dynamic> json) =>
@@ -76,20 +113,28 @@ class AlarmRule {
     return other is AlarmRule &&
         level == other.level &&
         expression == other.expression &&
-        acknowledgeRequired == other.acknowledgeRequired;
+        acknowledgeRequired == other.acknowledgeRequired &&
+        onDelay == other.onDelay;
   }
 
   @override
-  int get hashCode => Object.hash(level, expression, acknowledgeRequired);
+  int get hashCode =>
+      Object.hash(level, expression, acknowledgeRequired, onDelay);
 
   static AlarmRule from(AlarmRule copy) {
     return AlarmRule(
       level: copy.level,
       expression: ExpressionConfig.from(copy.expression),
       acknowledgeRequired: copy.acknowledgeRequired,
+      onDelay: copy.onDelay,
     );
   }
 }
+
+Duration _durationFromMs(int? ms) => Duration(milliseconds: ms ?? 0);
+
+/// Null for zero, which `includeIfNull: false` then leaves out of the JSON.
+int? _durationToMs(Duration d) => d == Duration.zero ? null : d.inMilliseconds;
 
 @JsonSerializable()
 class AlarmConfig {
@@ -199,27 +244,13 @@ class AlarmConfig {
 class AlarmManConfig {
   final List<AlarmConfig> alarms;
 
-  /// Whether a raising alarm should pull the operator to the page that shows
-  /// it — the beacon's page, the same page whose navigation entry pulses.
-  ///
-  /// Plant-wide rather than per-station, and stored here rather than under a
-  /// preference key of its own: it belongs to the same `alarm_man_config`
-  /// blob the alarms themselves live in, which `kPrefAccessRules` already
-  /// classifies `configure`, so the switch is reachable by exactly the roles
-  /// that may edit an alarm and every flip lands in the audit trail without a
-  /// new rule.
-  ///
-  /// Off by default. A station that has been running for years must not start
-  /// yanking its operators between screens because it was upgraded; turning
-  /// this on is a decision somebody makes for a plant, once.
-  ///
-  /// Mutable, unlike [alarms] which is mutated in place: this is one bool and
-  /// [AlarmMan.setAutoNavigate] reassigns it, so the running [AlarmMan] and
-  /// the editor that flipped it agree without a reload.
-  @JsonKey(name: 'auto_navigate', defaultValue: false)
-  bool autoNavigate;
+  // Whether a raising alarm pulls the screen to its page is per account
+  // (`app_user.alarm_auto_navigate`), not here. There briefly was a plant-wide
+  // `auto_navigate` flag on this class (#493); stored copies of it are ignored
+  // on load and dropped on the next save, and were never carried over to the
+  // accounts.
 
-  AlarmManConfig({required this.alarms, this.autoNavigate = false});
+  AlarmManConfig({required this.alarms});
 
   factory AlarmManConfig.fromJson(Map<String, dynamic> json) =>
       _$AlarmManConfigFromJson(json);
@@ -277,15 +308,10 @@ abstract interface class AlarmSource {
   void removeAlarm(AlarmConfig alarm);
   void updateAlarm(AlarmConfig alarm);
 
-  /// Turns the follow-the-alarm navigation on or off, plant-wide.
-  ///
-  /// On the interface rather than on [AlarmMan] alone because the setting
-  /// lives in the same `alarm_man_config` preference both implementations
-  /// already read and write, and the editor that flips it has an
-  /// [AlarmSource] — not an [AlarmMan]. A gateway panel writes the same key
-  /// over relayed preferences, so the switch sticks there too instead of
-  /// silently doing nothing.
-  void setAutoNavigate(bool value);
+  // No `setAutoNavigate` here any more. Whether a raising alarm pulls the
+  // screen to its page is per account now (`app_user.alarm_auto_navigate`,
+  // #575), not a flag in `alarm_man_config`, so neither implementation has
+  // anything to set.
 }
 
 /// The operator's view of [alarms]: one row per alarm, worst rule first.
@@ -694,20 +720,6 @@ class AlarmMan implements AlarmSource {
     _writeConfig(preferences);
   }
 
-  /// Turns the auto-navigation flag on or off and persists it.
-  ///
-  /// Assigns before saving so a caller that reads [config] back in the same
-  /// turn — the alarm editor rebuilding its switch — sees the new value even
-  /// though the write is still in flight. A denied write (the guard, on a
-  /// session without `configure`) therefore leaves the in-memory flag ahead of
-  /// the stored one until the next load, which is the same shape every other
-  /// writer here has: [updateAlarm] mutates the list before `_saveConfig` too.
-  void setAutoNavigate(bool value) {
-    if (config.autoNavigate == value) return;
-    config.autoNavigate = value;
-    _saveConfig();
-  }
-
   Future<void> _writeConfig(Preferences prefs) =>
       prefs.setString('alarm_man_config', jsonEncode(config.toJson()));
 
@@ -878,6 +890,11 @@ class Alarm {
   }) {
     final streamController = StreamController<AlarmNotification>.broadcast();
     final evaluators = <Evaluator>[];
+    // Per rule: the on-delay running for a condition that is true but has not
+    // held long enough yet, and the bindings it will raise with.
+    final pending = List<Timer?>.filled(config.rules.length, null);
+    final pendingBindings =
+        List<Map<String, DynamicValue>?>.filled(config.rules.length, null);
 
     streamController.onListen = () async {
       for (var i = 0; i < config.rules.length; i++) {
@@ -885,30 +902,12 @@ class Alarm {
         final evaluator =
             Evaluator(stateMan: stateMan, expression: rule.expression);
         evaluators.add(evaluator);
-        // evaluations(), not state(): the false branch carries its bindings
-        // too (14-02), and without them a deactivation has no plant instant
-        // to be stamped from and would silently take this machine's clock.
-        evaluator.evaluations().listen((evaluation) {
-          final satisfied = evaluation.satisfied;
-          // Only emit on a transition of the VERDICT for this rule.
-          if (satisfied == _lastEvaluations[i]) return;
+
+        // One emission, stamped by the caller: the plant's instant for a
+        // watched transition, the end of the delay for a delayed raise.
+        void emit(bool satisfied, AlarmStamp stamp,
+            Map<String, DynamicValue> bindings) {
           _lastEvaluations[i] = satisfied;
-
-          final stamp = resolveAlarmStamp(
-            sourceTimes:
-                evaluation.bindings.values.map((v) => v.sourceTimestamp),
-            clock: clock,
-            skewWarnAfter: skewWarnAfter,
-            // Was `stderr.writeln`; main moved this file to the logger in
-            // #477 for the reason recorded there — on a windowed MSIX build
-            // with no console, stderr is discarded, and a clock fault that
-            // reports nowhere is the one this warning exists to surface.
-            onSkew: (skew, sourceTime) => _log.w(
-                'Alarm ${config.uid} rule $i: the plant instant $sourceTime is '
-                '${skew.inSeconds}s from this station\'s clock. Recorded '
-                'unchanged — clamping it would hide a clock fault.'),
-          );
-
           streamController.add(AlarmNotification(
               uid: config.uid,
               active: satisfied,
@@ -916,12 +915,58 @@ class Alarm {
               // bound value's toString(), and the unsatisfied branch has no
               // text to show (T-14-07).
               expression: satisfied
-                  ? rule.expression.value.formatWithValues(evaluation.bindings)
+                  ? rule.expression.value.formatWithValues(bindings)
                   : null,
               rule: rule,
               timestamp: stamp.at,
               ruleIndex: i,
               tsSource: stamp.source));
+        }
+
+        // evaluations(), not state(): the false branch carries its bindings
+        // too (14-02), and without them a deactivation has no plant instant
+        // to be stamped from and would silently take this machine's clock.
+        evaluator.evaluations().listen((evaluation) {
+          final satisfied = evaluation.satisfied;
+
+          if (!satisfied) {
+            // Cleared inside the delay: it never went active, so there is
+            // nothing to clear either — `_lastEvaluations[i]` is still false
+            // and the transition check below emits nothing.
+            pending[i]?.cancel();
+            pending[i] = null;
+            pendingBindings[i] = null;
+          } else if (!_lastEvaluations[i] && rule.onDelay > Duration.zero) {
+            // True, not yet raised: hold it for the delay (#571). Later
+            // evaluations while the timer runs only refresh the bindings, so
+            // the alarm raises with the values as they are when it does —
+            // rendered then, once, not on every tick of the delay (T-14-07).
+            pendingBindings[i] = evaluation.bindings;
+            if (pending[i] != null) return;
+            // The raise is stamped where the delay ENDS, measured from the
+            // plant's instant for the evaluation that started it, and keeps
+            // that instant's provenance. Stamping it from this station's clock
+            // when the timer fires would pair a receipt-time activation with a
+            // plant-time clear, and a skewed PLC clock would then give the
+            // stop a negative or inflated duration.
+            final started = _stampOf(evaluation, i, clock, skewWarnAfter);
+            final raisedAt = AlarmStamp(
+                at: started.at.add(rule.onDelay), source: started.source);
+            pending[i] = Timer(rule.onDelay, () {
+              pending[i] = null;
+              final bindings = pendingBindings[i];
+              pendingBindings[i] = null;
+              if (bindings != null && !streamController.isClosed) {
+                emit(true, raisedAt, bindings);
+              }
+            });
+            return;
+          }
+
+          // Only emit on a transition of the VERDICT for this rule.
+          if (satisfied == _lastEvaluations[i]) return;
+          emit(satisfied, _stampOf(evaluation, i, clock, skewWarnAfter),
+              evaluation.bindings);
         }, onError: (error, stack) {
           streamController.addError(error, stack);
         });
@@ -929,6 +974,11 @@ class Alarm {
     };
 
     streamController.onCancel = () async {
+      for (var i = 0; i < pending.length; i++) {
+        pending[i]?.cancel();
+        pending[i] = null;
+        pendingBindings[i] = null;
+      }
       for (final evaluator in evaluators) {
         evaluator.cancel();
       }
@@ -936,6 +986,24 @@ class Alarm {
 
     return streamController.stream;
   }
+
+  /// [evaluation]'s instant, resolved from the plant's source timestamps over
+  /// the injected [clock] — see [resolveAlarmStamp].
+  AlarmStamp _stampOf(Evaluation evaluation, int ruleIndex,
+          DateTime Function() clock, Duration skewWarnAfter) =>
+      resolveAlarmStamp(
+        sourceTimes: evaluation.bindings.values.map((v) => v.sourceTimestamp),
+        clock: clock,
+        skewWarnAfter: skewWarnAfter,
+        // Was `stderr.writeln`; main moved this file to the logger in #477
+        // for the reason recorded there — on a windowed MSIX build with no
+        // console, stderr is discarded, and a clock fault that reports
+        // nowhere is the one this warning exists to surface.
+        onSkew: (skew, sourceTime) => _log.w(
+            'Alarm ${config.uid} rule $ruleIndex: the plant instant '
+            '$sourceTime is ${skew.inSeconds}s from this station\'s clock. '
+            'Recorded unchanged — clamping it would hide a clock fault.'),
+      );
 }
 
 class AlarmNotification {
