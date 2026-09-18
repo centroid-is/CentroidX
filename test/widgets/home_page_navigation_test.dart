@@ -11,6 +11,8 @@
 /// not the button, so both are the sign-out tests.
 library;
 
+import 'dart:async';
+
 import 'package:beamer/beamer.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -59,6 +61,22 @@ class _DrivenSession extends AccessSessionController {
   void poke() {}
 }
 
+/// A session that has not answered until the test releases it -- a panel whose
+/// database connect is still out when the first page mounts.
+class _LateSession extends _DrivenSession {
+  _LateSession(super.initial);
+
+  final Completer<void> _release = Completer<void>();
+
+  void answer() => _release.complete();
+
+  @override
+  Future<AccessSession> build() async {
+    await _release.future;
+    return _initial;
+  }
+}
+
 /// Home pages by username, `anonymous` for the logged-out panel. An account
 /// missing from the map has none. [known] false answers as an unreachable
 /// database.
@@ -69,8 +87,12 @@ class _Pages {
   bool known = true;
   int lookups = 0;
 
+  /// While set, every lookup waits on it: a database read still out.
+  Completer<void>? hold;
+
   Future<HomePageAnswer> lookup(AccessSession session) async {
     lookups++;
+    await hold?.future;
     if (!known) return (known: false, page: null);
     return (
       known: true,
@@ -123,17 +145,45 @@ void _registerMenu() {
   ));
 }
 
-BeamPage _page(String path, String title, String body) => BeamPage(
-      key: ValueKey(path),
-      title: title,
-      child: BaseScaffold(title: title, body: Text(body)),
-    );
+/// What `PageAccessGate` does to every page at boot: a scaffold of its own
+/// while the session has not answered, swapped for the page's scaffold the
+/// frame after it does.
+class _WaitingGate extends ConsumerWidget {
+  const _WaitingGate({required this.title, required this.child});
+
+  final String title;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    if (!ref.watch(accessSessionProvider).hasValue) {
+      return BaseScaffold(title: title, body: const Text('checking-body'));
+    }
+    return child;
+  }
+}
+
+BeamPage _page(String path, String title, String body, {bool gated = false}) {
+  final Widget page = BaseScaffold(title: title, body: Text(body));
+  return BeamPage(
+    key: ValueKey(path),
+    title: title,
+    // Behind a builder when gated, as the real page sits behind a `Consumer`
+    // and `AssetView`: a bare `BaseScaffold` in both branches would let Flutter
+    // update the waiting scaffold in place, and the swap this reproduces --
+    // one scaffold unmounted, another mounted -- would never happen.
+    child: gated
+        ? _WaitingGate(title: title, child: Builder(builder: (_) => page))
+        : page,
+  );
+}
 
 ({Widget app, BeamerDelegate delegate, BootHomePageDebt debt}) _shell({
   required _DrivenSession session,
   _Pages? pages,
   String initialPath = '/advanced/server-config',
   BootHomePageDebt? debt,
+  bool gated = false,
 }) {
   final lookup = pages ?? _Pages();
   // Every sign-out test starts on a raised page somebody navigated to, so the
@@ -142,11 +192,12 @@ BeamPage _page(String path, String title, String body) => BeamPage(
   final delegate = BeamerDelegate(
     initialPath: initialPath,
     locationBuilder: RoutesLocationBuilder(routes: {
-      '/': (context, state, data) => _page('/', 'Home', 'home-body'),
+      '/': (context, state, data) =>
+          _page('/', 'Home', 'home-body', gated: gated),
       '/machines': (context, state, data) =>
-          _page('/machines', 'Machines', 'machines-body'),
+          _page('/machines', 'Machines', 'machines-body', gated: gated),
       '/freezer': (context, state, data) =>
-          _page('/freezer', 'Freezer', 'freezer-body'),
+          _page('/freezer', 'Freezer', 'freezer-body', gated: gated),
       '/advanced/server-config': (context, state, data) => _page(
           '/advanced/server-config', 'Server Config', 'server-config-body'),
     }).call,
@@ -439,6 +490,40 @@ void main() {
       // The session provider rebuilds when the database arrives.
       pages.known = true;
       session.become(_anonymous());
+      await tester.pumpAndSettle();
+
+      expect(find.text('freezer-body'), findsOneWidget);
+      expect(shell.debt.owed, isFalse);
+    });
+
+    testWidgets('the gate swapping its waiting screen for the page while the '
+        'lookup is out still gets the panel there', (tester) async {
+      // The station bug: every panel on a database booted on `/`. The gate's
+      // waiting scaffold is the one that sees the session arrive and starts
+      // the lookup; the gate replaces it with the page's scaffold a frame
+      // later, which skipped its own turn because one was in flight; the
+      // lookup then answered to an unmounted scaffold that beamed nowhere and
+      // settled the debt anyway.
+      final pages = _Pages({'panel_a': '/freezer'})..hold = Completer<void>();
+      final session = _LateSession(_panel());
+      final shell = _shell(
+        session: session,
+        initialPath: '/',
+        pages: pages,
+        debt: BootHomePageDebt(),
+        gated: true,
+      );
+
+      await tester.pumpWidget(shell.app);
+      await tester.pumpAndSettle();
+      expect(find.text('checking-body'), findsOneWidget);
+
+      session.answer();
+      await tester.pumpAndSettle();
+      expect(find.text('home-body'), findsOneWidget,
+          reason: 'the gate has let the page through; the lookup is still out');
+
+      pages.hold!.complete();
       await tester.pumpAndSettle();
 
       expect(find.text('freezer-body'), findsOneWidget);
