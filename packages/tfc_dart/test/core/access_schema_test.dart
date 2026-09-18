@@ -1259,13 +1259,15 @@ void main() {
     });
 
     test('the seed needs no schema version of its own', () async {
-      // Main shipped the seed at 9 and the config branch carries 12; the
-      // seed added an arm to neither. Pinned to the number the branch owns
-      // rather than to `db.schemaVersion`, because a seed that quietly took
-      // an arm would move that too.
+      // Main shipped the seed at 9, the relational config store carried it
+      // to 12, and widening that store's arm makes it 13. The seed added an
+      // arm to none of them. Pinned to a literal rather than to
+      // `db.schemaVersion`, because a seed that quietly took an arm would
+      // move that too — which is why this number has to be edited by hand on
+      // every bump, and is the whole value of the test.
       final db = await open();
       addTearDown(() => db.close());
-      expect(db.schemaVersion, 12);
+      expect(db.schemaVersion, 13);
     });
   });
 
