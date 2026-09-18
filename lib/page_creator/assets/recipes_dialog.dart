@@ -42,15 +42,53 @@ class _Line {
 }
 
 class _RecipesDialogBody extends ConsumerStatefulWidget {
-  const _RecipesDialogBody({required this.config});
+  const _RecipesDialogBody({required this.config, required this.guard});
 
   final RecipesConfig config;
+  final _CloseGuard guard;
 
   @override
   ConsumerState<_RecipesDialogBody> createState() => _RecipesDialogBodyState();
 }
 
 class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
+  static final _log = Logger(
+    printer: PrettyPrinter(
+      methodCount: 0,
+      errorMethodCount: 2,
+      lineLength: 80,
+      colors: true,
+      printEmojis: false,
+    ),
+  );
+
+  /// Saves run one after another, never side by side. The shared store
+  /// checks a row's revision on every write, so two saves in flight at once —
+  /// two quick taps — carry the same revision, and the second is refused as
+  /// though another station had changed the row. Each waits for the last.
+  Future<void> _saveChain = Future<void>.value();
+
+  /// The recipe being edited in the lines view, and its values while it is.
+  ///
+  /// Nothing reaches the database until Save. Values are read-only until
+  /// Edit, so a stray tap on a panel changes nothing; while editing they
+  /// change a draft, which Save stores, Cancel drops, and Send can try on the
+  /// line without storing — trying a value on a machine and keeping it as
+  /// the recipe are different decisions.
+  Recipe? _editing;
+  DynamicValue? _draft;
+
+  /// What the operator asked to do while there were unsaved edits — pick
+  /// another recipe, another line, the other view, close the window — held
+  /// until they say whether to save first.
+  VoidCallback? _pendingLeave;
+
+  /// What the held action will do, for the banner's buttons: "continue", or
+  /// "close" when it was the window's close button.
+  String _pendingVerb = 'continue';
+
+  /// The recipe whose delete is waiting to be confirmed.
+  Recipe? _confirmDelete;
   _RecipesView _view = _RecipesView.groups;
 
   /// The group on screen in the groups view, by name.
@@ -107,7 +145,14 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
   RecipesConfig get _config => widget.config;
 
   @override
+  void initState() {
+    super.initState();
+    widget.guard.ask = _askClose;
+  }
+
+  @override
   void dispose() {
+    if (widget.guard.ask == _askClose) widget.guard.ask = null;
     _newRecipeName.dispose();
     _panelName.dispose();
     _renameText.dispose();
@@ -119,30 +164,154 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
   Future<List<Recipe>> _getRecipes() =>
       _loadRecipes(ref, _config.recipesBucket);
 
-  /// Saves, and says so when it could not.
+  /// Saves, one save at a time, and says so — on screen AND in the log —
+  /// when it could not.
   ///
-  /// Called from inside `setState` callbacks, so it cannot be awaited there
-  /// — but a shared write can be refused (offline, a lost compare-and-swap,
-  /// a denial), and a refusal that lands nowhere leaves a recipe on screen
-  /// that reopening the dialog shows was never stored. The messenger is
-  /// resolved before the first await: the dialog may be gone by the time the
-  /// refusal comes back.
-  Future<void> _saveRecipes(List<Recipe> recipes) async {
+  /// Called from inside `setState` callbacks, so it cannot be awaited there.
+  /// The store and the messenger are taken now, while the dialog is certainly
+  /// mounted: a queued save may run after it has closed.
+  Future<void> _saveRecipes(List<Recipe> recipes) {
     final messenger = ScaffoldMessenger.maybeOf(context);
-    try {
-      await writeRecipes(
-        await ref.read(preferencesProvider.future),
-        _config.recipesBucket,
-        recipes,
-      );
-    } on AccessDenied {
-      // Already prompted and recorded by the guard.
-      rethrow;
-    } catch (error) {
-      messenger?.showSnackBar(SnackBar(
-        content: Text('Recipes not saved: $error'),
-      ));
+    final store = ref.read(preferencesProvider.future);
+    final bucket = _config.recipesBucket;
+    final run = _saveChain.then((_) async {
+      try {
+        await writeRecipes(await store, bucket, recipes);
+      } on AccessDenied catch (error) {
+        // The guard has prompted and recorded it already; logged too, so a
+        // refused save is never only a message that went away.
+        _log.w('recipes not saved for $bucket: not permitted ($error)');
+      } catch (error, stack) {
+        // A snackbar goes away. The log is where a save that did not land
+        // can still be found afterwards.
+        _log.e('recipes not saved for $bucket',
+            error: error, stackTrace: stack);
+        messenger?.showSnackBar(SnackBar(
+          content: Text('Recipes not saved: $error'),
+          duration: const Duration(seconds: 10),
+        ));
+      }
+    });
+    _saveChain = run;
+    return run;
+  }
+
+  // -- editing -------------------------------------------------------------
+
+  bool get _dirty {
+    final recipe = _editing;
+    final draft = _draft;
+    return recipe != null && draft != null && !_sameValues(recipe.value, draft);
+  }
+
+  void _startEditing(Recipe recipe) => setState(() {
+        _editing = recipe;
+        _draft = DynamicValue.from(recipe.value);
+        _pendingLeave = null;
+        _report = null;
+      });
+
+  void _stopEditing() {
+    _editing = null;
+    _draft = null;
+    _pendingLeave = null;
+  }
+
+  /// Lets a value still being typed land in the draft before it is read.
+  ///
+  /// A field commits when it loses focus, and focus changes are applied a
+  /// microtask after `unfocus()` — read the draft any sooner and the last
+  /// keystrokes are missing from it.
+  Future<void> _settleFields() async {
+    FocusScope.of(context).unfocus();
+    await Future<void>.delayed(Duration.zero);
+  }
+
+  Future<void> _saveEdit(List<Recipe> recipes) async {
+    await _settleFields();
+    if (!mounted) return;
+    setState(() {
+      final recipe = _editing;
+      final draft = _draft;
+      if (recipe != null && draft != null) {
+        recipe.value = draft;
+        _saveRecipes(recipes);
+      }
+      _stopEditing();
+    });
+  }
+
+  void _cancelEdit() => setState(_stopEditing);
+
+  /// Runs [action], or — with unsaved edits — asks first, in the pane.
+  void _leaveThen(VoidCallback action) {
+    if (!_dirty) {
+      if (_editing != null) _stopEditing();
+      action();
+      return;
     }
+    setState(() {
+      _pendingLeave = action;
+      _pendingVerb = 'continue';
+    });
+  }
+
+  /// The window's close button: allowed, or held for the question.
+  bool _askClose() {
+    if (!_dirty) return true;
+    setState(() {
+      _view = _RecipesView.lines;
+      _pendingLeave = () => closeFloatingDialog(widget.guard.dialogId);
+      _pendingVerb = 'close';
+    });
+    return false;
+  }
+
+  Widget _unsavedBanner(BuildContext context, List<Recipe> recipes) {
+    final theme = Theme.of(context);
+    final states = _states(context);
+    final then = _pendingLeave!;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+      decoration: BoxDecoration(
+        color: states.orange.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.edit_note, color: states.orange),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Unsaved changes to ${_editing?.name ?? 'this recipe'}. Save '
+              'them first?',
+              style: theme.textTheme.bodyMedium,
+            ),
+          ),
+          TextButton(
+            onPressed: () => setState(() => _pendingLeave = null),
+            child: const Text('Keep editing'),
+          ),
+          TextButton(
+            onPressed: () {
+              setState(_stopEditing);
+              then();
+            },
+            // Named for what happens next, so they cannot be mistaken for
+            // the header's own Save, which stays put.
+            child: Text('Discard and $_pendingVerb'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              await _saveEdit(recipes);
+              then();
+            },
+            child: Text('Save and $_pendingVerb'),
+          ),
+        ],
+      ),
+    );
   }
 
   // -- lines and live values -----------------------------------------------
@@ -520,6 +689,8 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
 
   void _deleteRecipe(Recipe recipe, List<Recipe> recipes) {
     setState(() {
+      _confirmDelete = null;
+      if (identical(recipe, _editing)) _stopEditing();
       recipes.remove(recipe);
       if (identical(recipe, _selectedRecipe)) _selectedRecipe = null;
       _report = null;
@@ -577,6 +748,7 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
             return Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                if (_pendingLeave != null) _unsavedBanner(context, recipes),
                 _viewSwitch(context),
                 const SizedBox(height: 8),
                 Expanded(
@@ -609,11 +781,11 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
           ),
         ],
         selected: {_view},
-        onSelectionChanged: (selection) => setState(() {
-          _view = selection.first;
-          _panel = _Panel.none;
-          _report = null;
-        }),
+        onSelectionChanged: (selection) => _leaveThen(() => setState(() {
+              _view = selection.first;
+              _panel = _Panel.none;
+              _report = null;
+            })),
       ),
     );
   }
@@ -1822,12 +1994,12 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
               padding: const EdgeInsets.only(right: 4),
               child: InkWell(
                 borderRadius: BorderRadius.circular(8),
-                onTap: () => setState(() {
-                  _selectedLine = i;
-                  _selectedRecipe = null;
-                  _renaming = null;
-                  _report = null;
-                }),
+                onTap: () => _leaveThen(() => setState(() {
+                      _selectedLine = i;
+                      _selectedRecipe = null;
+                      _renaming = null;
+                      _report = null;
+                    })),
                 child: Container(
                   padding:
                       const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
@@ -1989,11 +2161,13 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
       borderRadius: BorderRadius.circular(8),
       child: InkWell(
         borderRadius: BorderRadius.circular(8),
-        onTap: () => setState(() {
-          _selectedRecipe = recipe;
-          _renaming = null;
-          _report = null;
-        }),
+        onTap: () => identical(recipe, _selectedRecipe)
+            ? null
+            : _leaveThen(() => setState(() {
+                  _selectedRecipe = recipe;
+                  _renaming = null;
+                  _report = null;
+                })),
         child: Padding(
           padding: EdgeInsets.fromLTRB(dragIndex == null ? 10 : 2, 8, 0, 8),
           child: Row(
@@ -2035,11 +2209,28 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
                   ],
                 ),
               ),
-              IconButton(
-                icon: const Icon(Icons.delete_outline, size: 18),
-                tooltip: 'Delete ${recipe.name}',
-                onPressed: () => _deleteRecipe(recipe, recipes),
-              ),
+              // One tap asks, the second deletes: a bin a finger can brush on
+              // a touchscreen must not take a recipe with it.
+              if (identical(_confirmDelete, recipe)) ...[
+                TextButton(
+                  style: TextButton.styleFrom(
+                      foregroundColor: states.red,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      minimumSize: const Size(0, 36)),
+                  onPressed: () => _deleteRecipe(recipe, recipes),
+                  child: const Text('Delete'),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close, size: 18),
+                  tooltip: 'Keep ${recipe.name}',
+                  onPressed: () => setState(() => _confirmDelete = null),
+                ),
+              ] else
+                IconButton(
+                  icon: const Icon(Icons.delete_outline, size: 18),
+                  tooltip: 'Delete ${recipe.name}',
+                  onPressed: () => setState(() => _confirmDelete = recipe),
+                ),
             ],
           ),
         ),
@@ -2151,13 +2342,7 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
             ],
           ),
         ),
-        FilledButton.icon(
-          icon: const Icon(Icons.arrow_forward),
-          label: Text(_sending ? 'Sending...' : 'Send to ${line.name}'),
-          onPressed: (recipe == null || _sending)
-              ? null
-              : () => _send([(line: line, recipe: recipe)]),
-        ),
+        ..._editButtons(context, recipe, line, recipes),
       ],
     );
 
@@ -2245,6 +2430,68 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
     );
   }
 
+  /// The lines view's header buttons for [recipe]: Edit and Send, or while
+  /// editing, Cancel, Save and Send — which then sends what is on screen
+  /// without storing it.
+  List<Widget> _editButtons(
+      BuildContext context, Recipe? recipe, _Line line, List<Recipe> recipes) {
+    final editing = recipe != null && identical(_editing, recipe);
+    final dirty = editing && _dirty;
+    Future<void> send() async {
+      await _settleFields();
+      if (!mounted || recipe == null) return;
+      final draft = _draft;
+      final sending = editing && draft != null
+          ? Recipe(
+              name: recipe.name,
+              value: draft,
+              line: recipe.line,
+              group: recipe.group)
+          : recipe;
+      final unsaved = editing && _dirty;
+      await _send(
+        [(line: line, recipe: sending)],
+        alreadyDecided: unsaved
+            ? [
+                LineSendOutcome(
+                  label: recipe.name,
+                  ok: true,
+                  message: 'the values sent are not saved as the recipe — '
+                      'Save keeps them',
+                ),
+              ]
+            : const [],
+      );
+    }
+
+    return [
+      if (editing) ...[
+        TextButton(onPressed: _cancelEdit, child: const Text('Cancel')),
+        const SizedBox(width: 4),
+        FilledButton.tonalIcon(
+          icon: const Icon(Icons.save_outlined),
+          label: const Text('Save'),
+          onPressed: dirty ? () => _saveEdit(recipes) : null,
+        ),
+      ] else
+        OutlinedButton.icon(
+          icon: const Icon(Icons.edit_outlined),
+          label: const Text('Edit'),
+          onPressed: recipe == null ? null : () => _startEditing(recipe),
+        ),
+      const SizedBox(width: 8),
+      FilledButton.icon(
+        icon: const Icon(Icons.arrow_forward),
+        label: Text(_sending
+            ? 'Sending...'
+            : dirty
+                ? 'Send without saving'
+                : 'Send to ${line.name}'),
+        onPressed: (recipe == null || _sending) ? null : send,
+      ),
+    ];
+  }
+
   // -- the values table ----------------------------------------------------
 
   /// `Member | Recipe | <line> now` — the recipe's value and the line's live
@@ -2313,7 +2560,7 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
       DynamicValue? live, HmiStateColors states) {
     final child = _liveCell(context, row, live);
     if (recipe == null || live == null || !row.isLeaf) return _cell(child);
-    final mine = valueAtPath(recipe.value, row.path);
+    final mine = valueAtPath(_shown(recipe), row.path);
     final now = valueAtPath(live, row.path);
     final differs = mine != null && now != null && mine.value != now.value;
     return Container(
@@ -2342,7 +2589,12 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
     );
   }
 
-  /// The recipe's own cell — the one editable column.
+  /// The values the recipe column shows: the draft while editing, the
+  /// stored recipe otherwise.
+  DynamicValue _shown(Recipe recipe) =>
+      identical(_editing, recipe) && _draft != null ? _draft! : recipe.value;
+
+  /// The recipe's own cell — read-only until Edit, then editing the draft.
   ///
   /// [DynamicValueWidget] is handed a single LEAF rather than the whole tree,
   /// which is what lets the editors it already owns (the switch, the enum
@@ -2350,11 +2602,18 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
   /// instead of being reimplemented for the table.
   Widget _recipeCell(BuildContext context, RecipeRow row, Recipe recipe,
       List<Recipe> recipes) {
-    final value = valueAtPath(recipe.value, row.path);
+    final editing = identical(_editing, recipe) && _draft != null;
+    final value = valueAtPath(_shown(recipe), row.path);
     if (value == null) return _absent(context);
     if (!row.isLeaf) {
       return Text(formatRecipeValue(value),
           style: Theme.of(context).textTheme.bodySmall);
+    }
+    if (!editing) {
+      return Text(formatRecipeValue(value),
+          style: Theme.of(context).textTheme.bodyMedium,
+          softWrap: false,
+          overflow: TextOverflow.ellipsis);
     }
     // The label and description are already the Member column's job; leaving
     // them on the leaf would print each one twice per row.
@@ -2374,13 +2633,12 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
       ),
       child: DynamicValueWidget(
         value: leaf,
-        // A recipe is a document, not the plant: committing on the way out of
-        // the field costs nothing here, and Enter-or-nothing was losing edits
-        // for every operator who tapped the next row instead.
+        // Leaving a field keeps what was typed — in the draft. Nothing is
+        // stored until Save.
         commitOnFocusLoss: true,
         onSubmitted: (newValue) => setState(() {
-          recipe.value = setAtPath(recipe.value, row.path, newValue);
-          _saveRecipes(recipes);
+          final draft = _draft;
+          if (draft != null) _draft = setAtPath(draft, row.path, newValue);
         }),
       ),
     );

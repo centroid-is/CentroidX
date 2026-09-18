@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:json_annotation/json_annotation.dart';
+import 'package:logger/logger.dart';
 import 'package:rxdart/rxdart.dart';
 
 import 'package:tfc/page_creator/assets/button.dart';
@@ -1342,6 +1343,7 @@ class _RecipesState extends ConsumerState<Recipes> {
   String get _dialogId => 'recipes:${identityHashCode(widget.config)}';
 
   void _showRecipesDialog(BuildContext context) {
+    final guard = _CloseGuard(_dialogId);
     showFloatingDialog(
       context: context,
       id: _dialogId,
@@ -1361,7 +1363,23 @@ class _RecipesState extends ConsumerState<Recipes> {
       // builds its body ONCE and carries it as a captured child. Selection
       // state held anywhere above it could never re-point what the body
       // subscribes to.
-      builder: (_) => _RecipesDialogBody(config: widget.config),
+      builder: (_) => _RecipesDialogBody(config: widget.config, guard: guard),
+      // Unsaved edits are asked about before the window goes — in the pane,
+      // since a modal would open underneath the window.
+      onCloseRequested: () => guard.ask?.call() ?? true,
     );
   }
+}
+
+/// How the window's close button reaches the body's unsaved edits.
+///
+/// Made before the body exists and handed to both: the window asks through
+/// it, the body answers through it while it is mounted.
+class _CloseGuard {
+  _CloseGuard(this.dialogId);
+
+  final String dialogId;
+
+  /// Returns true when the window may close now.
+  bool Function()? ask;
 }

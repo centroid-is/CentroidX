@@ -185,13 +185,26 @@ void main() {
       );
     });
 
-    testWidgets('the lines view: one line, its recipe beside what it runs',
-        (tester) async {
+    testWidgets(
+        'the lines view, editing: one line, its draft beside what it '
+        'runs', (tester) async {
       await _pump(tester, _threeLines, _plant(), recipes: _grouped(),
           then: (tester) async {
         await tester.tap(find.text('Lines'));
         await tester.pumpAndSettle();
         await tester.tap(find.text('Standard').first);
+        await tester.pumpAndSettle();
+        // Mid-edit, with one value changed and not yet saved: the state that
+        // shows what Save, Cancel and "Send without saving" are for.
+        await tester.tap(find.text('Edit'));
+        await tester.pumpAndSettle();
+        await tester.enterText(
+            find
+                .descendant(
+                    of: find.byType(Table), matching: find.byType(TextField))
+                .first,
+            '2600');
+        FocusManager.instance.primaryFocus?.unfocus();
       });
 
       await expectLater(

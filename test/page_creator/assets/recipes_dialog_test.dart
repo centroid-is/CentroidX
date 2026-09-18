@@ -428,8 +428,9 @@ void main() {
       expect(find.text('Theirs'), findsNothing);
     });
 
-    testWidgets('a value typed and left, without Enter, is saved',
-        (tester) async {
+    testWidgets(
+        'a value typed and left, without Enter, is kept — and stored '
+        'only on Save', (tester) async {
       pushThreeLines();
       await pumpDialog(tester, threeLines, recipes: [
         Recipe(
@@ -437,6 +438,8 @@ void main() {
       ]);
       await openLines(tester);
       await tester.tap(find.text('Mine'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Edit'));
       await tester.pumpAndSettle();
 
       // The value cell, not the rail's "New recipe" box.
@@ -447,6 +450,12 @@ void main() {
               .first,
           '2750');
       FocusManager.instance.primaryFocus?.unfocus();
+      await tester.pumpAndSettle();
+
+      expect(jsonEncode(await saved(threeLines)), isNot(contains('2750')),
+          reason: 'kept in the draft, not stored');
+
+      await tester.tap(find.text('Save'));
       await tester.pumpAndSettle();
 
       expect(jsonEncode(await saved(threeLines)), contains('2750'));
@@ -693,6 +702,130 @@ void main() {
         'Other line',
         'First'
       ], reason: "line 2's recipe keeps its slot");
+    });
+  });
+
+  group('nothing is stored until Save', () {
+    Future<void> openMine(WidgetTester tester) async {
+      pushThreeLines();
+      await pumpDialog(tester, threeLines, recipes: [
+        Recipe(
+            name: 'Mine', value: obj({'gapLength': d(2000.0)}), line: 'line_a'),
+        Recipe(
+            name: 'Other', value: obj({'gapLength': d(1.0)}), line: 'line_a'),
+      ]);
+      await tester.tap(find.text('Lines'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Mine'));
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> editTo(WidgetTester tester, String value) async {
+      await tester.tap(find.text('Edit'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+          find
+              .descendant(
+                  of: find.byType(Table), matching: find.byType(TextField))
+              .first,
+          value);
+      FocusManager.instance.primaryFocus?.unfocus();
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('values are read-only until Edit', (tester) async {
+      await openMine(tester);
+
+      expect(
+          find.descendant(
+              of: find.byType(Table), matching: find.byType(TextField)),
+          findsNothing,
+          reason: 'a stray tap on a panel changes nothing');
+    });
+
+    testWidgets('Cancel puts every value back', (tester) async {
+      await openMine(tester);
+      await editTo(tester, '2750');
+
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('2000.0'), findsWidgets);
+      expect(jsonEncode(await saved(threeLines)), isNot(contains('2750')));
+    });
+
+    testWidgets('Send while editing tries the values without storing them',
+        (tester) async {
+      await openMine(tester);
+      await editTo(tester, '2750');
+
+      await tester.tap(find.text('Send without saving'));
+      await tester.pumpAndSettle();
+
+      expect(stateMan.writes.single.value['gapLength'].asDouble, 2750,
+          reason: 'what is on screen is what is sent');
+      expect(jsonEncode(await saved(threeLines)), isNot(contains('2750')),
+          reason: 'trying a value on the line is not keeping it');
+      expect(find.textContaining('not saved as the recipe'), findsOneWidget);
+    });
+
+    testWidgets('leaving for another recipe with unsaved edits asks first',
+        (tester) async {
+      await openMine(tester);
+      await editTo(tester, '2750');
+
+      await tester.tap(find.text('Other'));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('Unsaved changes to Mine'), findsOneWidget);
+
+      await tester.tap(find.text('Save and continue'));
+      await tester.pumpAndSettle();
+
+      expect(jsonEncode(await saved(threeLines)), contains('2750'));
+      expect(find.text('Other on Line 1'), findsOneWidget,
+          reason: 'and then it goes where it was asked to');
+    });
+
+    testWidgets('closing with unsaved edits asks, in the window, first',
+        (tester) async {
+      await openMine(tester);
+      await editTo(tester, '2750');
+
+      await tester.tap(find.byTooltip('Close'));
+      await tester.pumpAndSettle();
+
+      expect(FloatingDialogs.openIds, isNotEmpty,
+          reason: 'the window stays until the question is answered');
+      expect(find.textContaining('Unsaved changes to Mine'), findsOneWidget);
+
+      await tester.tap(find.text('Discard and close'));
+      await tester.pumpAndSettle();
+
+      expect(FloatingDialogs.openIds, isEmpty);
+      expect(jsonEncode(await saved(threeLines)), isNot(contains('2750')));
+    });
+
+    testWidgets('closing with nothing unsaved just closes', (tester) async {
+      await openMine(tester);
+
+      await tester.tap(find.byTooltip('Close'));
+      await tester.pumpAndSettle();
+
+      expect(FloatingDialogs.openIds, isEmpty);
+    });
+
+    testWidgets('delete asks before it deletes', (tester) async {
+      await openMine(tester);
+
+      await tester.tap(find.byTooltip('Delete Mine'));
+      await tester.pumpAndSettle();
+      expect((await saved(threeLines)).length, 2,
+          reason: 'one tap asks; a brushed bin must not take a recipe');
+
+      await tester.tap(find.widgetWithText(TextButton, 'Delete'));
+      await tester.pumpAndSettle();
+      expect([for (final r in await saved(threeLines)) r['name']], ['Other']);
     });
   });
 }
