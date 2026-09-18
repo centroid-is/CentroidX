@@ -9,6 +9,7 @@
 //     beside what the line holds now and the rows a send would change tinted;
 //   * the new-group panel, every line that has reported ticked;
 //   * the pick panel: which of a line's own recipes a product sends it;
+//   * view only: a session that cannot store recipes, told so up front;
 //   * the first-open panel that files "Line N - X" presets into groups.
 //
 // Each lives in the pane rather than in a dialog of its own: a modal opened
@@ -23,11 +24,22 @@ import 'package:open62541/open62541.dart' show DynamicValue;
 import 'package:rxdart/rxdart.dart';
 
 import 'package:tfc/page_creator/assets/recipes.dart';
+import 'package:tfc/providers/access.dart'
+    show
+        accessRepositoryProvider,
+        accessSessionProvider,
+        AccessSessionController;
+import 'package:tfc/providers/access_templates.dart';
 import 'package:tfc/providers/database.dart';
 import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/providers/state_man.dart';
 import 'package:tfc/theme.dart' show solarized;
 import 'package:tfc/widgets/panes/standard_dialog.dart';
+import 'package:tfc/widgets/tag_access_guard.dart' show TagAccess;
+import 'package:tfc_access/tfc_access.dart'
+    show AccessGroup, AccessSession, AuthenticatedUser, TagBindingResolver;
+import 'package:tfc_dart/core/access/access_repository.dart'
+    show AccessRepository;
 import 'package:tfc_dart/core/state_man.dart';
 
 import '../../helpers/golden_fonts.dart';
@@ -90,13 +102,30 @@ class _FakeStateMan implements StateMan {
       throw UnimplementedError('${invocation.memberName}');
 }
 
+class _PresentRepository extends Fake implements AccessRepository {}
+
+class _FixedSession extends AccessSessionController {
+  _FixedSession(this._session);
+
+  final AccessSession _session;
+
+  @override
+  Future<AccessSession> build() async => _session;
+}
+
 Future<void> _pump(
   WidgetTester tester,
   RecipesConfig config,
   _FakeStateMan stateMan, {
   List<Recipe> recipes = const [],
   Future<void> Function(WidgetTester tester)? then,
+  // A Shift Leader's, unless a frame is about what someone less may do.
+  Set<AccessGroup> groups = const {AccessGroup.operate, AccessGroup.setpoints},
 }) async {
+  final session = AccessSession(
+    user: const AuthenticatedUser(username: 'shift', roleName: 'Shift'),
+    groups: groups,
+  );
   // The window opens at 1180x760, and only gets that if the screen it thinks
   // it is on is bigger: the shell clamps a window to the screen when it is
   // created. At the test binding's default 800x600 every frame here would be
@@ -118,6 +147,11 @@ Future<void> _pump(
       preferencesProvider.overrideWith((ref) async => prefs),
       databaseProvider.overrideWith((ref) async => null),
       stateManProvider.overrideWith((ref) async => stateMan),
+      tagAccessProvider.overrideWithValue(
+          TagAccess(resolver: TagBindingResolver(), session: session)),
+      accessRepositoryProvider
+          .overrideWith((ref) async => _PresentRepository()),
+      accessSessionProvider.overrideWith(() => _FixedSession(session)),
     ],
     child: MaterialApp(
       theme: solarized().$1,
@@ -238,6 +272,17 @@ void main() {
       await expectLater(
         find.byType(StandardDialog),
         matchesGoldenFile('goldens/recipes_pick_panel.png'),
+      );
+    });
+
+    testWidgets('view only: a session that cannot store recipes is told so',
+        (tester) async {
+      await _pump(tester, _threeLines, _plant(),
+          recipes: _grouped(), groups: const {AccessGroup.operate});
+
+      await expectLater(
+        find.byType(StandardDialog),
+        matchesGoldenFile('goldens/recipes_view_only.png'),
       );
     });
 

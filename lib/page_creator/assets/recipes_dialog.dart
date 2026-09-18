@@ -89,6 +89,15 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
 
   /// The recipe whose delete is waiting to be confirmed.
   Recipe? _confirmDelete;
+
+  /// The permission storing a recipe needs, and whether this session holds
+  /// it — refreshed on every build, which watches the session, so both change
+  /// the moment someone signs in or out.
+  AccessGroup _storeGroup = AccessGroup.setpoints;
+  bool _canStore = true;
+
+  /// The last change this session was refused, said in the pane.
+  String? _refusal;
   _RecipesView _view = _RecipesView.groups;
 
   /// The group on screen in the groups view, by name.
@@ -196,6 +205,61 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
     return run;
   }
 
+  // -- access --------------------------------------------------------------
+
+  /// True when this session may change recipes. Otherwise records the refusal
+  /// the way every guarded control does, says why IN THE PANE, and returns
+  /// false so the caller's next line does not run.
+  ///
+  /// Asked when a change STARTS — Edit, not Save; opening a form, not
+  /// submitting it — so nobody spends a minute on a change the store was
+  /// always going to refuse. And said in the pane because the app's own
+  /// denial prompt is a route, and a route opened from inside a floating
+  /// window lands underneath it.
+  bool _storeOrExplain() {
+    if (_canStore) return true;
+    unawaited(guardGroupAction(ref, _storeGroup,
+        itemKey: '${_config.recipesBucket}.recipes'));
+    setState(() => _refusal = 'Not changed: changing recipes needs the '
+        '"${_storeGroup.label}" permission.');
+    return false;
+  }
+
+  /// Says, before anyone tries, what this session cannot do here.
+  Widget _accessNotice(BuildContext context) {
+    final theme = Theme.of(context);
+    final refused = _refusal != null;
+    final text = [
+      _refusal ??
+          'View only. Changing recipes needs the "${_storeGroup.label}" '
+              'permission.',
+      'Sign in from the lock at the top of the screen.',
+    ].join(' ');
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.onSurface
+            .withValues(alpha: refused ? 0.10 : 0.05),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.lock_outline,
+              size: 18, color: theme.colorScheme.onSurfaceVariant),
+          const SizedBox(width: 8),
+          Expanded(child: Text(text, style: theme.textTheme.bodySmall)),
+          if (refused)
+            IconButton(
+              icon: const Icon(Icons.close, size: 16),
+              tooltip: 'Dismiss',
+              onPressed: () => setState(() => _refusal = null),
+            ),
+        ],
+      ),
+    );
+  }
+
   // -- editing -------------------------------------------------------------
 
   bool get _dirty {
@@ -204,7 +268,12 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
     return recipe != null && draft != null && !_sameValues(recipe.value, draft);
   }
 
-  void _startEditing(Recipe recipe) => setState(() {
+  void _startEditing(Recipe recipe) {
+    if (!_storeOrExplain()) return;
+    _beginEdit(recipe);
+  }
+
+  void _beginEdit(Recipe recipe) => setState(() {
         _editing = recipe;
         _draft = DynamicValue.from(recipe.value);
         _pendingLeave = null;
@@ -228,6 +297,8 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
   }
 
   Future<void> _saveEdit(List<Recipe> recipes) async {
+    // Signed out mid-edit: the draft stays, and the pane says why.
+    if (!_storeOrExplain()) return;
     await _settleFields();
     if (!mounted) return;
     setState(() {
@@ -643,6 +714,7 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
 
   void _copyIntoGroup(
       String group, _Line line, DynamicValue live, List<Recipe> recipes) {
+    if (!_storeOrExplain()) return;
     setState(() {
       // Placed straight after the group's other recipes, so the group stays
       // one block in the list.
@@ -661,6 +733,7 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
   void _addLineRecipe(
       String name, _Line line, DynamicValue live, List<Recipe> recipes) {
     if (name.trim().isEmpty) return;
+    if (!_storeOrExplain()) return;
     setState(() {
       final added = _captured(line, live, name: name.trim());
       recipes.add(added);
@@ -673,6 +746,7 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
 
   void _setGroup(
       Recipe recipe, String? group, _Line line, List<Recipe> recipes) {
+    if (!_storeOrExplain()) return;
     setState(() {
       if (group == null) {
         recipe.group = null;
@@ -720,6 +794,13 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
       for (final key in _subscribedKeys) ref.watch(keyStreamProvider(key))
     ];
 
+    // Watched, so a sign-in or sign-out redraws the locks at once.
+    _storeGroup = ref
+        .watch(accessPolicyProvider)
+        .groupForPref('${_config.recipesBucket}.recipes');
+    _canStore = groupAllowed(ref, _storeGroup);
+    if (_canStore) _refusal = null;
+
     return FutureBuilder<List<Recipe>>(
       future: _recipesFuture ??= _getRecipes(),
       builder: (context, snapshot) {
@@ -748,6 +829,7 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
             return Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                if (!_canStore || _refusal != null) _accessNotice(context),
                 if (_pendingLeave != null) _unsavedBanner(context, recipes),
                 _viewSwitch(context),
                 const SizedBox(height: 8),
@@ -896,10 +978,13 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
                   // Groups have no order of their own — a group sits where its
                   // first recipe sits — so the drag moves the group's
                   // recipes, as one block.
-                  onReorderItem: (oldIndex, newIndex) => setState(() {
-                    moveRecipeGroup(recipes, groups[oldIndex], newIndex);
-                    _saveRecipes(recipes);
-                  }),
+                  onReorderItem: (oldIndex, newIndex) {
+                    if (!_storeOrExplain()) return;
+                    setState(() {
+                      moveRecipeGroup(recipes, groups[oldIndex], newIndex);
+                      _saveRecipes(recipes);
+                    });
+                  },
                   itemBuilder: (context, i) => _groupCard(
                     context,
                     key: ValueKey('group:${groups[i]}'),
@@ -915,7 +1000,15 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
         const SizedBox(height: 8),
         OutlinedButton.icon(
           icon: const Icon(Icons.add),
-          label: Text('New ${_config.groupNoun.toLowerCase()}'),
+          label: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Flexible(
+                  child: Text('New ${_config.groupNoun.toLowerCase()}',
+                      overflow: TextOverflow.ellipsis)),
+              GroupLockBadge(group: _storeGroup),
+            ],
+          ),
           onPressed: () => _openNewGroup(lines, live),
         ),
       ],
@@ -1307,7 +1400,15 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
                 onPressed: _sending
                     ? null
                     : () => _send([(line: line, recipe: recipe)]),
-                child: Text('Send to ${line.name}'),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Flexible(
+                        child: Text('Send to ${line.name}',
+                            overflow: TextOverflow.ellipsis)),
+                    TagLockBadge(tagKey: line.key),
+                  ],
+                ),
               ),
             ),
           ],
@@ -1474,7 +1575,12 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
   // would sit behind the recipes window, unreachable. A pane has no stacking
   // order to get wrong.
 
-  void _openPanel(_Panel panel, {String? group}) => setState(() {
+  void _openPanel(_Panel panel, {String? group}) {
+    if (!_storeOrExplain()) return;
+    _showPanel(panel, group: group);
+  }
+
+  void _showPanel(_Panel panel, {String? group}) => setState(() {
         _panel = panel;
         _panelGroup = group;
         _report = null;
@@ -1657,6 +1763,7 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
       Padding(padding: const EdgeInsets.all(8), child: child);
 
   void _openNewGroup(List<_Line> lines, List<DynamicValue?> live) {
+    if (!_storeOrExplain()) return;
     _panelName.clear();
     // Every line that has something to copy starts ticked.
     _ticked
@@ -1665,7 +1772,7 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
         for (var i = 0; i < lines.length; i++)
           if (live[i] != null) lines[i].id,
       ]);
-    _openPanel(_Panel.newGroup);
+    _showPanel(_Panel.newGroup);
   }
 
   Widget _newGroupPanel(BuildContext context, List<Recipe> recipes,
@@ -1747,7 +1854,12 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
     );
   }
 
-  void _openPick(String group, _Line line) => setState(() {
+  void _openPick(String group, _Line line) {
+    if (!_storeOrExplain()) return;
+    _showPick(group, line);
+  }
+
+  void _showPick(String group, _Line line) => setState(() {
         _panel = _Panel.pick;
         _panelGroup = group;
         _panelLine = line.id;
@@ -1851,8 +1963,9 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
   }
 
   void _openRename(String group) {
+    if (!_storeOrExplain()) return;
     _panelName.text = group;
-    _openPanel(_Panel.rename, group: group);
+    _showPanel(_Panel.rename, group: group);
   }
 
   Widget _renamePanel(
@@ -2081,10 +2194,13 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
                         // written back into the slots they already held, so a
                         // drag here cannot move another line's recipe or a
                         // product's.
-                        onReorderItem: (oldIndex, newIndex) => setState(() {
-                          reorderWithin(recipes, loose, oldIndex, newIndex);
-                          _saveRecipes(recipes);
-                        }),
+                        onReorderItem: (oldIndex, newIndex) {
+                          if (!_storeOrExplain()) return;
+                          setState(() {
+                            reorderWithin(recipes, loose, oldIndex, newIndex);
+                            _saveRecipes(recipes);
+                          });
+                        },
                         itemBuilder: (context, i) => _lineRecipeCard(
                           context,
                           loose[i],
@@ -2229,7 +2345,10 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
                 IconButton(
                   icon: const Icon(Icons.delete_outline, size: 18),
                   tooltip: 'Delete ${recipe.name}',
-                  onPressed: () => setState(() => _confirmDelete = recipe),
+                  onPressed: () {
+                    if (!_storeOrExplain()) return;
+                    setState(() => _confirmDelete = recipe);
+                  },
                 ),
             ],
           ),
@@ -2280,10 +2399,13 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
                         // which a bare "Rename" beside one line's recipe
                         // would hide.
                         tooltip: 'Rename recipe',
-                        onPressed: () => setState(() {
-                          _renaming = recipe;
-                          _renameText.text = recipe.name;
-                        }),
+                        onPressed: () {
+                          if (!_storeOrExplain()) return;
+                          setState(() {
+                            _renaming = recipe;
+                            _renameText.text = recipe.name;
+                          });
+                        },
                       ),
                   ],
                 ),
@@ -2476,17 +2598,32 @@ class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
       ] else
         OutlinedButton.icon(
           icon: const Icon(Icons.edit_outlined),
-          label: const Text('Edit'),
+          label: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Flexible(child: Text('Edit', overflow: TextOverflow.ellipsis)),
+              GroupLockBadge(group: _storeGroup),
+            ],
+          ),
           onPressed: recipe == null ? null : () => _startEditing(recipe),
         ),
       const SizedBox(width: 8),
       FilledButton.icon(
         icon: const Icon(Icons.arrow_forward),
-        label: Text(_sending
-            ? 'Sending...'
-            : dirty
-                ? 'Send without saving'
-                : 'Send to ${line.name}'),
+        label: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Flexible(
+                child: Text(
+                    _sending
+                        ? 'Sending...'
+                        : dirty
+                            ? 'Send without saving'
+                            : 'Send to ${line.name}',
+                    overflow: TextOverflow.ellipsis)),
+            TagLockBadge(tagKey: line.key),
+          ],
+        ),
         onPressed: (recipe == null || _sending) ? null : send,
       ),
     ];

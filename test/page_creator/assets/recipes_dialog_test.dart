@@ -24,13 +24,20 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:open62541/open62541.dart' show DynamicValue;
 import 'package:rxdart/rxdart.dart';
 import 'package:tfc/page_creator/assets/recipes.dart';
+import 'package:tfc/providers/access.dart'
+    show
+        accessRepositoryProvider,
+        accessSessionProvider,
+        AccessSessionController;
 import 'package:tfc/providers/access_templates.dart';
 import 'package:tfc/providers/database.dart';
 import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/providers/state_man.dart';
 import 'package:tfc/widgets/panes/standard_dialog.dart';
 import 'package:tfc_access/tfc_access.dart'
-    show AccessGroup, AccessSession, TagBindingResolver;
+    show AccessGroup, AccessSession, AuthenticatedUser, TagBindingResolver;
+import 'package:tfc_dart/core/access/access_repository.dart'
+    show AccessRepository;
 import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
@@ -96,6 +103,20 @@ class _FakeStateMan implements StateMan {
       );
 }
 
+/// A repository that exists: with none, the station cannot authenticate
+/// anybody and every permission above Operate is shut.
+class _PresentRepository extends Fake implements AccessRepository {}
+
+/// A session that resolves at once to whatever the test needs.
+class _FixedSession extends AccessSessionController {
+  _FixedSession(this._session);
+
+  final AccessSession _session;
+
+  @override
+  Future<AccessSession> build() async => _session;
+}
+
 void main() {
   late _FakeStateMan stateMan;
   late Preferences prefs;
@@ -120,7 +141,16 @@ void main() {
     WidgetTester tester,
     RecipesConfig config, {
     List<Recipe> recipes = const [],
+    // What a Shift Leader holds: enough to change a recipe and send it.
+    Set<AccessGroup> groups = const {
+      AccessGroup.operate,
+      AccessGroup.setpoints,
+    },
   }) async {
+    final session = AccessSession(
+      user: const AuthenticatedUser(username: 'shift', roleName: 'Shift'),
+      groups: groups,
+    );
     // Bigger than the 1120x720 the dialog opens at: the shell clamps a
     // window to the screen when it is created, so the binding's default
     // 800x600 would give every test a small-window layout.
@@ -145,11 +175,11 @@ void main() {
         // has its own tests.
         tagAccessProvider.overrideWithValue(TagAccess(
           resolver: TagBindingResolver(),
-          session: AccessSession(groups: const {
-            AccessGroup.operate,
-            AccessGroup.setpoints,
-          }),
+          session: session,
         )),
+        accessRepositoryProvider
+            .overrideWith((ref) async => _PresentRepository()),
+        accessSessionProvider.overrideWith(() => _FixedSession(session)),
       ],
       child: MaterialApp(
         home: Scaffold(body: Center(child: Recipes(config: config))),
@@ -826,6 +856,84 @@ void main() {
       await tester.tap(find.widgetWithText(TextButton, 'Delete'));
       await tester.pumpAndSettle();
       expect([for (final r in await saved(threeLines)) r['name']], ['Other']);
+    });
+  });
+
+  group('access is shown before anyone tries', () {
+    const operatorOnly = {AccessGroup.operate};
+
+    testWidgets('a session that cannot store recipes is told so up front',
+        (tester) async {
+      pushThreeLines();
+      await pumpDialog(tester, threeLines,
+          recipes: standardGroup(), groups: operatorOnly);
+
+      expect(find.textContaining('View only'), findsOneWidget);
+      expect(find.textContaining('"Setpoints" permission'), findsOneWidget);
+      expect(find.byIcon(Icons.lock_outline), findsWidgets,
+          reason: 'a lock on the ways in, before a tap');
+    });
+
+    testWidgets('Edit is refused at Edit, not at Save', (tester) async {
+      pushThreeLines();
+      await pumpDialog(tester, threeLines,
+          recipes: standardGroup(), groups: operatorOnly);
+      await tester.tap(find.text('Lines'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Line 1 - Standard'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Edit'));
+      await tester.pumpAndSettle();
+
+      expect(
+          find.descendant(
+              of: find.byType(Table), matching: find.byType(TextField)),
+          findsNothing,
+          reason: 'no editing starts that the store would refuse');
+      expect(find.textContaining('Not changed'), findsOneWidget,
+          reason: 'said in the pane: the app prompt would open under the '
+              'window');
+    });
+
+    testWidgets('every other change is refused where it starts too',
+        (tester) async {
+      pushThreeLines();
+      await pumpDialog(tester, threeLines,
+          recipes: standardGroup(), groups: operatorOnly);
+
+      await tester.tap(find.text('New product'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('recipes.newGroupName')), findsNothing);
+
+      await tester.tap(find.text('Change').first);
+      await tester.pumpAndSettle();
+      expect(find.textContaining("Line 1's recipe in"), findsNothing);
+
+      expect((await saved(threeLines)).length, 2, reason: 'nothing stored');
+    });
+
+    testWidgets('a session that can store sees no locks and no notice',
+        (tester) async {
+      pushThreeLines();
+      await pumpDialog(tester, threeLines, recipes: standardGroup());
+
+      expect(find.textContaining('View only'), findsNothing);
+      expect(find.byIcon(Icons.lock_outline), findsNothing);
+    });
+
+    testWidgets('sending still works for a session that may only operate',
+        (tester) async {
+      // Storing a recipe and sending one are separate permissions: a line
+      // bound at Operate may be sent to by someone who cannot edit recipes.
+      pushThreeLines();
+      await pumpDialog(tester, threeLines,
+          recipes: standardGroup(), groups: operatorOnly);
+
+      await tester.tap(find.text('Send to Line 1'));
+      await tester.pumpAndSettle();
+
+      expect(stateMan.writes.map((w) => w.key), ['line_a']);
     });
   });
 }
