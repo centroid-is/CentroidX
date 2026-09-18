@@ -27,6 +27,8 @@ import '../providers/state_man.dart';
 import '../providers/database.dart';
 import '../providers/gateway.dart';
 import '../providers/config_store.dart';
+import '../providers/device_local_store_open.dart';
+import '../core/relayed_config_items.dart';
 import 'access_templates_section.dart';
 import 'package:tfc_access/tfc_access.dart'
     show AccessTemplate, TagBindingResolver;
@@ -389,8 +391,11 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
     // `origin: 'mcp'`. That is named in the copy below, not only here.
     // ---------------------------------------------------------------------
     try {
-      final store = await ref.read(configStoreProvider.future);
-      final keyMappings = store.inner.keyMappings;
+      // What the plant holds: the mirror on a station, the relayed rows in a
+      // browser — never this screen's unsaved edits.
+      final keyMappings = kHasDeviceLocalMirror
+          ? (await ref.read(configStoreProvider.future)).inner.keyMappings
+          : (await ref.read(relayedConfigItemsProvider.future)).keyMappings;
       final jsonString =
           const JsonEncoder.withIndent('  ').convert(keyMappings.toJson());
 
@@ -444,6 +449,17 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
   }
 
   Future<void> _onImport() async {
+    if (!kHasDeviceLocalMirror) {
+      // Refused before the file picker, not after it: an import is a save,
+      // and a browser cannot save key mappings (see [_saveKeyMappings]).
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        backgroundColor: Theme.of(context).colorScheme.error,
+        content: const Text('This browser reads the key mappings over the '
+            'relay and cannot write them back, so it cannot import. Import on '
+            'a station.'),
+      ));
+      return;
+    }
     try {
       // A browser hands over bytes and no path, so the read is behind the same
       // seam as the write. Null is a dismissed dialog, not a failure.
@@ -1136,13 +1152,33 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
       // The plant's wiring comes from the shared configuration store, one row
       // per key. `state_man_config` is not this phase's key and still comes
       // out of preferences.
-      final store = await ref.read(configStoreProvider.future);
-      _keyMappings = store.inner.keyMappings;
-      _baselineItems = store.inner.keyMappingItems;
+      if (kHasDeviceLocalMirror) {
+        final store = await ref.read(configStoreProvider.future);
+        _keyMappings = store.inner.keyMappings;
+        _baselineItems = store.inner.keyMappingItems;
+      } else {
+        // A browser has no mirror, so `configStoreProvider` cannot be built
+        // here and this page used to stop on its error. The rows come over
+        // the relay instead — the same `RelayedConfigItems` the page manager
+        // and the StateMan read — and a copy is held, so an edit on this
+        // screen never reaches the object the running panel resolves keys
+        // from. Saving is refused by name in [_saveKeyMappings].
+        final relayed = await ref.read(relayedConfigItemsProvider.future);
+        _keyMappings = KeyMappings.fromJson(relayed.keyMappings.toJson());
+        _baselineItems = null;
+      }
       _invalidateDerived();
       _savedJson = _currentJson();
-      final prefs = await ref.read(preferencesProvider.future);
-      _stateManConfig = await StateManConfigStorage.fromPrefs(prefs);
+      // The server list only feeds the alias pickers. Read apart from the
+      // mappings: on a gateway panel it is a preference the session may not
+      // be allowed to read, and a list of keys is worth showing without it.
+      try {
+        final prefs = await ref.read(preferencesProvider.future);
+        _stateManConfig = await StateManConfigStorage.fromPrefs(prefs);
+      } catch (e) {
+        if (kHasDeviceLocalMirror) rethrow;
+        _stateManConfig = null;
+      }
       _rebuildAliasLists();
     } catch (e) {
       _error = e.toString();
@@ -1180,6 +1216,19 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
     // pending, so they came back on the next load.
     final messenger = _messenger;
     final errorColour = _errorColour;
+    if (!kHasDeviceLocalMirror) {
+      // The page manager's refusal, for the page manager's reason: the relay
+      // serves `config_item` rows for reading only, and a browser holds no
+      // mirror to merge a save against. Said on the screen rather than thrown
+      // into a spinner, and reported as not saved so a proposal stays pending.
+      messenger?.showSnackBar(SnackBar(
+        backgroundColor: errorColour,
+        content: const Text('This browser reads the key mappings over the '
+            'relay and cannot write them back. Nothing was saved. Edit the '
+            'key mappings on a station.'),
+      ));
+      return false;
+    }
     try {
       // The container when the banner drove us here, because `ref` is gone by
       // then; `ref` for an ordinary Save, where no container was ever taken.
