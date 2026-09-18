@@ -25,6 +25,7 @@ import '../providers/access_templates.dart';
 import '../providers/preferences.dart';
 import '../providers/state_man.dart';
 import '../providers/database.dart';
+import '../providers/gateway.dart';
 import '../providers/config_store.dart';
 import 'access_templates_section.dart';
 import 'package:tfc_access/tfc_access.dart'
@@ -210,6 +211,15 @@ class KeyRepositoryContent extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final dbAsync = ref.watch(databaseProvider);
+    // **Is there a database** is the wrong question on a gateway panel, and
+    // asking it put a "no database" banner on every browser. A browser has no
+    // SQLite by design and permanently — the key mappings on this page do not
+    // come from one: they are `config_item` rows the gateway serves, reaching
+    // the store through `RelayedConfigItems`, exactly as this panel's
+    // preferences do. The banner means "this station's own database is
+    // missing", which is a real fault on a station and a category error here.
+    final isGateway =
+        ref.watch(gatewayConfigProvider).valueOrNull?.isGateway ?? false;
 
     // The key list scrolls on its own (see [_KeyMappingsSection]) instead of
     // the whole page living in a SingleChildScrollView. A scroll view with a
@@ -218,14 +228,18 @@ class KeyRepositoryContent extends ConsumerWidget {
     final content = Column(
       children: [
         // Database status indicator
-        dbAsync.when(
-          data: (db) {
-            if (db != null) return const SizedBox.shrink();
-            return _DatabaseStatusBanner(connected: false);
-          },
-          loading: () => _DatabaseStatusBanner(connected: false, loading: true),
-          error: (_, __) => _DatabaseStatusBanner(connected: false),
-        ),
+        if (isGateway)
+          const SizedBox.shrink()
+        else
+          dbAsync.when(
+            data: (db) {
+              if (db != null) return const SizedBox.shrink();
+              return _DatabaseStatusBanner(connected: false);
+            },
+            loading: () =>
+                _DatabaseStatusBanner(connected: false, loading: true),
+            error: (_, __) => _DatabaseStatusBanner(connected: false),
+          ),
         Expanded(child: _KeyMappingsSection(proposalData: proposalData)),
         const SizedBox(height: 16),
         const AccessTemplatesSection(),
