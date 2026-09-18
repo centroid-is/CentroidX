@@ -41,7 +41,7 @@ import 'package:tfc/pages/tech_doc_library.dart';
 import 'package:tfc/pages/first_user.dart';
 import 'package:tfc/pages/audit_trail.dart';
 import 'package:tfc/pages/access_admin.dart';
-import 'package:tfc/pages/config_history.dart';
+import 'package:tfc/pages/config_history.dart' show kConfigHistoryTitle;
 import 'package:tfc/transition_delegate.dart';
 import 'package:tfc/providers/theme.dart';
 import 'package:tfc/core/feature_flags.dart';
@@ -929,8 +929,10 @@ RoutesLocationBuilder createLocationBuilder(
     kConfigHistoryRoute: (context, state, args) => BeamPage(
         key: const ValueKey(kConfigHistoryRoute),
         title: kConfigHistoryTitle,
-        child: gated(
-            kConfigHistoryRoute, kConfigHistoryTitle, const ConfigHistoryPage())),
+        // The audit trail's page, with its scope fixed to configuration by
+        // this route. The page offers no control that widens it.
+        child: gated(kConfigHistoryRoute, kConfigHistoryTitle,
+            const AuditTrailPage(scope: AuditTrailScope.configuration))),
   };
 
   // Statement-level const guard rather than a collection-if inside the map

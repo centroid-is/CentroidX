@@ -25,11 +25,14 @@ import 'package:drift/drift.dart'
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:tfc/pages/audit_trail.dart';
 import 'package:tfc/pages/config_history.dart';
 import 'package:tfc/providers/access.dart';
 import 'package:tfc/providers/access_policy.dart';
 import 'package:tfc/providers/config_store.dart';
 import 'package:tfc/providers/database.dart';
+import 'package:tfc/widgets/audit_trail_row.dart';
+import 'package:tfc/widgets/config_change_row.dart';
 import 'package:tfc/widgets/config_undo_dialogs.dart';
 import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/access/guarded_config_store.dart';
@@ -218,6 +221,7 @@ void main() {
     WidgetTester tester, {
     Set<AccessGroup> groups = const {AccessGroup.configure},
     String? username = 'gudrun',
+    Widget body = const ConfigHistoryBody(),
   }) async {
     store.attachRemoteDatabase(remote, startSync: false);
     await store.open();
@@ -237,8 +241,8 @@ void main() {
 
     await tester.pumpWidget(UncontrolledProviderScope(
       container: container,
-      child: const MaterialApp(
-        home: Scaffold(body: ConfigHistoryBody()),
+      child: MaterialApp(
+        home: Scaffold(body: body),
       ),
     ));
     await tester.pump();
@@ -293,6 +297,124 @@ void main() {
               'button that could only ever refuse is worse than none');
     });
 
+  });
+
+  // The full trail draws a configuration action as this view does, and its
+  // Undo is the same write path — `ConfigUndoHost`, hosted by both bodies.
+  group('from the full audit trail', () {
+    /// A tag write: an audit row with no change rows behind it.
+    Future<void> seedTagWrite(String actionId) =>
+        remote.into(remote.auditEntry).insert(AuditEntryCompanion.insert(
+              at: kSeedAt,
+              who: 'jon',
+              station: kStation,
+              roleName: 'Engineer',
+              surface: 'tag',
+              itemKey: 'ST101.CN04.SpeedRef',
+              oldValue: const Value('20'),
+              newValue: const Value('35'),
+              groupRequired: 'setpoints',
+              allowed: true,
+              actionId: actionId,
+            ));
+
+    testWidgets(
+        'a configuration action is titled by what it changed and offers Undo',
+        (tester) async {
+      final asset = assetItem('a1', page: 'p1', ordinal: 1024);
+      await seedItem(asset, [local, remote]);
+      await seedChange(remote, actionId: 'act-1', after: asset);
+      await seedAuditHeader(remote, 'act-1');
+      await seedTagWrite('act-tag');
+
+      await pump(tester,
+          groups: {AccessGroup.configure, AccessGroup.users},
+          body: const AuditTrailBody());
+      await settle(tester);
+
+      expect(find.byType(DeferredConfigActionTile), findsOneWidget);
+      expect(find.text('jon changed 1 asset'), findsOneWidget,
+          reason: 'the full trail must read a page save the way the '
+              'configuration view does, not as a bare page_editor_data line');
+      expect(find.byKey(configHistoryUndoKey('act-1')), findsOneWidget);
+
+      // The tag write is an audit line, and nothing on it can be undone.
+      expect(find.text('ST101.CN04.SpeedRef'), findsOneWidget);
+      expect(find.byKey(configHistoryUndoKey('act-tag')), findsNothing);
+    });
+
+    testWidgets('opening it reads its entities and draws their diffs',
+        (tester) async {
+      final before = assetItem('a1', page: 'p1', ordinal: 1024);
+      final after = assetItem('a1', page: 'p1', ordinal: 1024, colour: 'blue');
+      await seedItem(after, [local, remote]);
+      await seedChange(remote, actionId: 'act-1', before: before, after: after);
+      await seedAuditHeader(remote, 'act-1');
+
+      await pump(tester,
+          groups: {AccessGroup.configure, AccessGroup.users},
+          body: const AuditTrailBody());
+      await settle(tester);
+
+      expect(find.byType(ConfigChangeTile), findsNothing,
+          reason: 'shut on arrival: opening is the read');
+
+      await tester.tap(find.byKey(kConfigActionHeaderKey));
+      await settle(tester);
+
+      expect(find.byType(ConfigChangeTile), findsOneWidget);
+      expect(find.text('asset:a1'), findsOneWidget);
+      // Its header row, drawn by the audit trail's own line.
+      expect(find.text('page_editor_data'), findsOneWidget);
+    });
+
+    testWidgets('Undo there writes the inverse, exactly as it does here',
+        (tester) async {
+      final before = assetItem('a1', page: 'p1', ordinal: 1024);
+      final after = assetItem('a1', page: 'p1', ordinal: 1024, colour: 'blue');
+      await seedItem(after, [local, remote]);
+      await seedChange(remote, actionId: 'act-1', before: before, after: after);
+      await seedAuditHeader(remote, 'act-1');
+
+      await pump(tester,
+          groups: {AccessGroup.configure, AccessGroup.users},
+          body: const AuditTrailBody());
+      await settle(tester);
+
+      await tester.tap(find.byKey(configHistoryUndoKey('act-1')));
+      await settle(tester);
+      expect(find.byKey(kConfigUndoConfirmKey), findsOneWidget);
+
+      await tester.tap(find.byKey(kConfigUndoConfirmButtonKey));
+      await settle(tester);
+
+      expect((await itemRows()).single.payload, before.payload);
+      final log = await changeRows();
+      expect(log.last.reason, 'undo of act-1');
+      expect(find.text(kConfigHistoryUndoneNote), findsOneWidget);
+    });
+
+    testWidgets('the gate is the same: without configure it is refused',
+        (tester) async {
+      final before = assetItem('a1', page: 'p1', ordinal: 1024);
+      final after = assetItem('a1', page: 'p1', ordinal: 1024, colour: 'blue');
+      await seedItem(after, [local, remote]);
+      await seedChange(remote, actionId: 'act-1', before: before, after: after);
+      await seedAuditHeader(remote, 'act-1');
+
+      // `users` reaches the full trail; it does not grant configure.
+      await pump(tester,
+          groups: {AccessGroup.users}, body: const AuditTrailBody());
+      await settle(tester);
+
+      await tester.tap(find.byKey(configHistoryUndoKey('act-1')));
+      await settle(tester);
+
+      expect(find.byKey(kConfigUndoConfirmKey), findsNothing);
+      expect((await itemRows()).single.payload, after.payload,
+          reason: 'reading the whole trail is not permission to write it');
+      expect(sink.rows.single.allowed, isFalse);
+    });
   });
 
   group('the happy path', () {

@@ -17,7 +17,6 @@ import 'package:tfc/models/menu_item.dart';
 import 'package:tfc/pages/access_admin.dart';
 import 'package:tfc/pages/alarm_editor.dart';
 import 'package:tfc/pages/audit_trail.dart';
-import 'package:tfc/pages/config_history.dart';
 import 'package:tfc/pages/first_user.dart';
 import 'package:tfc/pages/key_repository.dart';
 import 'package:tfc/pages/page_editor.dart';
@@ -451,6 +450,7 @@ void main() {
         expect(gate.allowWhenRepositoryUnavailable, isFalse,
             reason: 'the trail is the database; there is nothing to read while it is down');
         expect(gate.child, isA<AuditTrailPage>());
+        expect((gate.child as AuditTrailPage).scope, AuditTrailScope.everything);
       });
 
       testWidgets('config history needs configure, and not users',
@@ -467,7 +467,13 @@ void main() {
         expect(gate.allowWhenRepositoryUnavailable, isFalse,
             reason: 'the history is the database; there is nothing to read '
                 'while it is down');
-        expect(gate.child, isA<ConfigHistoryPage>());
+        // The same page, with its scope fixed by this route. `configure` must
+        // never reach the whole trail through it: the scope is a constructor
+        // argument, and the configuration scope builds no control that widens
+        // it (audit_trail_test.dart's scope group).
+        expect(gate.child, isA<AuditTrailPage>());
+        expect((gate.child as AuditTrailPage).scope,
+            AuditTrailScope.configuration);
       });
 
       testWidgets('access needs users', (tester) async {

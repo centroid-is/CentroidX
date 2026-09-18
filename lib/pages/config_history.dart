@@ -6,16 +6,20 @@
 /// states — permanently, on screen — the two things a reader would otherwise
 /// have to infer from an absence.
 ///
-/// ## Its own route, at `configure`
+/// ## One trail, two scopes, two routes
 ///
-/// `kRaisedRoutes[kConfigHistoryRoute]` is [AccessGroup.configure]. The audit
-/// trail next door is `users` because it displays every write anybody ever
-/// made, including the denials that show where a role is configured too
-/// tightly. This page displays configuration only, and the engineer it serves
-/// — the one who edits pages and key maps — holds `configure`. Widening the
-/// existing `users` entry to reach this page would have handed the audit trail
-/// to everyone who can edit a page (T-04-06a), so this is a second entry rather
-/// than a looser first one.
+/// This is the configuration view of the audit trail, and `AuditTrailPage`
+/// hosts it twice: as the whole page at `kConfigHistoryRoute`, and as the
+/// Configuration lens of the full trail at `kAuditTrailRoute`.
+///
+/// `kRaisedRoutes[kConfigHistoryRoute]` is [AccessGroup.configure]. The full
+/// trail is `users` because it displays every write anybody ever made,
+/// including the denials that show where a role is configured too tightly.
+/// This view displays configuration only, and the engineer it serves — the one
+/// who edits pages and key maps — holds `configure`. Widening the full trail's
+/// entry to reach this view would have handed it to everyone who can edit a
+/// page (T-04-06a), so the configuration route fixes this scope and the page
+/// offers no control that widens it.
 ///
 /// **Denied is not built here.** The route gate renders the locked body before
 /// this page is reached. A second, weaker check on the page could disagree with
@@ -44,11 +48,11 @@
 /// inherited whole. The page queries on arrival, on an explicit refresh, on a
 /// filter change and on an explicit `Load more`, and at no other time.
 ///
-/// ## The Page/Body split is mandatory
+/// ## No scaffold here
 ///
-/// [BaseScaffold] calls `context.currentBeamLocation`, so it cannot be pumped
-/// without a Beamer ancestor. Every widget test and every golden pumps
-/// [ConfigHistoryBody].
+/// `BaseScaffold` calls `context.currentBeamLocation`, so it cannot be pumped
+/// without a Beamer ancestor. `AuditTrailPage` owns the scaffold; every widget
+/// test and every golden pumps [ConfigHistoryBody].
 library;
 
 import 'package:clock/clock.dart';
@@ -67,7 +71,6 @@ import '../widgets/audit_trail_filters.dart'
         kAuditTrailDefaultRangeLabel,
         kAuditTrailWholeTableLabel,
         auditRangeLabel;
-import '../widgets/base_scaffold.dart';
 import '../widgets/config_change_row.dart';
 import '../widgets/config_undo_dialogs.dart';
 import '../widgets/fuzzy_search_bar.dart';
@@ -76,8 +79,8 @@ import '../widgets/fuzzy_search_bar.dart';
 // The copy
 // ---------------------------------------------------------------------------
 
-/// The title over the page, and the words the Advanced menu entry is spelled
-/// from.
+/// The title over the configuration route's page, and the words its Advanced
+/// menu entry is spelled from.
 const String kConfigHistoryTitle = 'Config History';
 
 /// There is no database behind this station, or the read failed.
@@ -298,24 +301,13 @@ bool configActionIsUndoable(HistoryAction action) =>
 // The page
 // ---------------------------------------------------------------------------
 
-/// Route target for `/advanced/config-history`.
+/// The configuration history: the configuration lens of the audit trail.
 ///
-/// Field-less so `createLocationBuilder` can register it as
-/// `const ConfigHistoryPage()`. All of the logic lives in [ConfigHistoryBody].
-class ConfigHistoryPage extends StatelessWidget {
-  const ConfigHistoryPage({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return const BaseScaffold(
-      title: kConfigHistoryTitle,
-      body: ConfigHistoryBody(),
-    );
-  }
-}
-
-/// The page content, split from [ConfigHistoryPage] so tests and goldens can
-/// pump it without [BaseScaffold]'s routing context.
+/// Not a page of its own any more. `AuditTrailPage` hosts it — as the whole of
+/// the page at `/advanced/config-history`, whose route fixes that scope, and as
+/// the Configuration lens of the full trail. It carries no scaffold, which is
+/// also what lets tests and goldens pump it without `BaseScaffold`'s routing
+/// context.
 class ConfigHistoryBody extends ConsumerStatefulWidget {
   const ConfigHistoryBody({super.key});
 
@@ -324,7 +316,8 @@ class ConfigHistoryBody extends ConsumerStatefulWidget {
 }
 
 /// Public so a widget test can reach [buildCount].
-class ConfigHistoryBodyState extends ConsumerState<ConfigHistoryBody> {
+class ConfigHistoryBodyState extends ConsumerState<ConfigHistoryBody>
+    with ConfigUndoHost<ConfigHistoryBody> {
   /// The filter controls' state, as one value.
   ConfigHistoryFilters _filters = const ConfigHistoryFilters();
 
@@ -366,6 +359,9 @@ class ConfigHistoryBodyState extends ConsumerState<ConfigHistoryBody> {
   /// cache. The invalidate names the queries about to be watched rather than
   /// the whole family, so it does not re-execute the `Load more` pages this
   /// reset has just discarded.
+  @override
+  void onConfigUndone() => _refresh();
+
   void _refresh() {
     final fresh = _firstPageOnly(_filters);
     setState(() {
@@ -597,16 +593,8 @@ class ConfigHistoryBodyState extends ConsumerState<ConfigHistoryBody> {
   /// No `itemExtent` and no `prototypeItem`: an action is an `ExpansionTile`
   /// whose height changes when it opens, and a fixed extent would clip it.
   /// `ListView.builder` is what keeps a 500-row result from building every tile
-  /// in one frame.
-  /// The virtualised list, each action beside its Undo.
-  ///
-  /// The control is **composed next to** [ConfigActionTile] rather than added
-  /// inside it: the tile is the history's read-only rendering and is shared
-  /// with the goldens 04-06 already baselined, and threading an action callback
-  /// through it would put a write concern into the widget that draws a row.
-  ///
-  /// `CrossAxisAlignment.start` pins the button to the header line, so it does
-  /// not drift to the vertical middle of a tile the operator has expanded.
+  /// in one frame. Each action sits beside its Undo — see
+  /// [ConfigUndoHost.configUndoButton] for why beside and not inside.
   Widget _list(List<HistoryAction> actions) => ListView.builder(
         key: kConfigHistoryListKey,
         itemCount: actions.length,
@@ -622,122 +610,11 @@ class ConfigHistoryBodyState extends ConsumerState<ConfigHistoryBody> {
             children: [
               Expanded(child: ConfigActionTile(action: action)),
               if (configActionIsUndoable(action))
-                Padding(
-                  padding: const EdgeInsets.only(top: 6, right: 8),
-                  child: Tooltip(
-                    message: kConfigHistoryUndoTooltip,
-                    child: TextButton.icon(
-                      key: configHistoryUndoKey(action.actionId),
-                      // Disabled while one is in flight, rather than guarded on
-                      // the way in: a second tap must look refused, not
-                      // ignored.
-                      onPressed:
-                          _undoInFlight == null ? () => _undo(action) : null,
-                      icon: const Icon(Icons.undo, size: 16),
-                      label: const Text(kConfigHistoryUndoLabel),
-                    ),
-                  ),
-                ),
+                configUndoButton(action.actionId),
             ],
           );
         },
       );
-
-  // -------------------------------------------------------------------------
-  // Undo
-  // -------------------------------------------------------------------------
-
-  /// The action currently being undone, or null. One at a time: two undos in
-  /// flight against overlapping entities would have the second refused by the
-  /// compare-and-swap for a reason the operator did not cause.
-  String? _undoInFlight;
-
-  /// Plan it, ask whether this session may, confirm it, write it, show it.
-  ///
-  /// Every branch that stops short says why, and none of them stops silently.
-  /// The gate is checked **before** the confirmation opens — a dialog an
-  /// operator cannot finish is a worse refusal than an immediate one — and the
-  /// real enforcement is inside `executeUndo` regardless (T-04-10a).
-  Future<void> _undo(HistoryAction action) async {
-    // Two taps in one frame both reach the callback the frame was built with;
-    // the disabled button is a frame late. One undo at a time is the rule,
-    // and this is where it is enforced.
-    if (_undoInFlight != null) return;
-    final controller = ref.read(configUndoControllerProvider);
-    setState(() => _undoInFlight = action.actionId);
-    try {
-      final plan = await controller.plan(action.actionId);
-      if (!mounted) return;
-
-      if (plan == null) {
-        _note(kConfigHistoryUnavailable);
-        return;
-      }
-      if (plan.isUnknownAction) {
-        _note(kConfigHistoryUndoNothingToDoNote);
-        return;
-      }
-      if (!plan.isReady) {
-        await _showBlocked(plan.blockers);
-        return;
-      }
-      // The standard treatment: the operator gets the app's own denial prompt,
-      // the trail gets a refused row, and nothing is issued to the store.
-      if (!controller.mayUndo(plan)) {
-        await controller.refuse(plan);
-        return;
-      }
-
-      final confirmed = await showDialog<bool>(
-        context: context,
-        builder: (_) => ConfigUndoConfirmDialog(plan: plan),
-      );
-      if (confirmed != true || !mounted) return;
-
-      final outcome = await controller.execute(plan);
-      if (!mounted) return;
-      switch (outcome) {
-        case UndoDone():
-          // No optimistic edit anywhere: the list is re-read from the store,
-          // so what is on screen afterwards is what the database holds.
-          _refresh();
-          _note(kConfigHistoryUndoneNote);
-        case UndoBlocked(:final blockers):
-          await _showBlocked(blockers);
-        case UndoDenied():
-          // Already prompted and already recorded by the controller. A second
-          // message here would be the same refusal told twice.
-          break;
-        case UndoUnavailable(:final message):
-          _note(message);
-      }
-    } on Object catch (error) {
-      // Everything the controller does not classify: a driver error out of
-      // the store's transaction, an argument error, a plan that could not be
-      // read. Left to escape, it landed in an async void handler and the
-      // operator saw a button that did nothing — and tapped it again.
-      if (mounted) _note('Undo failed: $error');
-    } finally {
-      if (mounted) {
-        setState(() => _undoInFlight = null);
-      } else {
-        _undoInFlight = null;
-      }
-    }
-  }
-
-  Future<void> _showBlocked(List<UndoBlocker> blockers) => showDialog<void>(
-        context: context,
-        builder: (_) => ConfigUndoBlockedDialog(blockers: blockers),
-      );
-
-  /// One line to the operator. A snackbar and not a dialog: none of these needs
-  /// an answer.
-  void _note(String message) {
-    final messenger = ScaffoldMessenger.maybeOf(context);
-    if (messenger == null) return;
-    messenger.showSnackBar(SnackBar(content: Text(message)));
-  }
 
   /// Under the list, not over it: the cap is a fact about the bottom of the
   /// result, and the operator reads it when they get there.
@@ -938,5 +815,140 @@ class ConfigHistoryBodyState extends ConsumerState<ConfigHistoryBody> {
         ? const <ConfigKind>[]
         : selectable.where(updated.contains).toList();
     _onFiltersChanged(_filters.copyWith(kinds: kinds));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Undo
+// ---------------------------------------------------------------------------
+
+/// Undo, for any list that shows configuration actions.
+///
+/// Both views of the trail offer it — the configuration lens and the full
+/// trail, where a configuration action expands to the same field diffs — and
+/// both must behave identically: one undo in flight per page, the same gate
+/// before the confirmation, the same notes. One mixin rather than two copies,
+/// because two copies of a write path drift.
+///
+/// The host says what "done" means for its list through [onConfigUndone]:
+/// no optimistic edit anywhere, the list is re-read from the store.
+mixin ConfigUndoHost<T extends ConsumerStatefulWidget> on ConsumerState<T> {
+  /// Re-read the list after an undo landed.
+  void onConfigUndone();
+
+  /// One action's Undo control, placed beside its tile.
+  ///
+  /// **Composed next to** the tile rather than added inside it: the tile is
+  /// the read-only rendering the goldens baseline, and threading an action
+  /// callback through it would put a write concern into the widget that draws
+  /// a row. The top padding pins the button to the header line, so it does not
+  /// drift to the vertical middle of a tile the operator has expanded.
+  Widget configUndoButton(String actionId) => Padding(
+        padding: const EdgeInsets.only(top: 6, right: 8),
+        child: Tooltip(
+          message: kConfigHistoryUndoTooltip,
+          child: TextButton.icon(
+            key: configHistoryUndoKey(actionId),
+            // Disabled while one is in flight, rather than guarded on the way
+            // in: a second tap must look refused, not ignored.
+            onPressed: _configUndoInFlight == null
+                ? () => undoConfigAction(actionId)
+                : null,
+            icon: const Icon(Icons.undo, size: 16),
+            label: const Text(kConfigHistoryUndoLabel),
+          ),
+        ),
+      );
+
+  /// The action currently being undone, or null. One at a time: two undos in
+  /// flight against overlapping entities would have the second refused by the
+  /// compare-and-swap for a reason the operator did not cause.
+  String? _configUndoInFlight;
+
+  /// Plan it, ask whether this session may, confirm it, write it, show it.
+  ///
+  /// Every branch that stops short says why, and none of them stops silently.
+  /// The gate is checked **before** the confirmation opens — a dialog an
+  /// operator cannot finish is a worse refusal than an immediate one — and the
+  /// real enforcement is inside `executeUndo` regardless (T-04-10a).
+  Future<void> undoConfigAction(String actionId) async {
+    // Two taps in one frame both reach the callback the frame was built with;
+    // the disabled button is a frame late. One undo at a time is the rule,
+    // and this is where it is enforced.
+    if (_configUndoInFlight != null) return;
+    final controller = ref.read(configUndoControllerProvider);
+    setState(() => _configUndoInFlight = actionId);
+    try {
+      final plan = await controller.plan(actionId);
+      if (!mounted) return;
+
+      if (plan == null) {
+        _undoNote(kConfigHistoryUnavailable);
+        return;
+      }
+      if (plan.isUnknownAction) {
+        _undoNote(kConfigHistoryUndoNothingToDoNote);
+        return;
+      }
+      if (!plan.isReady) {
+        await _showUndoBlocked(plan.blockers);
+        return;
+      }
+      // The standard treatment: the operator gets the app's own denial prompt,
+      // the trail gets a refused row, and nothing is issued to the store.
+      if (!controller.mayUndo(plan)) {
+        await controller.refuse(plan);
+        return;
+      }
+
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (_) => ConfigUndoConfirmDialog(plan: plan),
+      );
+      if (confirmed != true || !mounted) return;
+
+      final outcome = await controller.execute(plan);
+      if (!mounted) return;
+      switch (outcome) {
+        case UndoDone():
+          // No optimistic edit anywhere: the list is re-read from the store,
+          // so what is on screen afterwards is what the database holds.
+          onConfigUndone();
+          _undoNote(kConfigHistoryUndoneNote);
+        case UndoBlocked(:final blockers):
+          await _showUndoBlocked(blockers);
+        case UndoDenied():
+          // Already prompted and already recorded by the controller. A second
+          // message here would be the same refusal told twice.
+          break;
+        case UndoUnavailable(:final message):
+          _undoNote(message);
+      }
+    } on Object catch (error) {
+      // Everything the controller does not classify: a driver error out of
+      // the store's transaction, an argument error, a plan that could not be
+      // read. Left to escape, it landed in an async void handler and the
+      // operator saw a button that did nothing — and tapped it again.
+      if (mounted) _undoNote('Undo failed: $error');
+    } finally {
+      if (mounted) {
+        setState(() => _configUndoInFlight = null);
+      } else {
+        _configUndoInFlight = null;
+      }
+    }
+  }
+
+  Future<void> _showUndoBlocked(List<UndoBlocker> blockers) => showDialog<void>(
+        context: context,
+        builder: (_) => ConfigUndoBlockedDialog(blockers: blockers),
+      );
+
+  /// One line to the operator. A snackbar and not a dialog: none of these needs
+  /// an answer.
+  void _undoNote(String message) {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    if (messenger == null) return;
+    messenger.showSnackBar(SnackBar(content: Text(message)));
   }
 }

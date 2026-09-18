@@ -343,7 +343,7 @@ VisibleMenu visibleMenu(Ref ref) {
         if (survivor != null) kept.add(survivor);
       }
       if (kept.isEmpty) return null;
-      return item.copyWith(children: kept);
+      return item.copyWith(children: _dropSuperseded(kept));
     }
     final path = item.path;
     if (path == null || path.isEmpty) return item;
@@ -355,7 +355,26 @@ VisibleMenu visibleMenu(Ref ref) {
     final survivor = filter(item);
     if (survivor != null) kept.add(survivor);
   }
-  return VisibleMenu(List.unmodifiable(kept));
+  return VisibleMenu(List.unmodifiable(_dropSuperseded(kept)));
+}
+
+/// [siblings] without the entries a surviving sibling supersedes — see
+/// [kSupersededRoutes].
+///
+/// Run **after** the session's filter and over survivors only: an entry is
+/// superseded by a sibling this session may open, never by one it cannot, so
+/// a session that holds only the narrower route keeps its entry.
+List<MenuItem> _dropSuperseded(List<MenuItem> siblings) {
+  final offered = {for (final item in siblings) item.path};
+  bool superseded(MenuItem item) {
+    final by = kSupersededRoutes[item.path];
+    return by != null && offered.contains(by);
+  }
+
+  return [
+    for (final item in siblings)
+      if (!superseded(item)) item,
+  ];
 }
 
 /// Whether this session may open [path] — the same question the route gate

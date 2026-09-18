@@ -247,7 +247,35 @@ const String kReportEditorRoute = '/advanced/report-editor';
 ///
 /// The undo that 04-10 builds is a **write**, and its gate is the store's
 /// rather than this route's. A route group is a decision about who may read.
+///
+/// **One page, two scopes.** Both routes render `AuditTrailPage`; this one
+/// fixes its scope to configuration at construction and offers no control that
+/// widens it, so what this route can display is decided here and nowhere else.
+/// The full trail at [kAuditTrailRoute] carries the same configuration view as
+/// a lens, which is why [kSupersededRoutes] offers a session holding both
+/// groups only the one entry.
 const String kConfigHistoryRoute = '/advanced/config-history';
+
+/// Routes the navigation menu leaves out when a wider sibling is offered
+/// beside them: narrower path → the path that supersedes it.
+///
+/// **A menu decision, never an access one.** Both routes stay in
+/// [kRaisedRoutes] and both stay routable; a deep link, a startup URL or a
+/// role's page whitelist naming the narrower one still opens it. What this
+/// changes is only what a session holding both is *offered*: one entry rather
+/// than two that lead to the same page.
+///
+/// The one entry today is the configuration trail. The full audit trail
+/// ([kAuditTrailRoute], `users`) carries the configuration view as a lens, so
+/// an engineer holding both groups who saw both entries would be shown the
+/// same history twice under two names. An engineer holding `configure` alone
+/// never sees the full trail's entry and keeps the configuration one; holding
+/// `users` alone, the full one. Applied by `visibleMenuProvider` among
+/// siblings that survived the session's filter — never to the full tree, which
+/// the page editor and the whitelist editor read.
+const Map<String, String> kSupersededRoutes = {
+  kConfigHistoryRoute: kAuditTrailRoute,
+};
 
 /// The eleven routes raised above `operate`, and the group each one needs.
 ///
