@@ -1320,12 +1320,12 @@ cs.ChartTheme darkChartTheme({EdgeInsets padding = kChartPadding}) {
     axisTextStyle: const TextStyle(
       color: SolarizedColors.base01,
       fontSize: 12,
-      fontFamily: 'roboto-mono',
+      fontFamily: kAppFontFamily,
     ),
     axisLabelStyle: const TextStyle(
       color: SolarizedColors.base00,
       fontSize: 12,
-      fontFamily: 'roboto-mono',
+      fontFamily: kAppFontFamily,
     ),
   );
 }
@@ -1359,12 +1359,12 @@ cs.ChartTheme lightChartTheme({EdgeInsets padding = kChartPadding}) {
     axisTextStyle: const TextStyle(
       color: SolarizedColors.base00,
       fontSize: 12,
-      fontFamily: 'roboto-mono',
+      fontFamily: kAppFontFamily,
     ),
     axisLabelStyle: const TextStyle(
       color: SolarizedColors.base01,
       fontSize: 12,
-      fontFamily: 'roboto-mono',
+      fontFamily: kAppFontFamily,
     ),
   );
 }
