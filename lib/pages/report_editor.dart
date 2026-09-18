@@ -13,6 +13,7 @@ import '../providers/report.dart';
 import '../providers/state_man.dart';
 import '../widgets/base_scaffold.dart';
 import '../widgets/plant_time_picker.dart';
+import '../theme.dart' show kAppFontFamily;
 
 /// Configures the shift calendar and the report definitions.
 ///
@@ -935,7 +936,7 @@ class _ReportEditorPageState extends ConsumerState<ReportEditorPage> {
                 helperMaxLines: 4,
                 isDense: true,
               ),
-              style: const TextStyle(fontFamily: 'roboto-mono'),
+              style: const TextStyle(fontFamily: kAppFontFamily),
               maxLines: 6,
               minLines: 2,
               onChanged: (v) => setState(() => s.query = v),

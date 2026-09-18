@@ -3,6 +3,7 @@ import 'package:dbus/dbus.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'base_scaffold.dart';
 import '../dbus/generated/operations.dart';
+import '../theme.dart' show kAppFontFamily;
 
 class OperationModeAppBarLeftWidgetProvider
     extends GlobalAppBarLeftWidgetProvider {
@@ -84,7 +85,7 @@ class OperationModeAppBarLeftWidgetProvider
                     child: Text(
                       mode.toUpperCase(),
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            fontFamily: 'roboto-mono',
+                            fontFamily: kAppFontFamily,
                             fontSize: 16.0,
                             fontWeight: FontWeight.w500,
                             letterSpacing: 0.1,
