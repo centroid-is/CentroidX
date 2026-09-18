@@ -36,7 +36,7 @@ final auditTrailStoreProvider = FutureProvider<AuditTrailStore?>.internal(
 @Deprecated('Will be removed in 3.0. Use Ref instead')
 // ignore: unused_element
 typedef AuditTrailStoreRef = FutureProviderRef<AuditTrailStore?>;
-String _$auditTrailEntriesHash() => r'42ac457c602aa4af8e9b1da587fc2414be63f096';
+String _$auditTrailEntriesHash() => r'2c1af7c5d2cd797ba5912e9c130b014f10d0a46f';
 
 /// Copied from Dart SDK
 class _SystemHash {
@@ -363,7 +363,7 @@ class _AuditTrailEntriesProviderElement
   AuditQuery get query => (origin as AuditTrailEntriesProvider).query;
 }
 
-String _$auditWhoOptionsHash() => r'314988cb41608661fc6d7e47b23dac945325b10e';
+String _$auditWhoOptionsHash() => r'70c21c08b4fc2b33c22cc8a859cc5bdb5161d454';
 
 /// Every distinct `who` in the table, for the filter bar's dropdown.
 ///

@@ -42,6 +42,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/core/audit_trail_store.dart';
 import 'package:tfc/pages/audit_trail.dart';
 import 'package:tfc/providers/audit_trail.dart';
+import 'package:tfc/providers/config_history.dart' show configChangeStoreProvider;
 import 'package:tfc/theme.dart' show muted;
 import 'package:tfc/widgets/audit_trail_filters.dart';
 import 'package:tfc/widgets/audit_trail_row.dart';
@@ -243,6 +244,9 @@ Future<void> _pumpBody(
     ProviderScope(
       overrides: [
         auditTrailStoreProvider.overrideWith((ref) async => store),
+        // No configuration actions in these fixtures, and no database behind
+        // the change store: every action draws as the audit line it is.
+        configChangeStoreProvider.overrideWith((ref) async => null),
       ],
       child: MaterialApp(
         theme: light,

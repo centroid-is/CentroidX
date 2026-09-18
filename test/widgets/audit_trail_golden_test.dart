@@ -89,6 +89,7 @@ import 'package:tfc/core/audit_trail_store.dart';
 import 'package:tfc/pages/audit_trail.dart';
 import 'package:tfc/providers/access.dart';
 import 'package:tfc/providers/audit_trail.dart';
+import 'package:tfc/providers/config_history.dart' show configChangeStoreProvider;
 import 'package:tfc/theme.dart' show muted;
 import 'package:tfc/widgets/access_gate.dart';
 import 'package:tfc/widgets/audit_trail_filters.dart';
@@ -218,6 +219,9 @@ Widget _bodyHost({
     overrides: <Override>[
       ..._accessOverrides(),
       auditTrailStoreProvider.overrideWith((ref) async => store),
+      // No configuration actions in these fixtures, and no database behind
+      // the change store: every action draws as the audit line it is.
+      configChangeStoreProvider.overrideWith((ref) async => null),
       // Overridden as well as answered by the store above, so the dropdown's
       // options are the same list in every image whatever the store is.
       auditWhoOptionsProvider.overrideWith((ref) async => kAuditGoldenWhoOptions),

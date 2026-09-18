@@ -52,10 +52,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/audit_trail_grouping.dart';
 import '../core/audit_trail_store.dart';
+import '../core/config_change_store.dart';
 import '../providers/audit_trail.dart';
+import '../providers/config_history.dart' show configActionChangesProvider;
 import '../widgets/audit_trail_filters.dart';
 import '../widgets/audit_trail_row.dart';
 import '../widgets/base_scaffold.dart';
+import '../widgets/config_change_row.dart';
+import 'config_history.dart' show ConfigUndoHost;
 
 // ---------------------------------------------------------------------------
 // The copy
@@ -110,6 +114,15 @@ const String kAuditTrailLimitNote =
 /// The explicit paging action. A button, never a scroll position.
 const String kAuditTrailLoadMoreLabel = 'Load more';
 
+/// What an opened configuration action says when its rows cannot be read.
+const String kAuditConfigUnreadable = 'The changes could not be read:';
+
+/// Rows a configuration action has that this build cannot decode — written by
+/// a station on a newer build. Counted, so they cannot vanish.
+String kAuditConfigUnreadRowsNote(int unread, int total) =>
+    '$unread of $total changes were written by a newer build and cannot be '
+    'shown here.';
+
 // ---------------------------------------------------------------------------
 // The keys
 // ---------------------------------------------------------------------------
@@ -150,6 +163,16 @@ const Key kAuditTrailLimitNoteKey = ValueKey<String>('audit-trail-limit-note');
 /// The `Load more` button. Present only while the newest page came back full.
 const Key kAuditTrailLoadMoreKey = ValueKey<String>('audit-trail-load-more');
 
+/// An opened configuration action while its rows are being read.
+const Key kAuditConfigLoadingKey = ValueKey<String>('audit-config-loading');
+
+/// An opened configuration action whose rows could not be read.
+const Key kAuditConfigErrorKey = ValueKey<String>('audit-config-error');
+
+/// The line under an opened action naming rows this build could not decode.
+const Key kAuditConfigUnreadRowsKey =
+    ValueKey<String>('audit-config-unread-rows');
+
 // ---------------------------------------------------------------------------
 // The page
 // ---------------------------------------------------------------------------
@@ -184,7 +207,8 @@ class AuditTrailBody extends ConsumerStatefulWidget {
 }
 
 /// Public so a widget test can reach [buildCount].
-class AuditTrailBodyState extends ConsumerState<AuditTrailBody> {
+class AuditTrailBodyState extends ConsumerState<AuditTrailBody>
+    with ConfigUndoHost<AuditTrailBody> {
   /// The filter controls' state, as one value. The bar holds none of it and
   /// emits a whole new value through `onChanged`.
   AuditTrailFilters _filters = const AuditTrailFilters();
@@ -258,6 +282,11 @@ class AuditTrailBodyState extends ConsumerState<AuditTrailBody> {
   /// database round trip on rows nobody will ever see, and leaves the last
   /// statement the page issued being one for a page it had already thrown
   /// away.
+  /// An undo is a new action at the top of the trail, so the answer to "what
+  /// is on screen now" is the newest page again.
+  @override
+  void onConfigUndone() => _refresh();
+
   void _refresh() {
     final fresh = _firstPageOnly(_filters);
     setState(() {
@@ -367,6 +396,9 @@ class AuditTrailBodyState extends ConsumerState<AuditTrailBody> {
     final actions = <AuditAction>[
       for (final result in resolved) ...result.actions,
     ];
+    final configChanges = <String, ActionChangeCounts>{
+      for (final result in resolved) ...result.configChanges,
+    };
     // The number the `LIMIT` applied to, not `actions.length`: eight rows of
     // one struct write are one action, and it is the eight that the cap
     // counted.
@@ -403,7 +435,7 @@ class AuditTrailBodyState extends ConsumerState<AuditTrailBody> {
           Expanded(child: _empty(context))
         else ...[
           _header(context),
-          Expanded(child: _list(actions)),
+          Expanded(child: _list(actions, configChanges)),
         ],
         if (actions.isNotEmpty && tail.reachedLimit) ...[
           _limitNote(context),
@@ -547,11 +579,47 @@ class AuditTrailBodyState extends ConsumerState<AuditTrailBody> {
 
   /// `ListView.builder` is what keeps a 500-action result from building 500
   /// tiles in one frame (T-05-64).
-  Widget _list(List<AuditAction> actions) => ListView.builder(
+  ///
+  /// A configuration action — one [configChanges] names — is drawn as the
+  /// configuration view draws it: titled by what it changed, its field diffs
+  /// when opened, and Undo beside it. That is the whole of what makes this page
+  /// and the configuration history one trail rather than two: a page save is
+  /// not a `pref` line here and a diff over there.
+  ///
+  /// Undo is offered on every configuration action, where the configuration
+  /// view also checks that each row is shared. That check reads the rows,
+  /// which this list does not load, and it cannot fail here: this page reads
+  /// the Postgres trail, and Postgres holds shared rows only (C-13). The plan
+  /// refuses a station row regardless.
+  Widget _list(
+    List<AuditAction> actions,
+    Map<String, ActionChangeCounts> configChanges,
+  ) =>
+      ListView.builder(
         key: kAuditTrailListKey,
         itemCount: actions.length,
-        itemBuilder: (context, index) =>
-            AuditActionTile(action: actions[index]),
+        itemBuilder: (context, index) {
+          final action = actions[index];
+          final counts = configChanges[action.actionId];
+          if (counts == null) return AuditActionTile(action: action);
+          // Keyed by the action: an undo prepends a new action and shifts
+          // every other one down, and an unkeyed row would hand the shifted
+          // action the expansion state of the one above it.
+          return Row(
+            key: ValueKey(action.actionId),
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: DeferredConfigActionTile(
+                  action: action,
+                  counts: counts,
+                  opened: _OpenedConfigAction(action: action, counts: counts),
+                ),
+              ),
+              configUndoButton(action.actionId),
+            ],
+          );
+        },
       );
 
   /// Under the list, not over it: the cap is a fact about the bottom of the
@@ -582,4 +650,65 @@ class AuditTrailBodyState extends ConsumerState<AuditTrailBody> {
           ),
         ),
       );
+}
+
+/// An opened configuration action: its change rows, read now, drawn with its
+/// header as the configuration view draws them.
+///
+/// Mounted only while its tile is open, so this is the one read an action
+/// costs. `configActionChangesProvider` reads by action id and **unfiltered**:
+/// the trail's filters chose the action, not which of its entities to show.
+class _OpenedConfigAction extends ConsumerWidget {
+  const _OpenedConfigAction({required this.action, required this.counts});
+
+  final AuditAction action;
+  final ActionChangeCounts counts;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final secondary = theme.textTheme.bodySmall
+        ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
+
+    return ref.watch(configActionChangesProvider(action.actionId)).when(
+          loading: () => const Padding(
+            key: kAuditConfigLoadingKey,
+            padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: LinearProgressIndicator(),
+          ),
+          // Said, not swallowed: an opened action with nothing under it would
+          // read as an action that changed nothing.
+          error: (error, _) => Padding(
+            key: kAuditConfigErrorKey,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Text('$kAuditConfigUnreadable $error', style: secondary),
+          ),
+          data: (records) {
+            final history = groupHistoryRows(
+              auditRows: action.rows,
+              changes: records,
+              auditTotalsByActionId: {action.actionId: action.totalRowCount},
+              changeTotalsByActionId: {action.actionId: counts.total},
+            ).single;
+            // Rows the count saw and this build could not decode. They are
+            // real rows; the line says so rather than letting the entity list
+            // look complete.
+            final unread = counts.total - records.length;
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                ...configActionChildren(history),
+                if (unread > 0)
+                  Padding(
+                    key: kAuditConfigUnreadRowsKey,
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                    child: Text(kAuditConfigUnreadRowsNote(unread, counts.total),
+                        style: secondary),
+                  ),
+              ],
+            );
+          },
+        );
+  }
 }
