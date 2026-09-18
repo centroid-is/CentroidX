@@ -428,7 +428,6 @@ const Key kAccessAnonymousPagesWarningKey =
 /// The create dialog's reserved-name sentence.
 const Key kAccessUserReservedKey = Key('access-user-reserved');
 
-/// The station-account toggle on a user row.
 /// The Pages control on an account's row.
 Key kAccessUserPagesKey(String username) => Key('access-user-pages-$username');
 
@@ -447,16 +446,20 @@ Key kAccessUserPagesOverrideKey(String username) =>
 /// is what keeps that from being a surprise.
 const String kAccessUserPagesOverrideTag = 'own pages';
 
-const String kAccessUserPagesTooltip = 'Which pages this account sees';
+const String kAccessUserPagesLabel = 'Pages';
+
+/// The Pages entry's faded value: whether the account follows its role, and
+/// how many pages its own list holds when it does not.
+String kAccessUserPagesValue(Set<String>? pages) => switch (pages?.length) {
+      null => 'Follows role',
+      1 => '1 page',
+      final n => '$n pages',
+    };
 
 Key kAccessUserStationAccountKey(String username) =>
     Key('access-user-station-$username');
 
-/// The two tooltips are the two states, and the ON one carries the way back.
-const String kAccessUserStationAccountOffTooltip =
-    'Make station account — sessions never expire';
-const String kAccessUserStationAccountOnTooltip =
-    'Station account — sessions never expire. Tap to make it a person again.';
+const String kAccessUserStationAccountLabel = 'Station account';
 
 /// The confirm labels, named so the tests tap the same words the operator
 /// reads.
@@ -486,12 +489,17 @@ Key kAccessUserTimeoutTagKey(String username) =>
 /// an account that differs from the default says so where the roster is read.
 String kAccessUserTimeoutTag(int minutes) => '$minutes min';
 
-const String kAccessUserTimeoutTooltip = 'Inactivity timeout for this account';
+const String kAccessUserTimeoutLabel = 'Inactivity timeout';
 
-/// A station account has no timeout to set — its sessions never expire. The
-/// control is inapplicable there rather than refused, and says why.
-const String kAccessUserTimeoutStationTooltip =
-    'Station account — sessions never expire';
+/// The Timeout entry's faded value. A station account has no timeout to set —
+/// its sessions never expire — so its entry is inapplicable there rather than
+/// refused, and this is what says why.
+String kAccessUserTimeoutValue({required bool station, int? ownMinutes}) =>
+    station
+        ? 'Never expires'
+        : ownMinutes != null
+            ? '$ownMinutes min'
+            : '${kDefaultInactivityTimeout.inMinutes} min (default)';
 
 /// The timeout dialog's field, and its two ways out besides Cancel.
 const Key kAccessUserTimeoutFieldKey = Key('access-user-timeout-field');
@@ -520,11 +528,7 @@ const String kAccessUserTimeoutDefaultLabel = 'Use default';
 Key kAccessUserAlarmNavigateKey(String username) =>
     Key('access-user-alarm-navigate-$username');
 
-/// The two tooltips are the two states, each saying what a tap does.
-const String kAccessUserAlarmNavigateOffTooltip =
-    'Stays put when an alarm raises — tap to go to the alarm\'s page';
-const String kAccessUserAlarmNavigateOnTooltip =
-    'Goes to a raising alarm\'s page — tap to stay put';
+const String kAccessUserAlarmNavigateLabel = 'Go to raising alarms';
 
 const String kAccessUserAlarmNavigateConfirmOn = 'Go to alarms';
 const String kAccessUserAlarmNavigateConfirmOff = 'Stay put';
@@ -563,7 +567,7 @@ Key kAccessUserHomePageTagKey(String username) =>
 /// the menu by, and its address only when this station has no such page.
 String kAccessUserHomePageTag(String page) => 'opens $page';
 
-const String kAccessUserHomePageTooltip = 'Home page for this account';
+const String kAccessUserHomePageLabel = 'Home page';
 
 /// One choice in the home-page dialog; null is Home, "no page of its own".
 Key kAccessUserHomePageOptionKey(String? path) =>
@@ -602,17 +606,32 @@ Key kAccessUserCreatedKey(String username) =>
 Key kAccessUserLastLoginKey(String username) =>
     Key('access-user-last-login-$username');
 
+/// One account's actions button — the "…" that opens every control below.
+Key kAccessUserActionsKey(String username) =>
+    Key('access-user-actions-$username');
+
+const String kAccessUserActionsTooltip = 'Account actions';
+
+/// The two-state entries' faded value.
+const String kAccessUserOn = 'On';
+const String kAccessUserOff = 'Off';
+
 /// One account's change-roles control.
 Key kAccessUserChangeRoleKey(String username) =>
     Key('access-user-change-role-$username');
+
 
 /// One account's reset-password control.
 Key kAccessUserSetPasswordKey(String username) =>
     Key('access-user-set-password-$username');
 
+const String kAccessUserSetPasswordLabel = 'Set password';
+
 /// One account's delete control.
 Key kAccessUserDeleteKey(String username) =>
     Key('access-user-delete-$username');
+
+const String kAccessUserDeleteLabel = 'Delete account';
 
 /// The create control. Present whenever there is a table to create into.
 const Key kAccessUsersCreateKey = Key('access-users-create');
@@ -896,28 +915,39 @@ const int _kNameFlex = 5;
 const int _kRoleFlex = 5;
 const int _kWhenFlex = 6;
 
-/// Eight [_kActionSize] icon buttons: station account, timeout, home page,
-/// alarm navigation, pages, role, password, delete. Widened from 192 when the
-/// Pages control joined them and from 240 when the timeout did; the home page
-/// made seven, and seven at 48 px squeezed the timestamps below their gap at
-/// 900 px, so the buttons went compact instead of the columns going narrower.
+/// One [_kActionSize] "…" button, which opens every control an account has.
 ///
-/// Alarm navigation made eight, and eight at 40 px cost the four flex columns
-/// 40 px they did not have: at 900 px `commissioning` and `Engineering`
-/// wrapped **mid-word**. So the buttons shrank again rather than the columns —
-/// see [_kActionSize]. A fixed width with one more button than it was sized
-/// for overflows the row rather than wrapping, which is how this number earns
-/// a comment.
-const double _kActionsWidth = 288;
+/// It was eight icon buttons side by side — station account, timeout, home
+/// page, alarm navigation, pages, role, password, delete — 288 px of glyphs
+/// nobody could tell apart without hovering each one, which took the width the
+/// four text columns needed and wrapped `commissioning` mid-word at 900 px.
+/// The menu names each action and shows what it is set to now, and the row
+/// gets its width back.
+const double _kActionsWidth = _kActionSize;
 
-/// One row action's box, both dimensions.
+/// The actions button's box, both dimensions.
 ///
-/// Below the 40 px a compact [IconButton] takes by itself, and set explicitly
-/// so eight of them fit the four text columns' budget rather than eating into
-/// it. The 18 px glyph is unchanged; what shrinks is the padding around it.
-/// This screen is read on a desk far more than it is tapped on a panel, and
-/// nothing here is an action an operator takes mid-shift.
+/// Set explicitly because a Material 3 [IconButton] sizes itself from its
+/// ButtonStyle, and 36 px keeps a one-line row the height it was.
 const double _kActionSize = 36;
+
+/// The actions menu's width. A floor so a short menu does not crowd the faded
+/// values against the labels, and a ceiling so a long role list ellipsises
+/// rather than stretching the menu across the page.
+const BoxConstraints _kActionsMenuConstraints =
+    BoxConstraints(minWidth: 280, maxWidth: 380);
+
+/// Every control an account's "…" menu can offer, in menu order.
+enum _UserAction {
+  stationAccount,
+  timeout,
+  homePage,
+  alarmNavigate,
+  pages,
+  role,
+  password,
+  delete,
+}
 
 /// The drag handle's slot at the start of every row, in front of the four
 /// flex columns so its width comes out of all of them in proportion. Taken out
@@ -1204,88 +1234,7 @@ class _UserTileState extends ConsumerState<_UserTile> {
               ),
               SizedBox(
                 width: _kActionsWidth,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (!_anonymous) ...[
-                      _action(
-                        key: kAccessUserStationAccountKey(user.username),
-                        icon: user.stationAccount
-                            ? Icons.desktop_windows
-                            : Icons.desktop_windows_outlined,
-                        tooltip: user.stationAccount
-                            ? kAccessUserStationAccountOnTooltip
-                            : kAccessUserStationAccountOffTooltip,
-                        onPressed: _toggleStationAccount,
-                      ),
-                      _action(
-                        key: kAccessUserTimeoutKey(user.username),
-                        icon: _ownTimeout != null
-                            ? Icons.timer
-                            : Icons.timer_outlined,
-                        tooltip: user.stationAccount
-                            ? kAccessUserTimeoutStationTooltip
-                            : kAccessUserTimeoutTooltip,
-                        // Disabled for a station account because the setting
-                        // does not apply to it, not for lack of a permission —
-                        // this file never greys a control for that. The
-                        // tooltip says which.
-                        onPressed: user.stationAccount ? null : _setTimeout,
-                      ),
-                    ],
-                    // Every account, the anonymous one included: its home
-                    // page is where a logged-out panel opens.
-                    _action(
-                      key: kAccessUserHomePageKey(user.username),
-                      icon: user.homePage != null
-                          ? Icons.home
-                          : Icons.home_outlined,
-                      tooltip: kAccessUserHomePageTooltip,
-                      onPressed: _setHomePage,
-                    ),
-                    // Every account too: the anonymous account's value is
-                    // what a logged-out panel does when an alarm raises.
-                    _action(
-                      key: kAccessUserAlarmNavigateKey(user.username),
-                      icon: user.alarmAutoNavigate
-                          ? Icons.notifications_active
-                          : Icons.notifications_none,
-                      tooltip: user.alarmAutoNavigate
-                          ? kAccessUserAlarmNavigateOnTooltip
-                          : kAccessUserAlarmNavigateOffTooltip,
-                      onPressed: _toggleAlarmNavigate,
-                    ),
-                    _action(
-                      key: kAccessUserPagesKey(user.username),
-                      icon: _overridesPages
-                          ? Icons.layers
-                          : Icons.layers_outlined,
-                      tooltip: kAccessUserPagesTooltip,
-                      onPressed: _togglePages,
-                    ),
-                    _action(
-                      key: kAccessUserChangeRoleKey(user.username),
-                      icon: Icons.badge_outlined,
-                      tooltip: 'Change role',
-                      onPressed: _changeRole,
-                    ),
-                    if (!_anonymous) ...[
-                      _action(
-                        key: kAccessUserSetPasswordKey(user.username),
-                        icon: Icons.password_outlined,
-                        tooltip: 'Set password',
-                        onPressed: _setPassword,
-                      ),
-                      _action(
-                        key: kAccessUserDeleteKey(user.username),
-                        icon: Icons.delete_outline,
-                        tooltip: 'Delete account',
-                        onPressed: _delete,
-                      ),
-                    ],
-                  ],
-                ),
+                child: _actionsMenu(context),
               ),
             ],
           ),
@@ -1346,28 +1295,196 @@ class _UserTileState extends ConsumerState<_UserTile> {
     );
   }
 
-  /// One action in the row's trailing cluster, sized by [_kActionSize].
-  Widget _action({
+  /// The row's one "…" button, and the menu of everything that changes the
+  /// account.
+  ///
+  /// Each entry is the action's icon and name, with what it is set to now in
+  /// faded text at the end, so the menu answers "what is this account's home
+  /// page?" without opening a dialog. The entries keep the keys the separate
+  /// buttons had.
+  ///
+  /// The anonymous account offers four: home page, alarm navigation, pages and
+  /// role. The rest are **absent** rather than greyed — they are not permission
+  /// refusals, and the repository throws `AnonymousAccountError` for each.
+  Widget _actionsMenu(BuildContext context) {
+    return PopupMenuButton<_UserAction>(
+      key: kAccessUserActionsKey(user.username),
+      tooltip: kAccessUserActionsTooltip,
+      icon: const Icon(Icons.more_horiz, size: 18),
+      // Through `styleFrom` rather than `constraints`: a Material 3 IconButton
+      // sizes itself from its ButtonStyle and ignores the constraints.
+      style: IconButton.styleFrom(
+        padding: EdgeInsets.zero,
+        fixedSize: const Size.square(_kActionSize),
+        minimumSize: const Size.square(_kActionSize),
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      ),
+      position: PopupMenuPosition.under,
+      constraints: _kActionsMenuConstraints,
+      onSelected: (action) {
+        switch (action) {
+          case _UserAction.stationAccount:
+            _toggleStationAccount();
+          case _UserAction.timeout:
+            _setTimeout();
+          case _UserAction.homePage:
+            _setHomePage();
+          case _UserAction.alarmNavigate:
+            _toggleAlarmNavigate();
+          case _UserAction.pages:
+            _togglePages();
+          case _UserAction.role:
+            _changeRole();
+          case _UserAction.password:
+            _setPassword();
+          case _UserAction.delete:
+            _delete();
+        }
+      },
+      itemBuilder: (context) => [
+        if (!_anonymous) ...[
+          _menuEntry(
+            context,
+            action: _UserAction.stationAccount,
+            key: kAccessUserStationAccountKey(user.username),
+            icon: user.stationAccount
+                ? Icons.desktop_windows
+                : Icons.desktop_windows_outlined,
+            label: kAccessUserStationAccountLabel,
+            active: user.stationAccount,
+            value: user.stationAccount ? kAccessUserOn : kAccessUserOff,
+          ),
+          _menuEntry(
+            context,
+            action: _UserAction.timeout,
+            key: kAccessUserTimeoutKey(user.username),
+            icon: _ownTimeout != null ? Icons.timer : Icons.timer_outlined,
+            label: kAccessUserTimeoutLabel,
+            active: _ownTimeout != null,
+            value: kAccessUserTimeoutValue(
+              station: user.stationAccount,
+              ownMinutes: _ownTimeout,
+            ),
+            // Disabled for a station account because the setting does not
+            // apply to it, not for lack of a permission — this file never
+            // greys a control for that. The value says which.
+            enabled: !user.stationAccount,
+          ),
+        ],
+        // Every account, the anonymous one included: its home page is where a
+        // logged-out panel opens.
+        _menuEntry(
+          context,
+          action: _UserAction.homePage,
+          key: kAccessUserHomePageKey(user.username),
+          icon: user.homePage != null ? Icons.home : Icons.home_outlined,
+          label: kAccessUserHomePageLabel,
+          active: user.homePage != null,
+          value: user.homePage == null
+              ? kAccessUserHomePageDefaultLabel
+              : _homePageLabel(user.homePage!),
+        ),
+        // Every account too: the anonymous account's value is what a
+        // logged-out panel does when an alarm raises.
+        _menuEntry(
+          context,
+          action: _UserAction.alarmNavigate,
+          key: kAccessUserAlarmNavigateKey(user.username),
+          icon: user.alarmAutoNavigate
+              ? Icons.notifications_active
+              : Icons.notifications_none,
+          label: kAccessUserAlarmNavigateLabel,
+          active: user.alarmAutoNavigate,
+          value: user.alarmAutoNavigate ? kAccessUserOn : kAccessUserOff,
+        ),
+        _menuEntry(
+          context,
+          action: _UserAction.pages,
+          key: kAccessUserPagesKey(user.username),
+          icon: _overridesPages ? Icons.layers : Icons.layers_outlined,
+          label: kAccessUserPagesLabel,
+          active: _overridesPages,
+          value: kAccessUserPagesValue(
+              decodeAllowedPagesColumn(user.allowedPages)),
+        ),
+        _menuEntry(
+          context,
+          action: _UserAction.role,
+          key: kAccessUserChangeRoleKey(user.username),
+          icon: Icons.badge_outlined,
+          label: kAccessUsersColumnRole,
+          value: roleLabelFor(AccessRepository.rolesOf(user)),
+        ),
+        if (!_anonymous) ...[
+          _menuEntry(
+            context,
+            action: _UserAction.password,
+            key: kAccessUserSetPasswordKey(user.username),
+            icon: Icons.password_outlined,
+            label: kAccessUserSetPasswordLabel,
+          ),
+          const PopupMenuDivider(),
+          _menuEntry(
+            context,
+            action: _UserAction.delete,
+            key: kAccessUserDeleteKey(user.username),
+            icon: Icons.delete_outline,
+            label: kAccessUserDeleteLabel,
+          ),
+        ],
+      ],
+    );
+  }
+
+  /// One entry in the actions menu: the icon, the action's name, and — when
+  /// the action has one — the current setting, faded, at the far end.
+  ///
+  /// [active] is whether the account differs from the default for this
+  /// setting; actions with no state leave it true.
+  PopupMenuItem<_UserAction> _menuEntry(
+    BuildContext context, {
+    required _UserAction action,
     required Key key,
     required IconData icon,
-    required String tooltip,
-    required VoidCallback? onPressed,
-  }) =>
-      IconButton(
-        key: key,
-        // Through `styleFrom` rather than `constraints`: a Material 3
-        // IconButton sizes itself from its ButtonStyle and ignores the
-        // constraints, so the box below is the only thing that shrinks it.
-        style: IconButton.styleFrom(
-          padding: EdgeInsets.zero,
-          fixedSize: const Size.square(_kActionSize),
-          minimumSize: const Size.square(_kActionSize),
-          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-        ),
-        icon: Icon(icon, size: 18),
-        tooltip: tooltip,
-        onPressed: onPressed,
-      );
+    required String label,
+    String? value,
+    bool active = true,
+    bool enabled = true,
+  }) {
+    final theme = Theme.of(context);
+    return PopupMenuItem<_UserAction>(
+      key: key,
+      value: action,
+      enabled: enabled,
+      child: Row(
+        children: [
+          // The icon carries the state as well as the value does: filled and
+          // full-strength when the account has a setting of its own, outlined
+          // and faded when it is on the default.
+          Icon(
+            icon,
+            size: 18,
+            color: active ? null : theme.colorScheme.onSurfaceVariant,
+          ),
+          const SizedBox(width: 12),
+          Text(label),
+          if (value != null) ...[
+            const SizedBox(width: 24),
+            Expanded(
+              child: Text(
+                value,
+                textAlign: TextAlign.end,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
 
   /// The username, and under it what else identifies the row: the anonymous
   /// account's tag, and the page the account opens on.

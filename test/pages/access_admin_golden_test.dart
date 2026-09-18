@@ -95,6 +95,7 @@ import 'package:tfc_dart/core/access/access_repository.dart';
 import 'package:drift/drift.dart' show Value;
 import 'package:tfc_dart/core/database_drift.dart' show AppUserData;
 
+import '../helpers/access_user_actions.dart';
 import '../helpers/golden_tolerance.dart';
 import '../helpers/golden_platform.dart';
 
@@ -618,7 +619,7 @@ void _expectTimestampColumnsHaveAGap(WidgetTester tester) {
 }
 
 void main() {
-  final (light, _) = muted();
+  final (light, dark) = muted();
 
   useTolerantGoldenComparator();
 
@@ -663,7 +664,6 @@ void main() {
           lessThan(tester.getTopLeft(find.byKey(kAccessUserRowKey('admin'))).dy),
         );
         expect(find.byKey(kAccessUserAnonymousTagKey), findsOneWidget);
-        expect(find.byKey(kAccessUserDeleteKey(kAnonymousUsername)), findsNothing);
         expect(find.byKey(kAccessRoleDeleteKey(kOperatorRoleName)), findsOneWidget);
         // A drag handle on every role and every person; none on anonymous,
         // which is pinned first.
@@ -922,7 +922,7 @@ void main() {
         ));
         await tester.pumpAndSettle();
 
-        await tester.tap(find.byKey(kAccessUserChangeRoleKey('linar')));
+        await tapUserAction(tester, kAccessUserChangeRoleKey, 'linar');
         await tester.pumpAndSettle();
 
         // The state key: the dialog is open and offers every role the store
@@ -972,7 +972,7 @@ void main() {
         ));
         await tester.pumpAndSettle();
 
-        await tester.tap(find.byKey(kAccessUserChangeRoleKey(kAnonymousUsername)));
+        await tapUserAction(tester, kAccessUserChangeRoleKey, kAnonymousUsername);
         await tester.pumpAndSettle();
 
         // The state key: the picker is open on the anonymous account, the banner
@@ -1035,7 +1035,7 @@ void main() {
         expect(find.byKey(kAccessUserHomePageTagKey('linar')), findsOneWidget);
         expect(find.text(kAccessUserHomePageTag('Freezer')), findsOneWidget);
 
-        await tester.tap(find.byKey(kAccessUserHomePageKey('linar')));
+        await tapUserAction(tester, kAccessUserHomePageKey, 'linar');
         await tester.pumpAndSettle();
 
         // The state key: open on linar, the stored page chosen, sections as
@@ -1075,17 +1075,19 @@ void main() {
         await tester.pumpAndSettle();
 
         // The row states: linar on, everybody else off.
-        String? tooltip(String username) => tester
-            .widget<IconButton>(find.byKey(kAccessUserAlarmNavigateKey(username)))
-            .tooltip;
-        expect(tooltip('linar'), kAccessUserAlarmNavigateOnTooltip);
-        expect(tooltip('admin'), kAccessUserAlarmNavigateOffTooltip);
-        expect(tooltip(kAnonymousUsername), kAccessUserAlarmNavigateOffTooltip);
-        // Eight actions still leave the timestamps their gap at 900 px.
+        Future<String?> state(String username) async {
+          await openUserActions(tester, username);
+          final value =
+              userActionValue(tester, kAccessUserAlarmNavigateKey, username);
+          await dismissUserActions(tester);
+          return value;
+        }
+        expect(await state('linar'), kAccessUserOn);
+        expect(await state('admin'), kAccessUserOff);
+        expect(await state(kAnonymousUsername), kAccessUserOff);
         _expectTimestampColumnsHaveAGap(tester);
 
-        await tester
-            .tap(find.byKey(kAccessUserAlarmNavigateKey(kAnonymousUsername)));
+        await tapUserAction(tester, kAccessUserAlarmNavigateKey, kAnonymousUsername);
         await tester.pumpAndSettle();
 
         expect(
@@ -1104,5 +1106,69 @@ void main() {
         );
       });
     });
+
+    // One "…" per row, and the menu it opens: every control an account has,
+    // each with its icon, its name and — faded, at the end — what it is set
+    // to now. linar has a setting of its own for everything that can carry
+    // one, so the image shows both icon states: filled and full-strength on
+    // linar's own values, outlined and faded where the station account is off.
+    for (final (name, theme) in [('light', light), ('dark', dark)]) {
+      testWidgets('the account actions menu, open, $name', (tester) async {
+        await withClock(Clock.fixed(_frozen), () async {
+          _sizeView(tester, const Size(900, 760));
+          final users = [
+            for (final u in _users())
+              u.username == 'linar'
+                  ? u.copyWith(
+                      homePage: const Value('/packing'),
+                      alarmAutoNavigate: true,
+                      allowedPages: Value(encodeAllowedPagesColumn(
+                          {'/', '/packing', '/halls/freezer'})),
+                      inactivityTimeoutMinutes: const Value(45),
+                    )
+                  : u,
+          ];
+          RouteRegistry().addMenuItem(const MenuItem(
+              label: 'Packing', path: '/packing', icon: Icons.inventory));
+          await tester.pumpWidget(_dialogHost(
+            theme: theme,
+            store: _AnsweringStore(roleRows: _roles(), userRows: users),
+            session: _withUsers(),
+          ));
+          await tester.pumpAndSettle();
+
+          // One button per row where there were eight.
+          for (final user in users) {
+            expect(find.byKey(kAccessUserActionsKey(user.username)),
+                findsOneWidget);
+          }
+          _expectTimestampColumnsHaveAGap(tester);
+
+          await openUserActions(tester, 'linar');
+
+          expect(userActionValue(tester, kAccessUserStationAccountKey, 'linar'),
+              kAccessUserOff);
+          expect(userActionValue(tester, kAccessUserTimeoutKey, 'linar'),
+              kAccessUserTimeoutValue(station: false, ownMinutes: 45));
+          expect(userActionValue(tester, kAccessUserHomePageKey, 'linar'),
+              'Packing');
+          expect(userActionValue(tester, kAccessUserAlarmNavigateKey, 'linar'),
+              kAccessUserOn);
+          expect(userActionValue(tester, kAccessUserPagesKey, 'linar'),
+              kAccessUserPagesValue({'/', '/packing', '/halls/freezer'}));
+          expect(userActionValue(tester, kAccessUserChangeRoleKey, 'linar'),
+              roleLabelFor(const ['Shift Leader', 'Maintenance']));
+          expect(userActionValue(tester, kAccessUserSetPasswordKey, 'linar'),
+              isNull,
+              reason: 'an action with nothing to show shows nothing');
+          expect(tester.takeException(), isNull);
+
+          await expectLater(
+            find.byType(MaterialApp),
+            matchesGoldenFile('goldens/access_admin_actions_menu_$name.png'),
+          );
+        });
+      });
+    }
   });
 }
