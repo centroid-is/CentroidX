@@ -139,7 +139,12 @@ final class RemoteStateMan implements StateManApi {
     // assigned on the next statement; nothing calls them before then.
     _heartbeat = HeartbeatPump(
       config: config,
-      isReady: () => _supervisor.state == LinkState.ready,
+      // Every state the pump runs in, not only `ready`: the same predicate
+      // [_onLinkState] starts it on. Started while awaiting a sign-in but
+      // gated per beat on `ready`, it ran and sent nothing, and the gateway
+      // reaped the sign-in screen on every deadline
+      // (`awaiting_liveness_test.dart`).
+      isReady: () => _linkHeld,
       peer: () => _supervisor.peer,
       // The delivery ack (16-02-DECISION §5.1). Read straight off the
       // subscription state the resync path already maintains, so the pump
@@ -1848,6 +1853,13 @@ final class RemoteStateMan implements StateManApi {
 
   /// One transition. Everything that belongs to *entering* a state rather than
   /// to the code path that got there lives here.
+  /// Whether the link is up and held open: ready, or admitted and held at a
+  /// sign-in screen or on a refused read. The heartbeat's whole lifetime.
+  bool get _linkHeld =>
+      _supervisor.state == LinkState.ready ||
+      _supervisor.awaitingSignIn ||
+      _supervisor.readsWithheld;
+
   void _onLinkState(LinkState state) {
     if (_disposed) return;
     final isReady = state == LinkState.ready;
@@ -1890,7 +1902,7 @@ final class RemoteStateMan implements StateManApi {
     // `awaiting_sign_in_test.dart` pins, and adds no reachable surface.
     // `readsWithheld` beats for the awaiting case's reason: it is the same
     // held-open socket, and the same reaper is waiting on the far side.
-    if (isReady || _supervisor.awaitingSignIn || _supervisor.readsWithheld) {
+    if (_linkHeld) {
       _heartbeat.start();
     } else {
       _heartbeat.stop();

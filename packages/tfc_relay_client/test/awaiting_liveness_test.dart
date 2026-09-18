@@ -182,6 +182,14 @@ void main() {
     addTearDown(watch.cancel);
 
     await fixture.client.sessionReady;
+    // The hold lands a round trip after hello: the gate opens on the hello
+    // answer, and the refused subscribe comes back behind it. The
+    // supervisor re-announces its state at the hold.
+    if (!fixture.client.awaitingSignIn) {
+      await fixture.client.linkStates
+          .firstWhere((_) => fixture.client.awaitingSignIn)
+          .timeout(const Duration(seconds: 5));
+    }
     expect(fixture.client.awaitingSignIn, isTrue,
         reason: 'the connect-path subscribe was refused with the marker: '
             'this is the hold under test');
