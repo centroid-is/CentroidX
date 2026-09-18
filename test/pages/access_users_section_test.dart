@@ -59,6 +59,7 @@ import 'package:tfc_dart/core/access/access_repository.dart';
 import 'package:tfc_dart/core/access/local_auth_provider.dart';
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/database_drift.dart';
+import '../helpers/access_user_actions.dart';
 import '../helpers/test_helpers.dart';
 
 // ---------------------------------------------------------------------------
@@ -468,7 +469,7 @@ void main() {
       await seedBob();
       await pumpSection(tester, overrides());
 
-      await tester.tap(find.byKey(kAccessUserTimeoutKey('bob')));
+      await tapUserAction(tester, kAccessUserTimeoutKey, 'bob');
       await tester.pumpAndSettle();
 
       final field =
@@ -491,7 +492,7 @@ void main() {
       await seedBob(minutes: 45);
       await pumpSection(tester, overrides());
 
-      await tester.tap(find.byKey(kAccessUserTimeoutKey('bob')));
+      await tapUserAction(tester, kAccessUserTimeoutKey, 'bob');
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(kAccessUserTimeoutDefaultKey));
       await tester.pumpAndSettle();
@@ -506,7 +507,7 @@ void main() {
       await seedBob();
       await pumpSection(tester, overrides());
 
-      await tester.tap(find.byKey(kAccessUserTimeoutKey('bob')));
+      await tapUserAction(tester, kAccessUserTimeoutKey, 'bob');
       await tester.pumpAndSettle();
 
       expect(find.byKey(kAccessUserTimeoutDefaultKey), findsNothing,
@@ -518,7 +519,7 @@ void main() {
       await seedBob();
       await pumpSection(tester, overrides());
 
-      await tester.tap(find.byKey(kAccessUserTimeoutKey('bob')));
+      await tapUserAction(tester, kAccessUserTimeoutKey, 'bob');
       await tester.pumpAndSettle();
       await tester.enterText(find.byKey(kAccessUserTimeoutFieldKey), '0');
       await tester.tap(find.byKey(kAccessUserTimeoutSaveKey));
@@ -550,14 +551,17 @@ void main() {
     testWidgets('a station account has no timeout to set', (tester) async {
       // Disabled because the setting does not apply — its sessions never
       // expire — and not for lack of a permission, which this screen never
-      // greys anything for. The tooltip is what says which.
+      // greys anything for. The entry's faded value is what says which.
       await seedBob(minutes: 45, stationAccount: true);
       await pumpSection(tester, overrides());
 
-      final button =
-          tester.widget<IconButton>(find.byKey(kAccessUserTimeoutKey('bob')));
-      expect(button.onPressed, isNull);
-      expect(button.tooltip, kAccessUserTimeoutStationTooltip);
+      await openUserActions(tester, 'bob');
+      final entry = tester.widget<PopupMenuItem<Object?>>(
+          find.byKey(kAccessUserTimeoutKey('bob')));
+      expect(entry.enabled, isFalse);
+      expect(userActionValue(tester, kAccessUserTimeoutKey, 'bob'),
+          kAccessUserTimeoutValue(station: true));
+      await dismissUserActions(tester);
       expect(find.byKey(kAccessUserTimeoutTagKey('bob')), findsNothing,
           reason: 'a stored number governs nothing while the flag is set, so '
               'showing it beside the role would only mislead');
@@ -604,7 +608,7 @@ void main() {
       await seedBob();
       await pumpSection(tester, overrides());
 
-      await tester.tap(find.byKey(kAccessUserHomePageKey('bob')));
+      await tapUserAction(tester, kAccessUserHomePageKey, 'bob');
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(kAccessUserHomePageOptionKey('/halls/freezer')));
       await tester.pumpAndSettle();
@@ -619,7 +623,7 @@ void main() {
       await seedBob();
       await pumpSection(tester, overrides());
 
-      await tester.tap(find.byKey(kAccessUserHomePageKey('bob')));
+      await tapUserAction(tester, kAccessUserHomePageKey, 'bob');
       await tester.pumpAndSettle();
 
       expect(find.byKey(kAccessUserHomePageOptionKey('/pages/packing')),
@@ -634,7 +638,7 @@ void main() {
       await seedBob(homePage: '/pages/packing');
       await pumpSection(tester, overrides());
 
-      await tester.tap(find.byKey(kAccessUserHomePageKey('bob')));
+      await tapUserAction(tester, kAccessUserHomePageKey, 'bob');
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(kAccessUserHomePageOptionKey(null)));
       await tester.pumpAndSettle();
@@ -648,7 +652,7 @@ void main() {
       await seedBob(homePage: '/pages/packing');
       await pumpSection(tester, overrides());
 
-      await tester.tap(find.byKey(kAccessUserHomePageKey('bob')));
+      await tapUserAction(tester, kAccessUserHomePageKey, 'bob');
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(kAccessUserHomePageSaveKey));
       await tester.pumpAndSettle();
@@ -663,7 +667,7 @@ void main() {
       await seedBob(homePage: '/pages/elsewhere');
       await pumpSection(tester, overrides());
 
-      await tester.tap(find.byKey(kAccessUserHomePageKey('bob')));
+      await tapUserAction(tester, kAccessUserHomePageKey, 'bob');
       await tester.pumpAndSettle();
 
       expect(find.byKey(kAccessUserHomePageOptionKey('/pages/elsewhere')),
@@ -694,7 +698,7 @@ void main() {
         (tester) async {
       await pumpSection(tester, overrides());
 
-      await tester.tap(find.byKey(kAccessUserHomePageKey(kAnonymousUsername)));
+      await tapUserAction(tester, kAccessUserHomePageKey, kAnonymousUsername);
       await tester.pumpAndSettle();
       expect(find.text(kAccessUserHomePageAnonymousNote), findsOneWidget);
       await tester.tap(find.byKey(kAccessUserHomePageOptionKey('/pages/packing')));
@@ -711,7 +715,7 @@ void main() {
       session = _configureOnly();
       await pumpSection(tester, overrides());
 
-      await tester.tap(find.byKey(kAccessUserHomePageKey('bob')));
+      await tapUserAction(tester, kAccessUserHomePageKey, 'bob');
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(kAccessUserHomePageOptionKey('/pages/packing')));
       await tester.pumpAndSettle();
@@ -759,7 +763,7 @@ void main() {
 
   /// Opens the change-role dialog for [username].
   Future<void> openRolePicker(WidgetTester tester, String username) async {
-    await tester.tap(find.byKey(kAccessUserChangeRoleKey(username)));
+    await tapUserAction(tester, kAccessUserChangeRoleKey, username);
     await tester.pumpAndSettle();
   }
 
@@ -771,7 +775,7 @@ void main() {
 
   /// Opens the set-password dialog for [username].
   Future<void> openSetPassword(WidgetTester tester, String username) async {
-    await tester.tap(find.byKey(kAccessUserSetPasswordKey(username)));
+    await tapUserAction(tester, kAccessUserSetPasswordKey, username);
     await tester.pumpAndSettle();
   }
 
@@ -954,27 +958,25 @@ void main() {
       await makeUser('freezer', 'Shift Leader');
       await pumpSection(tester, overrides());
 
-      await tester.tap(find.byKey(kAccessUserStationAccountKey('freezer')));
+      await tapUserAction(tester, kAccessUserStationAccountKey, 'freezer');
       await tester.pumpAndSettle();
       await tester.tap(find.text(kAccessUserStationAccountConfirmMake));
       await tester.pumpAndSettle();
 
       expect(store!.calls, contains('setUserStationAccount:freezer:true'));
-      // The roster refreshed from the repository, so the row now renders the
-      // on-state affordance — the one whose tooltip offers the way back.
+      // The roster refreshed from the repository, so the menu now shows the
+      // account as a station account.
+      await openUserActions(tester, 'freezer');
       expect(
-          tester
-              .widget<IconButton>(
-                  find.byKey(kAccessUserStationAccountKey('freezer')))
-              .tooltip,
-          kAccessUserStationAccountOnTooltip);
+          userActionValue(tester, kAccessUserStationAccountKey, 'freezer'),
+          kAccessUserOn);
     });
 
     testWidgets('cancelling the confirmation writes nothing', (tester) async {
       await makeUser('freezer', 'Shift Leader');
       await pumpSection(tester, overrides());
 
-      await tester.tap(find.byKey(kAccessUserStationAccountKey('freezer')));
+      await tapUserAction(tester, kAccessUserStationAccountKey, 'freezer');
       await tester.pumpAndSettle();
       await tester.tap(find.text('Cancel'));
       await tester.pumpAndSettle();
@@ -993,25 +995,30 @@ void main() {
   // logged-out panel does.
   // -------------------------------------------------------------------------
   group('alarm navigation', () {
-    String? tooltip(WidgetTester tester, String username) => tester
-        .widget<IconButton>(find.byKey(kAccessUserAlarmNavigateKey(username)))
-        .tooltip;
+    /// The entry's faded On/Off, read from a freshly opened menu.
+    Future<String?> state(WidgetTester tester, String username) async {
+      await openUserActions(tester, username);
+      final value =
+          userActionValue(tester, kAccessUserAlarmNavigateKey, username);
+      await dismissUserActions(tester);
+      return value;
+    }
 
     testWidgets('turning it on writes through the store and the row follows',
         (tester) async {
       await makeUser('bob', 'Shift Leader');
       await pumpSection(tester, overrides());
-      expect(tooltip(tester, 'bob'), kAccessUserAlarmNavigateOffTooltip,
+      expect(await state(tester, 'bob'), kAccessUserOff,
           reason: 'every account starts off');
 
-      await tester.tap(find.byKey(kAccessUserAlarmNavigateKey('bob')));
+      await tapUserAction(tester, kAccessUserAlarmNavigateKey, 'bob');
       await tester.pumpAndSettle();
       await tester.tap(find.text(kAccessUserAlarmNavigateConfirmOn));
       await tester.pumpAndSettle();
 
       expect(store!.calls, contains('setUserAlarmAutoNavigate:bob:true'));
       expect((await userNamed('bob'))!.alarmAutoNavigate, isTrue);
-      expect(tooltip(tester, 'bob'), kAccessUserAlarmNavigateOnTooltip);
+      expect(await state(tester, 'bob'), kAccessUserOn);
       final row = sink.rows.lastWhere(
           (r) => r.itemKey == 'user.alarm_auto_navigate');
       expect(row.allowed, isTrue);
@@ -1023,7 +1030,7 @@ void main() {
       await repository.setAlarmAutoNavigate('bob', true);
       await pumpSection(tester, overrides());
 
-      await tester.tap(find.byKey(kAccessUserAlarmNavigateKey('bob')));
+      await tapUserAction(tester, kAccessUserAlarmNavigateKey, 'bob');
       await tester.pumpAndSettle();
       await tester.tap(find.text(kAccessUserAlarmNavigateConfirmOff));
       await tester.pumpAndSettle();
@@ -1035,7 +1042,7 @@ void main() {
       await makeUser('bob', 'Shift Leader');
       await pumpSection(tester, overrides());
 
-      await tester.tap(find.byKey(kAccessUserAlarmNavigateKey('bob')));
+      await tapUserAction(tester, kAccessUserAlarmNavigateKey, 'bob');
       await tester.pumpAndSettle();
       await tester.tap(find.text('Cancel'));
       await tester.pumpAndSettle();
@@ -1048,7 +1055,7 @@ void main() {
         (tester) async {
       await pumpSection(tester, overrides());
 
-      await tester.tap(find.byKey(kAccessUserAlarmNavigateKey(kAnonymousUsername)));
+      await tapUserAction(tester, kAccessUserAlarmNavigateKey, kAnonymousUsername);
       await tester.pumpAndSettle();
       expect(
           find.text(kAccessUserAlarmNavigateMessage(
@@ -1066,7 +1073,7 @@ void main() {
       session = _configureOnly();
       await pumpSection(tester, overrides());
 
-      await tester.tap(find.byKey(kAccessUserAlarmNavigateKey('bob')));
+      await tapUserAction(tester, kAccessUserAlarmNavigateKey, 'bob');
       await tester.pumpAndSettle();
       await tester.tap(find.text(kAccessUserAlarmNavigateConfirmOn));
       await tester.pumpAndSettle();
@@ -1192,6 +1199,7 @@ void main() {
       expect(cell(tester, kAccessUserLastLoginKey(kAnonymousUsername)),
           kAccessUserNotApplicable);
 
+      await openUserActions(tester, kAnonymousUsername);
       expect(find.byKey(kAccessUserChangeRoleKey(kAnonymousUsername)),
           findsOneWidget);
       expect(find.byKey(kAccessUserPagesKey(kAnonymousUsername)), findsOneWidget);
@@ -1295,7 +1303,7 @@ void main() {
 
     testWidgets('its pages block says what it governs', (tester) async {
       await pumpSection(tester, overrides());
-      await tester.tap(find.byKey(kAccessUserPagesKey(kAnonymousUsername)));
+      await tapUserAction(tester, kAccessUserPagesKey, kAnonymousUsername);
       await tester.pumpAndSettle();
 
       expect(find.byKey(kAccessAnonymousPagesWarningKey), findsOneWidget);
@@ -1451,7 +1459,7 @@ void main() {
       await makeUser('bjorn', 'Shift Leader');
       await pumpSection(tester, overrides());
 
-      await tester.tap(find.byKey(kAccessUserDeleteKey('bjorn')));
+      await tapUserAction(tester, kAccessUserDeleteKey, 'bjorn');
       await tester.pumpAndSettle();
 
       expect(find.text(kAccessUserDeleteMessage('bjorn')), findsOneWidget);
@@ -1473,7 +1481,7 @@ void main() {
       expect(await auditRowsFor('bjorn'), hasLength(2));
 
       await pumpSection(tester, overrides());
-      await tester.tap(find.byKey(kAccessUserDeleteKey('bjorn')));
+      await tapUserAction(tester, kAccessUserDeleteKey, 'bjorn');
       await tester.pumpAndSettle();
       await tester.tap(find.text(kAccessUserDeleteConfirmLabel));
       await tester.pumpAndSettle();
@@ -1494,7 +1502,7 @@ void main() {
       await makeUser('bjorn', 'Shift Leader');
       await pumpSection(tester, overrides());
 
-      await tester.tap(find.byKey(kAccessUserDeleteKey('bjorn')));
+      await tapUserAction(tester, kAccessUserDeleteKey, 'bjorn');
       await tester.pumpAndSettle();
       await tester.tap(find.text('Cancel'));
       await tester.pumpAndSettle();
@@ -1511,9 +1519,10 @@ void main() {
       session = _configureOnly();
       await pumpSection(tester, overrides());
 
-      final button = tester.widget<IconButton>(
+      await openUserActions(tester, 'bjorn');
+      final entry = tester.widget<PopupMenuItem<Object?>>(
           find.byKey(kAccessUserDeleteKey('bjorn')));
-      expect(button.onPressed, isNotNull,
+      expect(entry.enabled, isTrue,
           reason: 'nothing on this section is greyed for lack of a permission '
               '— it is pressed, and then explained');
 
@@ -1546,7 +1555,7 @@ void main() {
       await makeUser('bjorn', 'Shift Leader');
       await pumpSection(tester, overrides());
 
-      await tester.tap(find.byKey(kAccessUserDeleteKey('admin')));
+      await tapUserAction(tester, kAccessUserDeleteKey, 'admin');
       await tester.pumpAndSettle();
       await tester.tap(find.text(kAccessUserDeleteConfirmLabel));
       await tester.pumpAndSettle();
@@ -1610,7 +1619,7 @@ void main() {
         ['admin', 'keeper', 'sigga'],
       );
 
-      await tester.tap(find.byKey(kAccessUserDeleteKey('admin')));
+      await tapUserAction(tester, kAccessUserDeleteKey, 'admin');
       await tester.pumpAndSettle();
       await tester.tap(find.text(kAccessUserDeleteConfirmLabel));
       await tester.pumpAndSettle();
@@ -1627,7 +1636,7 @@ void main() {
       await makeUser('admin', 'Engineering');
       await pumpSection(tester, overrides());
 
-      await tester.tap(find.byKey(kAccessUserDeleteKey('admin')));
+      await tapUserAction(tester, kAccessUserDeleteKey, 'admin');
       await tester.pumpAndSettle();
       await tester.tap(find.text(kAccessUserDeleteConfirmLabel));
       await tester.pumpAndSettle();
@@ -1708,7 +1717,7 @@ void main() {
       await signIn(tester, 'admin');
       expect((await sessionInForce()).isElevated, isTrue);
 
-      await tester.tap(find.byKey(kAccessUserDeleteKey('admin')));
+      await tapUserAction(tester, kAccessUserDeleteKey, 'admin');
       await tester.pumpAndSettle();
       await tester.tap(find.text(kAccessUserDeleteConfirmLabel));
       await tester.pumpAndSettle();
