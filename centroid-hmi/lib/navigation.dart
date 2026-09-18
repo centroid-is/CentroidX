@@ -104,6 +104,10 @@ List<MenuItem> buildTopLevelMenuItems({
     if (!historyAtTopLevel) historyViewMenuItem,
     MenuItem(label: 'Server Config', path: '/advanced/server-config', icon: FontAwesomeIcons.server.data),
     MenuItem(label: 'Key Repository', path: '/advanced/key-repository', icon: FontAwesomeIcons.key.data),
+    // One trail behind two routes: the full one (`users`) and its
+    // configuration view alone (`configure`). Both stay in the tree so the
+    // page whitelist can name either; the navigation bar offers a session
+    // holding both only the full one (`kSupersededRoutes`).
     MenuItem(label: 'Audit Trail', path: '/advanced/audit-trail', icon: Icons.receipt_long),
     MenuItem(label: 'Config History', path: '/advanced/config-history', icon: Icons.history_edu),
     MenuItem(label: kAccessAdminTitle, path: '/advanced/access', icon: Icons.manage_accounts),

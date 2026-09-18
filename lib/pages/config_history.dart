@@ -6,16 +6,20 @@
 /// states — permanently, on screen — the two things a reader would otherwise
 /// have to infer from an absence.
 ///
-/// ## Its own route, at `configure`
+/// ## One trail, two scopes, two routes
 ///
-/// `kRaisedRoutes[kConfigHistoryRoute]` is [AccessGroup.configure]. The audit
-/// trail next door is `users` because it displays every write anybody ever
-/// made, including the denials that show where a role is configured too
-/// tightly. This page displays configuration only, and the engineer it serves
-/// — the one who edits pages and key maps — holds `configure`. Widening the
-/// existing `users` entry to reach this page would have handed the audit trail
-/// to everyone who can edit a page (T-04-06a), so this is a second entry rather
-/// than a looser first one.
+/// This is the configuration view of the audit trail, and `AuditTrailPage`
+/// hosts it twice: as the whole page at `kConfigHistoryRoute`, and as the
+/// Configuration lens of the full trail at `kAuditTrailRoute`.
+///
+/// `kRaisedRoutes[kConfigHistoryRoute]` is [AccessGroup.configure]. The full
+/// trail is `users` because it displays every write anybody ever made,
+/// including the denials that show where a role is configured too tightly.
+/// This view displays configuration only, and the engineer it serves — the one
+/// who edits pages and key maps — holds `configure`. Widening the full trail's
+/// entry to reach this view would have handed it to everyone who can edit a
+/// page (T-04-06a), so the configuration route fixes this scope and the page
+/// offers no control that widens it.
 ///
 /// **Denied is not built here.** The route gate renders the locked body before
 /// this page is reached. A second, weaker check on the page could disagree with
@@ -44,11 +48,11 @@
 /// inherited whole. The page queries on arrival, on an explicit refresh, on a
 /// filter change and on an explicit `Load more`, and at no other time.
 ///
-/// ## The Page/Body split is mandatory
+/// ## No scaffold here
 ///
-/// [BaseScaffold] calls `context.currentBeamLocation`, so it cannot be pumped
-/// without a Beamer ancestor. Every widget test and every golden pumps
-/// [ConfigHistoryBody].
+/// `BaseScaffold` calls `context.currentBeamLocation`, so it cannot be pumped
+/// without a Beamer ancestor. `AuditTrailPage` owns the scaffold; every widget
+/// test and every golden pumps [ConfigHistoryBody].
 library;
 
 import 'package:clock/clock.dart';
@@ -67,7 +71,6 @@ import '../widgets/audit_trail_filters.dart'
         kAuditTrailDefaultRangeLabel,
         kAuditTrailWholeTableLabel,
         auditRangeLabel;
-import '../widgets/base_scaffold.dart';
 import '../widgets/config_change_row.dart';
 import '../widgets/config_undo_dialogs.dart';
 import '../widgets/fuzzy_search_bar.dart';
@@ -76,8 +79,8 @@ import '../widgets/fuzzy_search_bar.dart';
 // The copy
 // ---------------------------------------------------------------------------
 
-/// The title over the page, and the words the Advanced menu entry is spelled
-/// from.
+/// The title over the configuration route's page, and the words its Advanced
+/// menu entry is spelled from.
 const String kConfigHistoryTitle = 'Config History';
 
 /// There is no database behind this station, or the read failed.
@@ -298,24 +301,13 @@ bool configActionIsUndoable(HistoryAction action) =>
 // The page
 // ---------------------------------------------------------------------------
 
-/// Route target for `/advanced/config-history`.
+/// The configuration history: the configuration lens of the audit trail.
 ///
-/// Field-less so `createLocationBuilder` can register it as
-/// `const ConfigHistoryPage()`. All of the logic lives in [ConfigHistoryBody].
-class ConfigHistoryPage extends StatelessWidget {
-  const ConfigHistoryPage({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return const BaseScaffold(
-      title: kConfigHistoryTitle,
-      body: ConfigHistoryBody(),
-    );
-  }
-}
-
-/// The page content, split from [ConfigHistoryPage] so tests and goldens can
-/// pump it without [BaseScaffold]'s routing context.
+/// Not a page of its own any more. `AuditTrailPage` hosts it — as the whole of
+/// the page at `/advanced/config-history`, whose route fixes that scope, and as
+/// the Configuration lens of the full trail. It carries no scaffold, which is
+/// also what lets tests and goldens pump it without `BaseScaffold`'s routing
+/// context.
 class ConfigHistoryBody extends ConsumerStatefulWidget {
   const ConfigHistoryBody({super.key});
 

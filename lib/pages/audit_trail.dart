@@ -1,10 +1,22 @@
-/// The audit trail: one page, one query, and three ways to have nothing to
-/// show.
+/// The audit trail: one page for every change anybody made, configuration
+/// included, and three ways to have nothing to show.
 ///
-/// The first and only reader's screen. It watches one resolved [AuditQuery] per
-/// loaded page, renders 05-05's filter bar above a virtualised list of 05-04's
-/// grouped actions, and distinguishes the states that would otherwise all look
-/// like a blank screen.
+/// ## One trail, not two
+///
+/// The configuration history used to be a page of its own beside this one, so
+/// a page save appeared here as a bare `page_editor_data` line and its field
+/// diffs and Undo lived one menu entry away. They are one page now,
+/// [AuditTrailPage], whose scope the route fixes: the full trail at
+/// `/advanced/audit-trail` (`users`), and the configuration view alone at
+/// `/advanced/config-history` (`configure`). In the full trail a configuration
+/// action is drawn as the configuration view draws it, and a lens switches to
+/// that view whole. See [AuditTrailView] for why it is a lens rather than one
+/// merged list, and `kSupersededRoutes` for how the menu offers one entry.
+///
+/// The Everything view, [AuditTrailBody], watches one resolved [AuditQuery]
+/// per loaded page, renders 05-05's filter bar above a virtualised list of
+/// 05-04's grouped actions, and distinguishes the states that would otherwise
+/// all look like a blank screen.
 ///
 /// ## The three terminal states, and why they are three
 ///
@@ -59,7 +71,8 @@ import '../widgets/audit_trail_filters.dart';
 import '../widgets/audit_trail_row.dart';
 import '../widgets/base_scaffold.dart';
 import '../widgets/config_change_row.dart';
-import 'config_history.dart' show ConfigUndoHost;
+import 'config_history.dart'
+    show ConfigHistoryBody, ConfigUndoHost, kConfigHistoryTitle;
 
 // ---------------------------------------------------------------------------
 // The copy
@@ -177,24 +190,147 @@ const Key kAuditConfigUnreadRowsKey =
 // The page
 // ---------------------------------------------------------------------------
 
-/// Route target for `/advanced/audit-trail`.
+/// How much of the trail a page shows. Fixed by the route, never by the page.
+enum AuditTrailScope {
+  /// Every write, denial, sign-in and administration change, with the
+  /// configuration lens beside it. `kAuditTrailRoute`, at `users`.
+  everything,
+
+  /// Configuration changes only. `kConfigHistoryRoute`, at `configure`.
+  configuration,
+}
+
+/// Route target for `/advanced/audit-trail` and `/advanced/config-history`:
+/// one page, whose [scope] the route fixes.
 ///
-/// Field-less on purpose so `createLocationBuilder` can register it as
-/// `const AuditTrailPage()`. All of the logic lives in [AuditTrailBody].
+/// ## Why the scope is a constructor argument and nothing else
+///
+/// The route map in `lib/access_routes.dart` is the whole of the enforcement
+/// for reading the trail — neither store takes a session, on purpose. So the
+/// configuration route's `configure` gate is only worth anything if nothing
+/// behind it can reach the full trail. The scope is therefore decided once,
+/// where the route builds this page, and [AuditTrailView] builds no control
+/// that widens it: at [AuditTrailScope.configuration] there is no lens and no
+/// [AuditTrailBody] in the tree at all. `navigation_test.dart` pins which scope
+/// each route builds.
+///
+/// Const-constructible, so the route map can register it as a constant.
 class AuditTrailPage extends StatelessWidget {
-  const AuditTrailPage({super.key});
+  const AuditTrailPage({super.key, this.scope = AuditTrailScope.everything});
+
+  /// What this page may show. See the class doc.
+  final AuditTrailScope scope;
+
+  /// The title over the page: the full trail's, or the configuration route's.
+  String get title => switch (scope) {
+        AuditTrailScope.everything => kAuditTrailTitle,
+        AuditTrailScope.configuration => kConfigHistoryTitle,
+      };
 
   @override
   Widget build(BuildContext context) {
-    return const BaseScaffold(
-      title: kAuditTrailTitle,
-      body: AuditTrailBody(),
+    return BaseScaffold(
+      title: title,
+      body: AuditTrailView(scope: scope),
     );
   }
 }
 
-/// The page content, split from [AuditTrailPage] so tests and goldens can pump
-/// it without [BaseScaffold]'s routing context.
+/// What the lens offers, in the full scope.
+const String kAuditTrailLensEverything = 'Everything';
+
+/// See [kAuditTrailLensEverything].
+const String kAuditTrailLensConfiguration = 'Configuration';
+
+/// The lens control. Present only in [AuditTrailScope.everything].
+const Key kAuditTrailLensKey = ValueKey<String>('audit-trail-lens');
+
+/// Which view of the full trail is showing.
+enum _AuditTrailLens { everything, configuration }
+
+/// The trail, as [scope] allows it.
+///
+/// At [AuditTrailScope.configuration] this is [ConfigHistoryBody] and nothing
+/// else. At [AuditTrailScope.everything] it is a lens over two views of the one
+/// trail: **Everything**, which pages over `audit_entry` and draws each
+/// configuration action with its field diffs and Undo; and **Configuration**,
+/// which pages over `config_change` itself.
+///
+/// ## Why the lens exists rather than Everything alone
+///
+/// The two views are driven by different tables, and each surfaces something
+/// the other cannot. Everything is driven by the audit headers, so an action
+/// whose change rows committed but whose header was never written — the
+/// orphan window `HistoryAction.isParentless` describes — has no row to be
+/// found by. Configuration is driven by the change rows, so it finds those,
+/// and it has the filters that only mean something there: kind, entity, and
+/// the scope and silent-kinds notes. Merging the two into one paged stream
+/// would mean a cursor over two tables with two id spaces; the lens keeps each
+/// view's paging exactly as it was proven.
+///
+/// The lens is local state and starts on Everything. Switching it starts the
+/// other view afresh, as arriving at it would.
+class AuditTrailView extends StatefulWidget {
+  const AuditTrailView({super.key, required this.scope});
+
+  final AuditTrailScope scope;
+
+  @override
+  State<AuditTrailView> createState() => _AuditTrailViewState();
+}
+
+class _AuditTrailViewState extends State<AuditTrailView> {
+  _AuditTrailLens _lens = _AuditTrailLens.everything;
+
+  @override
+  Widget build(BuildContext context) {
+    // The configuration route's whole page. No lens, and no AuditTrailBody
+    // anywhere below: this scope cannot be widened from inside it.
+    if (widget.scope == AuditTrailScope.configuration) {
+      return const ConfigHistoryBody();
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: SegmentedButton<_AuditTrailLens>(
+              key: kAuditTrailLensKey,
+              showSelectedIcon: false,
+              style: const ButtonStyle(visualDensity: VisualDensity.compact),
+              segments: const [
+                ButtonSegment(
+                  value: _AuditTrailLens.everything,
+                  label: Text(kAuditTrailLensEverything),
+                  icon: Icon(Icons.receipt_long, size: 16),
+                ),
+                ButtonSegment(
+                  value: _AuditTrailLens.configuration,
+                  label: Text(kAuditTrailLensConfiguration),
+                  icon: Icon(Icons.history_edu, size: 16),
+                ),
+              ],
+              selected: {_lens},
+              onSelectionChanged: (next) => setState(() => _lens = next.single),
+            ),
+          ),
+        ),
+        Expanded(
+          child: switch (_lens) {
+            _AuditTrailLens.everything => const AuditTrailBody(),
+            _AuditTrailLens.configuration => const ConfigHistoryBody(),
+          },
+        ),
+      ],
+    );
+  }
+}
+
+/// The full trail's Everything view, split from [AuditTrailPage] so tests and
+/// goldens can pump it without [BaseScaffold]'s routing context.
 ///
 /// [BaseScaffold] calls `context.currentBeamLocation`, so it cannot be pumped
 /// without a Beamer ancestor. `FirstUserBody` and `KeyRepositoryContent` are
