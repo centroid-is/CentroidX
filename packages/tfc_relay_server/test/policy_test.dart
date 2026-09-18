@@ -1953,6 +1953,7 @@ void main() {
         'and records nothing', () async {
       final display = seenBy(_display);
       await display.store.setBool('svn.ui.dark', true);
+      display.store.writes.clear();
       final prefs = display.served.preferences;
       for (final (name, read) in <(String, Future<void> Function())>[
         ('getBool', () => prefs.getBool('svn.ui.dark')),

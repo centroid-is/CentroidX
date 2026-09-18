@@ -244,9 +244,13 @@ void main() {
           reason: 'the whole point: the server still refuses, and it refuses '
               'through the one AccessPolicy — 518 KiB of plant routing '
               'config is not something an unauthenticated peer re-points');
-      expect(refusal.message, isNot(contains('awaiting_sign_in')),
-          reason: 'the third state is gone; a refusal that still named it '
-              'would be the blanket gate surviving under another name');
+      expect(refusal.message, contains('"configure"'),
+          reason: 'the policy refused it, and says which permission it '
+              'wanted; a blanket gate would have no permission to name');
+      expect(refusal.message, contains(SessionAuthMarkers.awaitingSignIn),
+          reason: 'since 2026-09-16 an anonymous refusal carries the marker '
+              'the relay client keys its sign-in screen off, because signing '
+              'in is what changes the answer (`refusedForGroup`)');
     });
 
     test('and so is a plant write, while anonymous holds nothing', () async {

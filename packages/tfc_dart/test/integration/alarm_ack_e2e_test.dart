@@ -632,14 +632,19 @@ void main() {
       await rig.awaitStanding();
 
       final wallDisplay = await rig.joinViewOnly();
-      expect(wallDisplay.uids, [kAlarmUid],
-          reason: 'the wall display may SEE the alarm — the shipped policy '
-              'hides nothing — which is what makes the refusal below about '
-              'actuation rather than about visibility');
+      Object? readRefusal;
+      try {
+        await wallDisplay.subscribe(kSub, <String>[relay.AlarmKeys.active]);
+      } catch (error) {
+        readRefusal = error;
+      }
+      expect(readRefusal, isA<RelayRefusal>(),
+          reason: 'the read floor (2026-09-16): a station holding nothing '
+              'does not see the active set either');
 
       Object? refusal;
       try {
-        await wallDisplay.client.ackAlarm(kAlarmUid, 0);
+        await wallDisplay.ackAlarm(kAlarmUid, 0);
       } catch (error) {
         refusal = error;
       }
@@ -823,9 +828,16 @@ final class _Rig {
     return _Rig._(fixture, a, b);
   }
 
-  /// A third session, speaking for a station that may look and not touch.
-  Future<_Panel> joinViewOnly() async =>
-      _Panel.attach(await fixture.connectClient('V'), kViewToken);
+  /// A third session, speaking for a station that holds nothing.
+  ///
+  /// Signed in and nothing more: since the read floor (2026-09-16) a station
+  /// holding nothing may not subscribe to the active set either, so there is
+  /// no [_Panel] to build — arm 6 measures both refusals itself.
+  Future<BackendRelayClient> joinViewOnly() async {
+    final client = await fixture.connectClient('V');
+    await client.hello(token: kViewToken);
+    return client;
+  }
 
   /// Puts the conveyor over its limit, stamped by the plant.
   void raise() =>

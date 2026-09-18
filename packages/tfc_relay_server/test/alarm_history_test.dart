@@ -325,23 +325,38 @@ void main() {
     expect(source.queries.single.to, isNull);
   });
 
-  test('a view station may read history', () async {
+  test('reading history never consults the write gate', () async {
     // The deliberate difference from `alarm_ack_test.dart`. Gating this on
-    // `canWrite` would blank the history page on every `view` station in the
-    // plant — the same empty page this change exists to remove, reached
-    // through a permission instead of through a missing database.
+    // `canWrite` would tie reading the history page to acknowledging alarms,
+    // which are different decisions. Since the read floor (2026-09-16) the
+    // reader must hold operate; what this pins is that the read is graded by
+    // that floor and not by the write gate.
     final policy = _SpyPolicy();
     final source = _Recorder(rows: [_row()]);
-    final link =
-        _link(identity: _display, policy: policy, alarmHistory: source);
+    final link = _link(identity: _panel, policy: policy, alarmHistory: source);
     await link.hello();
 
     expect(AlarmHistoryEntry.decodeList(await link.history()), hasLength(1));
     expect(policy.askedToWrite, isEmpty,
-        reason: 'a read that consults the write gate is a read a view station '
-            'cannot make, and this is the assertion that catches it — the '
-            'answer above would still be right if the display happened to '
-            'hold operate');
+        reason: 'a read that consults the write gate is a read graded as a '
+            'write, and this is the assertion that catches it — the answer '
+            'above would still be right because the panel holds operate');
+  });
+
+  test('a station holding nothing is refused history, and nothing is read',
+      () async {
+    final source = _Recorder(rows: [_row()]);
+    final link = _link(
+        identity: _display, policy: _SpyPolicy(), alarmHistory: source);
+    await link.hello();
+
+    await expectLater(
+        link.history(),
+        throwsA(isA<rpc.RpcException>()
+            .having((e) => e.code, 'code', ServerErrorCodes.forbidden)
+            .having((e) => e.message, 'message', contains('"operate"'))));
+    expect(source.queries, isEmpty,
+        reason: 'the floor refuses before the source is asked');
   });
 
   test('a hidden ALARM.active is refused as nonexistent, never as forbidden',

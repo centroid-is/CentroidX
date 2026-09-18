@@ -106,8 +106,11 @@ void main() {
               'incomplete-composition marker');
       expect((caught! as rpc.RpcException).code, ServerErrorCodes.forbidden);
       expect((caught as rpc.RpcException).message,
-          contains('definitively had no effect'),
-          reason: 'the safety wording survives on this family too');
+          contains('nothing was changed and nothing was read'),
+          reason: 'the safety wording survives on this family too. A null '
+              'identity is answered in the sign-in wording '
+              '(`refusedForGroup`), which says the same thing for a session '
+              'nobody has signed in on');
     });
 
     test('a source that ANSWERS is still not reachable around the gate', () {

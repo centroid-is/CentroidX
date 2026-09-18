@@ -738,12 +738,15 @@ void main() {
       final fixture = _gatewayAt(path);
       await fixture.ready;
       await fixture.request(Methods.hello,
-          params: _helloWith(_stationOneToken).toJson(),
-          what: 'ST101\'s hello');
+          params: _helloWith(_stationTwoToken).toJson(),
+          what: 'ST201\'s hello');
 
+      // The survivor is the station that holds operate: since the read floor
+      // (2026-09-16) a station holding nothing cannot subscribe, and this
+      // case is about the sweep, not the floor.
       final survivor = await _Panel.connect(fixture.server);
       await survivor.peer.sendRequest(
-          Methods.hello, _helloWith(_stationTwoToken).toJson());
+          Methods.hello, _helloWith(_stationOneToken).toJson());
       const key = 'CN01.MOT01.speed';
       fixture.served.setValue(key, 1);
       await survivor.peer.sendRequest(Methods.subscribe,
@@ -752,7 +755,7 @@ void main() {
 
       _writeTokenFile(dir, {
         'tokens': {
-          _stationTwoToken: {'username': 'ST201-panel', 'station': 'ST201'},
+          _stationOneToken: {'username': 'ST101-panel', 'station': 'ST101'},
         },
       });
       await fixture.server.reloadTokens();
@@ -767,7 +770,7 @@ void main() {
       fixture.served.setValue(key, 2);
       await _until(
           () => survivor.inbound.any((f) => f.contains('"method":"u"')),
-          'ST201 still receiving plant updates after ST101 was revoked');
+          'ST101 still receiving plant updates after ST201 was revoked');
     }, tags: 'ws');
 
     test('a session that has not said hello is left alone by the sweep',

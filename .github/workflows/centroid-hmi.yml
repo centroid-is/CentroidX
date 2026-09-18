@@ -671,7 +671,7 @@ jobs:
       # rest out of the compile, D-Bus and the local database included.
       - name: Build web client
         working-directory: centroid-hmi
-        run: flutter build web -t lib/main_web.dart --release
+        run: flutter build web -t lib/main_web.dart --release --dart-define=CENTROIDX_CHAT=false --dart-define=CENTROIDX_KNOWLEDGE=false
 
       # The gateway declaration must still be a placeholder here. If a build
       # ever substitutes it, every station serving this image would dial
