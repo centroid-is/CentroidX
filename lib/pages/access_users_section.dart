@@ -1169,51 +1169,13 @@ class _UserTileState extends ConsumerState<_UserTile> {
               Expanded(flex: _kNameFlex, child: _nameCell(context)),
               Expanded(
                 flex: _kRoleFlex,
-                // The tag sits against the role on purpose: a personal page
-                // list survives a move to another role, so the place somebody
-                // needs to be told is the place they change the role.
-                child: Row(
-                  children: [
-                    Flexible(
-                      // Every role the account holds, not `role_name` alone —
-                      // a roster that showed the primary role only would read
-                      // as a demotion to anybody who had just added a second.
-                      child: Text(
-                        roleLabelFor(AccessRepository.rolesOf(user)),
-                        key: kAccessUserRoleKey(user.username),
-                      ),
-                    ),
-                    if (_overridesPages) ...[
-                      const SizedBox(width: 6),
-                      Text(
-                        kAccessUserPagesOverrideTag,
-                        key: kAccessUserPagesOverrideKey(user.username),
-                        style: Theme.of(context)
-                            .textTheme
-                            .labelSmall
-                            ?.copyWith(
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .onSurfaceVariant),
-                      ),
-                    ],
-                    if (_ownTimeout != null) ...[
-                      const SizedBox(width: 6),
-                      Text(
-                        kAccessUserTimeoutTag(_ownTimeout!),
-                        key: kAccessUserTimeoutTagKey(user.username),
-                        style: Theme.of(context)
-                            .textTheme
-                            .labelSmall
-                            ?.copyWith(
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .onSurfaceVariant),
-                      ),
-                    ],
-
-                  ],
-                ),
+                // The tags sit with the role on purpose: a personal page list
+                // survives a move to another role, so the place somebody needs
+                // to be told is the place they change the role. Under it
+                // rather than beside it — beside it, an account with two roles
+                // and both tags broke `Maintenance` mid-word and ran the
+                // timeout into the Created column.
+                child: _roleCell(context),
               ),
               Expanded(
                 flex: _kWhenFlex,
@@ -1452,6 +1414,11 @@ class _UserTileState extends ConsumerState<_UserTile> {
     bool enabled = true,
   }) {
     final theme = Theme.of(context);
+    // Visibly fainter than the label in both themes. Not
+    // `colorScheme.outline`, which all but vanishes on the dark one, and not
+    // `onSurfaceVariant`, which in the muted theme is barely lighter than the
+    // label it sits beside.
+    final faded = theme.colorScheme.onSurface.withValues(alpha: 0.5);
     return PopupMenuItem<_UserAction>(
       key: key,
       value: action,
@@ -1464,7 +1431,7 @@ class _UserTileState extends ConsumerState<_UserTile> {
           Icon(
             icon,
             size: 18,
-            color: active ? null : theme.colorScheme.onSurfaceVariant,
+            color: active ? null : faded,
           ),
           const SizedBox(width: 12),
           Text(label),
@@ -1476,13 +1443,52 @@ class _UserTileState extends ConsumerState<_UserTile> {
                 textAlign: TextAlign.end,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.bodySmall
-                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                style: theme.textTheme.bodySmall?.copyWith(color: faded),
               ),
             ),
           ],
         ],
       ),
+    );
+  }
+
+  /// Every role the account holds, and under it the tags for what the account
+  /// sets for itself: its own page list and its own timeout.
+  Widget _roleCell(BuildContext context) {
+    // Every role the account holds, not `role_name` alone — a roster that
+    // showed the primary role only would read as a demotion to anybody who
+    // had just added a second.
+    final roles = Text(
+      roleLabelFor(AccessRepository.rolesOf(user)),
+      key: kAccessUserRoleKey(user.username),
+    );
+    if (!_overridesPages && _ownTimeout == null) return roles;
+    final theme = Theme.of(context);
+    final tagStyle = theme.textTheme.labelSmall
+        ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        roles,
+        Wrap(
+          spacing: 6,
+          children: [
+            if (_overridesPages)
+              Text(
+                kAccessUserPagesOverrideTag,
+                key: kAccessUserPagesOverrideKey(user.username),
+                style: tagStyle,
+              ),
+            if (_ownTimeout != null)
+              Text(
+                kAccessUserTimeoutTag(_ownTimeout!),
+                key: kAccessUserTimeoutTagKey(user.username),
+                style: tagStyle,
+              ),
+          ],
+        ),
+      ],
     );
   }
 
