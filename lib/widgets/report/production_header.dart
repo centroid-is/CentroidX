@@ -129,9 +129,8 @@ class ProductionHeader extends StatelessWidget {
       );
     }
     final ongoing = window.concludedAt == null;
-    // An en dash, not an arrow: the app declares no font faces, and the
-    // fallback the HMI actually renders with has no U+2192 — it came out as a
-    // blank gap between the two times.
+    // An en dash, not an arrow: the usual mark for a range. It was also forced
+    // at the time, because the font then in the goldens had no U+2192.
     final range = ongoing
         ? '${_hm(window.effectiveStart)} – now'
         : '${_hm(window.effectiveStart)} – ${_hm(window.effectiveEnd)}';

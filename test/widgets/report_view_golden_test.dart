@@ -504,11 +504,10 @@ Future<void> _loadFonts() async {
         .load();
   }
 
-  // Regular only, deliberately. The app's pubspec declares no roboto-mono
-  // faces at all, so loading Medium and Bold here would golden a page heavier
-  // than the one the HMI renders.
-  await load('Roboto', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
-  await load('roboto-mono', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+  // Regular only, like every other golden: the app bundles DejaVu Sans Regular
+  // and Bold, but the goldens have always drawn every weight from one face.
+  await load('Roboto', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
+  await load('dejavu-sans', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
 
   final flutterRoot = Platform.environment['FLUTTER_ROOT'];
   if (flutterRoot != null) {

@@ -36,9 +36,9 @@ Future<void> loadRealFont() async {
         .load();
   }
 
-  await loadFont('Roboto', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+  await loadFont('Roboto', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
   await loadFont(
-      'roboto-mono', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+      'dejavu-sans', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
 }
 
 class _FakeStateMan extends Fake implements StateMan {}

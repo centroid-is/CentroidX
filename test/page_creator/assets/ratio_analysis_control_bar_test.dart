@@ -140,7 +140,7 @@ void main() {
   // picker. Rendering it is the only way to see that the bar reflows rather
   // than collides.
   testWidgets('narrow control bar golden', (tester) async {
-    final data = File('lib/fonts/roboto-mono/RobotoMono-Regular.ttf')
+    final data = File('lib/fonts/dejavu-sans/DejaVuSans.ttf')
         .readAsBytesSync()
         .buffer
         .asByteData();

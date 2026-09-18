@@ -83,7 +83,7 @@ Future<void> _loadFonts() async {
   }
 
   // Material's default family, so ordinary labels render.
-  await load('Roboto', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+  await load('Roboto', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
 
   // The drag handle itself is a Material icon.
   final flutterRoot = Platform.environment['FLUTTER_ROOT'];

@@ -166,7 +166,7 @@ void main() {
   final (_, dark) = solarized();
 
   // `flutter_test_config.dart` registers the text font as 'Roboto'. The app
-  // theme asks for 'roboto-mono' by name and the pane header carries Material
+  // theme asks for 'dejavu-sans' by name and the pane header carries Material
   // icons, so both have to be registered or the goldens come out as boxes.
   setUpAll(() async {
     Future<void> loadFont(String family, String path) async {
@@ -178,7 +178,7 @@ void main() {
     }
 
     await loadFont(
-        'roboto-mono', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+        'dejavu-sans', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
 
     final flutterRoot = Platform.environment['FLUTTER_ROOT'];
     for (final candidate in <String>[

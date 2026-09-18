@@ -51,9 +51,9 @@ Future<void> loadRealFont() async {
   // Under the app theme the family is asked for by name; a bare MaterialApp
   // asks for Roboto. Register both so the golden never falls back to the test
   // font's boxes.
-  await loadFont('Roboto', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+  await loadFont('Roboto', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
   await loadFont(
-      'roboto-mono', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+      'dejavu-sans', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
 
   final flutterRoot = Platform.environment['FLUTTER_ROOT'];
   for (final candidate in <String>[

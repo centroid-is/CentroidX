@@ -143,10 +143,10 @@ void main() {
     // would demand a 3:1 box for words that fit at 2:1 on a station.
     setUpAll(() async {
       final bytes =
-          File('lib/fonts/roboto-mono/RobotoMono-Regular.ttf').readAsBytesSync();
-      // The solarized theme names 'roboto-mono' as its family; load 'Roboto'
+          File('lib/fonts/dejavu-sans/DejaVuSans.ttf').readAsBytesSync();
+      // The solarized theme names 'dejavu-sans' as its family; load 'Roboto'
       // too so a default-styled Text resolves to the same metrics.
-      for (final family in const ['roboto-mono', 'Roboto']) {
+      for (final family in const ['dejavu-sans', 'Roboto']) {
         await (FontLoader(family)
               ..addFont(Future.value(ByteData.view(bytes.buffer))))
             .load();

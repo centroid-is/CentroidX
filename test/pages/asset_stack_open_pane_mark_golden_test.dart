@@ -63,8 +63,8 @@ Future<void> _loadFonts() async {
   // Both names: Material's default family, and the one the app's theme asks
   // for — a themed golden that only registers 'Roboto' draws every label as a
   // test-font block.
-  for (final family in ['Roboto', 'roboto-mono']) {
-    await load(family, 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+  for (final family in ['Roboto', 'dejavu-sans']) {
+    await load(family, 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
   }
 
   final flutterRoot = Platform.environment['FLUTTER_ROOT'];

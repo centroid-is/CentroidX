@@ -33,13 +33,13 @@ final DateTime _anchor = DateTime(2026, 8, 30, 12);
 /// Real letterforms instead of the test font's black boxes; MaterialIcons so
 /// the folder / chip / menu icons don't render as tofu.
 Future<void> _loadRealFonts() async {
-  final data = File('lib/fonts/roboto-mono/RobotoMono-Regular.ttf')
+  final data = File('lib/fonts/dejavu-sans/DejaVuSans.ttf')
       .readAsBytesSync()
       .buffer
       .asByteData();
   final loader = FontLoader('Roboto')..addFont(Future.value(data));
   await loader.load();
-  final chartLoader = FontLoader('roboto-mono')..addFont(Future.value(data));
+  final chartLoader = FontLoader('dejavu-sans')..addFont(Future.value(data));
   await chartLoader.load();
 
   final flutterRoot = Platform.environment['FLUTTER_ROOT'];

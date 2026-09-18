@@ -340,7 +340,7 @@ enum AppColorScheme {
 /// The app's typeface. Bundled by `centroid-hmi/pubspec.yaml` under exactly
 /// this family name; `test/core/app_font_bundled_test.dart` holds the two
 /// together.
-const String kAppFontFamily = 'roboto-mono';
+const String kAppFontFamily = 'dejavu-sans';
 
 ThemeData _themeFromColorScheme(ColorScheme scheme, HmiStateColors states) {
   return ThemeData(

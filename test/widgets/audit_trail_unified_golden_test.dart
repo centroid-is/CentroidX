@@ -14,8 +14,8 @@
 /// document apply unchanged — the muted palette rather than a bare
 /// `MaterialApp`, both font families loaded, the `RepaintBoundary` one level
 /// below `Scaffold.body`, and every test asserting the state it claims before
-/// it captures it. The transition arrow is missing from the field rows for the
-/// reason the config history's goldens give: RobotoMono has no U+2192.
+/// it captures it. The transition arrow draws in the field rows: DejaVu Sans
+/// has U+2192.
 ///
 /// **The seam is the two stores**, as in the config history's goldens: the real
 /// providers run, so the kind counts in the title, the lazy read on opening and
@@ -173,9 +173,9 @@ void main() {
           .load();
     }
 
-    await loadFont('Roboto', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+    await loadFont('Roboto', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
     await loadFont(
-        'roboto-mono', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+        'dejavu-sans', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
 
     final flutterRoot = Platform.environment['FLUTTER_ROOT'];
     for (final candidate in <String>[

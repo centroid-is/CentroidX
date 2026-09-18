@@ -25,7 +25,7 @@
 ///
 /// **Fonts are loaded here, twice, deliberately.** `test/page_creator/` has no
 /// `flutter_test_config.dart` of its own and the root one registers **no font
-/// at all**; `lib/theme.dart:349` names `'roboto-mono'` as the theme's family.
+/// at all**; `lib/theme.dart:349` names `'dejavu-sans'` as the theme's family.
 /// Without both registrations every themed `Text` in this pane captures as
 /// Ahem rectangles and the "is the number legible" question cannot be
 /// answered. MaterialIcons comes out of the SDK cache for the lock, the
@@ -223,7 +223,7 @@ class _FakeStateMan implements StateMan {
 
 /// Loads the two families the theme needs plus the icon font.
 ///
-/// `'Roboto'` is Flutter's default family and `'roboto-mono'` is what
+/// `'Roboto'` is Flutter's default family and `'dejavu-sans'` is what
 /// `lib/theme.dart` asks for; the same file backs both, because the point is
 /// that a glyph is drawn rather than which face draws it.
 Future<void> _loadRealFonts() async {
@@ -235,8 +235,8 @@ Future<void> _loadRealFonts() async {
         .load();
   }
 
-  await loadFont('Roboto', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
-  await loadFont('roboto-mono', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+  await loadFont('Roboto', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
+  await loadFont('dejavu-sans', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
 
   final flutterRoot = Platform.environment['FLUTTER_ROOT'];
   for (final candidate in <String>[

@@ -17,7 +17,7 @@
 ///
 /// **Fonts are loaded here, twice.** `test/flutter_test_config.dart` — the one
 /// that governs `test/pages/` — registers no font at all, and `lib/theme.dart`
-/// names `'roboto-mono'` as the theme's family. Without both registrations
+/// names `'dejavu-sans'` as the theme's family. Without both registrations
 /// every themed `Text` captures as Ahem rectangles.
 ///
 /// To update: flutter test test/pages/first_user_golden_test.dart --update-goldens --run-skipped
@@ -133,9 +133,9 @@ void main() {
           .load();
     }
 
-    await loadFont('Roboto', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+    await loadFont('Roboto', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
     await loadFont(
-        'roboto-mono', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+        'dejavu-sans', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
 
     final flutterRoot = Platform.environment['FLUTTER_ROOT'];
     for (final candidate in <String>[

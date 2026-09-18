@@ -16,7 +16,7 @@ Future<void> testExecutable(FutureOr<void> Function() testMain) async {
 
   useTolerantGoldenComparator();
 
-  final fontFile = File('lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+  final fontFile = File('lib/fonts/dejavu-sans/DejaVuSans.ttf');
   final fontData = fontFile.readAsBytesSync();
   final byteData = ByteData.view(fontData.buffer);
 

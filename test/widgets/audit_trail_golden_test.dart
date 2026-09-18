@@ -20,31 +20,17 @@
 ///
 /// **Fonts are loaded here, twice.** `test/widgets/flutter_test_config.dart`
 /// registers the TTF under `'Roboto'` alone, but `lib/theme.dart:349` names
-/// `'roboto-mono'` as the theme's family; an unregistered family falls back to
+/// `'dejavu-sans'` as the theme's family; an unregistered family falls back to
 /// Ahem, so every themed `Text` would capture as a solid rectangle. Same helper
 /// as `test/page_creator/assets/aircab_golden_test.dart:105-125` and
 /// `access_gate_golden_test.dart`.
 ///
-/// **The transition arrow is missing from these images, and it is a font gap
-/// rather than a widget one.** `AuditEntryLine` renders
-/// `old $kAuditTransitionArrow new` — the assertion below finds the string
-/// `operate, users → operate` on screen, so the widget emits it — but
-/// `lib/fonts/roboto-mono/RobotoMono-Regular.ttf` has no glyph for U+2192, and
-/// neither does the Roboto in the SDK's `material_fonts` cache. Both fonts
-/// carry the em dash and the middle dot this page also draws, so the gap is
-/// specific to the arrow. In the baselines a transition therefore reads
-/// `20   35` with a blank where the arrow belongs.
-///
-/// It is left that way on purpose. The two fixes available are both worse than
-/// the gap: loading a macOS system font would make every one of these images
-/// depend on an OS update, and changing `kAuditTransitionArrow` would change a
-/// rendering decision that belongs to `lib/widgets/audit_trail_row.dart` to
-/// suit a test font. The arrow's presence is pinned textually here and in
-/// `audit_trail_row_test.dart`, which is where a character's presence belongs.
-/// Note also that `roboto-mono` is declared in no `pubspec.yaml` in this repo,
-/// so at runtime the theme's family is unresolved and the platform font — which
-/// does have the arrow — draws it. These images are the test environment's
-/// rendering, not the station's.
+/// **The transition arrow is in these images.** `AuditEntryLine` renders
+/// `old $kAuditTransitionArrow new`, and DejaVu Sans, the app's bundled font,
+/// has U+2192, so a transition reads `20 → 35` here as it does on a station.
+/// The assertion below also finds `operate, users → operate` on screen, which
+/// pins the arrow's presence textually. That is where a character's presence
+/// belongs, as in `audit_trail_row_test.dart`.
 ///
 /// **The `RepaintBoundary` is deliberately not the direct child of
 /// `Scaffold.body`.** Scaffold paints its background outside that subtree, and a
@@ -393,9 +379,9 @@ void main() {
 
     // Both families, deliberately. `flutter_test_config.dart` registers only
     // the first; `lib/theme.dart:349` asks for the second.
-    await loadFont('Roboto', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+    await loadFont('Roboto', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
     await loadFont(
-        'roboto-mono', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+        'dejavu-sans', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
 
     final flutterRoot = Platform.environment['FLUTTER_ROOT'];
     for (final candidate in <String>[

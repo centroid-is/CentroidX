@@ -7,7 +7,7 @@
 # is not a test.
 #
 # They then ran on macOS only. That was the wrong reference platform, for a
-# reason that took a while to surface: our goldens load RobotoMono from repo
+# reason that took a while to surface: our goldens load DejaVu Sans from repo
 # bytes, so the font data is pinned, but on macOS Skia rasterises glyphs
 # through CoreText -- which belongs to the operating system. A golden authored
 # on macOS 15 could therefore fail on CI's macOS 26 under an identical Flutter

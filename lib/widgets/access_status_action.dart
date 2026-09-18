@@ -68,8 +68,8 @@ const Key kAccessPanelBadgeKey = Key('access-panel-badge');
 
 /// Says why there is no Sign out, and where the way out is instead.
 ///
-/// `>`, not an arrow: the theme's RobotoMono has no glyph for U+2192, and the
-/// commit prompt's golden rendered a blank where the same arrow was.
+/// `>`, not an arrow: picked while the app font was RobotoMono, which has no
+/// U+2192. DejaVu Sans has one, so an arrow would now draw.
 const String kAccessPanelBadgeTooltip =
     'This panel\'s own account. It is released under Advanced > Access.';
 
