@@ -28,6 +28,7 @@
 /// cannot render one as the other by accident; see [EntityHistory.isSilent].
 library;
 
+import 'package:collection/collection.dart' show MapEquality;
 import 'package:drift/drift.dart';
 import 'package:logger/logger.dart';
 import 'package:meta/meta.dart';
@@ -103,6 +104,33 @@ class ConfigChangePage {
 
   /// The `id` of the last raw row, or null when there were none.
   final int? oldestId;
+}
+
+/// One action's change rows, counted by kind — see
+/// [ConfigChangeStore.changeKindCountsByAction].
+@immutable
+class ActionChangeCounts {
+  const ActionChangeCounts({required this.byKind, required this.total});
+
+  /// The kinds this build can name, and how many rows each.
+  final Map<ConfigKind, int> byKind;
+
+  /// Every row the action has, including kinds this build cannot name.
+  final int total;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ActionChangeCounts &&
+          other.total == total &&
+          const MapEquality<ConfigKind, int>().equals(other.byKind, byKind);
+
+  @override
+  int get hashCode =>
+      Object.hash(total, const MapEquality<ConfigKind, int>().hash(byKind));
+
+  @override
+  String toString() => 'ActionChangeCounts($byKind, total: $total)';
 }
 
 /// One entity's history, and whether the log is entitled to have one.
@@ -590,6 +618,55 @@ class ConfigChangeStore {
     return {
       for (final row in rows)
         row.read(_db.configChangeTable.actionId)!: row.read(total) ?? 0,
+    };
+  }
+
+  /// Each of [actionIds]' change rows counted by kind, over the whole table.
+  ///
+  /// What the full audit trail titles a configuration action with — "jon
+  /// changed 2 assets, 1 page" — without loading the rows themselves. Those
+  /// carry a whole entity on each side and a key-mapping import writes hundreds
+  /// of them, so the trail reads them only when an action is opened
+  /// ([changesByAction]); a page of the trail costs this one grouped statement,
+  /// on `idx_config_change_action`.
+  ///
+  /// **An action with no change rows is absent, never zero**, which is how the
+  /// trail tells a configuration action from an audit-only one. A kind this
+  /// build cannot name — a station on a newer build wrote it — is counted in
+  /// [ActionChangeCounts.total] and left out of [ActionChangeCounts.byKind],
+  /// so the title never claims fewer rows than the action has.
+  ///
+  /// An empty [actionIds] returns an empty map **without issuing a
+  /// statement**, as [changeCountsByAction] does.
+  Future<Map<String, ActionChangeCounts>> changeKindCountsByAction(
+      Iterable<String> actionIds) async {
+    final ids = actionIds.toSet().toList();
+    if (ids.isEmpty) return const {};
+
+    final table = _db.configChangeTable;
+    final total = table.id.count();
+    final rows = await (_db.selectOnly(table)
+          ..addColumns([table.actionId, table.kind, total])
+          ..where(table.actionId.isIn(ids))
+          ..groupBy([table.actionId, table.kind]))
+        .get();
+
+    final byKind = <String, Map<ConfigKind, int>>{};
+    final totals = <String, int>{};
+    for (final row in rows) {
+      final actionId = row.read(table.actionId)!;
+      final count = row.read(total) ?? 0;
+      totals[actionId] = (totals[actionId] ?? 0) + count;
+      final kinds = byKind.putIfAbsent(actionId, () => <ConfigKind, int>{});
+      final kind = ConfigKind.byWireName(row.read(table.kind)!);
+      if (kind != null) kinds[kind] = count;
+    }
+    return {
+      for (final entry in totals.entries)
+        entry.key: ActionChangeCounts(
+          byKind: Map.unmodifiable(byKind[entry.key]!),
+          total: entry.value,
+        ),
     };
   }
 
