@@ -401,6 +401,15 @@ jobs:
           echo "SHA: $SHA"
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
+      # Same flutter-elinux as elinux-build and elinux-release-build. Without
+      # it this job builds with the toolchain image's baked Flutter, which is
+      # older than the other two and fails on APIs they accept (onReorderItem).
+      - name: Use upstream flutter-elinux 3.47.0
+        run: |
+          git clone https://github.com/flutter-elinux/flutter-elinux.git /opt/flutter-elinux-347
+          git -C /opt/flutter-elinux-347 checkout 4d63880dfaba6e30530b88f2344e0a7b870228b2
+          echo "/opt/flutter-elinux-347/bin" >> "$GITHUB_PATH"
+
       - name: Setup elinux platform
         working-directory: centroid-hmi
         run: flutter-elinux create --platforms=elinux .
