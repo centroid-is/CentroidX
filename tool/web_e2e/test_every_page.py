@@ -45,14 +45,37 @@ IGNORED = (
     "unhandled element <sodipodi:",
 )
 
+# **This suite drives a live plant.** On 2026-09-17 a substring fallback in
+# the matcher, asked for "Box erector 1", clicked a node whose label began
+# "Pause Line" — a container whose label concatenates the whole page. The
+# gateway's write log showed zero writes; the account held `operate`, so that
+# was luck. Two rules follow and neither is optional:
+#
+#  * EXACT match only. A label not on screen verbatim is not found, and the
+#    suite says so rather than clicking a neighbour.
+#  * A refusal list checked on the node that WOULD be clicked, so a
+#    navigation label that happens to sit on a control is refused too.
+#
+# Ambiguity refuses unless the caller says every candidate is the same act —
+# true of "Sign in" (app-bar action and body button), of nothing on the plant.
+ACTUATING = [
+    "pause", "resume", "start", "stop", "run", "jog", "reset", "ack",
+    "acknowledge", "force", "write", "apply", "save", "delete", "remove",
+    "confirm", "enable", "disable", "open", "close", "on", "off", "release",
+    "clear", "trigger", "fire", "calibrate", "tare", "zero", "home",
+    "emergency", "estop", "e-stop", "override", "bypass", "discard",
+]
+
 JS_CLICK = """
-(label) => {
+([label, refused, firstOfMany]) => {
   const nodes = [...document.querySelectorAll('flt-semantics')];
-  const exact = nodes.find(n => (n.getAttribute('aria-label') || n.textContent || '')
-                                 .trim() === label);
-  const hit = exact || nodes.find(n => (n.getAttribute('aria-label') || n.textContent || '')
-                                        .trim().toLowerCase() === label.toLowerCase());
-  if (!hit) return false;
+  const text = n => (n.getAttribute('aria-label') || n.textContent || '').trim();
+  const hits = nodes.filter(n => text(n) === label);
+  if (hits.length === 0) return false;
+  if (hits.length > 1 && !firstOfMany) return false;
+  const hit = hits[0];
+  const words = text(hit).toLowerCase().split(/[^a-z0-9-]+/);
+  if (words.some(w => refused.includes(w))) return false;
   hit.click();
   return true;
 }
@@ -106,7 +129,7 @@ def main():
         page.eval_on_selector("flt-semantics-placeholder", "el => el.click()")
         page.wait_for_timeout(4_000)
 
-        if not page.evaluate(JS_CLICK, "Sign in"):
+        if not page.evaluate(JS_CLICK, ["Sign in", [], True]):
             print("!! no sign-in offered; is the gateway reachable?")
             return 1
         page.wait_for_timeout(3_000)
@@ -158,7 +181,7 @@ def main():
                                       "el => el.click()")
                 page.wait_for_timeout(1_500)
             for step in steps:
-                if not page.evaluate(JS_CLICK, step):
+                if not page.evaluate(JS_CLICK, [step, ACTUATING, False]):
                     print(f"  {entry:22} NOT REACHABLE (no '{step}' on screen)")
                     faults.append(f"{entry}: no menu entry '{step}'")
                     reached = False

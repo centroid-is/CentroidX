@@ -206,6 +206,12 @@ final gatewayLinkProvider = StreamProvider<GatewayLinkReport?>((ref) {
       state: remote.linkState,
       lastDownReason: remote.lastDownReason,
       stopReason: remote.stopReason,
+      // The two HELD states: the gateway answered and refuses this session's
+      // reads, and the client deliberately keeps the link rather than
+      // redialling. Without them a sign-in screen read as "unreachable" — see
+      // `_Voice.awaitingSignIn`.
+      awaitingSignIn: remote.awaitingSignIn,
+      readsWithheld: remote.readsWithheld,
       url: remote.uri,
       elapsed: now.difference(firstObserved!),
       patience: patience,

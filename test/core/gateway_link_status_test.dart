@@ -71,6 +71,67 @@ void main() {
   // this file, which is what makes plan 15-07's golden frames constants rather
   // than a race against macOS CI's wall clock.
 
+  group('a held link is reachable, whatever the session may read', () {
+    // The defect (2026-09-17): every panel whose anonymous account holds
+    // nothing showed "Gateway unreachable: No answer from … after 15 s" on its
+    // sign-in screen. The gateway had answered the handshake; it refuses an
+    // unsigned session every subscribe, so the link sat in `resyncing`, never
+    // reached `ready`, and the patience window decided the rest.
+    test('a sign-in screen past the patience is connected, not unreachable',
+        () {
+      final report = describeGatewayLink(
+        state: LinkState.resyncing,
+        url: kByAddress,
+        elapsed: const Duration(seconds: 42),
+        awaitingSignIn: true,
+      );
+      expect(report.kind, GatewayLinkKind.connected,
+          reason: 'the handshake was answered and the client is holding the '
+              'link on purpose; calling that unreachable sends somebody to '
+              'the switch cupboard for a panel that only wants a password');
+      expect(report.headline, contains('sign in'));
+      expect(report.headline, contains('10.50.10.11:9444'));
+      expect(report.terminal, isFalse);
+    });
+
+    test('the same hold without the flag still belongs to the patience window — '
+        'the fix is the flag, not a blanket pass for resyncing', () {
+      final report = describeGatewayLink(
+        state: LinkState.resyncing,
+        url: kByAddress,
+        elapsed: const Duration(seconds: 42),
+      );
+      expect(report.kind, GatewayLinkKind.unreachable,
+          reason: 'a link stuck resyncing with nothing refused and nothing '
+              'arriving IS the silence this surface exists to report');
+    });
+
+    test('a signed-in account without the read floor is connected, and the '
+        'headline names the account rather than the wire', () {
+      final report = describeGatewayLink(
+        state: LinkState.resyncing,
+        url: kByAddress,
+        elapsed: const Duration(seconds: 42),
+        readsWithheld: true,
+      );
+      expect(report.kind, GatewayLinkKind.connected);
+      expect(report.headline, contains('this account'));
+    });
+
+    test('a link that went down wins over a stale hold flag', () {
+      final report = describeGatewayLink(
+        state: LinkState.down,
+        url: kByAddress,
+        elapsed: const Duration(seconds: 42),
+        lastDownReason: kDiedBeforeSnapshot,
+        awaitingSignIn: true,
+      );
+      expect(report.kind, GatewayLinkKind.unreachable,
+          reason: 'the hold is only evidence while the link is up; a flag '
+              'left over from before a drop must not paper over the drop');
+    });
+  });
+
   group('the kinds a live client produces', () {
     test('a ready link reads connected and is not terminal', () {
       final report = describeGatewayLink(

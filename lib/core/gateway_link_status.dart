@@ -218,6 +218,23 @@ enum _Voice {
   connected,
   connecting,
 
+  /// The handshake was answered and nobody has signed in. The gateway refuses
+  /// this session every read — correctly, since 2026-09-16 — and the client
+  /// HOLDS the link rather than redialling it. Reachable, and saying so.
+  ///
+  /// It needs its own voice because the ladder below used to reach
+  /// [noAnswerYet] from here: `ready` means every subscription is holding its
+  /// snapshot, a session refused every subscription can never get there, and
+  /// the patience window then called a perfectly healthy gateway unreachable
+  /// on the sign-in screen of every panel whose anonymous account holds
+  /// nothing. Reported from the plant on 2026-09-17.
+  awaitingSignIn,
+
+  /// The handshake was answered, somebody IS signed in, and that account lacks
+  /// the read floor. Also a held link, also reachable — what is missing is a
+  /// permission, and the page gate says which.
+  readsWithheld,
+
   /// The dial never landed: address, port, cable.
   dialNeverLanded,
 
@@ -246,6 +263,11 @@ enum _Voice {
   GatewayLinkKind get kind => switch (this) {
         _Voice.connected => GatewayLinkKind.connected,
         _Voice.connecting => GatewayLinkKind.connecting,
+        // The link is up: it is the SESSION that holds nothing. Reported as
+        // connected so the panel's own gateway alarm does not fire on a
+        // sign-in screen; the headline says what is actually missing.
+        _Voice.awaitingSignIn => GatewayLinkKind.connected,
+        _Voice.readsWithheld => GatewayLinkKind.connected,
         _Voice.dialNeverLanded => GatewayLinkKind.unreachable,
         _Voice.linkDropped => GatewayLinkKind.unreachable,
         _Voice.wentQuiet => GatewayLinkKind.unreachable,
@@ -270,6 +292,8 @@ enum _Voice {
   bool get terminal => switch (this) {
         _Voice.connected => false,
         _Voice.connecting => false,
+        _Voice.awaitingSignIn => false,
+        _Voice.readsWithheld => false,
         _Voice.dialNeverLanded => false,
         _Voice.linkDropped => false,
         _Voice.wentQuiet => false,
@@ -428,6 +452,8 @@ GatewayLinkReport describeGatewayLink({
   required Duration elapsed,
   String? lastDownReason,
   String? stopReason,
+  bool awaitingSignIn = false,
+  bool readsWithheld = false,
   Duration patience = kGatewayFirstConnectPatience,
 }) {
   final _Voice voice;
@@ -443,6 +469,19 @@ GatewayLinkReport describeGatewayLink({
     // 2. A live session. `resyncing` is deliberately not here: values are not
     //    trustworthy yet, so it stays with the connecting/patience arms below.
     voice = _Voice.connected;
+    raw = null;
+  } else if (state == LinkState.resyncing && awaitingSignIn) {
+    // 2b. A HELD link: handshake answered, every read refused because nobody
+    //     has signed in. `resyncing` is the proof the gateway was reached, and
+    //     the client holds rather than redials — so this is not the patience
+    //     window's business at all. Before [lastDownReason] because a held
+    //     link is the newer fact; after `ready` because a signed-in session
+    //     clears the flag before it gets there.
+    voice = _Voice.awaitingSignIn;
+    raw = null;
+  } else if (state == LinkState.resyncing && readsWithheld) {
+    // 2c. The same hold, for a signed-in account without the read floor.
+    voice = _Voice.readsWithheld;
     raw = null;
   } else if (lastDownReason != null) {
     // 3. The reason wins over the clock. See F-6 above.
@@ -551,6 +590,9 @@ String _headline(_Voice voice, String where, Duration elapsed, Duration patience
     switch (voice) {
       _Voice.connected => 'Connected to $where',
       _Voice.connecting => 'Connecting to $where…',
+      _Voice.awaitingSignIn => 'Connected to $where — sign in to see the plant',
+      _Voice.readsWithheld =>
+        'Connected to $where — this account may not read the plant',
       _Voice.dialNeverLanded => 'No connection to $where',
       _Voice.linkDropped => 'The connection to $where ended',
       _Voice.wentQuiet => 'The gateway at $where has gone quiet',
@@ -581,6 +623,14 @@ String _detail(_Voice voice, String where, String? path) => switch (voice) {
       _Voice.connecting =>
         'The first attempt is still in flight. If nothing comes back, this '
             'will say so rather than keep spinning.',
+      _Voice.awaitingSignIn =>
+        'The gateway answered and is holding this session open. It shows a '
+            'panel nothing until somebody signs in, which is how this plant is '
+            'set up — nothing is wrong with the link.',
+      _Voice.readsWithheld =>
+        'The gateway answered, and the account signed in here is not allowed '
+            'to read the plant. Sign in as someone who is, or ask for the '
+            'account to be given it under Advanced > Access.',
       _Voice.dialNeverLanded =>
         'The dial never landed. Check the address and the port above, that '
             'the gateway is running, and the cable and switch between this '
