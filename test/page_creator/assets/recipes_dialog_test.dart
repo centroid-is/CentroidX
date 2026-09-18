@@ -1,21 +1,20 @@
-// The recipes dialog: what it reads, what it shows, and what Send writes.
+// The recipes dialog: what it shows, and what Send writes.
 //
-// Three things here are regressions rather than features.
+// Two views over one list. The GROUPS view — "Products" unless the page calls
+// them something else — is where the dialog opens: a group is one complete
+// recipe per line, sent together. The LINES view is the advanced one: one
+// line at a time, every value editable against what the line holds now.
 //
-// 1. **The line pills used to change nothing but themselves.** The tag
-//    subscription sat ABOVE the `StatefulBuilder` the selection was mutated
-//    through, and the floating dialog builds its body once and carries it as
-//    a captured child — so tapping a second line re-drew the pill and went on
-//    showing the first line's node. The dialog body is now a stateful widget
-//    that builds its own subscriptions, so a selection change re-points them.
+// What these tests hold it to:
 //
-// 2. **A member one line does not have must say so.** A blank cell reads as
-//    "nothing set" and a zero reads as a setpoint; both are wrong about a
-//    line that simply has no such member.
-//
-// 3. **Send is a member-wise merge, never a struct copy.** Lines are not
-//    obliged to share a shape, and writing a three-belt recipe onto a
-//    two-belt line must not lengthen it.
+//   * each line in a group is sent its OWN recipe, merged into its own shape
+//     — the lines do not share a struct, and a group never asks them to;
+//   * sending a group writes only the lines that would change, and says what
+//     it did with every other line;
+//   * the presets a station already has ("Line 2 - Standard") are grouped
+//     only when asked, and nothing is sent to a PLC when they are;
+//   * a line tab re-points the live values (the bug that started this);
+//   * a value typed and left — no Enter — is saved.
 
 import 'dart:convert';
 
@@ -161,250 +160,396 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  group('the line pills re-point the live subscription', () {
-    testWidgets('tapping a second line shows that line, not the first',
-        (tester) async {
-      final config = RecipesConfig(
-          key: '', label: 'Line', keys: const ['line_a', 'line_b']);
-      stateMan.push('line_a', lineValue(gapLength: 2000, belts: 1));
-      stateMan.push('line_b', lineValue(gapLength: 2500, belts: 1));
+  // Three lines, the shape the plant has: line 1 differs from its recipe,
+  // line 2 is running its recipe, and line 3 has none in the group.
+  final threeLines = RecipesConfig(
+      key: '', label: 'Line', keys: const ['line_a', 'line_b', 'line_c']);
 
-      await pumpDialog(tester, config);
+  List<Recipe> standardGroup() => [
+        Recipe(
+            name: 'Line 1 - Standard',
+            value: lineValue(gapLength: 2500, belts: 1),
+            line: 'line_a',
+            group: 'Standard'),
+        Recipe(
+            name: 'Line 2 - Standard',
+            value: lineValue(gapLength: 2500, belts: 1),
+            line: 'line_b',
+            group: 'Standard'),
+      ];
+
+  void pushThreeLines() {
+    stateMan.push('line_a', lineValue(gapLength: 2000, belts: 1));
+    stateMan.push('line_b', lineValue(gapLength: 2500, belts: 1));
+    stateMan.push('line_c', lineValue(gapLength: 2500, belts: 1));
+  }
+
+  Future<List<dynamic>> saved(RecipesConfig config) async =>
+      jsonDecode((await prefs.getString('${config.recipesBucket}.recipes'))!)
+          as List;
+
+  group("the dialog speaks the asset's own words", () {
+    testWidgets('Products | Lines unless the page says otherwise',
+        (tester) async {
+      pushThreeLines();
+      await pumpDialog(tester, threeLines);
+
+      expect(find.text('Products'), findsWidgets);
+      expect(find.text('Lines'), findsOneWidget);
+      expect(find.text('New product'), findsOneWidget);
+    });
+
+    testWidgets('and whatever the page calls them when it does',
+        (tester) async {
+      pushThreeLines();
+      await pumpDialog(
+        tester,
+        RecipesConfig(
+          key: '',
+          label: 'Lína',
+          labelPlural: 'Línur',
+          groupLabel: 'Vara',
+          groupLabelPlural: 'Vörur',
+          keys: const ['line_a', 'line_b', 'line_c'],
+        ),
+      );
+
+      expect(find.text('Vörur'), findsWidgets);
+      expect(find.text('Línur'), findsOneWidget);
+      expect(find.text('New vara'), findsOneWidget);
+      expect(find.text('Products'), findsNothing,
+          reason: 'nothing in the dialog is hard-coded to "Product"');
+    });
+  });
+
+  group('a group is one recipe per line, sent together', () {
+    testWidgets('each line says where it stands against its recipe',
+        (tester) async {
+      pushThreeLines();
+      await pumpDialog(tester, threeLines, recipes: standardGroup());
+
+      expect(find.text('1 value differs'), findsOneWidget);
+      expect(find.text('Running'), findsOneWidget);
+      expect(find.text('No recipe'), findsOneWidget);
+    });
+
+    testWidgets('sending the group writes only the line that would change',
+        (tester) async {
+      pushThreeLines();
+      await pumpDialog(tester, threeLines, recipes: standardGroup());
+
+      await tester.tap(find.text('Send to all 2 lines'));
+      await tester.pumpAndSettle();
+
+      expect(stateMan.writes.map((w) => w.key), ['line_a'],
+          reason: 'line 2 already runs it, and line 3 has no recipe here');
+      expect(find.textContaining('already running it'), findsOneWidget);
+      expect(find.textContaining('no recipe in Standard'), findsOneWidget);
+    });
+
+    testWidgets('each line is sent its own recipe, in its own shape',
+        (tester) async {
+      stateMan.push('line_a', lineValue(gapLength: 2000, belts: 1));
+      stateMan.push('line_b', lineValue(gapLength: 2000, belts: 3));
+      stateMan.push('line_c', lineValue(gapLength: 2000, belts: 3));
+      await pumpDialog(tester, threeLines, recipes: [
+        Recipe(
+            name: 'Line 1 - Standard',
+            value: lineValue(gapLength: 2500, belts: 1),
+            line: 'line_a',
+            group: 'Standard'),
+        Recipe(
+            name: 'Line 2 - Standard',
+            value: lineValue(gapLength: 2600, belts: 3),
+            line: 'line_b',
+            group: 'Standard'),
+      ]);
+
+      await tester.tap(find.text('Send to all 2 lines'));
+      await tester.pumpAndSettle();
+
+      final byKey = {for (final w in stateMan.writes) w.key: w.value};
+      expect(byKey['line_a']!['gapLength'].asDouble, 2500);
+      expect(byKey['line_a']!['belts'].asArray.length, 1);
+      expect(byKey['line_b']!['gapLength'].asDouble, 2600,
+          reason: "line 2 gets its own value, not line 1's");
+      expect(byKey['line_b']!['belts'].asArray.length, 3);
+    });
+
+    testWidgets('a card sends its own line and no other', (tester) async {
+      pushThreeLines();
+      await pumpDialog(tester, threeLines, recipes: standardGroup());
+
+      await tester.tap(find.text('Send to Line 1'));
+      await tester.pumpAndSettle();
+
+      expect(stateMan.writes.map((w) => w.key), ['line_a']);
+    });
+
+    testWidgets('a line with no recipe is filled from what it runs now',
+        (tester) async {
+      pushThreeLines();
+      await pumpDialog(tester, threeLines, recipes: standardGroup());
+
+      await tester.tap(find.text('Copy from Line 3 now'));
+      await tester.pumpAndSettle();
+
+      final third =
+          (await saved(threeLines)).singleWhere((r) => r['line'] == 'line_c');
+      expect(third['group'], 'Standard');
+      expect(stateMan.writes, isEmpty,
+          reason: 'copying FROM a line writes nothing TO it');
+      expect(find.text('No recipe'), findsNothing);
+    });
+  });
+
+  group('a new group starts from what every line runs now', () {
+    testWidgets('one recipe per ticked line, captured from that line',
+        (tester) async {
+      pushThreeLines();
+      await pumpDialog(tester, threeLines);
+
+      await tester.tap(find.text('New product'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+          find.byKey(const ValueKey('recipes.newGroupName')), 'Standard');
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Create product'));
+      await tester.pumpAndSettle();
+
+      final all = await saved(threeLines);
+      expect([for (final r in all) r['line']], ['line_a', 'line_b', 'line_c']);
+      expect({for (final r in all) r['group']}, {'Standard'});
+      expect(find.text('Running'), findsNWidgets(3),
+          reason: 'captured from the lines, so every line is running it');
+    });
+  });
+
+  group('the presets a station already has', () {
+    testWidgets('are grouped by their names when asked, and nothing is sent',
+        (tester) async {
+      pushThreeLines();
+      await pumpDialog(tester, threeLines, recipes: [
+        Recipe(name: 'Line 1 - Standard', value: lineValue(belts: 1)),
+        Recipe(name: 'Line 2 - Standard', value: lineValue(belts: 1)),
+        Recipe(name: 'Trial', value: lineValue(belts: 1)),
+      ]);
+
+      expect(find.textContaining('2 saved recipes are named for a line'),
+          findsOneWidget);
+      await tester.tap(find.text('Group into products'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Group into 1 product'));
+      await tester.pumpAndSettle();
+
+      final all = await saved(threeLines);
+      expect([
+        for (final r in all) (r['line'], r['group'])
+      ], [
+        ('line_a', 'Standard'),
+        ('line_b', 'Standard'),
+        (null, null),
+      ]);
+      expect(stateMan.writes, isEmpty);
+      expect(find.textContaining('named for a line'), findsNothing,
+          reason: 'nothing left to offer');
+    });
+
+    testWidgets('"Not now" leaves them exactly as they were', (tester) async {
+      pushThreeLines();
+      await pumpDialog(tester, threeLines, recipes: [
+        Recipe(name: 'Line 1 - Standard', value: lineValue(belts: 1)),
+      ]);
+
+      await tester.tap(find.text('Group into products'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Not now'));
+      await tester.pumpAndSettle();
+
+      expect((await saved(threeLines)).single['group'], isNull);
+    });
+  });
+
+  group('groups are arranged by dragging', () {
+    testWidgets('the new order is the stored order', (tester) async {
+      pushThreeLines();
+      await pumpDialog(tester, threeLines, recipes: [
+        Recipe(
+            name: 'A', value: lineValue(belts: 1), line: 'line_a', group: 'A'),
+        Recipe(
+            name: 'B', value: lineValue(belts: 1), line: 'line_a', group: 'B'),
+      ]);
+
+      // Past the top: a drag beyond the first slot is clamped to it, so
+      // overshooting says "to the top" without pinning the test to a height.
+      await tester.drag(
+          find.byIcon(Icons.drag_indicator).last, const Offset(0, -400));
+      await tester.pumpAndSettle();
+
+      expect([for (final r in await saved(threeLines)) r['group']], ['B', 'A']);
+    });
+  });
+
+  group('the lines view', () {
+    Future<void> openLines(WidgetTester tester) async {
+      await tester.tap(find.text('Lines'));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('a tab re-points the live values', (tester) async {
+      pushThreeLines();
+      await pumpDialog(tester, threeLines);
+      await openLines(tester);
 
       expect(find.text('2000.0'), findsOneWidget);
-      expect(find.text('2500.0'), findsNothing);
 
       await tester.tap(find.text('Line 2'));
       await tester.pumpAndSettle();
 
       expect(find.text('2500.0'), findsOneWidget,
-          reason: 'the subscription must follow the selection');
+          reason: 'the regression this whole rebuild started from: the tab '
+              'moved and the values stayed on the first line');
       expect(find.text('2000.0'), findsNothing);
     });
 
-    testWidgets('the column is headed Current when lines are picked one at a '
-        'time', (tester) async {
-      final config = RecipesConfig(
-          key: '', label: 'Line', keys: const ['line_a', 'line_b']);
-      stateMan.push('line_a', lineValue(belts: 1));
-
-      await pumpDialog(tester, config);
-
-      expect(find.text('Current'), findsOneWidget);
-      expect(find.text('Line 1'), findsOneWidget); // the pill, not a column
-    });
-  });
-
-  group('unified mode', () {
-    testWidgets('gives every line its own column and no line pills',
+    testWidgets(
+        'a line is offered its own recipes and the ones saved before lines',
         (tester) async {
-      final config = RecipesConfig(
-        key: '',
-        label: 'Line',
-        keys: const ['line_a', 'line_b', 'line_c'],
-        unifiedRecipe: true,
-      );
-      stateMan.push('line_a', lineValue(belts: 2));
-      stateMan.push('line_b', lineValue(belts: 3));
-      stateMan.push('line_c', lineValue(belts: 3));
+      pushThreeLines();
+      await pumpDialog(tester, threeLines, recipes: [
+        Recipe(name: 'Mine', value: lineValue(belts: 1), line: 'line_a'),
+        Recipe(name: 'Theirs', value: lineValue(belts: 1), line: 'line_b'),
+        Recipe(name: 'Old', value: lineValue(belts: 1)),
+      ]);
+      await openLines(tester);
 
-      await pumpDialog(tester, config);
-
-      // Column headings, one per line — and the pills are gone, because in
-      // unified mode there is no line to choose.
-      expect(find.text('Line 1'), findsOneWidget);
-      expect(find.text('Line 2'), findsOneWidget);
-      expect(find.text('Line 3'), findsOneWidget);
-      expect(find.text('Current'), findsNothing);
+      expect(find.text('Mine'), findsOneWidget);
+      expect(find.text('Old'), findsOneWidget);
+      expect(find.text('Theirs'), findsNothing);
     });
 
-    testWidgets('a member the short line does not have says so', (tester) async {
-      final config = RecipesConfig(
-        key: '',
-        label: 'Line',
-        keys: const ['line_a', 'line_b'],
-        unifiedRecipe: true,
-      );
-      stateMan.push('line_a', lineValue(belts: 2));
-      stateMan.push('line_b', lineValue(belts: 3));
-
-      await pumpDialog(tester, config);
-
-      // The third belt exists on one line only: its row is there, and the
-      // line without it says "not present" rather than showing a blank or a
-      // zero that reads as a setpoint.
-      expect(find.text('Item 3'), findsOneWidget);
-      expect(find.text('not present'), findsWidgets);
-    });
-
-    testWidgets('a line that has not reported waits in its own column only',
+    testWidgets('a value typed and left, without Enter, is saved',
         (tester) async {
-      final config = RecipesConfig(
-        key: '',
-        label: 'Line',
-        keys: const ['line_a', 'line_b'],
-        unifiedRecipe: true,
-      );
-      // Only one line ever speaks. CombineLatest would otherwise hold the
-      // whole table back until every input had produced a value.
-      stateMan.push('line_a', lineValue(belts: 1));
+      pushThreeLines();
+      await pumpDialog(tester, threeLines, recipes: [
+        Recipe(
+            name: 'Mine', value: obj({'gapLength': d(2000.0)}), line: 'line_a'),
+      ]);
+      await openLines(tester);
+      await tester.tap(find.text('Mine'));
+      await tester.pumpAndSettle();
 
-      await pumpDialog(tester, config);
+      // The value cell, not the rail's "New recipe" box.
+      await tester.enterText(
+          find
+              .descendant(
+                  of: find.byType(Table), matching: find.byType(TextField))
+              .first,
+          '2750');
+      FocusManager.instance.primaryFocus?.unfocus();
+      await tester.pumpAndSettle();
 
-      expect(find.text('Gap Length'), findsOneWidget);
-      expect(find.text('waiting'), findsWidgets);
+      expect(jsonEncode(await saved(threeLines)), contains('2750'));
+    });
+
+    testWidgets('Send writes that line, in its own shape', (tester) async {
+      pushThreeLines();
+      await pumpDialog(tester, threeLines, recipes: [
+        Recipe(
+            name: 'Wide',
+            value: lineValue(gapLength: 2700, belts: 3),
+            line: 'line_a'),
+      ]);
+      await openLines(tester);
+      await tester.tap(find.text('Wide'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Send to Line 1'));
+      await tester.pumpAndSettle();
+
+      final write = stateMan.writes.single;
+      expect(write.key, 'line_a');
+      expect(write.value['gapLength'].asDouble, 2700);
+      expect(write.value['belts'].asArray.length, 1,
+          reason: 'a line is never lengthened to fit a recipe');
+    });
+
+    testWidgets('a line that cannot be read is not written blind',
+        (tester) async {
+      pushThreeLines();
+      stateMan.unreadable.add('line_a');
+      await pumpDialog(tester, threeLines, recipes: [
+        Recipe(name: 'Mine', value: lineValue(belts: 1), line: 'line_a'),
+      ]);
+      await openLines(tester);
+      await tester.tap(find.text('Mine'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Send to Line 1'));
+      await tester.pumpAndSettle();
+
+      expect(stateMan.writes, isEmpty);
+      expect(find.textContaining('could not be read'), findsOneWidget);
     });
   });
 
   group('the dialog owns its own space', () {
     testWidgets('the body is not wrapped in a scroll view of its own',
         (tester) async {
-      final config = RecipesConfig(
-          key: '', label: 'Line', keys: const ['line_a', 'line_b']);
-      stateMan.push('line_a', lineValue(belts: 1));
-
-      await pumpDialog(tester, config);
+      pushThreeLines();
+      await pumpDialog(tester, threeLines);
 
       final dialog = tester.widget<StandardDialog>(find.byType(StandardDialog));
       expect(dialog.scrollable, isFalse,
-          reason: 'the content fills the window itself');
+          reason: 'the content fills the window itself, so dragging the '
+              'window bigger grows it');
     });
 
     testWidgets('the values are one scroll region, not two side by side',
         (tester) async {
-      final config = RecipesConfig(
-          key: '', label: 'Line', keys: const ['line_a', 'line_b']);
-      stateMan.push('line_a', lineValue(belts: 1));
+      pushThreeLines();
+      await pumpDialog(tester, threeLines, recipes: [
+        Recipe(name: 'Mine', value: lineValue(belts: 1), line: 'line_a'),
+      ]);
+      await tester.tap(find.text('Lines'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Mine'));
+      await tester.pumpAndSettle();
 
-      await pumpDialog(tester, config);
-
-      expect(
-        find.descendant(
-          of: find.byType(StandardDialog),
-          matching: find.byType(SingleChildScrollView),
-        ),
-        findsOneWidget,
-      );
+      final vertical = tester
+          .widgetList<SingleChildScrollView>(find.descendant(
+            of: find.byType(StandardDialog),
+            matching: find.byType(SingleChildScrollView),
+          ))
+          .where((s) => s.scrollDirection == Axis.vertical);
+      expect(vertical, hasLength(1));
     });
   });
 
-  group('Send merges rather than copies', () {
-    testWidgets('writes every line, keeping each line its own shape',
+  group('the legacy single-key array', () {
+    testWidgets('sends one element and writes the rest back as read',
         (tester) async {
-      final config = RecipesConfig(
-        key: '',
-        label: 'Line',
-        keys: const ['line_a', 'line_b'],
-        unifiedRecipe: true,
-      );
-      stateMan.push('line_a', lineValue(gapLength: 2000, belts: 2));
-      stateMan.push('line_b', lineValue(gapLength: 2000, belts: 3));
+      final config = RecipesConfig(key: 'all_lines', label: 'Line');
+      stateMan.push(
+          'all_lines',
+          arr([
+            lineValue(gapLength: 2000, belts: 1),
+            lineValue(gapLength: 2000, belts: 1),
+          ]));
+      await pumpDialog(tester, config, recipes: [
+        Recipe(
+            name: 'Line 2 - G',
+            value: lineValue(gapLength: 2500, belts: 1),
+            line: 'all_lines[1]',
+            group: 'G'),
+      ]);
 
-      await pumpDialog(
-        tester,
-        config,
-        recipes: [
-          Recipe(name: 'Preset A', value: lineValue(gapLength: 2500, belts: 3)),
-        ],
-      );
-
-      await tester.tap(find.text('Preset A'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.textContaining('Send to every'));
+      await tester.tap(find.text('Send to Line 2'));
       await tester.pumpAndSettle();
 
-      expect(stateMan.writes.map((w) => w.key), ['line_a', 'line_b']);
-
-      final toShortLine = stateMan.writes.first.value;
-      expect(toShortLine['gapLength'].asDouble, 2500);
-      expect(toShortLine['belts'].asArray, hasLength(2),
-          reason: 'a three-belt recipe must not lengthen a two-belt line');
-
-      final toLongLine = stateMan.writes.last.value;
-      expect(toLongLine['belts'].asArray, hasLength(3));
-    });
-
-    testWidgets('reports each line on its own, naming what did not land',
-        (tester) async {
-      final config = RecipesConfig(
-        key: '',
-        label: 'Line',
-        keys: const ['line_a', 'line_b'],
-        unifiedRecipe: true,
-      );
-      stateMan.push('line_a', lineValue(belts: 2));
-      stateMan.push('line_b', lineValue(belts: 3));
-
-      await pumpDialog(
-        tester,
-        config,
-        recipes: [Recipe(name: 'Preset A', value: lineValue(belts: 3))],
-      );
-
-      await tester.tap(find.text('Preset A'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.textContaining('Send to every'));
-      await tester.pumpAndSettle();
-
-      expect(find.textContaining('Line 1: 5 of 7 values written'), findsOneWidget);
-      expect(find.textContaining('Line 2: all 7 values written'), findsOneWidget);
-      // Three separate controllers, so there is no atomicity to promise and
-      // the wording does not pretend otherwise.
-      expect(find.textContaining('written separately'), findsOneWidget);
-    });
-
-    testWidgets('a line that cannot be read is not written blind',
-        (tester) async {
-      final config = RecipesConfig(
-        key: '',
-        label: 'Line',
-        keys: const ['line_a', 'line_b'],
-        unifiedRecipe: true,
-      );
-      stateMan.push('line_a', lineValue(belts: 2));
-      stateMan.push('line_b', lineValue(belts: 2));
-      stateMan.unreadable.add('line_a');
-
-      await pumpDialog(
-        tester,
-        config,
-        recipes: [Recipe(name: 'Preset A', value: lineValue(belts: 2))],
-      );
-
-      await tester.tap(find.text('Preset A'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.textContaining('Send to every'));
-      await tester.pumpAndSettle();
-
-      // Without the target's own shape the only thing left to write is the
-      // recipe as it stands, which is the blind copy this path exists to
-      // avoid. So that line is reported and skipped — and the other is still
-      // attempted.
-      expect(stateMan.writes.map((w) => w.key), ['line_b']);
-      expect(find.textContaining('could not be read'), findsOneWidget);
-    });
-
-    testWidgets('per-line mode sends only the line that is selected',
-        (tester) async {
-      final config = RecipesConfig(
-          key: '', label: 'Line', keys: const ['line_a', 'line_b']);
-      stateMan.push('line_a', lineValue(belts: 2));
-      stateMan.push('line_b', lineValue(belts: 2));
-
-      await pumpDialog(
-        tester,
-        config,
-        recipes: [Recipe(name: 'Preset A', value: lineValue(belts: 2))],
-      );
-
-      await tester.tap(find.text('Line 2'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Preset A'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Send values'));
-      await tester.pumpAndSettle();
-
-      expect(stateMan.writes.map((w) => w.key), ['line_b']);
+      final write = stateMan.writes.single;
+      expect(write.key, 'all_lines');
+      expect(write.value[0]['gapLength'].asDouble, 2000,
+          reason: 'the other line is written back exactly as it was read');
+      expect(write.value[1]['gapLength'].asDouble, 2500);
     });
   });
 }

@@ -1,0 +1,2181 @@
+part of 'recipes.dart';
+
+// The recipes dialog: two views over one list.
+//
+//  * The GROUPS view (called whatever the asset calls a group — "Products"
+//    by default) is where the dialog opens. A group is one recipe per line;
+//    pick one and send it, whole or a line at a time.
+//  * The LINES view is the advanced one: one line at a time, every value of
+//    one recipe editable against what the line holds now.
+//
+// Both read the same recipe list and the same live values, so switching
+// between them loses nothing.
+
+enum _RecipesView { groups, lines }
+
+/// What the right-hand pane of the groups view is showing, when it is not
+/// the selected group.
+enum _Panel { none, newGroup, grouping, rename, delete }
+
+/// One line as the dialog sees it.
+@immutable
+class _Line {
+  const _Line({
+    required this.id,
+    required this.name,
+    required this.key,
+    this.index,
+  });
+
+  /// What [Recipe.line] stores for this line: its key, or for the legacy
+  /// array shape, the key and the element it indexes.
+  final String id;
+
+  /// "Line 2" — what the operator reads.
+  final String name;
+
+  /// The node that is read and written.
+  final String key;
+
+  /// The element of the legacy array this line is, null for per-line keys.
+  final int? index;
+}
+
+class _RecipesDialogBody extends ConsumerStatefulWidget {
+  const _RecipesDialogBody({required this.config});
+
+  final RecipesConfig config;
+
+  @override
+  ConsumerState<_RecipesDialogBody> createState() => _RecipesDialogBodyState();
+}
+
+class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
+  _RecipesView _view = _RecipesView.groups;
+
+  /// The group on screen in the groups view, by name.
+  String? _selectedGroup;
+
+  /// The line on screen in the lines view, by position among the lines.
+  int _selectedLine = 0;
+
+  /// The recipe on screen in the lines view — the recipe ITSELF, not its
+  /// position, so nothing that reorders or files the list can quietly swap
+  /// what the table shows and what Send would send.
+  Recipe? _selectedRecipe;
+
+  bool _sending = false;
+  List<LineSendOutcome>? _report;
+
+  final _newRecipeName = TextEditingController();
+
+  /// A form open in the groups view's right-hand pane, and the group it is
+  /// about.
+  _Panel _panel = _Panel.none;
+  String? _panelGroup;
+
+  /// The name being typed in a panel.
+  final _panelName = TextEditingController();
+
+  /// The lines ticked in the new-group panel, by id.
+  final Set<String> _ticked = {};
+
+  /// The recipe list the open dialog works on. Fetched once per opening, not
+  /// once per rebuild: a fresh future on every rebuild re-read the
+  /// preferences and rebuilt the content — and with it the text fields —
+  /// for every keystroke.
+  ///
+  /// Started from `build` rather than `initState`, and only once there is
+  /// something to show: an unconfigured button — the palette preview is one
+  /// — must not read the preference store for nothing.
+  Future<List<Recipe>>? _recipesFuture;
+
+  /// The combined per-key stream, cached the way `conveyor.dart` caches its
+  /// own. A new stream object means cancel every subscription and open them
+  /// again, and a dialog rebuilds on every tick and every keystroke.
+  Stream<List<DynamicValue?>>? _cachedValues;
+  int? _cachedSignature;
+
+  RecipesConfig get _config => widget.config;
+
+  @override
+  void dispose() {
+    _newRecipeName.dispose();
+    _panelName.dispose();
+    super.dispose();
+  }
+
+  // -- storage -------------------------------------------------------------
+
+  Future<List<Recipe>> _getRecipes() =>
+      _loadRecipes(ref, _config.recipesBucket);
+
+  /// Saves, and says so when it could not.
+  ///
+  /// Called from inside `setState` callbacks, so it cannot be awaited there
+  /// — but a shared write can be refused (offline, a lost compare-and-swap,
+  /// a denial), and a refusal that lands nowhere leaves a recipe on screen
+  /// that reopening the dialog shows was never stored. The messenger is
+  /// resolved before the first await: the dialog may be gone by the time the
+  /// refusal comes back.
+  Future<void> _saveRecipes(List<Recipe> recipes) async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    try {
+      await writeRecipes(
+        await ref.read(preferencesProvider.future),
+        _config.recipesBucket,
+        recipes,
+      );
+    } on AccessDenied {
+      // Already prompted and recorded by the guard.
+      rethrow;
+    } catch (error) {
+      messenger?.showSnackBar(SnackBar(
+        content: Text('Recipes not saved: $error'),
+      ));
+    }
+  }
+
+  // -- lines and live values -----------------------------------------------
+
+  /// Every node the dialog reads. Both views need every line — the groups
+  /// view shows them side by side, and the lines view switches between them
+  /// instantly — so all of them are subscribed for as long as it is open.
+  List<String> get _subscribedKeys {
+    if (_config.perLineKeys) {
+      return [
+        for (final key in _config.keys)
+          if (key.isNotEmpty) key
+      ];
+    }
+    return _config.key.isEmpty ? const [] : [_config.key];
+  }
+
+  /// The lines, in order.
+  ///
+  /// A blank entry in the key list — "Add line" leaves one until it is
+  /// filled in — is skipped, and the lines that remain keep their configured
+  /// numbers, so a line is not renamed by its neighbour being unfinished.
+  List<_Line> _lines(List<DynamicValue?> raw) {
+    final noun = _config.lineNoun;
+    if (_config.perLineKeys) {
+      return [
+        for (var i = 0; i < _config.keys.length; i++)
+          if (_config.keys[i].isNotEmpty)
+            _Line(
+                id: _config.keys[i],
+                name: '$noun ${i + 1}',
+                key: _config.keys[i]),
+      ];
+    }
+    final whole = raw.isEmpty ? null : raw.first;
+    if (whole == null || !whole.isArray) return const [];
+    return [
+      for (var i = 0; i < whole.asArray.length; i++)
+        _Line(
+          id: '${_config.key}[$i]',
+          name: '$noun ${i + 1}',
+          key: _config.key,
+          index: i,
+        ),
+    ];
+  }
+
+  /// One live value per line, null while a line has not reported.
+  List<DynamicValue?> _liveValues(List<_Line> lines, List<DynamicValue?> raw) {
+    if (_config.perLineKeys) {
+      return [
+        for (var i = 0; i < lines.length; i++) i < raw.length ? raw[i] : null
+      ];
+    }
+    final whole = raw.isEmpty ? null : raw.first;
+    return [
+      for (final line in lines)
+        (whole != null && whole.isArray && line.index! < whole.asArray.length)
+            ? whole.asArray[line.index!]
+            : null,
+    ];
+  }
+
+  /// The values behind [_subscribedKeys], one slot per key.
+  ///
+  /// Straight from `conveyor.dart`'s multi-key pattern, including the trap
+  /// documented there: `CombineLatestStream` emits nothing at all until EVERY
+  /// input has produced a value, so one silent line would blank the whole
+  /// dialog. Each source is seeded with a null and has its errors swallowed
+  /// to null, so a dead line costs its own card and nothing else.
+  Stream<List<DynamicValue?>> _valuesStream(
+      List<Stream<DynamicValue>> sources) {
+    final signature =
+        Object.hashAll([for (final s in sources) identityHashCode(s)]);
+    final cached = _cachedValues;
+    if (cached != null && signature == _cachedSignature) return cached;
+
+    final combined = sources.isEmpty
+        ? Stream<List<DynamicValue?>>.value(const <DynamicValue?>[])
+        : CombineLatestStream<DynamicValue?, List<DynamicValue?>>(
+            [for (final s in sources) _tolerant(s)],
+            (values) => List<DynamicValue?>.from(values),
+          ).shareReplay(maxSize: 1);
+
+    _cachedSignature = signature;
+    _cachedValues = combined;
+    return combined;
+  }
+
+  Stream<DynamicValue?> _tolerant(Stream<DynamicValue> source) => source
+      .map<DynamicValue?>((value) => value)
+      .transform(
+        StreamTransformer<DynamicValue?, DynamicValue?>.fromHandlers(
+          handleError: (error, stackTrace, sink) => sink.add(null),
+        ),
+      )
+      .startWith(null);
+
+  // -- sending -------------------------------------------------------------
+
+  /// Sends each job's recipe to its line, one line at a time.
+  ///
+  /// **Every write goes through [writeTag]**, so each key is access-checked
+  /// and audited on its own — a session allowed to set one line and not
+  /// another is refused only on the one it may not touch. There is no
+  /// transaction across lines, and nothing here pretends there is: each line
+  /// reports on itself.
+  ///
+  /// [alreadyDecided] are the lines settled without a write — running the
+  /// recipe already, or with no recipe in the group — reported beside the
+  /// ones that were written so the operator sees every line accounted for.
+  Future<void> _send(
+    List<({_Line line, Recipe recipe})> jobs, {
+    List<LineSendOutcome> alreadyDecided = const [],
+  }) async {
+    // A value typed but not entered is still in its field. Dropping focus
+    // fires the commit, so Send sends what is on screen rather than what the
+    // operator last pressed Enter on.
+    FocusScope.of(context).unfocus();
+
+    setState(() {
+      _sending = true;
+      _report = null;
+    });
+
+    final outcomes = <LineSendOutcome>[];
+    try {
+      final stateMan = await ref.read(stateManProvider.future);
+      for (final job in jobs) {
+        outcomes.add(job.line.index == null
+            ? await _sendOne(
+                stateMan, job.line.name, job.line.key, job.recipe.value)
+            : await _sendLegacyArray(stateMan, job.line, job.recipe.value));
+      }
+    } catch (error) {
+      // Not one line's failure — there was no connection to send through, so
+      // nothing was attempted at all.
+      outcomes.add(LineSendOutcome(
+        label: 'Nothing sent',
+        ok: false,
+        message: 'no connection to the controllers ($error)',
+      ));
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _sending = false;
+      _report = [...outcomes, ...alreadyDecided];
+    });
+  }
+
+  /// Reads one line, merges the recipe into what it reads, writes it back.
+  ///
+  /// The read is not a formality. Merging needs the target's own shape, and
+  /// without it the only thing left to write is the recipe as it stands —
+  /// a blind struct copy. A recipe captured from its own line fits it, but a
+  /// line's PLC type can change after the recipe was saved, and this is what
+  /// keeps that from writing a guess. So a line whose current value cannot
+  /// be obtained is reported and **not written**.
+  Future<LineSendOutcome> _sendOne(
+    StateMan stateMan,
+    String label,
+    String key,
+    DynamicValue recipe,
+  ) async {
+    if (key.isEmpty) {
+      return LineSendOutcome(
+          label: label, ok: false, message: 'no key configured');
+    }
+    DynamicValue current;
+    try {
+      current = await stateMan.read(key);
+    } catch (error) {
+      return LineSendOutcome(
+        label: label,
+        ok: false,
+        message: 'could not be read, so nothing was written ($error)',
+      );
+    }
+    final result = mergeRecipeInto(current, recipe);
+    if (result.written.isEmpty) {
+      return LineSendOutcome(
+        label: label,
+        ok: false,
+        message: 'nothing written — ${describeMerge(result)}',
+      );
+    }
+    try {
+      final issued = await writeTag(ref, stateMan, key, result.merged);
+      if (!issued) {
+        return LineSendOutcome(
+          label: label,
+          ok: false,
+          message: 'not permitted, so nothing was written',
+        );
+      }
+    } on AccessDenied {
+      return LineSendOutcome(
+        label: label,
+        ok: false,
+        message: 'not permitted, so nothing was written',
+      );
+    } catch (error) {
+      return LineSendOutcome(
+          label: label, ok: false, message: 'failed: $error');
+    }
+    return LineSendOutcome(
+        label: label, ok: true, message: describeMerge(result));
+  }
+
+  /// The legacy single-key shape: one array node holding every line.
+  ///
+  /// The whole array has to go back, because that is the node. The merge
+  /// applies to this line's element alone, and the other elements are
+  /// written back exactly as they were read.
+  Future<LineSendOutcome> _sendLegacyArray(
+      StateMan stateMan, _Line line, DynamicValue recipe) async {
+    final label = line.name;
+    final index = line.index!;
+    DynamicValue whole;
+    try {
+      whole = DynamicValue.from(await stateMan.read(line.key));
+    } catch (error) {
+      return LineSendOutcome(
+        label: label,
+        ok: false,
+        message: 'could not be read, so nothing was written ($error)',
+      );
+    }
+    if (!whole.isArray || index >= whole.asArray.length) {
+      return LineSendOutcome(
+          label: label, ok: false, message: 'this line is not in the array');
+    }
+    final result = mergeRecipeInto(whole[index], recipe);
+    if (result.written.isEmpty) {
+      return LineSendOutcome(
+        label: label,
+        ok: false,
+        message: 'nothing written — ${describeMerge(result)}',
+      );
+    }
+    whole[index] = result.merged;
+    try {
+      final issued = await writeTag(ref, stateMan, line.key, whole);
+      if (!issued) {
+        return LineSendOutcome(
+          label: label,
+          ok: false,
+          message: 'not permitted, so nothing was written',
+        );
+      }
+    } on AccessDenied {
+      return LineSendOutcome(
+        label: label,
+        ok: false,
+        message: 'not permitted, so nothing was written',
+      );
+    } catch (error) {
+      return LineSendOutcome(
+          label: label, ok: false, message: 'failed: $error');
+    }
+    return LineSendOutcome(
+        label: label, ok: true, message: describeMerge(result));
+  }
+
+  /// Sends [group] to every line it has a recipe for.
+  ///
+  /// A line already running its recipe is not written — the dialog said it
+  /// would be "left as it is", and a write that changes nothing is still a
+  /// write to the PLC and a row in the audit trail. A line the group has no
+  /// recipe for is left alone and says so.
+  void _sendGroup(String group, List<_Line> lines, List<DynamicValue?> live,
+      List<Recipe> recipes) {
+    final jobs = <({_Line line, Recipe recipe})>[];
+    final decided = <LineSendOutcome>[];
+    for (var i = 0; i < lines.length; i++) {
+      final line = lines[i];
+      final recipe = recipeInGroup(recipes, group, line.id);
+      final status = lineRecipeStatus(recipe, live[i]);
+      switch (status.state) {
+        case LineRecipeState.noRecipe:
+          decided.add(LineSendOutcome(
+            label: line.name,
+            ok: true,
+            message: 'no recipe in $group — left alone',
+          ));
+        case LineRecipeState.running:
+          decided.add(LineSendOutcome(
+            label: line.name,
+            ok: true,
+            message: 'already running it — left as it is',
+          ));
+        case LineRecipeState.waiting:
+        case LineRecipeState.differs:
+        case LineRecipeState.doesNotFit:
+          jobs.add((line: line, recipe: recipe!));
+      }
+    }
+    _send(jobs, alreadyDecided: decided);
+  }
+
+  // -- changing the list ---------------------------------------------------
+
+  /// A recipe for [line], named so that a station still on an older build —
+  /// which reads this same list and knows nothing of groups — shows it as
+  /// what it is.
+  Recipe _captured(_Line line, DynamicValue live,
+          {String? group, String? name}) =>
+      Recipe(
+        name: name ?? '${line.name} - ${group ?? 'recipe'}',
+        value: DynamicValue.from(live),
+        line: line.id,
+        group: group,
+      );
+
+  void _createGroup(String name, List<({_Line line, DynamicValue live})> from,
+      List<Recipe> recipes) {
+    setState(() {
+      for (final item in from) {
+        recipes.add(_captured(item.line, item.live, group: name));
+      }
+      _selectedGroup = name;
+      _report = null;
+      _saveRecipes(recipes);
+    });
+  }
+
+  void _copyIntoGroup(
+      String group, _Line line, DynamicValue live, List<Recipe> recipes) {
+    setState(() {
+      // Placed straight after the group's other recipes, so the group stays
+      // one block in the list.
+      final after = recipes.lastIndexWhere((r) => r.group == group);
+      recipes.insert(after + 1, _captured(line, live, group: group));
+      _report = null;
+      _saveRecipes(recipes);
+    });
+  }
+
+  void _addLineRecipe(
+      String name, _Line line, DynamicValue live, List<Recipe> recipes) {
+    if (name.trim().isEmpty) return;
+    setState(() {
+      final added = _captured(line, live, name: name.trim());
+      recipes.add(added);
+      _selectedRecipe = added;
+      _newRecipeName.clear();
+      _report = null;
+      _saveRecipes(recipes);
+    });
+  }
+
+  void _setGroup(
+      Recipe recipe, String? group, _Line line, List<Recipe> recipes) {
+    setState(() {
+      if (group == null) {
+        recipe.group = null;
+      } else {
+        // A recipe saved before recipes knew their line is offered on every
+        // line; filing it into a group makes it this line's.
+        recipe.line ??= line.id;
+        if (!canJoinGroup(recipes, recipe, group)) return;
+        recipe.group = group;
+      }
+      _saveRecipes(recipes);
+    });
+  }
+
+  void _deleteRecipe(Recipe recipe, List<Recipe> recipes) {
+    setState(() {
+      recipes.remove(recipe);
+      if (identical(recipe, _selectedRecipe)) _selectedRecipe = null;
+      _report = null;
+      _saveRecipes(recipes);
+    });
+  }
+
+  // -- build ---------------------------------------------------------------
+
+  @override
+  Widget build(BuildContext context) {
+    if (_config.lineKeys.isEmpty) {
+      return const Center(
+        child: Text('This recipes button has no keys configured yet.'),
+      );
+    }
+
+    // One shared stream per key, held by [keyStreamProvider] rather than by
+    // this widget: watching keeps them alive across a rebuild, and two assets
+    // pointed at the same node read the same subscription.
+    //
+    // Watched HERE, in `build` itself, and not inside the builders below: a
+    // `ref.watch` from a nested builder's callback runs in that builder's
+    // element, not this one's, and is not a dependency this widget would be
+    // rebuilt for.
+    final sources = [
+      for (final key in _subscribedKeys) ref.watch(keyStreamProvider(key))
+    ];
+
+    return FutureBuilder<List<Recipe>>(
+      future: _recipesFuture ??= _getRecipes(),
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return Center(
+              child: Text('Error loading recipes: ${snapshot.error}'));
+        }
+        if (!snapshot.hasData) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        final recipes = snapshot.data!;
+        return StreamBuilder<List<DynamicValue?>>(
+          stream: _valuesStream(sources),
+          builder: (context, values) {
+            final raw =
+                values.data ?? List<DynamicValue?>.filled(sources.length, null);
+            final first = raw.isEmpty ? null : raw.first;
+            if (!_config.perLineKeys && first != null && !first.isArray) {
+              return Center(
+                child: Text(
+                    'Unsupported type: ${first.type}, needs to be an array'),
+              );
+            }
+            final lines = _lines(raw);
+            final live = _liveValues(lines, raw);
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _viewSwitch(context),
+                const SizedBox(height: 8),
+                Expanded(
+                  child: _view == _RecipesView.groups
+                      ? _groupsView(context, recipes, lines, live)
+                      : _linesView(context, recipes, lines, live),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  /// "Products | Lines" — both words the asset's own.
+  Widget _viewSwitch(BuildContext context) {
+    return Align(
+      alignment: Alignment.centerRight,
+      child: SegmentedButton<_RecipesView>(
+        showSelectedIcon: false,
+        segments: [
+          ButtonSegment(
+            value: _RecipesView.groups,
+            label: Text(_config.groupNounPlural),
+          ),
+          ButtonSegment(
+            value: _RecipesView.lines,
+            label: Text(_config.lineNounPlural),
+          ),
+        ],
+        selected: {_view},
+        onSelectionChanged: (selection) => setState(() {
+          _view = selection.first;
+          _panel = _Panel.none;
+          _report = null;
+        }),
+      ),
+    );
+  }
+
+  /// The two-pane layout both views share: a rail, and what is picked in it.
+  ///
+  /// The rail is sized from what the window gives it rather than pinned, so
+  /// dragging the window bigger grows the content with it and a narrow
+  /// window shrinks the rail before it overflows.
+  Widget _twoPane(Widget Function(double railWidth) rail, Widget detail) {
+    return LayoutBuilder(builder: (context, constraints) {
+      final railWidth = (constraints.maxWidth * 0.25).clamp(200.0, 300.0);
+      return Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SizedBox(width: railWidth, child: rail(railWidth)),
+          const VerticalDivider(width: 17),
+          Expanded(child: detail),
+        ],
+      );
+    });
+  }
+
+  HmiStateColors _states(BuildContext context) =>
+      Theme.of(context).extension<HmiStateColors>() ??
+      HmiStateColors.solarizedLight;
+
+  // =========================================================================
+  // The groups view
+  // =========================================================================
+
+  Widget _groupsView(BuildContext context, List<Recipe> recipes,
+      List<_Line> lines, List<DynamicValue?> live) {
+    final groups = recipeGroups(recipes);
+    final selected = (_selectedGroup != null && groups.contains(_selectedGroup))
+        ? _selectedGroup
+        : (groups.isEmpty ? null : groups.first);
+
+    return _twoPane(
+      (_) => _groupRail(context, recipes, groups, selected, lines, live),
+      _panelOrDetail(context, recipes, groups, selected, lines, live),
+    );
+  }
+
+  Widget _panelOrDetail(
+    BuildContext context,
+    List<Recipe> recipes,
+    List<String> groups,
+    String? selected,
+    List<_Line> lines,
+    List<DynamicValue?> live,
+  ) {
+    final about = _panelGroup;
+    switch (_panel) {
+      case _Panel.newGroup:
+        return _newGroupPanel(context, recipes, lines, live);
+      case _Panel.grouping:
+        final proposal = proposeRecipeGrouping(
+            recipes, _config.lineNoun, [for (final l in lines) l.id]);
+        if (proposal.isNotEmpty) {
+          return _groupingPanel(context, recipes, lines, proposal);
+        }
+      case _Panel.rename:
+        if (about != null && groups.contains(about)) {
+          return _renamePanel(context, recipes, about);
+        }
+      case _Panel.delete:
+        if (about != null && groups.contains(about)) {
+          return _deletePanel(context, recipes, about);
+        }
+      case _Panel.none:
+        break;
+    }
+    return selected == null
+        ? _noGroups(context, recipes, lines)
+        : _groupDetail(context, recipes, selected, lines, live);
+  }
+
+  Widget _groupRail(
+    BuildContext context,
+    List<Recipe> recipes,
+    List<String> groups,
+    String? selected,
+    List<_Line> lines,
+    List<DynamicValue?> live,
+  ) {
+    final theme = Theme.of(context);
+    final proposal = proposeRecipeGrouping(
+        recipes, _config.lineNoun, [for (final l in lines) l.id]);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(_config.groupNounPlural, style: theme.textTheme.titleMedium),
+        const Divider(),
+        if (proposal.isNotEmpty) _groupingOffer(context, proposal),
+        Expanded(
+          child: groups.isEmpty
+              ? const SizedBox.shrink()
+              : ReorderableListView.builder(
+                  primary: false,
+                  buildDefaultDragHandles: false,
+                  itemCount: groups.length,
+                  // Groups have no order of their own — a group sits where its
+                  // first recipe sits — so the drag moves the group's
+                  // recipes, as one block.
+                  onReorderItem: (oldIndex, newIndex) => setState(() {
+                    moveRecipeGroup(recipes, groups[oldIndex], newIndex);
+                    _saveRecipes(recipes);
+                  }),
+                  itemBuilder: (context, i) => _groupCard(
+                    context,
+                    key: ValueKey('group:${groups[i]}'),
+                    index: i,
+                    group: groups[i],
+                    selected: groups[i] == selected,
+                    recipes: recipes,
+                    lines: lines,
+                    live: live,
+                  ),
+                ),
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          icon: const Icon(Icons.add),
+          label: Text('New ${_config.groupNoun.toLowerCase()}'),
+          onPressed: () => _openNewGroup(lines, live),
+        ),
+      ],
+    );
+  }
+
+  Widget _groupCard(
+    BuildContext context, {
+    required Key key,
+    required int index,
+    required String group,
+    required bool selected,
+    required List<Recipe> recipes,
+    required List<_Line> lines,
+    required List<DynamicValue?> live,
+  }) {
+    final theme = Theme.of(context);
+    final states = _states(context);
+    final running = <String>[];
+    for (var i = 0; i < lines.length; i++) {
+      final status =
+          lineRecipeStatus(recipeInGroup(recipes, group, lines[i].id), live[i]);
+      if (status.state == LineRecipeState.running) running.add(lines[i].name);
+    }
+
+    return Material(
+      key: key,
+      color: selected
+          ? theme.colorScheme.primary.withValues(alpha: 0.14)
+          : Colors.transparent,
+      borderRadius: BorderRadius.circular(8),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: () => setState(() {
+          _selectedGroup = group;
+          _panel = _Panel.none;
+          _report = null;
+        }),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(4, 8, 8, 8),
+          child: Row(
+            children: [
+              // An explicit handle rather than long-press-anywhere: on a
+              // touchscreen a long press is also how an operator steadies a
+              // finger, and a drag started from that moves a group nobody
+              // meant to move.
+              ReorderableDragStartListener(
+                index: index,
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+                  child: Icon(Icons.drag_indicator, size: 18),
+                ),
+              ),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Tooltip(
+                      message: group,
+                      child: Text(
+                        group,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.titleSmall?.copyWith(
+                          fontWeight:
+                              selected ? FontWeight.bold : FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      running.isEmpty
+                          ? 'Not running'
+                          : 'Running on ${_joinLabels(running)}',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: running.isEmpty
+                            ? theme.colorScheme.onSurfaceVariant
+                            : states.green,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Wrap(
+                      spacing: 4,
+                      runSpacing: 4,
+                      children: [
+                        for (final line in lines)
+                          _lineChip(context, line,
+                              recipeInGroup(recipes, group, line.id) != null),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// A small marker per line: filled where the group has a recipe for it,
+  /// dashed where it has none.
+  Widget _lineChip(BuildContext context, _Line line, bool has) {
+    final scheme = Theme.of(context).colorScheme;
+    final number = line.name.split(' ').last;
+    final short = '${_config.lineNoun.characters.first}$number';
+    return Tooltip(
+      message: has ? line.name : 'No recipe for ${line.name}',
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+        decoration: BoxDecoration(
+          color: has ? scheme.primary.withValues(alpha: 0.16) : null,
+          border: has ? null : Border.all(color: scheme.outlineVariant),
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: Text(
+          short,
+          style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: has ? scheme.onSurface : scheme.onSurfaceVariant,
+              ),
+        ),
+      ),
+    );
+  }
+
+  Widget _noGroups(
+      BuildContext context, List<Recipe> recipes, List<_Line> lines) {
+    final theme = Theme.of(context);
+    final loose = recipes.length;
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 420),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('No ${_config.groupNounPlural.toLowerCase()} yet.',
+                style: theme.textTheme.titleMedium),
+            const SizedBox(height: 8),
+            Text(
+              'A ${_config.groupNoun.toLowerCase()} is one recipe for each '
+              '${_config.lineNoun.toLowerCase()}, sent together. '
+              '${loose == 0 ? '' : 'Recipes that are not in one are in the '
+                  '${_config.lineNounPlural} view.'}',
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodySmall,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _groupDetail(BuildContext context, List<Recipe> recipes, String group,
+      List<_Line> lines, List<DynamicValue?> live) {
+    final theme = Theme.of(context);
+    final statuses = [
+      for (var i = 0; i < lines.length; i++)
+        lineRecipeStatus(recipeInGroup(recipes, group, lines[i].id), live[i]),
+    ];
+    final covered =
+        statuses.where((s) => s.state != LineRecipeState.noRecipe).length;
+    final noun = _config.lineNoun.toLowerCase();
+    final nouns = _config.lineNounPlural.toLowerCase();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(group, style: theme.textTheme.headlineSmall),
+                  const SizedBox(height: 4),
+                  Text(
+                    'One recipe for each $noun. Each $noun keeps its own '
+                    'values — change them in the ${_config.lineNounPlural} '
+                    'view.',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ],
+              ),
+            ),
+            PopupMenuButton<String>(
+              tooltip: 'More',
+              onSelected: (action) => action == 'rename'
+                  ? _openRename(group)
+                  : _openPanel(_Panel.delete, group: group),
+              itemBuilder: (context) => [
+                PopupMenuItem(
+                    value: 'rename',
+                    child: Text('Rename ${_config.groupNoun.toLowerCase()}')),
+                PopupMenuItem(
+                    value: 'delete',
+                    child: Text('Delete ${_config.groupNoun.toLowerCase()}')),
+              ],
+            ),
+            const SizedBox(width: 8),
+            FilledButton.icon(
+              icon: const Icon(Icons.arrow_forward),
+              label: Text(_sending
+                  ? 'Sending...'
+                  : covered == 1
+                      ? 'Send to 1 $noun'
+                      : 'Send to all $covered $nouns'),
+              onPressed: (_sending || covered == 0)
+                  ? null
+                  : () => _sendGroup(group, lines, live, recipes),
+            ),
+          ],
+        ),
+        if (_report != null) _reportBlock(context, _report!),
+        const SizedBox(height: 16),
+        // The one scroll region in this view: the cards, however many lines
+        // the asset has.
+        Expanded(
+          child: SingleChildScrollView(
+            primary: false,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                LayoutBuilder(builder: (context, constraints) {
+                  const minCard = 240.0;
+                  const gap = 12.0;
+                  final perRow =
+                      ((constraints.maxWidth + gap) / (minCard + gap))
+                          .floor()
+                          .clamp(1, lines.isEmpty ? 1 : lines.length);
+                  // The usual case — every line on one row — gets cards of
+                  // one height, buttons level along the bottom. A card that
+                  // stops short of its neighbours reads as unfinished.
+                  if (perRow >= lines.length) {
+                    return IntrinsicHeight(
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          for (var i = 0; i < lines.length; i++) ...[
+                            if (i > 0) const SizedBox(width: gap),
+                            Expanded(
+                              child: _lineCard(
+                                context,
+                                position: i,
+                                fill: true,
+                                recipes: recipes,
+                                group: group,
+                                line: lines[i],
+                                live: live[i],
+                                status: statuses[i],
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    );
+                  }
+                  final width =
+                      (constraints.maxWidth - gap * (perRow - 1)) / perRow;
+                  return Wrap(
+                    spacing: gap,
+                    runSpacing: gap,
+                    children: [
+                      for (var i = 0; i < lines.length; i++)
+                        SizedBox(
+                          width: width,
+                          child: _lineCard(
+                            context,
+                            position: i,
+                            recipes: recipes,
+                            group: group,
+                            line: lines[i],
+                            live: live[i],
+                            status: statuses[i],
+                          ),
+                        ),
+                    ],
+                  );
+                }),
+                const SizedBox(height: 16),
+                _sendSummary(context, group, lines, statuses),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _lineCard(
+    BuildContext context, {
+    required int position,
+    bool fill = false,
+    required List<Recipe> recipes,
+    required String group,
+    required _Line line,
+    required DynamicValue? live,
+    required LineRecipeStatus status,
+  }) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final states = _states(context);
+    final recipe = recipeInGroup(recipes, group, line.id);
+
+    return Container(
+      decoration: BoxDecoration(
+        border: Border.all(
+          color: status.state == LineRecipeState.differs
+              ? states.orange.withValues(alpha: 0.6)
+              : scheme.outlineVariant,
+        ),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      padding: const EdgeInsets.all(14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(line.name,
+                    style: theme.textTheme.titleMedium,
+                    overflow: TextOverflow.ellipsis),
+              ),
+              _statusChip(context, status),
+            ],
+          ),
+          const SizedBox(height: 2),
+          Text(
+            line.index == null ? line.key : '${line.key}[${line.index}]',
+            style: theme.textTheme.labelSmall
+                ?.copyWith(color: scheme.onSurfaceVariant),
+            overflow: TextOverflow.ellipsis,
+          ),
+          const Divider(height: 20),
+          if (recipe == null) ...[
+            Text('No recipe for ${line.name} in $group.',
+                style: theme.textTheme.bodySmall),
+            if (fill) const Spacer() else const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton(
+                // Copied from the line itself, so it fits that line exactly.
+                onPressed: live == null
+                    ? null
+                    : () => _copyIntoGroup(group, line, live, recipes),
+                child: Text('Copy from ${line.name} now'),
+              ),
+            ),
+          ] else ...[
+            ..._headlines(context, recipe, live),
+            const SizedBox(height: 10),
+            if (fill) const Spacer() else const SizedBox(height: 6),
+            // A link above a full-width button, stacked on purpose rather than
+            // side by side: the app's font is wide, a card is as narrow as the
+            // window and the line count make it, and two buttons sharing a
+            // row either overflowed or broke onto two lines at whatever width
+            // they happened to stop fitting.
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton(
+                onPressed: () => setState(() {
+                  _view = _RecipesView.lines;
+                  _selectedLine = position;
+                  _selectedRecipe = recipe;
+                  _report = null;
+                }),
+                child: const Text('All values'),
+              ),
+            ),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton(
+                onPressed: _sending
+                    ? null
+                    : () => _send([(line: line, recipe: recipe)]),
+                child: Text('Send to ${line.name}'),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// The first few values of a recipe, with the live value beside any that
+  /// differ — enough to recognise it and to see what a send would change,
+  /// without the whole table.
+  List<Widget> _headlines(
+      BuildContext context, Recipe recipe, DynamicValue? live) {
+    final theme = Theme.of(context);
+    final states = _states(context);
+    final leaves =
+        flattenRecipeShape([recipe.value]).where((row) => row.isLeaf).take(3);
+    return [
+      for (final row in leaves)
+        () {
+          final mine = valueAtPath(recipe.value, row.path)!;
+          final now = live == null ? null : valueAtPath(live, row.path);
+          final differs = now != null && now.value != mine.value;
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 3),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  flex: 3,
+                  child: Text(row.label,
+                      style: theme.textTheme.bodySmall
+                          ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                      overflow: TextOverflow.ellipsis),
+                ),
+                const SizedBox(width: 6),
+                // The live value on a line of its own under the recipe's:
+                // sharing one line, the pair was clipped to "now 20…" in a
+                // narrow card — and the clipped half is the half that says
+                // what a send would change.
+                // A fixed share of the row, right-aligned, so the values of
+                // every card form one column instead of starting wherever
+                // their labels stopped.
+                Expanded(
+                  flex: 2,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(formatRecipeValue(mine),
+                          style: theme.textTheme.bodyMedium,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis),
+                      if (differs)
+                        Text('now ${formatRecipeValue(now)}',
+                            style: theme.textTheme.labelSmall
+                                ?.copyWith(color: states.orange),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          );
+        }(),
+    ];
+  }
+
+  Widget _statusChip(BuildContext context, LineRecipeStatus status) {
+    final theme = Theme.of(context);
+    final states = _states(context);
+    final (text, color) = switch (status.state) {
+      LineRecipeState.running => ('Running', states.green),
+      LineRecipeState.differs => (
+          status.changes == 1
+              ? '1 value differs'
+              : '${status.changes} values differ',
+          states.orange
+        ),
+      LineRecipeState.waiting => (
+          'Waiting',
+          theme.colorScheme.onSurfaceVariant
+        ),
+      LineRecipeState.doesNotFit => ('Does not fit', states.orange),
+      LineRecipeState.noRecipe => (
+          'No recipe',
+          theme.colorScheme.onSurfaceVariant
+        ),
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.16),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child:
+          Text(text, style: theme.textTheme.labelSmall?.copyWith(color: color)),
+    );
+  }
+
+  /// What "Send to all" will do, in one sentence, before it is pressed.
+  Widget _sendSummary(BuildContext context, String group, List<_Line> lines,
+      List<LineRecipeStatus> statuses) {
+    final changing = <String>[];
+    final running = <String>[];
+    final missing = <String>[];
+    for (var i = 0; i < lines.length; i++) {
+      final status = statuses[i];
+      switch (status.state) {
+        case LineRecipeState.differs:
+          changing.add(
+              '${lines[i].name} changes ${status.changes} value${status.changes == 1 ? '' : 's'}');
+        case LineRecipeState.running:
+          running.add(lines[i].name);
+        case LineRecipeState.noRecipe:
+          missing.add(lines[i].name);
+        case LineRecipeState.waiting:
+        case LineRecipeState.doesNotFit:
+          break;
+      }
+    }
+    final noun = _config.lineNoun.toLowerCase();
+    final parts = <String>[
+      'Sending writes each $noun its own $group recipe, one at a time.',
+      if (changing.isNotEmpty) '${changing.join('; ')}.',
+      if (running.isNotEmpty)
+        running.length == 1
+            ? '${running.single} already matches and is left as it is.'
+            : '${_joinLabels(running)} already match and are left as they are.',
+      if (missing.isNotEmpty)
+        missing.length == 1
+            ? '${missing.single} has no recipe here and is left alone.'
+            : '${_joinLabels(missing)} have no recipe here and are left alone.',
+    ];
+    final theme = Theme.of(context);
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.onSurface.withValues(alpha: 0.04),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.info_outline,
+              size: 18, color: theme.colorScheme.onSurfaceVariant),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(parts.join(' '), style: theme.textTheme.bodySmall),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // -- panels ----------------------------------------------------------------
+  //
+  // Making a group, filing the old presets, renaming and deleting all happen
+  // IN the right-hand pane rather than in a dialog of their own. A modal
+  // opened from inside a floating window lands UNDER it: the floating window
+  // is an entry at the top of the root overlay, and a pushed route is slotted
+  // above the previous route — still below that entry. On a panel the form
+  // would sit behind the recipes window, unreachable. A pane has no stacking
+  // order to get wrong.
+
+  void _openPanel(_Panel panel, {String? group}) => setState(() {
+        _panel = panel;
+        _panelGroup = group;
+        _report = null;
+      });
+
+  void _closePanel() => setState(() {
+        _panel = _Panel.none;
+        _panelGroup = null;
+      });
+
+  Widget _groupingOffer(BuildContext context, List<RecipeGrouping> proposal) {
+    final theme = Theme.of(context);
+    final count = proposal.length;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.fromLTRB(10, 8, 6, 2),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.primary.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            count == 1
+                ? '1 saved recipe is named for a '
+                    '${_config.lineNoun.toLowerCase()}.'
+                : '$count saved recipes are named for a '
+                    '${_config.lineNoun.toLowerCase()}.',
+            style: theme.textTheme.bodySmall,
+          ),
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton(
+              onPressed: () => _openPanel(_Panel.grouping),
+              child:
+                  Text('Group into ${_config.groupNounPlural.toLowerCase()}'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// The pane's frame for a panel: a title, what it is about, its body, and
+  /// the buttons along the bottom.
+  Widget _panelFrame(
+    BuildContext context, {
+    required String title,
+    String? lead,
+    required Widget body,
+    required List<Widget> actions,
+  }) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(title, style: theme.textTheme.headlineSmall),
+        if (lead != null) ...[
+          const SizedBox(height: 4),
+          Text(lead, style: theme.textTheme.bodySmall),
+        ],
+        const SizedBox(height: 16),
+        Expanded(
+          child: SingleChildScrollView(primary: false, child: body),
+        ),
+        const Divider(height: 24),
+        OverflowBar(
+          alignment: MainAxisAlignment.end,
+          spacing: 8,
+          overflowSpacing: 4,
+          children: actions,
+        ),
+      ],
+    );
+  }
+
+  /// First open: files the recipes already named "Line 2 - Standard" into
+  /// groups. Shown, never done silently — a name is the operator's own words
+  /// — and nothing is sent to a line either way.
+  Widget _groupingPanel(BuildContext context, List<Recipe> recipes,
+      List<_Line> lines, List<RecipeGrouping> proposal) {
+    final theme = Theme.of(context);
+    final groups = <String>[];
+    for (final item in proposal) {
+      if (!groups.contains(item.group)) groups.add(item.group);
+    }
+    String? nameFor(String group, _Line line) {
+      for (final item in proposal) {
+        if (item.group == group && item.line == line.id) {
+          return item.recipe.name;
+        }
+      }
+      return null;
+    }
+
+    final untouched = [
+      for (final r in recipes)
+        if (r.group == null &&
+            r.line == null &&
+            !proposal.any((p) => identical(p.recipe, r)))
+          r.name
+    ];
+    final lineWord = _config.lineNoun.toLowerCase();
+    final groupWord = groups.length == 1
+        ? _config.groupNoun.toLowerCase()
+        : _config.groupNounPlural.toLowerCase();
+
+    return _panelFrame(
+      context,
+      title:
+          'Group your saved recipes into ${_config.groupNounPlural.toLowerCase()}',
+      lead: 'These recipes are named for a $lineWord. Grouped by the name '
+          'after it, they make ${groups.length} $groupWord.',
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Table(
+            border: TableBorder.all(color: theme.colorScheme.outlineVariant),
+            defaultVerticalAlignment: TableCellVerticalAlignment.middle,
+            children: [
+              TableRow(children: [
+                _panelCell(
+                    Text(_config.groupNoun, style: theme.textTheme.labelLarge)),
+                for (final line in lines)
+                  _panelCell(
+                      Text(line.name, style: theme.textTheme.labelLarge)),
+              ]),
+              for (final group in groups)
+                TableRow(children: [
+                  _panelCell(Text(group, style: theme.textTheme.titleSmall)),
+                  for (final line in lines)
+                    _panelCell(Text(
+                      nameFor(group, line) ?? 'none',
+                      style: nameFor(group, line) == null
+                          ? theme.textTheme.bodySmall?.copyWith(
+                              fontStyle: FontStyle.italic,
+                              color: theme.colorScheme.onSurfaceVariant)
+                          : theme.textTheme.bodySmall,
+                    )),
+                ]),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            [
+              if (untouched.length == 1)
+                '1 recipe has no $lineWord in its name — ${untouched.single} '
+                    '— and stays where it is.'
+              else if (untouched.isNotEmpty)
+                '${untouched.length} recipes have no $lineWord in their names '
+                    'and stay where they are.',
+              'Nothing is sent to a $lineWord; only the list is rearranged.',
+            ].join(' '),
+            style: theme.textTheme.bodySmall,
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(onPressed: _closePanel, child: const Text('Not now')),
+        FilledButton(
+          onPressed: () => setState(() {
+            applyRecipeGrouping(proposal);
+            _selectedGroup = groups.first;
+            _panel = _Panel.none;
+            _saveRecipes(recipes);
+          }),
+          child: Text(groups.length == 1
+              ? 'Group into 1 ${_config.groupNoun.toLowerCase()}'
+              : 'Group into ${groups.length} '
+                  '${_config.groupNounPlural.toLowerCase()}'),
+        ),
+      ],
+    );
+  }
+
+  static Widget _panelCell(Widget child) =>
+      Padding(padding: const EdgeInsets.all(8), child: child);
+
+  void _openNewGroup(List<_Line> lines, List<DynamicValue?> live) {
+    _panelName.clear();
+    // Every line that has something to copy starts ticked.
+    _ticked
+      ..clear()
+      ..addAll([
+        for (var i = 0; i < lines.length; i++)
+          if (live[i] != null) lines[i].id,
+      ]);
+    _openPanel(_Panel.newGroup);
+  }
+
+  Widget _newGroupPanel(BuildContext context, List<Recipe> recipes,
+      List<_Line> lines, List<DynamicValue?> live) {
+    final theme = Theme.of(context);
+    final existing = recipeGroups(recipes).map((g) => g.toLowerCase()).toSet();
+    final name = _panelName.text.trim();
+    final clash = existing.contains(name.toLowerCase());
+    final ready = name.isNotEmpty && !clash && _ticked.isNotEmpty;
+    final groupWord = _config.groupNoun.toLowerCase();
+    final lineWord = _config.lineNoun.toLowerCase();
+
+    return _panelFrame(
+      context,
+      title: 'New $groupWord',
+      lead: 'Each $lineWord starts from what it is running right now.',
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          TextField(
+            key: const ValueKey('recipes.newGroupName'),
+            controller: _panelName,
+            autofocus: true,
+            decoration: InputDecoration(
+              labelText: 'Name',
+              border: const OutlineInputBorder(),
+              errorText: clash ? 'There is already one called that.' : null,
+            ),
+            onChanged: (_) => setState(() {}),
+          ),
+          const SizedBox(height: 12),
+          Text(_config.lineNounPlural, style: theme.textTheme.labelLarge),
+          for (var i = 0; i < lines.length; i++)
+            CheckboxListTile(
+              contentPadding: EdgeInsets.zero,
+              controlAffinity: ListTileControlAffinity.leading,
+              value: _ticked.contains(lines[i].id),
+              // A line that has not reported has nothing to copy.
+              onChanged: live[i] == null
+                  ? null
+                  : (on) => setState(() => on == true
+                      ? _ticked.add(lines[i].id)
+                      : _ticked.remove(lines[i].id)),
+              title: Text(lines[i].name),
+              subtitle: Text(live[i] == null
+                  ? 'waiting for a value'
+                  : (lines[i].index == null
+                      ? lines[i].key
+                      : '${lines[i].key}[${lines[i].index}]')),
+            ),
+          Text(
+            'Untick a $lineWord that does not make this $groupWord. You can '
+            'add it later.',
+            style: theme.textTheme.bodySmall,
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(onPressed: _closePanel, child: const Text('Cancel')),
+        FilledButton(
+          onPressed: ready
+              ? () {
+                  _panel = _Panel.none;
+                  _createGroup(
+                      name,
+                      [
+                        for (var i = 0; i < lines.length; i++)
+                          if (_ticked.contains(lines[i].id) && live[i] != null)
+                            (line: lines[i], live: live[i]!),
+                      ],
+                      recipes);
+                }
+              : null,
+          child: Text('Create $groupWord'),
+        ),
+      ],
+    );
+  }
+
+  void _openRename(String group) {
+    _panelName.text = group;
+    _openPanel(_Panel.rename, group: group);
+  }
+
+  Widget _renamePanel(
+      BuildContext context, List<Recipe> recipes, String group) {
+    final others = recipeGroups(recipes)
+        .where((g) => g != group)
+        .map((g) => g.toLowerCase())
+        .toSet();
+    final name = _panelName.text.trim();
+    final clash = others.contains(name.toLowerCase());
+    return _panelFrame(
+      context,
+      title: 'Rename $group',
+      body: TextField(
+        controller: _panelName,
+        autofocus: true,
+        decoration: InputDecoration(
+          labelText: 'Name',
+          border: const OutlineInputBorder(),
+          errorText: clash ? 'There is already one called that.' : null,
+        ),
+        onChanged: (_) => setState(() {}),
+      ),
+      actions: [
+        TextButton(onPressed: _closePanel, child: const Text('Cancel')),
+        FilledButton(
+          onPressed: (name.isEmpty || clash || name == group)
+              ? null
+              : () => setState(() {
+                    for (final recipe in recipes) {
+                      if (recipe.group != group) continue;
+                      recipe.group = name;
+                      // Keep the name an older build shows in step, when it
+                      // still has the shape this dialog gave it.
+                      if (recipe.name.endsWith(' - $group')) {
+                        recipe.name =
+                            '${recipe.name.substring(0, recipe.name.length - group.length)}$name';
+                      }
+                    }
+                    _selectedGroup = name;
+                    _panel = _Panel.none;
+                    _saveRecipes(recipes);
+                  }),
+          child: const Text('Rename'),
+        ),
+      ],
+    );
+  }
+
+  Widget _deletePanel(
+      BuildContext context, List<Recipe> recipes, String group) {
+    final members = recipes.where((r) => r.group == group).length;
+    final lineWord = _config.lineNoun.toLowerCase();
+    return _panelFrame(
+      context,
+      title: 'Delete $group?',
+      body: Text(
+        'Its $members recipe${members == 1 ? '' : 's'} '
+        '${members == 1 ? 'is' : 'are'} deleted. Nothing is sent to a '
+        '$lineWord, and no $lineWord changes.',
+        style: Theme.of(context).textTheme.bodyMedium,
+      ),
+      actions: [
+        TextButton(onPressed: _closePanel, child: const Text('Cancel')),
+        FilledButton(
+          style: FilledButton.styleFrom(
+            backgroundColor: _states(context).red,
+          ),
+          onPressed: () => setState(() {
+            recipes.removeWhere((r) => r.group == group);
+            _selectedGroup = null;
+            _panel = _Panel.none;
+            _saveRecipes(recipes);
+          }),
+          child: const Text('Delete'),
+        ),
+      ],
+    );
+  }
+
+  // =========================================================================
+  // The lines view
+  // =========================================================================
+
+  Widget _linesView(BuildContext context, List<Recipe> recipes,
+      List<_Line> lines, List<DynamicValue?> live) {
+    if (lines.isEmpty) {
+      return const Center(child: Text('Waiting for values...'));
+    }
+    final at = _selectedLine.clamp(0, lines.length - 1);
+    final line = lines[at];
+    final onLine = recipesOnLine(recipes, line.id);
+    final selected =
+        (_selectedRecipe != null && onLine.contains(_selectedRecipe))
+            ? _selectedRecipe
+            : null;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _lineTabs(context, lines, at),
+        const SizedBox(height: 8),
+        Expanded(
+          child: _twoPane(
+            (_) =>
+                _lineRail(context, recipes, onLine, selected, line, live[at]),
+            _lineDetail(context, recipes, selected, line, live[at]),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _lineTabs(BuildContext context, List<_Line> lines, int at) {
+    final theme = Theme.of(context);
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      primary: false,
+      child: Row(
+        children: [
+          for (var i = 0; i < lines.length; i++)
+            Padding(
+              padding: const EdgeInsets.only(right: 4),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(8),
+                onTap: () => setState(() {
+                  _selectedLine = i;
+                  _selectedRecipe = null;
+                  _report = null;
+                }),
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+                  decoration: BoxDecoration(
+                    border: Border(
+                      bottom: BorderSide(
+                        width: 2,
+                        color: i == at
+                            ? theme.colorScheme.primary
+                            : Colors.transparent,
+                      ),
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        lines[i].name,
+                        style: theme.textTheme.titleSmall?.copyWith(
+                          fontWeight:
+                              i == at ? FontWeight.bold : FontWeight.normal,
+                        ),
+                      ),
+                      Text(
+                        lines[i].index == null
+                            ? lines[i].key
+                            : '${lines[i].key}[${lines[i].index}]',
+                        style: theme.textTheme.labelSmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _lineRail(BuildContext context, List<Recipe> recipes,
+      List<Recipe> onLine, Recipe? selected, _Line line, DynamicValue? live) {
+    final theme = Theme.of(context);
+    final grouped = [
+      for (final r in onLine)
+        if (r.group != null) r
+    ];
+    final loose = [
+      for (final r in onLine)
+        if (r.group == null) r
+    ];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text('${line.name} recipes', style: theme.textTheme.titleMedium),
+        const Divider(),
+        Expanded(
+          child: onLine.isEmpty
+              ? Center(
+                  child: Text('No recipes for ${line.name} yet.',
+                      style: theme.textTheme.bodySmall),
+                )
+              : ListView(
+                  primary: false,
+                  children: [
+                    for (final recipe in grouped)
+                      _lineRecipeCard(
+                          context, recipe, selected, line, live, recipes),
+                    if (loose.isNotEmpty) ...[
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(8, 12, 8, 4),
+                        child: Text(
+                          'Not in a ${_config.groupNoun.toLowerCase()}',
+                          style: theme.textTheme.labelSmall?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant),
+                        ),
+                      ),
+                      for (final recipe in loose)
+                        _lineRecipeCard(
+                            context, recipe, selected, line, live, recipes),
+                    ],
+                  ],
+                ),
+        ),
+        const SizedBox(height: 8),
+        TextField(
+          controller: _newRecipeName,
+          decoration: const InputDecoration(
+            border: OutlineInputBorder(),
+            labelText: 'New recipe',
+            isDense: true,
+          ),
+          onChanged: (_) => setState(() {}),
+          onSubmitted: (v) {
+            if (live != null) _addLineRecipe(v, line, live, recipes);
+          },
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          icon: const Icon(Icons.add),
+          label: Text('New from ${line.name} now'),
+          // With nothing live to copy there is no recipe to make: a preset
+          // seeded from a line that has not reported would be an empty struct
+          // that later looks like a real one.
+          onPressed: (live == null || _newRecipeName.text.trim().isEmpty)
+              ? null
+              : () => _addLineRecipe(_newRecipeName.text, line, live, recipes),
+        ),
+      ],
+    );
+  }
+
+  Widget _lineRecipeCard(BuildContext context, Recipe recipe, Recipe? selected,
+      _Line line, DynamicValue? live, List<Recipe> recipes) {
+    final theme = Theme.of(context);
+    final states = _states(context);
+    final isSelected = identical(recipe, selected);
+    final status = lineRecipeStatus(recipe, live);
+    final (note, color) = switch (status.state) {
+      LineRecipeState.running => ('Running on ${line.name}', states.green),
+      LineRecipeState.differs => (
+          '${status.changes} value${status.changes == 1 ? '' : 's'} differ${status.changes == 1 ? 's' : ''} from ${line.name}',
+          states.orange
+        ),
+      LineRecipeState.doesNotFit => (
+          'Does not fit ${line.name}',
+          states.orange
+        ),
+      _ => ('', theme.colorScheme.onSurfaceVariant),
+    };
+    final title = recipe.group ?? recipe.name;
+
+    return Material(
+      color: isSelected
+          ? theme.colorScheme.primary.withValues(alpha: 0.14)
+          : Colors.transparent,
+      borderRadius: BorderRadius.circular(8),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: () => setState(() {
+          _selectedRecipe = recipe;
+          _report = null;
+        }),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(10, 8, 0, 8),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Tooltip(
+                      message: recipe.name,
+                      child: Text(
+                        title,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.titleSmall?.copyWith(
+                          fontWeight:
+                              isSelected ? FontWeight.bold : FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                    if (note.isNotEmpty)
+                      Text(note,
+                          style: theme.textTheme.labelSmall
+                              ?.copyWith(color: color)),
+                  ],
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.delete_outline, size: 18),
+                tooltip: 'Delete ${recipe.name}',
+                onPressed: () => _deleteRecipe(recipe, recipes),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _lineDetail(BuildContext context, List<Recipe> recipes, Recipe? recipe,
+      _Line line, DynamicValue? live) {
+    final theme = Theme.of(context);
+    final groups = recipeGroups(recipes);
+
+    final header = Row(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text.rich(
+                TextSpan(children: [
+                  TextSpan(
+                      text: recipe == null
+                          ? line.name
+                          : (recipe.group ?? recipe.name)),
+                  if (recipe != null)
+                    TextSpan(
+                      text: ' on ${line.name}',
+                      style: TextStyle(
+                          color: theme.colorScheme.onSurfaceVariant,
+                          fontWeight: FontWeight.normal),
+                    ),
+                ]),
+                style: theme.textTheme.titleLarge,
+                overflow: TextOverflow.ellipsis,
+              ),
+              if (recipe != null) ...[
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    Text(_config.groupNoun, style: theme.textTheme.bodySmall),
+                    const SizedBox(width: 8),
+                    DropdownButton<String?>(
+                      value: recipe.group,
+                      isDense: true,
+                      items: [
+                        for (final group in groups)
+                          DropdownMenuItem<String?>(
+                            value: group,
+                            // One recipe per line in a group: a group that
+                            // already holds this line's recipe is offered,
+                            // but cannot be picked.
+                            enabled: group == recipe.group ||
+                                recipeInGroup(recipes, group, line.id) == null,
+                            child: Text(
+                              group == recipe.group ||
+                                      recipeInGroup(recipes, group, line.id) ==
+                                          null
+                                  ? group
+                                  : '$group (${line.name} has one)',
+                            ),
+                          ),
+                        DropdownMenuItem<String?>(
+                          value: null,
+                          child: Text(
+                              'Not in a ${_config.groupNoun.toLowerCase()}'),
+                        ),
+                      ],
+                      onChanged: (group) =>
+                          _setGroup(recipe, group, line, recipes),
+                    ),
+                  ],
+                ),
+                if (recipe.line == null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      'Saved before recipes knew their '
+                      '${_config.lineNoun.toLowerCase()}, so it is offered on '
+                      'every ${_config.lineNoun.toLowerCase()}.',
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  ),
+              ],
+            ],
+          ),
+        ),
+        FilledButton.icon(
+          icon: const Icon(Icons.arrow_forward),
+          label: Text(_sending ? 'Sending...' : 'Send to ${line.name}'),
+          onPressed: (recipe == null || _sending)
+              ? null
+              : () => _send([(line: line, recipe: recipe)]),
+        ),
+      ],
+    );
+
+    final rows = flattenRecipeShape([if (recipe != null) recipe.value, live]);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        header,
+        if (_report != null) _reportBlock(context, _report!),
+        const Divider(height: 24),
+        Expanded(
+          child: rows.isEmpty
+              ? Center(
+                  child: Text(
+                    live == null
+                        ? 'Waiting for ${line.name}...'
+                        : 'This recipe has no values in it.',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                )
+              : _valuesTable(context, rows, recipe, line, live, recipes),
+        ),
+      ],
+    );
+  }
+
+  // -- the values table ----------------------------------------------------
+
+  /// `Member | Recipe | <line> now` — the recipe's value and the line's live
+  /// value for a member on the same row, in the one scroll region this view
+  /// has.
+  Widget _valuesTable(BuildContext context, List<RecipeRow> rows,
+      Recipe? recipe, _Line line, DynamicValue? live, List<Recipe> recipes) {
+    final scheme = Theme.of(context).colorScheme;
+    final states = _states(context);
+    final widths = <int, TableColumnWidth>{
+      0: const FlexColumnWidth(2.0),
+      1: const FlexColumnWidth(1.5),
+      if (recipe != null) 2: const FlexColumnWidth(1.2),
+    };
+    final headerStyle = Theme.of(context)
+        .textTheme
+        .labelLarge
+        ?.copyWith(color: scheme.onSurfaceVariant);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Table(
+          columnWidths: widths,
+          children: [
+            TableRow(children: [
+              _cell(Text('Member', style: headerStyle)),
+              if (recipe != null) _cell(Text('Recipe', style: headerStyle)),
+              _cell(Text('${line.name} now', style: headerStyle)),
+            ]),
+          ],
+        ),
+        const Divider(height: 1),
+        Expanded(
+          child: SingleChildScrollView(
+            primary: false,
+            child: Table(
+              columnWidths: widths,
+              defaultVerticalAlignment: TableCellVerticalAlignment.middle,
+              children: [
+                for (final row in rows)
+                  TableRow(
+                    decoration: row.isLeaf
+                        ? null
+                        : BoxDecoration(
+                            color: scheme.onSurface.withValues(alpha: 0.04),
+                          ),
+                    children: [
+                      _cell(_memberLabel(context, row)),
+                      if (recipe != null)
+                        _cell(_recipeCell(context, row, recipe, recipes)),
+                      _liveCellFor(context, row, recipe, live, states),
+                    ],
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// The live cell, tinted where it differs from what the recipe would send —
+  /// so the rows a send would change stand out before it is pressed.
+  Widget _liveCellFor(BuildContext context, RecipeRow row, Recipe? recipe,
+      DynamicValue? live, HmiStateColors states) {
+    final child = _liveCell(context, row, live);
+    if (recipe == null || live == null || !row.isLeaf) return _cell(child);
+    final mine = valueAtPath(recipe.value, row.path);
+    final now = valueAtPath(live, row.path);
+    final differs = mine != null && now != null && mine.value != now.value;
+    return Container(
+      color: differs ? states.orange.withValues(alpha: 0.14) : null,
+      child: _cell(child),
+    );
+  }
+
+  static Widget _cell(Widget child) => Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        child: child,
+      );
+
+  Widget _memberLabel(BuildContext context, RecipeRow row) {
+    final scheme = Theme.of(context).colorScheme;
+    final style = row.isLeaf
+        ? Theme.of(context).textTheme.bodyMedium
+        : Theme.of(context)
+            .textTheme
+            .bodyMedium
+            ?.copyWith(fontWeight: FontWeight.bold, color: scheme.onSurface);
+    return Padding(
+      padding: EdgeInsets.only(left: 14.0 * row.depth),
+      child: Text(row.label,
+          style: style, softWrap: false, overflow: TextOverflow.ellipsis),
+    );
+  }
+
+  /// The recipe's own cell — the one editable column.
+  ///
+  /// [DynamicValueWidget] is handed a single LEAF rather than the whole tree,
+  /// which is what lets the editors it already owns (the switch, the enum
+  /// dropdown, the controller-keeping text field) be reused a row at a time
+  /// instead of being reimplemented for the table.
+  Widget _recipeCell(BuildContext context, RecipeRow row, Recipe recipe,
+      List<Recipe> recipes) {
+    final value = valueAtPath(recipe.value, row.path);
+    if (value == null) return _absent(context);
+    if (!row.isLeaf) {
+      return Text(formatRecipeValue(value),
+          style: Theme.of(context).textTheme.bodySmall);
+    }
+    // The label and description are already the Member column's job; leaving
+    // them on the leaf would print each one twice per row.
+    final leaf = DynamicValue.from(value)
+      ..displayName = null
+      ..description = null;
+    // Dense, because a row of this table is a row and not a form field.
+    final theme = Theme.of(context);
+    return Theme(
+      data: theme.copyWith(
+        visualDensity: VisualDensity.compact,
+        inputDecorationTheme: theme.inputDecorationTheme.copyWith(
+          isDense: true,
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        ),
+      ),
+      child: DynamicValueWidget(
+        value: leaf,
+        // A recipe is a document, not the plant: committing on the way out of
+        // the field costs nothing here, and Enter-or-nothing was losing edits
+        // for every operator who tapped the next row instead.
+        commitOnFocusLoss: true,
+        onSubmitted: (newValue) => setState(() {
+          recipe.value = setAtPath(recipe.value, row.path, newValue);
+          _saveRecipes(recipes);
+        }),
+      ),
+    );
+  }
+
+  Widget _liveCell(BuildContext context, RecipeRow row, DynamicValue? source) {
+    if (source == null) return _quiet(context, 'waiting');
+    final value = valueAtPath(source, row.path);
+    if (value == null) return _absent(context);
+    return Text(formatRecipeValue(value),
+        style: Theme.of(context).textTheme.bodyMedium,
+        softWrap: false,
+        overflow: TextOverflow.ellipsis);
+  }
+
+  /// A member this line does not have.
+  ///
+  /// Spelled out, never left blank and never shown as a zero: a blank reads as
+  /// "nothing set" and a zero reads as a setpoint, and both are wrong about a
+  /// line that simply has no such member.
+  Widget _absent(BuildContext context) => _quiet(context, 'not present');
+
+  /// A cell that says something about itself rather than carrying a value.
+  Widget _quiet(BuildContext context, String text) => Text(
+        text,
+        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+              fontStyle: FontStyle.italic,
+            ),
+        softWrap: false,
+        overflow: TextOverflow.ellipsis,
+      );
+
+  // -- the send report -----------------------------------------------------
+
+  Widget _reportBlock(BuildContext context, List<LineSendOutcome> outcomes) {
+    final states = _states(context);
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(top: 8.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (final outcome in outcomes)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 2.0),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    outcome.ok
+                        ? Icons.check_circle_outline
+                        : Icons.error_outline,
+                    size: 16,
+                    color: outcome.ok ? states.green : states.red,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text.rich(
+                      TextSpan(children: [
+                        TextSpan(
+                          text: '${outcome.label}: ',
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        TextSpan(text: outcome.message),
+                      ]),
+                      style: Theme.of(context)
+                          .textTheme
+                          .bodySmall
+                          ?.copyWith(color: scheme.onSurface),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}

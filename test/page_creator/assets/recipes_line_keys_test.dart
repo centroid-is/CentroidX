@@ -6,6 +6,8 @@
 // publish a separate recipe struct per station, so one key cannot reach them
 // all -- and writing an array would rewrite every other line.
 
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/page_creator/assets/recipes.dart';
 
@@ -102,16 +104,45 @@ void main() {
     });
   });
 
-  group('unifiedRecipe', () {
-    // Additive and off by default: a page saved before the flag existed has
-    // to deserialize into exactly the behaviour it had.
-    test('is off unless a config says otherwise', () {
-      expect(RecipesConfig(key: '', label: 'Line').unifiedRecipe, isFalse);
-      expect(RecipesConfig.preview().unifiedRecipe, isFalse);
+  group('what the dialog calls a line and a group', () {
+    // Both words are the page's, not the code's: "Product" is right for one
+    // plant and wrong for the next, and "add an s" is not a rule most
+    // languages keep, so each has a plural of its own.
+    test('defaults to Line and Product', () {
+      final c = RecipesConfig(key: '', label: 'Line');
+      expect(c.lineNoun, 'Line');
+      expect(c.lineNounPlural, 'Lines');
+      expect(c.groupNoun, 'Product');
+      expect(c.groupNounPlural, 'Products');
     });
 
-    test('a config written before the flag existed still loads, and is off',
-        () {
+    test('an empty plural adds an s to the singular', () {
+      final c = RecipesConfig(key: '', label: 'Belt', groupLabel: 'Batch');
+      expect(c.lineNounPlural, 'Belts');
+      expect(c.groupNounPlural, 'Batchs',
+          reason: 'wrong English, which is exactly why the plural is a field '
+              'of its own and not a rule');
+    });
+
+    test('a plural that is set is used as it stands', () {
+      final c = RecipesConfig(
+        key: '',
+        label: 'Lína',
+        labelPlural: 'Línur',
+        groupLabel: 'Vara',
+        groupLabelPlural: 'Vörur',
+      );
+      expect(c.lineNounPlural, 'Línur');
+      expect(c.groupNounPlural, 'Vörur');
+    });
+
+    test('a blank word falls back rather than printing nothing', () {
+      final c = RecipesConfig(key: '', label: '  ', groupLabel: '');
+      expect(c.lineNoun, 'Line');
+      expect(c.groupNoun, 'Product');
+    });
+
+    test('a config written before the names existed still loads', () {
       final back = RecipesConfig.fromJson(<String, dynamic>{
         'asset_name': 'RecipesConfig',
         'coordinates': {'x': 0.1, 'y': 0.1},
@@ -120,48 +151,37 @@ void main() {
         'key': '',
         'keys': ['line_a.recipe', 'line_b.recipe'],
       });
-      expect(back.unifiedRecipe, isFalse);
-      expect(back.unified, isFalse);
+      expect(back.groupNoun, 'Product');
+      expect(back.lineNounPlural, 'Lines');
     });
 
-    test('round-trips when it is on', () {
+    test('a config saved with the short-lived one-recipe flag still loads', () {
+      // `unifiedRecipe` lived on an unmerged branch for a day; a page saved
+      // from that build must not fail to open now it is gone.
+      final back = RecipesConfig.fromJson(<String, dynamic>{
+        'asset_name': 'RecipesConfig',
+        'coordinates': {'x': 0.1, 'y': 0.1},
+        'size': {'width': 0.055, 'height': 0.05},
+        'label': 'Line',
+        'key': '',
+        'keys': ['line_a.recipe'],
+        'unifiedRecipe': true,
+      });
+      expect(back.lineKeys, ['line_a.recipe']);
+    });
+
+    test('round-trips', () {
       final c = RecipesConfig(
-          key: '',
-          label: 'Line',
-          keys: const ['line_a.recipe'],
-          unifiedRecipe: true);
-      expect(c.toJson()['unifiedRecipe'], isTrue);
-    });
-
-    // It says "one recipe for every line", so without one node per line there
-    // is nothing for it to mean.
-    test('has no effect on the legacy single key', () {
-      final c = RecipesConfig(
-          key: 'LineRecipes', label: 'Line', unifiedRecipe: true);
-      expect(c.perLineKeys, isFalse);
-      expect(c.unified, isFalse);
-    });
-
-    test('is in force with per-line keys', () {
-      final c = RecipesConfig(
-          key: '',
-          label: 'Line',
-          keys: const ['line_a.recipe', 'line_b.recipe'],
-          unifiedRecipe: true);
-      expect(c.unified, isTrue);
-    });
-
-    // Presets were always one shared bucket. Turning the flag on must show
-    // the recipes that are already there, not orphan them.
-    test('does not move the recipe bucket', () {
-      final off = RecipesConfig(
-          key: '', label: 'Line', keys: const ['line_a.recipe', 'line_b.recipe']);
-      final on = RecipesConfig(
-          key: '',
-          label: 'Line',
-          keys: const ['line_a.recipe', 'line_b.recipe'],
-          unifiedRecipe: true);
-      expect(on.recipesBucket, off.recipesBucket);
+        key: '',
+        label: 'Lína',
+        labelPlural: 'Línur',
+        groupLabel: 'Vara',
+        groupLabelPlural: 'Vörur',
+      );
+      final back = RecipesConfig.fromJson(
+          jsonDecode(jsonEncode(c.toJson())) as Map<String, dynamic>);
+      expect(back.groupNounPlural, 'Vörur');
+      expect(back.lineNounPlural, 'Línur');
     });
   });
 

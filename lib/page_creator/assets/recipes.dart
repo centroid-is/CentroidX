@@ -22,6 +22,7 @@ import 'package:tfc_dart/core/state_man.dart';
 import 'package:open62541/open62541.dart' show DynamicValue;
 
 part 'recipes.g.dart';
+part 'recipes_dialog.dart';
 
 @JsonSerializable(explicitToJson: true)
 class RecipesConfig extends BaseAsset {
@@ -37,7 +38,7 @@ class RecipesConfig extends BaseAsset {
   /// Kept so existing pages keep working.
   String key;
 
-  /// One key per line, in the order the pills should appear.
+  /// One key per line, in the order the lines appear.
   ///
   /// Current PLCs publish a separate recipe struct per station rather than one
   /// array, so a single key cannot reach them all. When this is non-empty it
@@ -47,55 +48,66 @@ class RecipesConfig extends BaseAsset {
   @JsonKey(defaultValue: <String>[])
   List<String> keys;
 
+  /// What one line is called: "Line" unless the page says otherwise.
   String label;
 
-  /// One recipe list for the whole plant, sent to every key in [keys] at once.
+  /// What more than one line is called. Empty means [label] plus "s".
   ///
-  /// Off (the default, and what every page saved before this field existed
-  /// deserializes to) the dialog is per line: the pills pick a line, the
-  /// comparison shows that one line, and Send writes that one line.
+  /// A field of its own because adding an "s" is English, and not always
+  /// even that. The dialog's view switch reads `<groups> | <lines>`, so the
+  /// plural is on screen every time the dialog opens.
+  @JsonKey(defaultValue: '')
+  String labelPlural;
+
+  /// What one group of recipes is called. "Product" by default.
   ///
-  /// On, the pills disappear, the table grows one column per line, and Send
-  /// writes the chosen recipe to every line. **It is not a struct copy** --
-  /// see [mergeRecipeInto]. Lines do not have to share a shape, and the write
-  /// never adds a member, removes one, or changes an array's length on the
-  /// target.
-  ///
-  /// Only meaningful with [perLineKeys]. With the legacy single key there is
-  /// one node and nothing to unify, and [unified] reports false.
-  @JsonKey(defaultValue: false)
-  bool unifiedRecipe;
+  /// A group is one recipe per line, sent together — for this plant, one
+  /// product. Another machine groups by something else, so the word is the
+  /// page's to choose rather than the code's.
+  @JsonKey(defaultValue: 'Product')
+  String groupLabel;
+
+  /// What more than one group is called. Empty means [groupLabel] plus "s".
+  @JsonKey(defaultValue: '')
+  String groupLabelPlural;
 
   RecipesConfig({
     required this.key,
     required this.label,
     this.keys = const <String>[],
-    this.unifiedRecipe = false,
+    this.labelPlural = '',
+    this.groupLabel = 'Product',
+    this.groupLabelPlural = '',
   });
 
   /// The keys actually in play, whichever way this asset is configured.
-  List<String> get lineKeys => keys.isNotEmpty
-      ? keys
-      : (key.isEmpty ? const <String>[] : <String>[key]);
+  List<String> get lineKeys =>
+      keys.isNotEmpty ? keys : (key.isEmpty ? const <String>[] : <String>[key]);
 
   /// True when each line has its own node, so values are read and written
   /// per line instead of as one array.
   bool get perLineKeys => keys.isNotEmpty;
 
-  /// Whether the dialog runs in one-recipe-for-every-line mode.
-  ///
-  /// [unifiedRecipe] alone is not enough: the flag has no meaning without one
-  /// node per line, so an asset still on the legacy single key ignores it.
-  bool get unified => unifiedRecipe && perLineKeys;
-
   /// Where saved recipes live. Stable across a switch from [key] to [keys] so
   /// presets defined before the move are not orphaned.
-  ///
-  /// Unchanged by [unifiedRecipe] on purpose: the saved recipes were always
-  /// one shared bucket, so turning the flag on shows the presets that are
-  /// already there instead of orphaning them.
   String get recipesBucket =>
       key.isNotEmpty ? key : (keys.isEmpty ? '' : keys.first);
+
+  /// The word for one line, never empty.
+  String get lineNoun => label.trim().isEmpty ? 'Line' : label.trim();
+
+  /// The word for several lines.
+  String get lineNounPlural =>
+      labelPlural.trim().isEmpty ? '${lineNoun}s' : labelPlural.trim();
+
+  /// The word for one group, never empty.
+  String get groupNoun =>
+      groupLabel.trim().isEmpty ? 'Product' : groupLabel.trim();
+
+  /// The word for several groups.
+  String get groupNounPlural => groupLabelPlural.trim().isEmpty
+      ? '${groupNoun}s'
+      : groupLabelPlural.trim();
 
   factory RecipesConfig.fromJson(Map<String, dynamic> json) =>
       _$RecipesConfigFromJson(json);
@@ -110,20 +122,53 @@ class RecipesConfig extends BaseAsset {
   RecipesConfig.preview()
       : key = '',
         keys = const <String>[],
-        unifiedRecipe = false,
-        label = 'Line';
+        label = 'Line',
+        labelPlural = '',
+        groupLabel = 'Product',
+        groupLabelPlural = '';
 
   @override
   Widget configure(BuildContext context) => _RecipesConfigEditor(config: this);
 }
 
-@JsonSerializable()
+// explicitToJson so `toJson` hands back plain JSON all the way down: anything
+// that reads `toJson()` directly — a copy, a comparison, a test — gets maps,
+// not objects, and `fromJson` takes them straight back.
+@JsonSerializable(explicitToJson: true)
 class Recipe {
+  /// The operator's name for it.
+  ///
+  /// For a recipe in a group the dialog shows the GROUP's name instead — on
+  /// the Lines view the line is already the tab, so "Standard" is the whole
+  /// story. The name is still kept, and kept meaningful ("Line 2 -
+  /// Standard"), because a station still on an older build reads this same
+  /// list and knows nothing about groups.
   String name;
+
   @DynamicValueConverter()
   DynamicValue value;
 
-  Recipe({required this.name, required this.value});
+  /// The line this recipe belongs to, by its KEY — never by its position.
+  ///
+  /// A position would be repointed by reordering the keys in the asset
+  /// settings, silently sending a recipe to a different PLC. Null for every
+  /// recipe saved before recipes knew their line: those are offered on every
+  /// line, as they always were.
+  String? line;
+
+  /// The group this recipe is in, or null when it is in none.
+  ///
+  /// A group is at most one recipe per line. Each is captured from — and
+  /// kept for — its own line, so it always fits that line: the lines on a
+  /// plant do not share a struct shape, and a group never asks them to.
+  String? group;
+
+  Recipe({
+    required this.name,
+    required this.value,
+    this.line,
+    this.group,
+  });
 
   factory Recipe.fromJson(Map<String, dynamic> json) => _$RecipeFromJson(json);
   Map<String, dynamic> toJson() => _$RecipeToJson(this);
@@ -153,6 +198,19 @@ Future<List<Recipe>> readRecipes(
   return decoded.map((item) => Recipe.fromJson(item)).toList();
 }
 
+/// [readRecipes] against the stores the app provides.
+///
+/// Here, beside [readRecipes], and not in the dialog: the seed's write goes
+/// through the system store, and this file is the one
+/// `kSystemWriteCallSites` names for it. The dialog asks for its recipes
+/// through this and never touches that store itself.
+Future<List<Recipe>> _loadRecipes(WidgetRef ref, String bucket) async =>
+    readRecipes(
+      await ref.read(preferencesProvider.future),
+      await ref.read(systemPreferencesProvider.future),
+      bucket,
+    );
+
 /// Saves [recipes] for [bucket], **through the guarded store**.
 ///
 /// A person changed a recipe. `<bucket>.recipes` is a `setpoints` key and this
@@ -162,6 +220,217 @@ Future<List<Recipe>> readRecipes(
 Future<void> writeRecipes(
     Preferences prefs, String bucket, List<Recipe> recipes) async {
   await prefs.setString('$bucket.recipes', jsonEncode(recipes));
+}
+
+// ---------------------------------------------------------------------------
+// Groups
+// ---------------------------------------------------------------------------
+
+/// The groups, in the order the operator arranged them: a group sits where
+/// its first recipe sits in the list.
+List<String> recipeGroups(List<Recipe> recipes) {
+  final seen = <String>[];
+  for (final recipe in recipes) {
+    final group = recipe.group;
+    if (group != null && !seen.contains(group)) seen.add(group);
+  }
+  return seen;
+}
+
+/// The recipe [group] holds for [lineId], or null when it has none.
+Recipe? recipeInGroup(List<Recipe> recipes, String group, String lineId) {
+  for (final recipe in recipes) {
+    if (recipe.group == group && recipe.line == lineId) return recipe;
+  }
+  return null;
+}
+
+/// The recipes offered on [lineId]: the ones kept for it, and the ones saved
+/// before recipes knew their line, which have always been offered
+/// everywhere.
+List<Recipe> recipesOnLine(List<Recipe> recipes, String lineId) => [
+      for (final recipe in recipes)
+        if (recipe.line == null || recipe.line == lineId) recipe
+    ];
+
+/// Whether [recipe] may join [group] without the group then holding two
+/// recipes for one line.
+///
+/// One per line is what makes a group sendable in one press: with two, which
+/// one Line 2 gets would be a guess.
+bool canJoinGroup(List<Recipe> recipes, Recipe recipe, String group) {
+  final line = recipe.line;
+  if (line == null) return false;
+  final holder = recipeInGroup(recipes, group, line);
+  return holder == null || identical(holder, recipe);
+}
+
+/// Moves every recipe of [group] so the group sits at [newIndex] among the
+/// groups, keeping each recipe's place relative to the others.
+///
+/// Groups have no order of their own — a group sits where its first recipe
+/// sits — so reordering groups means reordering the recipes, as one block.
+void moveRecipeGroup(List<Recipe> recipes, String group, int newIndex) {
+  final groups = recipeGroups(recipes)..remove(group);
+  final target = newIndex.clamp(0, groups.length);
+  final members = [
+    for (final r in recipes)
+      if (r.group == group) r
+  ];
+  recipes.removeWhere((r) => r.group == group);
+  if (target >= groups.length) {
+    // Behind the last group: straight after that group's last recipe, so the
+    // ungrouped recipes keep their places.
+    final lastGroup = groups.isEmpty ? null : groups.last;
+    final after = lastGroup == null
+        ? -1
+        : recipes.lastIndexWhere((r) => r.group == lastGroup);
+    recipes.insertAll(after + 1, members);
+    return;
+  }
+  final before = recipes.indexWhere((r) => r.group == groups[target]);
+  recipes.insertAll(before, members);
+}
+
+/// One recipe the first-open grouping would file, and where.
+@immutable
+class RecipeGrouping {
+  const RecipeGrouping(this.recipe, this.line, this.group);
+
+  final Recipe recipe;
+
+  /// The line id its name points at.
+  final String line;
+
+  /// The group its name puts it in.
+  final String group;
+}
+
+/// Reads "Line 2 - Standard" back into a line number and a group name.
+///
+/// Stations accumulated exactly this naming habit, because until now one list
+/// served every line and the name was the only place to say which line a
+/// preset was for. [lineNoun] is the asset's own word for a line, so an asset
+/// that calls them something else is read in its own terms.
+({int number, String group})? parseLineRecipeName(
+    String name, String lineNoun) {
+  final noun = lineNoun.trim();
+  if (noun.isEmpty) return null;
+  final match = RegExp(
+    '^\\s*${RegExp.escape(noun)}\\s*(\\d+)(?!\\d)\\s*[-–—:.]?\\s*(.*\\S)\\s*\$',
+    caseSensitive: false,
+  ).firstMatch(name);
+  if (match == null) return null;
+  return (number: int.parse(match.group(1)!), group: match.group(2)!);
+}
+
+/// What the first-open grouping proposes: every recipe that names a line in
+/// its name and has not been filed yet, grouped by the rest of its name.
+///
+/// Never applied by itself. A name is the operator's own words, so this is
+/// shown, and applied by one press, and nothing is sent to a line either way —
+/// only the list is rearranged. A second recipe for a line already taken in
+/// the same group is left alone rather than guessed between.
+List<RecipeGrouping> proposeRecipeGrouping(
+    List<Recipe> recipes, String lineNoun, List<String> lineIds) {
+  final found = <RecipeGrouping>[];
+  final taken = <(String, String)>{
+    for (final r in recipes)
+      if (r.group != null && r.line != null) (r.group!, r.line!),
+  };
+  // Groups compared without case, and spelled the way they were first seen:
+  // "standard" and "Standard" are one product, not two.
+  final spelling = <String, String>{
+    for (final g in recipeGroups(recipes)) g.toLowerCase(): g,
+  };
+  for (final recipe in recipes) {
+    if (recipe.group != null || recipe.line != null) continue;
+    final parsed = parseLineRecipeName(recipe.name, lineNoun);
+    if (parsed == null) continue;
+    if (parsed.number < 1 || parsed.number > lineIds.length) continue;
+    final line = lineIds[parsed.number - 1];
+    if (line.isEmpty) continue;
+    final group =
+        spelling.putIfAbsent(parsed.group.toLowerCase(), () => parsed.group);
+    if (!taken.add((group, line))) continue;
+    found.add(RecipeGrouping(recipe, line, group));
+  }
+  return found;
+}
+
+/// Files every recipe in [proposal] into its line and group.
+void applyRecipeGrouping(List<RecipeGrouping> proposal) {
+  for (final item in proposal) {
+    item.recipe
+      ..line = item.line
+      ..group = item.group;
+  }
+}
+
+/// How many values sending [recipeValue] to [lineValue] would change — zero
+/// when the line is already running it (see [recipeIsActiveOn]).
+int recipeChangeCount(DynamicValue recipeValue, DynamicValue lineValue) {
+  final result = mergeRecipeInto(lineValue, recipeValue);
+  return _countChangedLeaves(result.merged, lineValue);
+}
+
+int _countChangedLeaves(DynamicValue a, DynamicValue b) {
+  if (a.isObject && b.isObject) {
+    var total = 0;
+    for (final entry in a.asObject.entries) {
+      final other = b.asObject[entry.key];
+      total += other == null ? 1 : _countChangedLeaves(entry.value, other);
+    }
+    return total;
+  }
+  if (a.isArray && b.isArray) {
+    var total = 0;
+    final left = a.asArray;
+    final right = b.asArray;
+    for (var i = 0; i < left.length; i++) {
+      total += i < right.length ? _countChangedLeaves(left[i], right[i]) : 1;
+    }
+    return total;
+  }
+  if (a.isObject || a.isArray || b.isObject || b.isArray) return 1;
+  return a.value == b.value ? 0 : 1;
+}
+
+/// Where one line stands against the recipe a group holds for it.
+enum LineRecipeState {
+  /// The group has no recipe for this line.
+  noRecipe,
+
+  /// The line has not reported a value yet.
+  waiting,
+
+  /// Sending would change nothing: the line is running this recipe.
+  running,
+
+  /// Sending would change [LineRecipeStatus.changes] values.
+  differs,
+
+  /// None of the recipe lands on this line. Captured from the line, a recipe
+  /// always fits it — so this is a line whose PLC type changed since.
+  doesNotFit,
+}
+
+/// One line's standing, and how many values a send would change.
+typedef LineRecipeStatus = ({LineRecipeState state, int changes});
+
+/// Where [live] stands against [recipe] — the facts every line card is built
+/// from, derived fresh from the live value every time. A remembered "last
+/// sent" would go on claiming a line was running a recipe long after someone
+/// turned a setpoint by hand on the panel.
+LineRecipeStatus lineRecipeStatus(Recipe? recipe, DynamicValue? live) {
+  if (recipe == null) return (state: LineRecipeState.noRecipe, changes: 0);
+  if (live == null) return (state: LineRecipeState.waiting, changes: 0);
+  final fit = recipeFitFor(recipe.value, live);
+  if (fit.none) return (state: LineRecipeState.doesNotFit, changes: 0);
+  final changes = recipeChangeCount(recipe.value, live);
+  return changes == 0
+      ? (state: LineRecipeState.running, changes: 0)
+      : (state: LineRecipeState.differs, changes: changes);
 }
 
 // ---------------------------------------------------------------------------
@@ -485,6 +754,108 @@ String _summarisePaths(List<String> paths) {
 }
 
 // ---------------------------------------------------------------------------
+// Whether a recipe applies to a line at all
+// ---------------------------------------------------------------------------
+
+/// How much of a recipe a line can actually take.
+///
+/// Computed by the same [mergeRecipeInto] the send performs, so what the
+/// dialog promises and what the write does cannot drift apart.
+@immutable
+class RecipeFit {
+  const RecipeFit({
+    required this.applies,
+    required this.skipped,
+    required this.known,
+  });
+
+  /// The line has not reported yet, so nothing can be said about it.
+  const RecipeFit.unknown()
+      : applies = 0,
+        skipped = const <RecipeSkip>[],
+        known = false;
+
+  /// Recipe leaves this line would take.
+  final int applies;
+
+  /// Recipe leaves this line has no home for.
+  final List<RecipeSkip> skipped;
+
+  /// False while the line has not reported a value.
+  final bool known;
+
+  int get offered => applies + skipped.length;
+
+  /// Every leaf lands: the recipe is simply this line's recipe.
+  bool get whole => known && skipped.isEmpty && applies > 0;
+
+  /// Some land and some do not.
+  bool get partial => known && skipped.isNotEmpty && applies > 0;
+
+  /// Nothing lands — the recipe is not about this line at all.
+  bool get none => known && applies == 0;
+}
+
+/// Whether [lineValue] already holds what [recipeValue] would write.
+///
+/// "Active" is not a flag the PLC publishes and there is nowhere to store one
+/// that would stay true — an operator can turn a setpoint by hand a second
+/// after a recipe is sent. So it is derived: a recipe is active on a line
+/// when sending it would change nothing. That is honest about what is known,
+/// and it goes stale the moment the line stops matching, which is exactly
+/// when it should.
+///
+/// A recipe with nothing to write to this line is never active on it, however
+/// equal the empty comparison would be.
+bool recipeIsActiveOn(DynamicValue recipeValue, DynamicValue? lineValue) {
+  if (lineValue == null) return false;
+  final result = mergeRecipeInto(lineValue, recipeValue);
+  if (result.written.isEmpty) return false;
+  return _sameValues(result.merged, lineValue);
+}
+
+bool _sameValues(DynamicValue a, DynamicValue b) {
+  if (a.isObject || b.isObject) {
+    if (!a.isObject || !b.isObject) return false;
+    final left = a.asObject;
+    final right = b.asObject;
+    if (left.length != right.length) return false;
+    for (final entry in left.entries) {
+      final other = right[entry.key];
+      if (other == null || !_sameValues(entry.value, other)) return false;
+    }
+    return true;
+  }
+  if (a.isArray || b.isArray) {
+    if (!a.isArray || !b.isArray) return false;
+    final left = a.asArray;
+    final right = b.asArray;
+    if (left.length != right.length) return false;
+    for (var i = 0; i < left.length; i++) {
+      if (!_sameValues(left[i], right[i])) return false;
+    }
+    return true;
+  }
+  return a.value == b.value;
+}
+
+/// What [recipeValue] would do to [lineValue].
+RecipeFit recipeFitFor(DynamicValue recipeValue, DynamicValue? lineValue) {
+  if (lineValue == null) return const RecipeFit.unknown();
+  final result = mergeRecipeInto(lineValue, recipeValue);
+  return RecipeFit(
+    applies: result.written.length,
+    skipped: result.skipped,
+    known: true,
+  );
+}
+
+String _joinLabels(List<String> labels) {
+  if (labels.length == 1) return labels.single;
+  return '${labels.take(labels.length - 1).join(', ')} and ${labels.last}';
+}
+
+// ---------------------------------------------------------------------------
 // Flattening a nested struct into comparable rows
 // ---------------------------------------------------------------------------
 
@@ -664,50 +1035,61 @@ class _RecipesConfigEditor extends StatefulWidget {
 }
 
 class _RecipesConfigEditorState extends State<_RecipesConfigEditor> {
-  late TextEditingController _labelController;
-
-  @override
-  void initState() {
-    super.initState();
-    _labelController = TextEditingController(text: widget.config.label);
-  }
+  late final _label = TextEditingController(text: widget.config.label);
+  late final _labelPlural =
+      TextEditingController(text: widget.config.labelPlural);
+  late final _groupLabel =
+      TextEditingController(text: widget.config.groupLabel);
+  late final _groupLabelPlural =
+      TextEditingController(text: widget.config.groupLabelPlural);
 
   @override
   void dispose() {
-    _labelController.dispose();
+    _label.dispose();
+    _labelPlural.dispose();
+    _groupLabel.dispose();
+    _groupLabelPlural.dispose();
     super.dispose();
   }
 
+  Widget _nameField(TextEditingController controller, String hint,
+          ValueChanged<String> onChanged) =>
+      TextField(
+        controller: controller,
+        decoration: InputDecoration(hintText: hint, isDense: true),
+        onChanged: (val) => setState(() => onChanged(val)),
+      );
+
   @override
   Widget build(BuildContext context) {
+    final config = widget.config;
+    final heading = Theme.of(context).textTheme.titleMedium;
+    final small = Theme.of(context).textTheme.bodySmall;
     return Padding(
       padding: const EdgeInsets.all(8.0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Keys, one per line',
-              style: Theme.of(context).textTheme.titleMedium),
+          Text('Keys, one per line', style: heading),
           const Text(
-            "Each key is one line's recipe node. The pills appear in this "
-            "order. Leave empty to use the single key below, which expects "
+            "Each key is one line's recipe node, in the order the lines "
+            "appear. Leave empty to use the single key below, which expects "
             "one node holding an array of every line.",
             style: TextStyle(fontSize: 12),
           ),
-          for (var i = 0; i < widget.config.keys.length; i++)
+          for (var i = 0; i < config.keys.length; i++)
             Row(
               children: [
                 Expanded(
                   child: KeyField(
-                    initialValue: widget.config.keys[i],
-                    onChanged: (val) =>
-                        setState(() => widget.config.keys[i] = val),
+                    initialValue: config.keys[i],
+                    onChanged: (val) => setState(() => config.keys[i] = val),
                   ),
                 ),
                 IconButton(
                   icon: const Icon(Icons.remove_circle_outline),
                   tooltip: 'Remove this line',
-                  onPressed: () =>
-                      setState(() => widget.config.keys.removeAt(i)),
+                  onPressed: () => setState(() => config.keys.removeAt(i)),
                 ),
               ],
             ),
@@ -719,45 +1101,80 @@ class _RecipesConfigEditorState extends State<_RecipesConfigEditor> {
               onPressed: () => setState(() {
                 // A growable copy: the generated fromJson can hand back a
                 // fixed-length list, which would throw on add.
-                widget.config.keys = [...widget.config.keys, ''];
+                config.keys = [...config.keys, ''];
               }),
             ),
           ),
           const SizedBox(height: 16),
-          CheckboxListTile(
-            contentPadding: EdgeInsets.zero,
-            controlAffinity: ListTileControlAffinity.leading,
-            value: widget.config.unifiedRecipe,
-            onChanged: (val) =>
-                setState(() => widget.config.unifiedRecipe = val ?? false),
-            title: const Text('One recipe for every line'),
-            subtitle: Text(
-              widget.config.perLineKeys
-                  ? 'Send writes the chosen recipe to every key above, member '
-                      'by member, skipping anything a line does not have. '
-                      'Lines are written one at a time and each reports on '
-                      'itself.'
-                  : 'Has no effect until there is more than one key above.',
-              style: const TextStyle(fontSize: 12),
-            ),
+          // The two words the dialog is written in. Both are the page's to
+          // choose — "Product" is right for one plant and wrong for the next
+          // — and both have a plural of their own, because "add an s" is not
+          // a rule most languages keep.
+          Text('Names', style: heading),
+          const SizedBox(height: 6),
+          Table(
+            columnWidths: const {
+              0: IntrinsicColumnWidth(),
+              1: FlexColumnWidth(),
+              2: FlexColumnWidth(),
+            },
+            defaultVerticalAlignment: TableCellVerticalAlignment.middle,
+            children: [
+              TableRow(children: [
+                const SizedBox.shrink(),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(8, 0, 8, 4),
+                  child: Text('One is called', style: small),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(8, 0, 8, 4),
+                  child: Text('More than one', style: small),
+                ),
+              ]),
+              TableRow(children: [
+                const Text('Line'),
+                Padding(
+                  padding: const EdgeInsets.all(8),
+                  child: _nameField(_label, 'Line', (v) => config.label = v),
+                ),
+                Padding(
+                  padding: const EdgeInsets.all(8),
+                  child: _nameField(_labelPlural, '${config.lineNoun}s',
+                      (v) => config.labelPlural = v),
+                ),
+              ]),
+              TableRow(children: [
+                const Text('Group'),
+                Padding(
+                  padding: const EdgeInsets.all(8),
+                  child: _nameField(
+                      _groupLabel, 'Product', (v) => config.groupLabel = v),
+                ),
+                Padding(
+                  padding: const EdgeInsets.all(8),
+                  child: _nameField(_groupLabelPlural, '${config.groupNoun}s',
+                      (v) => config.groupLabelPlural = v),
+                ),
+              ]),
+            ],
+          ),
+          Text('Leave "More than one" empty to add an "s".', style: small),
+          const SizedBox(height: 8),
+          Text(
+            'The dialog will read: ${config.groupNounPlural} | '
+            '${config.lineNounPlural} · New ${config.groupNoun.toLowerCase()}',
+            style: small,
           ),
           const SizedBox(height: 16),
-          Text('Single key (legacy array)',
-              style: Theme.of(context).textTheme.titleMedium),
+          Text('Single key (legacy array)', style: heading),
           KeyField(
-            initialValue: widget.config.key,
-            onChanged: (val) => setState(() => widget.config.key = val),
-          ),
-          const SizedBox(height: 16),
-          Text('Label', style: Theme.of(context).textTheme.titleMedium),
-          TextField(
-            controller: _labelController,
-            onChanged: (val) => setState(() => widget.config.label = val),
+            initialValue: config.key,
+            onChanged: (val) => setState(() => config.key = val),
           ),
           const SizedBox(height: 10),
           SizeField(
-              initialValue: widget.config.size,
-              onChanged: (size) => setState(() => widget.config.size = size)),
+              initialValue: config.size,
+              onChanged: (size) => setState(() => config.size = size)),
         ],
       ),
     );
@@ -772,6 +1189,14 @@ class PillText extends StatelessWidget {
   final EdgeInsetsGeometry padding;
   final Color? selectedColor;
 
+  /// How many lines the label may take before it is clipped.
+  ///
+  /// One by default, which is what a line pill wants. A recipe's name is the
+  /// operator's own words — "Line 2 - Standard" — and clipping that to
+  /// "Line 2 - Sta…" loses exactly the part that tells two presets apart, so
+  /// the rail allows a second line.
+  final int maxLines;
+
   const PillText({
     super.key,
     required this.text,
@@ -780,6 +1205,7 @@ class PillText extends StatelessWidget {
     this.unselectedStyle,
     this.padding = const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
     this.selectedColor,
+    this.maxLines = 1,
   });
 
   @override
@@ -796,6 +1222,8 @@ class PillText extends StatelessWidget {
       child: Text(
         text,
         overflow: TextOverflow.ellipsis,
+        maxLines: maxLines,
+        softWrap: maxLines > 1,
         style: selected
             ? selectedStyle ??
                 Theme.of(context).textTheme.titleMedium?.copyWith(
@@ -813,7 +1241,7 @@ class PillText extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------------
-// The asset and its dialog
+// The asset
 // ---------------------------------------------------------------------------
 
 class Recipes extends ConsumerStatefulWidget {
@@ -840,902 +1268,22 @@ class _RecipesState extends ConsumerState<Recipes> {
       context: context,
       id: _dialogId,
       title: 'Recipes',
-      subtitle: widget.config.label,
+      subtitle: '${widget.config.lineKeys.length} '
+              '${widget.config.lineKeys.length == 1 ? widget.config.lineNoun : widget.config.lineNounPlural}'
+          .toLowerCase(),
       icon: Icons.receipt_long,
-      size: const Size(1120, 720),
+      size: const Size(1180, 760),
       // The body fills the window itself. Left at the default, the whole
-      // dialog sat in a scroll view it does not need — one of four the
-      // content had to fight — and an `Expanded` cannot lay out against a
-      // scroll view's unbounded height, so the table could not own the space
-      // the window gives it.
+      // dialog sat in a scroll view it does not need, and an `Expanded`
+      // cannot lay out against a scroll view's unbounded height, so the
+      // content could not own the space the window gives it — which is why
+      // dragging the window bigger used to move nothing.
       scrollable: false,
       // A widget of its own, and a stateful one, because the floating dialog
       // builds its body ONCE and carries it as a captured child. Selection
-      // state that lived in [_RecipesState] and was mutated through a
-      // `StatefulBuilder` could never re-point the tag subscription above it:
-      // tapping Line 2 changed the pill and nothing else, and "Current
-      // values" went on showing Line 1's node. Here the subscriptions are
-      // built from this widget's own state, so a selection change rebuilds
-      // them along with everything else.
+      // state held anywhere above it could never re-point what the body
+      // subscribes to.
       builder: (_) => _RecipesDialogBody(config: widget.config),
     );
   }
-}
-
-class _RecipesDialogBody extends ConsumerStatefulWidget {
-  const _RecipesDialogBody({required this.config});
-
-  final RecipesConfig config;
-
-  @override
-  ConsumerState<_RecipesDialogBody> createState() => _RecipesDialogBodyState();
-}
-
-class _RecipesDialogBodyState extends ConsumerState<_RecipesDialogBody> {
-  int _selectedLine = 0;
-  int? _selectedRecipeIndex;
-  bool _sending = false;
-  List<LineSendOutcome>? _report;
-
-  final _newRecipeNameController = TextEditingController();
-
-  /// The recipe list the open dialog works on. Fetched once per opening, not
-  /// once per rebuild: the FutureBuilder used to take a fresh future on every
-  /// rebuild, which re-read the preferences and rebuilt the content -- and
-  /// with it the text fields -- for every keystroke-triggered rebuild. This
-  /// state object lives exactly as long as one opening of the dialog, so
-  /// memoising it here is once per opening.
-  ///
-  /// Started from `build` rather than `initState`, and only once there is
-  /// something to show: a read that nothing is going to listen to is an
-  /// unhandled error waiting to happen, and an unconfigured button — the
-  /// palette preview is one — would take the preference store down with it
-  /// for no reason.
-  Future<List<Recipe>>? _recipesFuture;
-
-  /// The combined per-key stream, cached the way `conveyor.dart` caches its
-  /// own. A new stream object means cancel every subscription and open them
-  /// again, and a dialog rebuilds on every tick and every keystroke.
-  Stream<List<DynamicValue?>>? _cachedValues;
-  int? _cachedSignature;
-
-  @override
-  void dispose() {
-    _newRecipeNameController.dispose();
-    super.dispose();
-  }
-
-  Future<List<Recipe>> _getRecipes() async {
-    return readRecipes(
-      await ref.read(preferencesProvider.future),
-      await ref.read(systemPreferencesProvider.future),
-      widget.config.recipesBucket,
-    );
-  }
-
-  /// Saves, and says so when it could not.
-  ///
-  /// Called from inside `setState` callbacks, so it cannot be awaited there
-  /// — but a shared write can be refused (offline, a lost compare-and-swap,
-  /// a denial), and a refusal that lands nowhere leaves a recipe on screen
-  /// that reopening the dialog shows was never stored. The messenger is
-  /// resolved before the first await for the reason every other write surface
-  /// gives: the dialog may be gone by the time the refusal comes back.
-  Future<void> _saveRecipes(List<Recipe> recipes) async {
-    final messenger = ScaffoldMessenger.maybeOf(context);
-    try {
-      await writeRecipes(
-        await ref.read(preferencesProvider.future),
-        widget.config.recipesBucket,
-        recipes,
-      );
-    } on AccessDenied {
-      // Already prompted and recorded by the guard.
-      rethrow;
-    } catch (error) {
-      messenger?.showSnackBar(SnackBar(
-        content: Text('Recipes not saved: $error'),
-      ));
-    }
-  }
-
-  // -- keys and live values ------------------------------------------------
-
-  /// The node this dialog reads and writes for the selected line.
-  ///
-  /// One key per line: the selected line's own node. Legacy single key: the
-  /// one array node, with [_selectedLine] indexing inside the value instead.
-  String get _activeKey {
-    final config = widget.config;
-    if (!config.perLineKeys) return config.key;
-    final keys = config.lineKeys;
-    if (keys.isEmpty) return '';
-    return keys[_selectedLine.clamp(0, keys.length - 1)];
-  }
-
-  /// One entry per value column of the table.
-  ///
-  /// A blank entry in the key list — the editor's "Add line" leaves one until
-  /// it is filled in — is dropped here rather than filtered later, so the
-  /// headings and the cells are built from the same list and can never come
-  /// out different lengths. The remaining lines keep their configured
-  /// numbers, so a line is not renamed by its neighbour being unfinished.
-  List<({String label, String key})> get _columnBindings {
-    final config = widget.config;
-    if (config.unified) {
-      final keys = config.lineKeys;
-      return [
-        for (var i = 0; i < keys.length; i++)
-          if (keys[i].isNotEmpty)
-            (label: '${config.label} ${i + 1}', key: keys[i]),
-      ];
-    }
-    final key = _activeKey;
-    if (key.isEmpty) return const [];
-    return [(label: 'Current', key: key)];
-  }
-
-  /// The keys actually subscribed to right now.
-  List<String> get _subscribedKeys => [for (final b in _columnBindings) b.key];
-
-  /// The values behind [_subscribedKeys], one slot per key, null while a key
-  /// has not reported.
-  ///
-  /// Straight from `conveyor.dart`'s multi-key pattern, including the trap
-  /// documented there: `CombineLatestStream` emits nothing at all until EVERY
-  /// input has produced a value, so one silent line would blank the whole
-  /// table. Each source is seeded with a null and has its errors swallowed to
-  /// null, so a dead line costs its own column and nothing else.
-  Stream<List<DynamicValue?>> _valuesStream(List<Stream<DynamicValue>> sources) {
-    final signature =
-        Object.hashAll([for (final s in sources) identityHashCode(s)]);
-    final cached = _cachedValues;
-    if (cached != null && signature == _cachedSignature) return cached;
-
-    final combined = sources.isEmpty
-        ? Stream<List<DynamicValue?>>.value(const <DynamicValue?>[])
-        : CombineLatestStream<DynamicValue?, List<DynamicValue?>>(
-            [for (final s in sources) _tolerant(s)],
-            (values) => List<DynamicValue?>.from(values),
-          ).shareReplay(maxSize: 1);
-
-    _cachedSignature = signature;
-    _cachedValues = combined;
-    return combined;
-  }
-
-  Stream<DynamicValue?> _tolerant(Stream<DynamicValue> source) => source
-      .map<DynamicValue?>((value) => value)
-      .transform(
-        StreamTransformer<DynamicValue?, DynamicValue?>.fromHandlers(
-          handleError: (error, stackTrace, sink) => sink.add(null),
-        ),
-      )
-      .startWith(null);
-
-  /// The raw stream values turned into one value per displayed column.
-  ///
-  /// Per-line keys hand back what they read. The legacy single key reads one
-  /// array covering every line, so the column shows the selected element of
-  /// it.
-  List<DynamicValue?> _displayValues(List<DynamicValue?> raw) {
-    if (widget.config.perLineKeys) return raw;
-    final whole = raw.isEmpty ? null : raw.first;
-    if (whole == null || !whole.isArray) return const <DynamicValue?>[null];
-    final items = whole.asArray;
-    final index = _selectedLine;
-    return [index >= 0 && index < items.length ? items[index] : null];
-  }
-
-  int _lineCount(List<DynamicValue?> raw) {
-    if (widget.config.perLineKeys) return widget.config.lineKeys.length;
-    final whole = raw.isEmpty ? null : raw.first;
-    if (whole == null || !whole.isArray) return 0;
-    return whole.asArray.length;
-  }
-
-  // -- sending -------------------------------------------------------------
-
-  /// Sends the selected recipe, one line at a time.
-  ///
-  /// **Every write goes through [writeTag]**, so each key is access-checked
-  /// and audited on its own — a session allowed to set one line and not
-  /// another is refused only on the one it may not touch.
-  ///
-  /// **No member is named** in the access question, and that is the honest
-  /// answer rather than a shortcut: a recipe sets many members of a line at
-  /// once, so the question is about the key as a whole, which is what a
-  /// template's `*` row answers.
-  Future<void> _send(List<Recipe> recipes) async {
-    final index = _selectedRecipeIndex;
-    if (index == null || index >= recipes.length) return;
-    final recipe = recipes[index].value;
-    final config = widget.config;
-
-    setState(() {
-      _sending = true;
-      _report = null;
-    });
-
-    final outcomes = <LineSendOutcome>[];
-    try {
-      final stateMan = await ref.read(stateManProvider.future);
-
-      if (config.perLineKeys) {
-        final keys = config.unified
-            ? config.lineKeys
-            : <String>[_activeKey];
-        final labels = config.unified
-            ? [for (var i = 0; i < keys.length; i++) '${config.label} ${i + 1}']
-            : <String>['${config.label} ${_selectedLine + 1}'];
-        for (var i = 0; i < keys.length; i++) {
-          outcomes.add(await _sendOne(stateMan, labels[i], keys[i], recipe));
-        }
-      } else {
-        outcomes.add(await _sendLegacyArray(stateMan, recipe));
-      }
-    } catch (error) {
-      // Not one line's failure — there was no connection to send through, so
-      // nothing was attempted at all.
-      outcomes.add(LineSendOutcome(
-        label: 'Nothing sent',
-        ok: false,
-        message: 'no connection to the controllers ($error)',
-      ));
-    }
-
-    if (!mounted) return;
-    setState(() {
-      _sending = false;
-      _report = outcomes;
-    });
-  }
-
-  /// Reads one line, merges the recipe into what it reads, writes it back.
-  ///
-  /// The read is not a formality. Merging needs the target's own shape, and
-  /// without it the only thing left to write is the recipe as it stands —
-  /// which is the blind struct copy this whole path exists to avoid. So a
-  /// line whose current value cannot be obtained is reported and **not
-  /// written**.
-  Future<LineSendOutcome> _sendOne(
-    StateMan stateMan,
-    String label,
-    String key,
-    DynamicValue recipe,
-  ) async {
-    if (key.isEmpty) {
-      return LineSendOutcome(
-          label: label, ok: false, message: 'no key configured');
-    }
-    DynamicValue current;
-    try {
-      current = await stateMan.read(key);
-    } catch (error) {
-      return LineSendOutcome(
-        label: label,
-        ok: false,
-        message: 'could not be read, so nothing was written ($error)',
-      );
-    }
-    final result = mergeRecipeInto(current, recipe);
-    if (result.written.isEmpty) {
-      return LineSendOutcome(
-        label: label,
-        ok: false,
-        message: 'nothing written — ${describeMerge(result)}',
-      );
-    }
-    try {
-      final issued = await writeTag(ref, stateMan, key, result.merged);
-      if (!issued) {
-        return LineSendOutcome(
-          label: label,
-          ok: false,
-          message: 'not permitted, so nothing was written',
-        );
-      }
-    } on AccessDenied {
-      return LineSendOutcome(
-        label: label,
-        ok: false,
-        message: 'not permitted, so nothing was written',
-      );
-    } catch (error) {
-      return LineSendOutcome(label: label, ok: false, message: 'failed: $error');
-    }
-    return LineSendOutcome(
-        label: label, ok: true, message: describeMerge(result));
-  }
-
-  /// The legacy single-key shape: one array node holding every line.
-  ///
-  /// The whole array has to go back, because that is the node. The merge still
-  /// applies to the selected element, so the element keeps its own shape, and
-  /// the other elements are written back exactly as they were read.
-  Future<LineSendOutcome> _sendLegacyArray(
-      StateMan stateMan, DynamicValue recipe) async {
-    final config = widget.config;
-    final label = '${config.label} ${_selectedLine + 1}';
-    if (config.key.isEmpty) {
-      return LineSendOutcome(
-          label: label, ok: false, message: 'no key configured');
-    }
-    DynamicValue whole;
-    try {
-      whole = DynamicValue.from(await stateMan.read(config.key));
-    } catch (error) {
-      return LineSendOutcome(
-        label: label,
-        ok: false,
-        message: 'could not be read, so nothing was written ($error)',
-      );
-    }
-    if (!whole.isArray || _selectedLine >= whole.asArray.length) {
-      return LineSendOutcome(
-          label: label, ok: false, message: 'this line is not in the array');
-    }
-    final result = mergeRecipeInto(whole[_selectedLine], recipe);
-    if (result.written.isEmpty) {
-      return LineSendOutcome(
-        label: label,
-        ok: false,
-        message: 'nothing written — ${describeMerge(result)}',
-      );
-    }
-    whole[_selectedLine] = result.merged;
-    try {
-      final issued = await writeTag(ref, stateMan, config.key, whole);
-      if (!issued) {
-        return LineSendOutcome(
-          label: label,
-          ok: false,
-          message: 'not permitted, so nothing was written',
-        );
-      }
-    } on AccessDenied {
-      return LineSendOutcome(
-        label: label,
-        ok: false,
-        message: 'not permitted, so nothing was written',
-      );
-    } catch (error) {
-      return LineSendOutcome(label: label, ok: false, message: 'failed: $error');
-    }
-    return LineSendOutcome(
-        label: label, ok: true, message: describeMerge(result));
-  }
-
-  // -- recipe list ---------------------------------------------------------
-
-  void _addRecipe(String name, List<Recipe> recipes, DynamicValue? seed) {
-    if (name.trim().isEmpty || seed == null) return;
-    setState(() {
-      recipes.add(Recipe(name: name.trim(), value: DynamicValue.from(seed)));
-      _selectedRecipeIndex = recipes.length - 1;
-      _newRecipeNameController.clear();
-      _saveRecipes(recipes);
-    });
-  }
-
-  // -- build ---------------------------------------------------------------
-
-  @override
-  Widget build(BuildContext context) {
-    if (widget.config.lineKeys.isEmpty) {
-      return const Center(
-        child: Text('This recipes button has no keys configured yet.'),
-      );
-    }
-    // May be empty when the line that is selected is the one whose key has
-    // not been filled in. The rails still render in that case — a dialog that
-    // replaced itself with a message would leave no pill to tap to get back
-    // to a line that does work.
-    final keys = _subscribedKeys;
-
-    // One shared stream per key, held by [keyStreamProvider] rather than by
-    // this widget: watching keeps them alive across a rebuild, and two assets
-    // pointed at the same node read the same subscription.
-    //
-    // Watched HERE, in `build` itself, and not inside the builders below: a
-    // `ref.watch` from a nested builder's callback runs in that builder's
-    // element, not this one's, and is not a dependency this widget would be
-    // rebuilt for.
-    final sources = [for (final key in keys) ref.watch(keyStreamProvider(key))];
-
-    return FutureBuilder<List<Recipe>>(
-      future: _recipesFuture ??= _getRecipes(),
-      builder: (context, snapshot) {
-        if (snapshot.hasError) {
-          return Center(child: Text('Error loading recipes: ${snapshot.error}'));
-        }
-        if (!snapshot.hasData) {
-          return const Center(child: CircularProgressIndicator());
-        }
-        return _liveContent(context, snapshot.data!, sources);
-      },
-    );
-  }
-
-  Widget _liveContent(BuildContext context, List<Recipe> recipes,
-      List<Stream<DynamicValue>> sources) {
-    return StreamBuilder<List<DynamicValue?>>(
-      stream: _valuesStream(sources),
-      builder: (context, snapshot) {
-        final raw = snapshot.data ??
-            List<DynamicValue?>.filled(sources.length, null, growable: false);
-        final config = widget.config;
-        final first = raw.isEmpty ? null : raw.first;
-        if (!config.perLineKeys && first != null && !first.isArray) {
-          return Center(
-            child: Text(
-                'Unsupported type: ${first.type}, needs to be an array'),
-          );
-        }
-        return _content(context, recipes, raw);
-      },
-    );
-  }
-
-  Widget _content(
-      BuildContext context, List<Recipe> recipes, List<DynamicValue?> raw) {
-    final config = widget.config;
-    final values = _displayValues(raw);
-    final lineCount = _lineCount(raw);
-    final showLinePills = !config.unified && lineCount > 1;
-    final selectedRecipe =
-        (_selectedRecipeIndex != null && _selectedRecipeIndex! < recipes.length)
-            ? recipes[_selectedRecipeIndex!]
-            : null;
-
-    // The rails are sized from what the window actually gives them rather
-    // than pinned: the floating dialog can be dragged down to 320 px wide,
-    // and two fixed rails wider than that overflow the row rather than
-    // shrinking. They give way first, because the table is the content.
-    return LayoutBuilder(builder: (context, constraints) {
-      final available = constraints.maxWidth;
-      final pillWidth = (available * 0.12).clamp(70.0, 110.0);
-      final railWidth = (available * 0.22).clamp(150.0, 210.0);
-      return Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          if (showLinePills) ...[
-            SizedBox(
-              width: pillWidth,
-              child: _linePills(context, lineCount),
-            ),
-            const VerticalDivider(),
-          ],
-          SizedBox(
-            width: railWidth,
-            child: _recipeRail(context, recipes, values),
-          ),
-          const VerticalDivider(),
-          Expanded(
-            child: _valuesPanel(context, recipes, selectedRecipe, values),
-          ),
-        ],
-      );
-    });
-  }
-
-  Widget _linePills(BuildContext context, int lineCount) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(widget.config.label,
-            style: Theme.of(context).textTheme.titleMedium),
-        const Divider(),
-        Expanded(
-          child: ListView.builder(
-            primary: false,
-            itemCount: lineCount,
-            itemBuilder: (context, i) => InkWell(
-              onTap: () => setState(() {
-                _selectedLine = i;
-                _report = null;
-              }),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 6.0),
-                child: PillText(
-                  text: '${widget.config.label} ${i + 1}',
-                  selected: i == _selectedLine,
-                ),
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _recipeRail(
-      BuildContext context, List<Recipe> recipes, List<DynamicValue?> values) {
-    final scheme = Theme.of(context).colorScheme;
-    final seed = values.firstWhere((v) => v != null, orElse: () => null);
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(8, 0, 8, 0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('Recipes', style: Theme.of(context).textTheme.titleMedium),
-          const Divider(),
-          // The rail's own short scroll, and the only one besides the values
-          // table: the list is as long as the operator has made it.
-          Expanded(
-            child: recipes.isEmpty
-                ? Center(
-                    child: Text(
-                      'No saved recipes yet.',
-                      textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: scheme.onSurfaceVariant,
-                          ),
-                    ),
-                  )
-                : ListView.builder(
-                    primary: false,
-                    itemCount: recipes.length,
-                    itemBuilder: (context, r) {
-                      final recipe = recipes[r];
-                      return Row(
-                        children: [
-                          IconButton(
-                            icon: const Icon(Icons.delete_outline),
-                            tooltip: 'Delete ${recipe.name}',
-                            onPressed: () => setState(() {
-                              recipes.removeAt(r);
-                              _selectedRecipeIndex = null;
-                              _report = null;
-                              _saveRecipes(recipes);
-                            }),
-                          ),
-                          Expanded(
-                            child: InkWell(
-                              onTap: () => setState(() {
-                                _selectedRecipeIndex = r;
-                                _report = null;
-                              }),
-                              child: Padding(
-                                padding:
-                                    const EdgeInsets.symmetric(vertical: 6.0),
-                                child: PillText(
-                                  text: recipe.name,
-                                  selected: r == _selectedRecipeIndex,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
-                      );
-                    },
-                  ),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 8.0),
-            child: TextField(
-              controller: _newRecipeNameController,
-              decoration: const InputDecoration(
-                border: OutlineInputBorder(),
-                labelText: 'New recipe',
-                isDense: true,
-              ),
-              onSubmitted: (v) => _addRecipe(v, recipes, seed),
-            ),
-          ),
-          Center(
-            child: ElevatedButton.icon(
-              icon: const Icon(Icons.add),
-              label: const Text('Add recipe'),
-              // With nothing live to copy there is no recipe to make: a
-              // preset seeded from a line that has not reported would be an
-              // empty struct that later looks like a real one.
-              onPressed: seed == null
-                  ? null
-                  : () =>
-                      _addRecipe(_newRecipeNameController.text, recipes, seed),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _valuesPanel(BuildContext context, List<Recipe> recipes,
-      Recipe? selectedRecipe, List<DynamicValue?> values) {
-    final bindings = _columnBindings;
-    final shapeSources = <DynamicValue?>[
-      if (selectedRecipe != null) selectedRecipe.value,
-      ...values,
-    ];
-    final rows = flattenRecipeShape(shapeSources);
-
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(8, 0, 8, 0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // The send button rides in the header rather than at the foot of the
-          // column: a recipe struct is as tall as the PLC type makes it, and
-          // below a Spacer() the button was pushed out of view and had to be
-          // scrolled to.
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  selectedRecipe == null
-                      ? 'Values'
-                      : 'Values — ${selectedRecipe.name}',
-                  style: Theme.of(context).textTheme.titleMedium,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              const SizedBox(width: 8),
-              ElevatedButton(
-                // Every branch below dereferences the selection, so with
-                // nothing selected the button can only throw. Disabled
-                // instead.
-                onPressed: selectedRecipe == null || _sending
-                    ? null
-                    : () => _send(recipes),
-                child: Text(_sending
-                    ? 'Sending...'
-                    : widget.config.unified
-                        ? 'Send to every ${widget.config.label.toLowerCase()}'
-                        : 'Send values'),
-              ),
-            ],
-          ),
-          if (_report != null) _reportBlock(context, _report!),
-          const Divider(),
-          if (bindings.isEmpty)
-            Expanded(
-              child: Center(
-                child: Text(
-                  'This ${widget.config.label.toLowerCase()} has no key '
-                  'configured yet.',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              ),
-            )
-          else if (rows.isEmpty)
-            Expanded(
-              child: Center(
-                child: Text(
-                  selectedRecipe == null
-                      ? 'Waiting for values...'
-                      : 'This recipe has no values in it.',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              ),
-            )
-          else
-            Expanded(
-              child: _comparisonTable(
-                  context, rows, bindings, selectedRecipe, values, recipes),
-            ),
-        ],
-      ),
-    );
-  }
-
-  Widget _reportBlock(BuildContext context, List<LineSendOutcome> outcomes) {
-    final states = Theme.of(context).extension<HmiStateColors>() ??
-        HmiStateColors.solarizedLight;
-    final scheme = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.only(top: 8.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          for (final outcome in outcomes)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 2.0),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Icon(
-                    outcome.ok ? Icons.check_circle_outline : Icons.error_outline,
-                    size: 16,
-                    color: outcome.ok ? states.green : states.red,
-                  ),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      '${outcome.label}: ${outcome.message}',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          if (outcomes.length > 1)
-            Padding(
-              padding: const EdgeInsets.only(top: 2.0),
-              child: Text(
-                'Each line is a controller of its own and was written '
-                'separately — some may have changed while others did not.',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: scheme.onSurfaceVariant,
-                      fontStyle: FontStyle.italic,
-                    ),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
-  /// The one member-aligned table: the recipe's value and every line's live
-  /// value for a member sit on the same row.
-  ///
-  /// It replaces two side-by-side trees that scrolled independently, so a
-  /// member's saved value and its live value could not be brought level with
-  /// each other on screen at all.
-  Widget _comparisonTable(
-    BuildContext context,
-    List<RecipeRow> rows,
-    List<({String label, String key})> bindings,
-    Recipe? selectedRecipe,
-    List<DynamicValue?> values,
-    List<Recipe> recipes,
-  ) {
-    final scheme = Theme.of(context).colorScheme;
-    final widths = <int, TableColumnWidth>{
-      0: const FlexColumnWidth(2.0),
-      if (selectedRecipe != null) 1: const FlexColumnWidth(1.5),
-    };
-    final firstValueColumn = selectedRecipe != null ? 2 : 1;
-    for (var i = 0; i < bindings.length; i++) {
-      widths[firstValueColumn + i] = const FlexColumnWidth(1.2);
-    }
-
-    final headerStyle = Theme.of(context)
-        .textTheme
-        .labelLarge
-        ?.copyWith(color: scheme.onSurfaceVariant);
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Table(
-          columnWidths: widths,
-          children: [
-            TableRow(children: [
-              _cell(Text('Member', style: headerStyle)),
-              if (selectedRecipe != null) _cell(Text('Recipe', style: headerStyle)),
-              for (final binding in bindings)
-                _cell(Text(binding.label,
-                    style: headerStyle, overflow: TextOverflow.ellipsis)),
-            ]),
-          ],
-        ),
-        const Divider(height: 1),
-        // THE scroll region. Everything else in this dialog sizes itself to
-        // the window.
-        Expanded(
-          child: SingleChildScrollView(
-            primary: false,
-            child: Table(
-              columnWidths: widths,
-              defaultVerticalAlignment: TableCellVerticalAlignment.middle,
-              children: [
-                for (final row in rows)
-                  TableRow(
-                    decoration: row.isLeaf
-                        ? null
-                        : BoxDecoration(
-                            color: scheme.onSurface.withValues(alpha: 0.04),
-                          ),
-                    children: [
-                      _cell(_memberLabel(context, row)),
-                      if (selectedRecipe != null)
-                        _cell(_recipeCell(
-                            context, row, selectedRecipe, recipes)),
-                      for (final value in values)
-                        _cell(_liveCell(context, row, value)),
-                    ],
-                  ),
-              ],
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  static Widget _cell(Widget child) => Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        child: child,
-      );
-
-  Widget _memberLabel(BuildContext context, RecipeRow row) {
-    final scheme = Theme.of(context).colorScheme;
-    final style = row.isLeaf
-        ? Theme.of(context).textTheme.bodyMedium
-        : Theme.of(context)
-            .textTheme
-            .bodyMedium
-            ?.copyWith(fontWeight: FontWeight.bold, color: scheme.onSurface);
-    return Padding(
-      padding: EdgeInsets.only(left: 14.0 * row.depth),
-      child: Text(row.label,
-          style: style, softWrap: false, overflow: TextOverflow.ellipsis),
-    );
-  }
-
-  /// The recipe's own cell — the one editable column.
-  ///
-  /// [DynamicValueWidget] is handed a single LEAF rather than the whole tree,
-  /// which is what lets the editors it already owns (the switch, the enum
-  /// dropdown, the controller-keeping text field) be reused a row at a time
-  /// instead of being reimplemented for the table.
-  Widget _recipeCell(BuildContext context, RecipeRow row, Recipe recipe,
-      List<Recipe> recipes) {
-    final value = valueAtPath(recipe.value, row.path);
-    if (value == null) {
-      return _absent(context);
-    }
-    if (!row.isLeaf) {
-      return Text(formatRecipeValue(value),
-          style: Theme.of(context).textTheme.bodySmall);
-    }
-    // The label and description are already the Member column's job; leaving
-    // them on the leaf would print each one twice per row.
-    final leaf = DynamicValue.from(value)
-      ..displayName = null
-      ..description = null;
-    // Dense, because a row of this table is a row and not a form field. At
-    // the default density one editor is 64 px tall and a nine-member recipe
-    // does not fit a window twice its height — which is the complaint this
-    // whole rebuild started from.
-    final theme = Theme.of(context);
-    return Theme(
-      data: theme.copyWith(
-        visualDensity: VisualDensity.compact,
-        inputDecorationTheme: theme.inputDecorationTheme.copyWith(
-          isDense: true,
-          contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-        ),
-      ),
-      child: DynamicValueWidget(
-        value: leaf,
-        onSubmitted: (newValue) => setState(() {
-          recipe.value = setAtPath(recipe.value, row.path, newValue);
-          _saveRecipes(recipes);
-        }),
-      ),
-    );
-  }
-
-  Widget _liveCell(BuildContext context, RecipeRow row, DynamicValue? source) {
-    if (source == null) return _quiet(context, 'waiting');
-    final value = valueAtPath(source, row.path);
-    if (value == null) return _absent(context);
-    return Text(formatRecipeValue(value),
-        style: Theme.of(context).textTheme.bodyMedium,
-        softWrap: false,
-        overflow: TextOverflow.ellipsis);
-  }
-
-  /// A member this column's line does not have.
-  ///
-  /// Spelled out, never left blank and never shown as a zero: a blank reads as
-  /// "nothing set" and a zero reads as a setpoint, and both are wrong about a
-  /// line that simply has no such member.
-  Widget _absent(BuildContext context) => _quiet(context, 'not present');
-
-  /// A cell that says something about itself rather than carrying a value.
-  ///
-  /// One line and clipped, never wrapped: a wrapped "waiting" grows the row
-  /// it is in and takes every other line's value with it.
-  Widget _quiet(BuildContext context, String text) => Text(
-        text,
-        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
-              fontStyle: FontStyle.italic,
-            ),
-        softWrap: false,
-        overflow: TextOverflow.ellipsis,
-      );
 }
