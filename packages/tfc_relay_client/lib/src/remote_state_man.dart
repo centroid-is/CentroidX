@@ -1634,17 +1634,6 @@ final class RemoteStateMan implements StateManApi {
     if (history.length > _debugHistory) history.removeAt(0);
   }
 
-  // ---------------------------------------------------------------- teardown
-
-  /// Drops every listener, closes every handed-out stream, stops the
-  /// reconnect loop and releases the socket. Idempotent.
-  ///
-  /// Handed-out streams go **before** the link, as in
-  /// `channel_state_man.dart:424-436`, and the supervisor goes last because
-  /// disposing it errors the readiness barrier — which is how a call still
-  /// waiting for a connection gets something it can show instead of a spinner
-  /// that never stops.
-  @override
   /// The type dictionary the gateway sent, by type id, merged across
   /// establishments.
   ///
@@ -1704,6 +1693,17 @@ final class RemoteStateMan implements StateManApi {
     return id == null ? null : _types[id];
   }
 
+  // ---------------------------------------------------------------- teardown
+
+  /// Drops every listener, closes every handed-out stream, stops the
+  /// reconnect loop and releases the socket. Idempotent.
+  ///
+  /// Handed-out streams go **before** the link, as in
+  /// `channel_state_man.dart:424-436`, and the supervisor goes last because
+  /// disposing it errors the readiness barrier — which is how a call still
+  /// waiting for a connection gets something it can show instead of a spinner
+  /// that never stops.
+  @override
   Future<void> dispose() async {
     if (_disposed) return;
     // Before the flag, so each release is an ordinary write with an honest
