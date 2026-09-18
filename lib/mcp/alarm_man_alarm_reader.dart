@@ -1,5 +1,5 @@
 import 'package:tfc_dart/core/alarm.dart';
-import 'package:tfc_mcp_server/tfc_mcp_server.dart' show AlarmReader;
+import 'package:tfc_mcp_server/tfc_mcp_server_data.dart' show AlarmReader;
 
 /// [AlarmReader] implementation backed by the Flutter app's [AlarmMan].
 ///

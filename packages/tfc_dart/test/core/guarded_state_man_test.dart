@@ -913,7 +913,12 @@ List<String> _sourceLinesWithoutComments(String path) {
 
 /// The body of `class [name]` in [lines], from the head to its closing brace.
 List<String> _classBody(List<String> lines, String name) {
-  final start = lines.indexWhere((l) => l.trimRight() == 'class $name {');
+  // `endsWith`, not `==`: `StateMan` is declared `abstract interface class`
+  // now, and the modifiers sit in front of the word `class`. It still cannot
+  // match the wrong line — `class OpcUaStateMan implements StateMan {` ends
+  // with `implements StateMan {`, not with `class StateMan {`.
+  final start =
+      lines.indexWhere((l) => l.trimRight().endsWith('class $name {'));
   expect(start, isNonNegative,
       reason: 'could not find the head of class $name; the derivation below '
           'would silently read nothing');
@@ -933,8 +938,13 @@ String? _declaredName(String line) {
 
 /// Every public instance member of `StateMan`, derived from its source.
 Set<String> stateManPublicMembers() {
+  // From the interface's own declaration in `state_man_types.dart`, which is
+  // what `GuardedStateMan implements`. It used to be derived from the public
+  // surface of the concrete class, because there was only one — the split into
+  // an interface and `OpcUaStateMan` makes the question exact rather than
+  // approximate.
   final body = _classBody(
-      _sourceLinesWithoutComments('lib/core/state_man.dart'), 'StateMan');
+      _sourceLinesWithoutComments('lib/core/state_man_types.dart'), 'StateMan');
   return {
     for (final line in body)
       if (_declaredName(line) case final name?)

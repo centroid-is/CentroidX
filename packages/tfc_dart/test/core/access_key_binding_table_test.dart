@@ -24,7 +24,7 @@ import 'dart:io';
 import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:test/test.dart';
 import 'package:tfc_dart/core/database_drift.dart' show AppDatabase;
-import 'package:tfc_dart/core/state_man.dart' show KeyMappingEntry;
+import 'package:tfc_dart/core/state_man_types.dart' show KeyMappingEntry;
 
 // ---------------------------------------------------------------------------
 // Source reading
@@ -84,8 +84,14 @@ String? _declaredName(String line) {
 /// The lines of `class KeyMappingEntry`, comments stripped. `@JsonKey(...)`
 /// annotation lines are kept: a JSON name is exactly the kind of binding
 /// smuggling this file exists to catch.
+///
+/// `state_man_types.dart`, not `state_man.dart`: the configuration types and
+/// the key mappings moved there when the OPC UA client was split off so that a
+/// build with no `dart:ffi` could still name them. The class did not change;
+/// only which file holds it.
 List<String> _keyMappingEntryBody() => _classBody(
-    _sourceLinesWithoutComments('lib/core/state_man.dart'), 'KeyMappingEntry');
+    _sourceLinesWithoutComments('lib/core/state_man_types.dart'),
+    'KeyMappingEntry');
 
 /// Every member `KeyMappingEntry` declares, derived from its source.
 Set<String> _keyMappingEntryMembers() => {
@@ -364,12 +370,12 @@ void main() {
       expect(round.io, isTrue);
     });
 
-    test('state_man.g.dart contains no access_template', () {
+    test('state_man_types.g.dart contains no access_template', () {
       // The generated code is evidence too: a field added and regenerated
       // would show up here even if somebody edited the hand-written class
       // back out.
       final generated =
-          File('lib/core/state_man.g.dart').readAsStringSync().toLowerCase();
+          File('lib/core/state_man_types.g.dart').readAsStringSync().toLowerCase();
       expect(generated.contains('access_template'), isFalse,
           reason: theRuling);
       expect(generated.contains('accesstemplate'), isFalse, reason: theRuling);

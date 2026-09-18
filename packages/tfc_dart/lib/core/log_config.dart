@@ -1,7 +1,6 @@
 import 'dart:io';
 
 import 'package:logger/logger.dart';
-import 'package:open62541/open62541.dart' show LogLevel;
 
 /// True when this code was compiled for release or profile.
 ///
@@ -16,6 +15,29 @@ const bool _kProfileMode = bool.fromEnvironment('dart.vm.profile');
 /// Whether the running binary is a shipped build (release or profile) rather
 /// than a JIT/debug run.
 const bool kShippedBuild = _kProductMode || _kProfileMode;
+
+/// Whether this build is running in a browser.
+///
+/// Spelled out rather than imported from `package:flutter/foundation.dart`,
+/// for the same reason the two constants above it are: this package is pure
+/// Dart and is run from `bin/` by the Dart VM, where `foundation` does not
+/// exist. It is the same definition Flutter uses — dart2js compiles `int` and
+/// `double` to one JS number, so `0` and `0.0` are identical there and on no
+/// other platform — and it is a compile-time constant, so each branch below
+/// folds away.
+///
+/// Private, because `tfc_dart.dart` exports this library and a public `kIsWeb`
+/// here would collide with `foundation`'s in every Flutter file importing
+/// both.
+///
+/// Every `Platform.environment` read in this file throws in a browser: there
+/// is no environment, and `dart:io`'s web stub raises rather than returning an
+/// empty map. `initLogConfig()` is the first thing `main()` calls, so without
+/// these guards a web build died before its first frame.
+const bool _kIsWeb = identical(0, 0.0);
+
+/// One environment variable, or null where there is no environment.
+String? _env(String name) => _kIsWeb ? null : Platform.environment[name];
 
 /// The level used when CENTROID_LOG_LEVEL is unset.
 ///
@@ -70,26 +92,12 @@ bool logLevelOverridesLoggerFloor(String? value) =>
 ///
 /// Valid values: trace, debug, info, warning, error, fatal, off, all
 /// Defaults to [defaultLogLevel] if unset or unrecognized.
-Level logLevelFromEnv() =>
-    logLevelFor(Platform.environment['CENTROID_LOG_LEVEL']);
+Level logLevelFromEnv() => logLevelFor(_env('CENTROID_LOG_LEVEL'));
 
-/// Reads CENTROID_OPCUA_LOG_LEVEL env var and returns the corresponding
-/// open62541 [LogLevel].
-///
-/// Valid values: trace, debug, info, warning, error, fatal
-/// Defaults to [LogLevel.UA_LOGLEVEL_INFO] if unset or unrecognized.
-LogLevel opcuaLogLevelFromEnv() {
-  final value = Platform.environment['CENTROID_OPCUA_LOG_LEVEL']?.toLowerCase();
-  return switch (value) {
-    'trace' => LogLevel.UA_LOGLEVEL_TRACE,
-    'debug' => LogLevel.UA_LOGLEVEL_DEBUG,
-    'info' => LogLevel.UA_LOGLEVEL_INFO,
-    'warning' || 'warn' => LogLevel.UA_LOGLEVEL_WARNING,
-    'error' => LogLevel.UA_LOGLEVEL_ERROR,
-    'fatal' => LogLevel.UA_LOGLEVEL_FATAL,
-    _ => LogLevel.UA_LOGLEVEL_INFO,
-  };
-}
+// `opcuaLogLevelFromEnv` is in `opcua_log_level.dart`. open62541's `LogLevel`
+// comes from the FFI barrel, and this file is imported by `main.dart` itself —
+// so that one `show LogLevel` put `dart:ffi` at the very root of the app's
+// import graph, where dart2js refuses it outright.
 
 /// A [LogFilter] that uses `CENTROID_LOG_LEVEL` to control which messages
 /// are logged. Messages at or above the configured level pass through.
@@ -109,11 +117,11 @@ class EnvLogFilter extends LogFilter {
 
   EnvLogFilter({String? envValue, bool? shippedBuild})
       : _minLevel = logLevelFor(
-          envValue ?? Platform.environment['CENTROID_LOG_LEVEL'],
+          envValue ?? _env('CENTROID_LOG_LEVEL'),
           shippedBuild: shippedBuild ?? kShippedBuild,
         ),
         _ignoreLoggerFloor = logLevelOverridesLoggerFloor(
-            envValue ?? Platform.environment['CENTROID_LOG_LEVEL']);
+            envValue ?? _env('CENTROID_LOG_LEVEL'));
 
   @override
   bool shouldLog(LogEvent event) {
@@ -206,6 +214,8 @@ void initLogConfig() {
 /// Points [Logger.defaultOutput] at `CENTROID_LOG_FILE` when that is set and
 /// the launcher has not already redirected stdout there.
 void _installFileOutput(String banner) {
+  // No environment and no filesystem in a browser, so no file sink.
+  if (_kIsWeb) return;
   final path = Platform.environment['CENTROID_LOG_FILE'];
   if (path == null || path.isEmpty) return;
 
@@ -240,7 +250,7 @@ void _installFileOutput(String banner) {
 /// "the subsystem never ran" look identical. Exposed separately so a caller
 /// can put it wherever else it needs to go.
 String logLevelBanner() {
-  final env = Platform.environment['CENTROID_LOG_LEVEL'];
+  final env = _env('CENTROID_LOG_LEVEL');
   final source = (env == null || env.isEmpty)
       ? 'CENTROID_LOG_LEVEL unset, default for a '
           '${kShippedBuild ? 'release/profile' : 'debug'} build'

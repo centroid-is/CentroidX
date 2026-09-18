@@ -5,7 +5,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
-import 'package:tfc_mcp_server/tfc_mcp_server.dart'
+import 'package:tfc_mcp_server/tfc_mcp_server_data.dart'
     show
         CapturedImage,
         ScreenCaptureBusyException,

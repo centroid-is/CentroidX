@@ -5,6 +5,9 @@ import 'dart:io';
 import 'dart:convert';
 import 'dart:math';
 
+import 'dart:ui' show PlatformDispatcher;
+
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
@@ -23,7 +26,13 @@ import '../widgets/base_scaffold.dart';
 import '../widgets/connection_status_chip.dart';
 import '../widgets/duration_field.dart';
 import '../widgets/preferences.dart';
-import 'package:tfc_dart/core/state_man.dart';
+// The types and the [StateMan] interface, never the OPC UA client: this page
+// edits configuration and shows a status chip, and doing either must not
+// link `dart:ffi`. The live sessions come through
+// `widgets/config/live_session_status.dart`, which is seamed.
+import 'package:tfc_dart/core/state_man_types.dart';
+import 'package:tfc_dart/core/state_man_config_storage.dart';
+import '../widgets/config/live_session_status.dart';
 import 'package:tfc_dart/core/modbus_device_client.dart';
 import 'package:modbus_client/modbus_client.dart' show ModbusEndianness;
 import 'package:tfc_dart/core/database.dart';
@@ -187,7 +196,12 @@ class _CertificateGeneratorState extends State<CertificateGenerator> {
   }
 
   void _initializeControllers() {
-    final locale = Platform.localeName;
+    // `Platform.localeName` throws in a browser. The country code only seeds
+    // a certificate form's default, so the browser's own locale is the right
+    // answer there and an empty one costs nothing.
+    final locale = kIsWeb
+        ? PlatformDispatcher.instance.locale.toString()
+        : Platform.localeName;
     final countryCode = locale.split('_').last;
 
     _commonNameController = TextEditingController(text: 'example.com');
@@ -702,7 +716,7 @@ class _OpcUAServersSectionState extends ConsumerState<_OpcUAServersSection> {
     });
 
     try {
-      _config = await StateManConfig.fromPrefs(
+      _config = await StateManConfigStorage.fromPrefs(
           await ref.read(preferencesProvider.future));
       _savedConfig = _config?.copy();
       _rowKeys.reset(_config?.opcua.length ?? 0);
@@ -727,7 +741,7 @@ class _OpcUAServersSectionState extends ConsumerState<_OpcUAServersSection> {
 
     try {
       await _config!.toPrefs(await ref.read(preferencesProvider.future));
-      _savedConfig = await StateManConfig.fromPrefs(
+      _savedConfig = await StateManConfigStorage.fromPrefs(
           await ref.read(preferencesProvider.future));
       ref.invalidate(stateManProvider);
       setState(() {});
@@ -792,35 +806,24 @@ class _OpcUAServersSectionState extends ConsumerState<_OpcUAServersSection> {
       onReorder: _reorderServer,
       itemCount: config.opcua.length,
       itemBuilder: (context, index) {
-        ClientWrapper? wrapper;
-        if (stateMan != null) {
-          final server = config.opcua[index];
-          wrapper = stateMan.clients.cast<ClientWrapper?>().firstWhere(
-                (w) =>
-                    (server.serverAlias != null &&
-                        server.serverAlias!.isNotEmpty &&
-                        w!.config.serverAlias == server.serverAlias) ||
-                    w!.config.endpoint == server.endpoint,
-                orElse: () => null,
-              );
-        }
+        final live = opcUaLiveStatus(stateMan, config.opcua[index]);
         return _ServerConfigCard(
           key: _rowKeys[index],
           server: config.opcua[index],
           onUpdate: (server) => _updateServer(index, server),
           onRemove: () => _removeServer(index),
-          connectionStatus: wrapper?.connectionStatus,
-          connectionStream: wrapper?.connectionStream,
+          connectionStatus: live?.connectionStatus,
+          connectionStream: live?.connectionStream,
           // Data-plane health: catches the frozen-session shape where the
           // channel stays formally open but no value ever arrives again,
           // which the event-driven connectionStream can never report.
-          effectiveStatus: wrapper?.effectiveStatus,
-          effectiveStatusStream: wrapper?.effectiveStatusStream,
+          effectiveStatus: live?.effectiveStatus,
+          effectiveStatusStream: live?.effectiveStatusStream,
           // Read through a callback, not captured as a value: the reason a
           // client is unhealthy changes without the card rebuilding, and
           // the string is the only place the server's own refusal message
           // reaches an operator.
-          healthDetail: wrapper == null ? null : () => wrapper!.healthDetail,
+          healthDetail: live?.healthDetail,
           stateManLoading: stateManAsync.isLoading,
           reorderIndex: reorderable ? index : null,
         );
@@ -1115,7 +1118,7 @@ class _JbtmServersSectionState extends ConsumerState<_JbtmServersSection> {
     });
 
     try {
-      _config = await StateManConfig.fromPrefs(
+      _config = await StateManConfigStorage.fromPrefs(
           await ref.read(preferencesProvider.future));
       _savedConfig = _config?.copy();
       _rowKeys.reset(_config?.jbtm.length ?? 0);
@@ -1140,7 +1143,7 @@ class _JbtmServersSectionState extends ConsumerState<_JbtmServersSection> {
 
     try {
       await _config!.toPrefs(await ref.read(preferencesProvider.future));
-      _savedConfig = await StateManConfig.fromPrefs(
+      _savedConfig = await StateManConfigStorage.fromPrefs(
           await ref.read(preferencesProvider.future));
       ref.invalidate(stateManProvider);
       setState(() {});
@@ -1190,29 +1193,14 @@ class _JbtmServersSectionState extends ConsumerState<_JbtmServersSection> {
       onReorder: _reorderServer,
       itemCount: config.jbtm.length,
       itemBuilder: (context, index) {
-        M2400DeviceClientAdapter? adapter;
-        if (stateMan != null) {
-          final server = config.jbtm[index];
-          adapter = stateMan.deviceClients
-              .whereType<M2400DeviceClientAdapter>()
-              .cast<M2400DeviceClientAdapter?>()
-              .firstWhere(
-                (dc) =>
-                    (server.serverAlias != null &&
-                        server.serverAlias!.isNotEmpty &&
-                        dc!.serverAlias == server.serverAlias) ||
-                    (dc!.wrapper.host == server.host &&
-                        dc.wrapper.port == server.port),
-                orElse: () => null,
-              );
-        }
+        final live = m2400LiveStatus(stateMan, config.jbtm[index]);
         return _JbtmServerConfigCard(
           key: _rowKeys[index],
           server: config.jbtm[index],
           onUpdate: (server) => _updateServer(index, server),
           onRemove: () => _removeServer(index),
-          connectionStatus: adapter?.connectionStatus,
-          connectionStream: adapter?.connectionStream,
+          connectionStatus: live?.connectionStatus,
+          connectionStream: live?.connectionStream,
           stateManLoading: stateManAsync.isLoading,
           reorderIndex: reorderable ? index : null,
         );
@@ -1553,7 +1541,7 @@ class _ModbusServersSectionState extends ConsumerState<_ModbusServersSection> {
     });
 
     try {
-      _config = await StateManConfig.fromPrefs(
+      _config = await StateManConfigStorage.fromPrefs(
           await ref.read(preferencesProvider.future));
       _savedConfig = _config?.copy();
       _rowKeys.reset(_config?.modbus.length ?? 0);
@@ -1578,7 +1566,7 @@ class _ModbusServersSectionState extends ConsumerState<_ModbusServersSection> {
 
     try {
       await _config!.toPrefs(await ref.read(preferencesProvider.future));
-      _savedConfig = await StateManConfig.fromPrefs(
+      _savedConfig = await StateManConfigStorage.fromPrefs(
           await ref.read(preferencesProvider.future));
       ref.invalidate(stateManProvider);
       setState(() {});
@@ -1633,33 +1621,18 @@ class _ModbusServersSectionState extends ConsumerState<_ModbusServersSection> {
       onReorder: _reorderServer,
       itemCount: config.modbus.length,
       itemBuilder: (context, index) {
-        ModbusDeviceClientAdapter? adapter;
-        if (stateMan != null) {
-          final server = config.modbus[index];
-          adapter = stateMan.deviceClients
-              .whereType<ModbusDeviceClientAdapter>()
-              .cast<ModbusDeviceClientAdapter?>()
-              .firstWhere(
-                (dc) =>
-                    (server.serverAlias != null &&
-                        server.serverAlias!.isNotEmpty &&
-                        dc!.serverAlias == server.serverAlias) ||
-                    (dc!.wrapper.host == server.host &&
-                        dc.wrapper.port == server.port),
-                orElse: () => null,
-              );
-        }
+        final live = modbusLiveStatus(stateMan, config.modbus[index]);
         return _ModbusServerConfigCard(
           key: _rowKeys[index],
           server: config.modbus[index],
           onUpdate: (server) => _updateServer(index, server),
           onRemove: () => _removeServer(index),
-          connectionStatus: adapter?.connectionStatus,
-          connectionStream: adapter?.connectionStream,
+          connectionStatus: live?.connectionStatus,
+          connectionStream: live?.connectionStream,
           // TD-004 (v1.1.x): combined TCP + UMAS health stream so the
           // chip surfaces a broken UMAS session as `umasUnhealthy`.
-          effectiveStatus: adapter?.effectiveStatus,
-          effectiveStatusStream: adapter?.effectiveStatusStream,
+          effectiveStatus: live?.effectiveStatus,
+          effectiveStatusStream: live?.effectiveStatusStream,
           stateManLoading: stateManAsync.isLoading,
           reorderIndex: reorderable ? index : null,
         );
@@ -3220,7 +3193,7 @@ class _ImportExportCardState extends ConsumerState<ImportExportCard> {
     // and breaks the trust the PLC was configured with.
     StateManConfig? current;
     try {
-      current = await StateManConfig.fromPrefs(prefs);
+      current = await StateManConfigStorage.fromPrefs(prefs);
     } catch (_) {
       // No (or unreadable) saved config — nothing to reuse.
     }
@@ -3286,7 +3259,7 @@ class _ImportExportCardState extends ConsumerState<ImportExportCard> {
   /// Shared by the file export and the database export.
   Future<Map<String, dynamic>> _collectExportJson(WidgetRef ref) async {
     final prefs = await ref.read(preferencesProvider.future);
-    final stateMan = await StateManConfig.fromPrefs(prefs);
+    final stateMan = await StateManConfigStorage.fromPrefs(prefs);
     final db = await DatabaseConfig.fromPrefs();
     final jsonMap = _scrubCertPaths(stateMan.toJson());
     jsonMap['database'] = db.toJson();

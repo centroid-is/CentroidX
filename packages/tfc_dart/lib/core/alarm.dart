@@ -22,7 +22,7 @@ import 'package:drift/drift.dart' as drift show Constant, Expression;
 import 'database.dart' show Database;
 import 'database_drift.dart' show $AlarmHistoryTable;
 import 'preferences.dart';
-import 'state_man.dart';
+import 'state_man_types.dart';
 import 'ring_buffer.dart';
 import 'boolean_expression.dart';
 import 'fuzzy_match.dart';
@@ -457,7 +457,7 @@ class AlarmMan {
   /// arrives as a value, already read.
   ///
   /// The acquisition backend's, and the shape the rest of its boot already
-  /// uses — `KeyMappings` reaches `StateMan.create` the same way. It takes
+  /// uses — `KeyMappings` reaches `OpcUaStateMan.create` the same way. It takes
   /// [database] on its own because alarm history is a different thing from
   /// alarm configuration and only ever shared a route by accident.
   ///

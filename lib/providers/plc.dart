@@ -1,6 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:tfc_dart/core/state_man.dart' show KeyMappings;
-import 'package:tfc_mcp_server/tfc_mcp_server.dart';
+import 'package:tfc_dart/core/state_man_types.dart' show KeyMappings;
+import 'package:tfc_mcp_server/tfc_mcp_server_data.dart';
 
 import '../core/guarded_knowledge_stores.dart';
 import '../plc/plc_code_upload_service.dart';
@@ -12,7 +12,7 @@ import 'state_man.dart';
 
 export '../core/guarded_knowledge_stores.dart' show PlcCodeIndexExtras;
 
-export 'package:tfc_mcp_server/tfc_mcp_server.dart' show PlcContextService, PlcContext;
+export 'package:tfc_mcp_server/tfc_mcp_server_data.dart' show PlcContextService, PlcContext;
 
 /// Cached [GuardedPlcCodeIndex] instance.
 ///

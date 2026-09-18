@@ -131,7 +131,7 @@ Future<void> _runDataAcquisition(
   // Combine all device clients
   final deviceClients = [...m2400Clients, ...modbusClients];
 
-  final stateMan = await StateMan.create(
+  final stateMan = await OpcUaStateMan.create(
     config: smConfig,
     keyMappings: keyMappings,
     useIsolate: false, // Already in isolate, no need for nested isolates

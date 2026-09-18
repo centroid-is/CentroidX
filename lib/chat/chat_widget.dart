@@ -19,6 +19,8 @@ import 'chat_overlay.dart';
 import 'chat_skill_chips.dart';
 import 'message_bubble.dart';
 
+import '../core/diagnostic_log.dart';
+
 /// The main chat widget with message list, input bar, and provider selector.
 ///
 /// Displays conversation history, tool progress indicators, and a text input
@@ -694,7 +696,7 @@ class _ChatWidgetState extends ConsumerState<ChatWidget> {
         attachment,
       ];
     } catch (e) {
-      io.stderr.writeln('ChatWidget._pickAttachment: $e');
+      logDiagnostic('ChatWidget._pickAttachment: $e');
     }
   }
 

@@ -42,6 +42,19 @@ dependencies:
   petitparser: ^7.0.0
 
 dependency_overrides:
+  # This package depends on tfc_dart, whose `state_man_types.dart` and every
+  # asset-facing type import `package:open62541/open62541_types.dart` — the
+  # FFI-free barrel, which exists only on this fork. Without this override a
+  # `dart pub get` HERE resolves open62541 from pub.dev and tfc_dart fails to
+  # compile inside this package's suite while compiling fine everywhere else.
+  # The root pubspec's note is the authority: every open62541 override in this
+  # repository carries THIS SHA, because two packages resolving two different
+  # open62541 builds is not a state this repository should be in. This is the
+  # fifth such entry (root, centroid-hmi, tfc_dart, jbtm, here).
+  open62541:
+    git:
+      url: https://github.com/centroid-is/open62541_dart.git
+      ref: 91a497a2f1b2e5c7232c9e229de9a9d67c353edb
   postgres:
     git:
       url: https://github.com/centroid-is/postgresql-dart.git

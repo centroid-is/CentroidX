@@ -4,9 +4,9 @@
 /// section tree (chapters > sections > subsections).
 library;
 
-import 'package:tfc_mcp_server/tfc_mcp_server.dart' show ParsedSection;
+import 'package:tfc_mcp_server/tfc_mcp_server_data.dart' show ParsedSection;
 
-export 'package:tfc_mcp_server/tfc_mcp_server.dart' show ParsedSection;
+export 'package:tfc_mcp_server/tfc_mcp_server_data.dart' show ParsedSection;
 
 /// Lightweight input model for section detection.
 ///

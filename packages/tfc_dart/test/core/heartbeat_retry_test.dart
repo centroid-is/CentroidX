@@ -80,6 +80,7 @@ class FlakyClientApi implements ClientApi {
     Duration samplingInterval = const Duration(milliseconds: 100),
     bool discardOldest = true,
     int queueSize = 1,
+    bool deliverBadStatus = false,
   }) =>
       StreamController<DynamicValue>().stream;
 
@@ -91,6 +92,7 @@ class FlakyClientApi implements ClientApi {
     Duration samplingInterval = const Duration(milliseconds: 100),
     bool discardOldest = true,
     int queueSize = 1,
+    bool deliverBadStatus = false,
   }) {
     monitoredItemsSubs.add(subscriptionId);
     return heartbeat.stream;

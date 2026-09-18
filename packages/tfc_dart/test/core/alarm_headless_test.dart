@@ -15,7 +15,7 @@ import 'package:test/test.dart';
 import 'package:tfc_dart/core/alarm.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
-Future<StateMan> _emptyStateMan() => StateMan.create(
+Future<StateMan> _emptyStateMan() => OpcUaStateMan.create(
       config: StateManConfig(opcua: []),
       keyMappings: KeyMappings(nodes: {}),
       useIsolate: false,

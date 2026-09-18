@@ -5,7 +5,7 @@ import 'package:tfc_dart/core/access/guarded_config_store.dart'
     show GuardedConfigStore;
 import 'package:tfc_dart/core/config/config_item.dart';
 import 'package:tfc_dart/core/config/config_store_errors.dart';
-import 'package:tfc_mcp_server/tfc_mcp_server.dart' show TechDocIndex;
+import 'package:tfc_mcp_server/tfc_mcp_server_data.dart' show TechDocIndex;
 
 import '../page_creator/assets/common.dart' show Asset, BaseAsset;
 import '../page_creator/assets/registry.dart' show AssetRegistry;

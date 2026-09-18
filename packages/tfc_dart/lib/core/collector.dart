@@ -3,12 +3,17 @@ import 'dart:collection';
 import 'package:rxdart/rxdart.dart';
 import 'package:logger/logger.dart';
 import 'package:json_annotation/json_annotation.dart';
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 
 import '../converter/dynamic_value_converter.dart';
 import '../converter/duration_converter.dart';
 import '../core/boolean_expression.dart';
-import 'state_man.dart';
+// The interface and the config types, never the OPC UA client: this file
+// carries `CollectEntry`, which every HMI asset reaches through
+// `page_creator/assets/common.dart`. Importing `state_man.dart` for it put
+// `dart:ffi` in the closure of the entire page editor.
+import 'auto_disposing_stream.dart';
+import 'state_man_types.dart';
 import 'database.dart';
 
 part 'collector.g.dart';

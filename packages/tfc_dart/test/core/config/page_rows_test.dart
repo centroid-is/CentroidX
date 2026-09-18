@@ -465,10 +465,18 @@ void main() {
 
     test('the walk still catches the pull D-3 arrived through', () {
       // The positive control. `config_service.dart` imports
-      // `key_mapping_codec.dart` -> `state_man.dart` -> open62541, one import
-      // deep, and that is exactly the shape a source-text check on the entry
-      // file alone would miss. If this ever comes back empty the two tests
-      // above are measuring nothing.
+      // `key_mapping_codec.dart` -> `state_man_types.dart` -> open62541, one
+      // import deep, and that is exactly the shape a source-text check on the
+      // entry file alone would miss. If this ever comes back empty the two
+      // tests above are measuring nothing.
+      //
+      // The waypoint was `core/state_man.dart` until the OPC UA client was
+      // split out of it. The chain is the same shape and one file longer: the
+      // codec names the configuration types, and those name `DynamicValue`.
+      // What changed is that `state_man_types.dart` reaches the FFI-free
+      // barrel rather than the FFI one, which is why this walk — which does
+      // not resolve conditional imports and is not trying to — still has
+      // something to report.
       final walk = _walk('lib/core/config/key_mapping_codec.dart');
 
       expect(walk.violations, isNotEmpty);
@@ -476,7 +484,7 @@ void main() {
           contains(startsWith('package:open62541/')));
       expect(
           walk.violations.any((v) =>
-              v.reachedThrough('core/state_man.dart') &&
+              v.reachedThrough('core/state_man_types.dart') &&
               v.startedAt('key_mapping_codec.dart')),
           isTrue,
           reason: 'the violation has to be reported with the chain that '

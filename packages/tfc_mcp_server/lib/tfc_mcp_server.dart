@@ -1,3 +1,7 @@
+// The full barrel: every export, including the twenty-nine libraries that
+// reach `McpServer` and therefore exist only off the web. Anything that does
+// not host an MCP server should import `tfc_mcp_server_data.dart` instead —
+// its own doc says why.
 export 'src/server.dart';
 export 'src/server_instructions.dart';
 export 'src/logging/stderr_logger.dart';

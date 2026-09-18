@@ -34,11 +34,11 @@ import 'dart:async';
 
 import 'package:logger/logger.dart';
 import 'package:meta/meta.dart' show visibleForTesting;
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 import 'package:tfc_access/tfc_access.dart';
 
 import '../config/config_diff.dart';
-import '../state_man.dart';
+import '../state_man_types.dart';
 import 'dynamic_value_diff.dart';
 
 /// A [StateMan] that records every write it lets through and refuses the ones
@@ -409,8 +409,17 @@ class GuardedStateMan implements StateMan {
   @override
   set keyMappings(KeyMappings value) => _inner.keyMappings = value;
 
-  @override
-  List<ClientWrapper> get clients => _inner.clients;
+  // `clients` used to be forwarded here. It is not a [StateMan] member any
+  // more: `ClientWrapper` is an open62541 session and so `dart:ffi`, and
+  // naming it linked the FFI barrel into every library that guards a
+  // StateMan — which is all of them. `lib/core/opcua_sessions.dart` in the
+  // app is native-only by construction and was the only caller; it asks
+  // through [innerAs].
+
+  /// The wrapped instance, when it is a [T]. The one sanctioned way past the
+  /// guard's own surface, for code that genuinely needs the implementation —
+  /// today only the browse and diagnostic screens, which need live sessions.
+  T? innerAs<T extends StateMan>() => _inner is T ? _inner : null;
 
   @override
   List<DeviceClient> get deviceClients => _inner.deviceClients;

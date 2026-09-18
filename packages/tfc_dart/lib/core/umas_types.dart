@@ -1089,7 +1089,14 @@ Uint8List encodeVariableValue(dynamic value, UmasDataTypeRef dataType) {
       }
       // Dart's int is 64-bit signed on the VM; full LINT range fits
       // natively. checkRange still useful to make the contract explicit.
-      checkRange('LINT', value, -0x8000000000000000, 0x7FFFFFFFFFFFFFFF);
+      //
+      // `_kLintMax` and not the literal `0x7FFFFFFFFFFFFFFF`: dart2js has no
+      // 64-bit int, so that literal is a hard compile error ("can't be
+      // represented exactly in JavaScript") — and this file is in the
+      // key-mapping editor's import closure, which a web build compiles. The
+      // negative bound is exactly representable as a double and stays a
+      // literal. On a station the VM folds both the same way.
+      checkRange('LINT', value, -0x8000000000000000, _kLintMax);
       final bytes = Uint8List(8);
       ByteData.sublistView(bytes).setInt64(0, value, Endian.little);
       return bytes;
@@ -1675,3 +1682,11 @@ class MonitorPlcRegistrationTable {
     return results;
   }
 }
+
+/// The largest signed 64-bit integer, built rather than written.
+///
+/// See the note at the `LINT` branch of `encodeVariableValue`: spelled as a
+/// literal this is a dart2js compile error, and nothing in this file is
+/// exercised in a browser — but every file in the closure still has to
+/// compile.
+final int _kLintMax = int.parse('9223372036854775807');

@@ -4,9 +4,8 @@ import 'dart:io' as io;
 
 import 'package:flutter/foundation.dart';
 import 'package:mcp_dart/mcp_dart.dart';
-import 'package:tfc_mcp_server/tfc_mcp_server.dart'
+import 'package:tfc_mcp_server/tfc_mcp_server_data.dart'
     show
-        TfcMcpServer,
         McpConfig,
         McpDatabase,
         StateReader,
@@ -19,9 +18,13 @@ import 'package:tfc_mcp_server/tfc_mcp_server.dart'
         ScreenCapturer,
         ProposalFeedbackBus;
 
+import '../core/diagnostic_log.dart';
 import '../llm/llm_models.dart';
 import '../llm/llm_provider.dart';
+// Both behind compile-time seams: hosting a server, and speaking to one over
+// a pipe, are things `package:mcp_dart` exports only off the web.
 import 'mcp_sse_server.dart';
+import 'mcp_transports.dart';
 
 /// The single preference key for the consolidated MCP config JSON.
 ///
@@ -101,14 +104,15 @@ class McpBridgeState {
 /// Both modes present the same [McpClient] interface for tool calls.
 class McpBridgeNotifier extends ChangeNotifier {
   McpClient? _client;
-  StdioClientTransport? _transport;
+  // `Transport`, not `StdioClientTransport`: the concrete class is in
+  // mcp_dart's non-web half, and this field is the only thing that named it.
+  Transport? _transport;
   McpBridgeState _state = McpBridgeState.initial();
   bool _disposed = false;
 
-  // In-process mode fields
-  TfcMcpServer? _server;
-  StreamController<List<int>>? _clientToServer;
-  StreamController<List<int>>? _serverToClient;
+  // In-process mode. The server, both pipes and their teardown live behind
+  // the transport seam — see `mcp_transports.dart`.
+  InProcessMcpServer? _inProcess;
   bool _isInProcess = false;
 
   /// Broadcast stream that emits proposal JSON whenever a write tool
@@ -145,7 +149,7 @@ class McpBridgeNotifier extends ChangeNotifier {
     try {
       _proposalController.add(jsonEncode(wrapped));
     } catch (e) {
-      io.stderr.writeln('McpBridgeNotifier._onProposal: failed to emit: $e');
+      logDiagnostic('McpBridgeNotifier._onProposal: failed to emit: $e');
     }
   }
 
@@ -255,24 +259,8 @@ class McpBridgeNotifier extends ChangeNotifier {
     _setState(_state.copyWith(connectionState: McpConnectionState.connecting));
 
     try {
-      // Create bidirectional stream controllers for in-process transport
-      _clientToServer = StreamController<List<int>>();
-      _serverToClient = StreamController<List<int>>();
-
-      // Server reads from clientToServer, writes to serverToClient
-      final serverTransport = IOStreamTransport(
-        stream: _clientToServer!.stream,
-        sink: _serverToClient!.sink,
-      );
-
-      // Client reads from serverToClient, writes to clientToServer
-      final clientTransport = IOStreamTransport(
-        stream: _serverToClient!.stream,
-        sink: _clientToServer!.sink,
-      );
-
-      // Create the in-process MCP server with real readers
-      _server = TfcMcpServer(
+      // The server, the pipe pair and the server's own end of it.
+      _inProcess = await startInProcessMcpServer(
         database: database,
         stateReader: stateReader,
         alarmReader: alarmReader,
@@ -284,9 +272,7 @@ class McpBridgeNotifier extends ChangeNotifier {
         onProposal: _onProposal,
         feedbackBus: feedbackBus,
       );
-
-      // Connect server to its transport
-      await _server!.connect(serverTransport);
+      final clientTransport = _inProcess!.clientTransport;
 
       // Create and configure MCP client
       _client = McpClient(
@@ -323,7 +309,7 @@ class McpBridgeNotifier extends ChangeNotifier {
         connectionState: McpConnectionState.error,
         error: e.toString(),
       ));
-      io.stderr.writeln('McpBridgeNotifier: Failed to connect in-process: $e');
+      logDiagnostic('McpBridgeNotifier: Failed to connect in-process: $e');
       // Clean up partial connection
       _cleanupInProcessResources();
     }
@@ -354,18 +340,29 @@ class McpBridgeNotifier extends ChangeNotifier {
       return;
     }
 
+    // Before `resolveServerPath`, which reads `Platform.environment` and
+    // therefore throws in a browser: the error the operator reads should name
+    // the reason, not the first `dart:io` member the code happened to touch.
+    if (kIsWeb) {
+      _setState(const McpBridgeState(
+        connectionState: McpConnectionState.error,
+        error: 'A browser cannot start the MCP server: it has no process to '
+            'spawn and no pipe to speak to it over. Run the copilot on the '
+            'station.',
+      ));
+      return;
+    }
+
     _setState(_state.copyWith(connectionState: McpConnectionState.connecting));
 
     try {
       final serverPath = resolveServerPath(envProvider: envProvider);
 
-      final params = StdioServerParameters(
+      _transport = stdioMcpTransport(
         command: serverPath,
-        args: [],
+        args: const [],
         environment: dbEnv,
       );
-
-      _transport = StdioClientTransport(params);
 
       _client = McpClient(
         const Implementation(name: 'tfc-hmi', version: '1.0.0'),
@@ -399,7 +396,7 @@ class McpBridgeNotifier extends ChangeNotifier {
         connectionState: McpConnectionState.error,
         error: e.toString(),
       ));
-      io.stderr.writeln('McpBridgeNotifier: Failed to connect: $e');
+      logDiagnostic('McpBridgeNotifier: Failed to connect: $e');
       // Clean up partial connection
       _client = null;
       try {
@@ -476,7 +473,7 @@ class McpBridgeNotifier extends ChangeNotifier {
         await _transport?.close();
       }
     } catch (e) {
-      io.stderr.writeln('McpBridgeNotifier: Error during disconnect: $e');
+      logDiagnostic('McpBridgeNotifier: Error during disconnect: $e');
     }
 
     _client = null;
@@ -502,17 +499,9 @@ class McpBridgeNotifier extends ChangeNotifier {
   /// not the MCP server.
   void _cleanupInProcessResources() {
     try {
-      _clientToServer?.close();
+      _inProcess?.close();
     } catch (_) {}
-    try {
-      _serverToClient?.close();
-    } catch (_) {}
-    try {
-      _server?.close(closeDatabase: false);
-    } catch (_) {}
-    _clientToServer = null;
-    _serverToClient = null;
-    _server = null;
+    _inProcess = null;
     _client = null;
     _isInProcess = false;
   }
@@ -609,7 +598,7 @@ class McpBridgeNotifier extends ChangeNotifier {
         connectionState: McpConnectionState.error,
         error: e.toString(),
       ));
-      io.stderr.writeln('McpBridgeNotifier: Failed to start SSE server: $e');
+      logDiagnostic('McpBridgeNotifier: Failed to start SSE server: $e');
     }
   }
 
@@ -623,7 +612,7 @@ class McpBridgeNotifier extends ChangeNotifier {
     try {
       await _sseServer.stop();
     } catch (e) {
-      io.stderr.writeln('McpBridgeNotifier: Error stopping SSE server: $e');
+      logDiagnostic('McpBridgeNotifier: Error stopping SSE server: $e');
     }
     // Preserve the in-process bridge state when stopping the SSE server.
     // Only reset to initial if there is no in-process connection alive.

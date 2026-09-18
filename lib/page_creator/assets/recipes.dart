@@ -8,7 +8,7 @@ import 'package:tfc/page_creator/assets/button.dart';
 import 'package:tfc/page_creator/assets/common.dart';
 import 'package:tfc_access/tfc_access.dart' show AccessDenied;
 import 'package:tfc_dart/core/preferences.dart';
-import 'package:tfc_dart/core/state_man.dart';
+import 'package:tfc_dart/core/state_man_types.dart';
 import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/widgets/dynamic_value.dart';
 import 'package:tfc/widgets/panes/standard_dialog.dart';
@@ -16,7 +16,7 @@ import 'package:tfc/widgets/state_value_builder.dart';
 import 'package:tfc/widgets/tag_access_guard.dart';
 import 'package:tfc_dart/converter/dynamic_value_converter.dart';
 
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 
 part 'recipes.g.dart';
 

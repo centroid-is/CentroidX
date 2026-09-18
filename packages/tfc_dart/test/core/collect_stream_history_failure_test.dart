@@ -37,7 +37,7 @@ class _NoHistoryDatabase extends Database {
 
 void main() {
   test('live samples still arrive when the backfill fails', () async {
-    final stateMan = await StateMan.create(
+    final stateMan = await OpcUaStateMan.create(
         config: StateManConfig(opcua: []), keyMappings: KeyMappings(nodes: {}));
     final database = _NoHistoryDatabase(AppDatabase.inMemoryForTest());
     final collector = Collector(
@@ -78,7 +78,7 @@ void main() {
   });
 
   test('samples buffered before the backfill failed are not lost', () async {
-    final stateMan = await StateMan.create(
+    final stateMan = await OpcUaStateMan.create(
         config: StateManConfig(opcua: []), keyMappings: KeyMappings(nodes: {}));
     final database = _SlowFailingDatabase(AppDatabase.inMemoryForTest());
     final collector = Collector(

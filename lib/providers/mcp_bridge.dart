@@ -3,7 +3,7 @@ import 'dart:io' as io;
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:tfc_access/tfc_access.dart' show AccessDenied;
-import 'package:tfc_mcp_server/tfc_mcp_server.dart'
+import 'package:tfc_mcp_server/tfc_mcp_server_data.dart'
     show
         AlarmReader,
         DriftDrawingIndex,
@@ -19,7 +19,9 @@ import '../mcp/alarm_man_alarm_reader.dart';
 import '../mcp/app_screen_capturer.dart';
 import '../mcp/mcp_lifecycle_state.dart';
 import '../mcp/mcp_bridge_notifier.dart';
-import '../mcp/state_man_node_browser.dart';
+// Behind a seam: the browser holds a live OPC UA session, which is
+// `dart:ffi`. See `mcp/node_browser_seam.dart`.
+import '../mcp/node_browser_seam.dart';
 import '../mcp/state_man_state_reader.dart';
 import '../pages/page_view.dart' show PlantPageView;
 import 'alarm.dart';
@@ -190,7 +192,7 @@ Future<void> _startServer(McpBridgeNotifier bridge, int port,
   // Await live readers; fall back to empty no-ops only on actual error.
   try {
     final stateMan = await ref.read(stateManProvider.future);
-    nodeBrowser = StateManNodeBrowser(stateMan);
+    nodeBrowser = makeNodeBrowser(stateMan);
     final reader = StateManStateReader(stateMan);
     _serverLifecycle.activeStateReader = reader;
     // Subscribe in the background.  init() awaits one subscribe per key,

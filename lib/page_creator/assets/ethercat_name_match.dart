@@ -9,8 +9,8 @@
 /// guessing.
 library;
 
-import 'package:open62541/open62541.dart' show DynamicValue;
-import 'package:tfc_dart/core/state_man.dart' show StateMan;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
+import 'package:tfc_dart/core/state_man_types.dart' show StateMan;
 
 import 'common.dart';
 import 'ethercat_asset.dart';

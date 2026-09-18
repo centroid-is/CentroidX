@@ -1,9 +1,10 @@
 import 'dart:async';
-import 'dart:io' as io;
 
-import 'package:open62541/open62541.dart' show DynamicValue;
-import 'package:tfc_dart/core/state_man.dart';
-import 'package:tfc_mcp_server/tfc_mcp_server.dart'
+import 'package:open62541/open62541_types.dart' show DynamicValue;
+import 'package:tfc_dart/core/state_man_types.dart';
+
+import '../core/diagnostic_log.dart';
+import 'package:tfc_mcp_server/tfc_mcp_server_data.dart'
     show ServerAliasProvider, StateReader;
 
 /// [StateReader] implementation backed by the Flutter app's [StateMan].
@@ -145,13 +146,13 @@ class StateManStateReader implements StateReader, ServerAliasProvider {
       final sub = stream.listen(
         (dynamicValue) => _cache[key] = _extractValue(dynamicValue),
         onError: (error) {
-          io.stderr.writeln(
+          logDiagnostic(
               'StateManStateReader: subscription error for key "$key": $error');
         },
       );
       _subscriptions[key] = sub;
     } catch (e) {
-      io.stderr.writeln(
+      logDiagnostic(
           'StateManStateReader: failed to subscribe to key "$key": $e');
     } finally {
       // On failure the key leaves the pending set, so a later query retries

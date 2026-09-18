@@ -8,7 +8,7 @@ import 'dart:isolate';
 import 'dart:convert';
 
 import 'package:drift/drift.dart';
-import 'package:drift/native.dart';
+import 'sqlite_executor.dart';
 import 'package:meta/meta.dart' show visibleForTesting;
 import 'package:drift/isolate.dart';
 import 'package:drift_postgres/drift_postgres.dart';
@@ -33,7 +33,6 @@ import 'config/config_item_table.dart'
     show ConfigChangeTable, ConfigItemTable;
 import 'mcp_tables.dart';
 import 'mcp_database.dart';
-import 'sqlite_loader.dart';
 
 part 'database_drift.g.dart';
 
@@ -538,7 +537,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
   @visibleForTesting
   factory AppDatabase.inMemoryForTest() => AppDatabase._(
         DatabaseConfig(),
-        NativeDatabase.memory(logStatements: false),
+        sqliteInMemory(logStatements: false),
       );
 
   /// A generative constructor so a test can *subclass* [AppDatabase] and
@@ -1683,10 +1682,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
       final dbFolder = sqliteFolder;
       final file = File(p.join(dbFolder.path, 'db.sqlite'));
       // Use a local NativeDatabase (or FlutterQueryExecutor).
-      final executor = NativeDatabase.createInBackground(
-        file,
-        logStatements: config.debug,
-      );
+      final executor = sqliteInBackground(file, logStatements: config.debug);
       return AppDatabase._(config, executor);
     }
     throw Exception("Unable to create database");
@@ -1722,25 +1718,12 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
   /// and passes no `sqliteFolder`, so it throws for a SQLite config.
   static AppDatabase createLocal(Directory folder,
       {bool logStatements = false}) {
-    final executor = NativeDatabase.createInBackground(
+    // The journal-mode PRAGMAs and the eLinux library override live with the
+    // opener in `sqlite_executor_io.dart`: both name `package:sqlite3` types,
+    // which is the half of drift a web build cannot compile.
+    final executor = sqliteLocalMirror(
       File(p.join(folder.path, 'config.sqlite')),
       logStatements: logStatements,
-      // Runs inside the background isolate before the file is opened, which is
-      // the only place a library override can go. On the eLinux stations it is
-      // what makes sqlite3 loadable at all — see [loadSqliteOnLinux].
-      isolateSetup: loadSqliteOnLinux,
-      setup: (db) {
-        // `createInBackground` does nothing about journal mode, and in the
-        // default rollback journal a reader blocks a writer across processes
-        // (`bin/page_geometry.dart` reads this file out-of-process). WAL is
-        // durable in the file header, so setting it every open is a no-op —
-        // except on a database restored from a rollback-mode backup, which it
-        // repairs.
-        db.execute('PRAGMA journal_mode = WAL;');
-        // WAL still serialises writers. Without a timeout a concurrent write
-        // returns SQLITE_BUSY immediately instead of waiting.
-        db.execute('PRAGMA busy_timeout = 5000;');
-      },
     );
     return AppDatabase._(DatabaseConfig(), executor);
   }
@@ -1792,10 +1775,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
       final dbFolder = sqliteFolder;
       final file = File(p.join(dbFolder.path, 'db.sqlite'));
       // Use a local NativeDatabase (or FlutterQueryExecutor).
-      final executor = NativeDatabase.createInBackground(
-        file,
-        logStatements: config.debug,
-      );
+      final executor = sqliteInBackground(file, logStatements: config.debug);
       return AppDatabase._(config, executor);
     }
     throw Exception("Unable to create database from spawn");

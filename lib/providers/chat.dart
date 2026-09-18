@@ -4,7 +4,7 @@ import 'dart:io' as io;
 
 import 'package:mcp_dart/mcp_dart.dart';
 import 'package:riverpod/riverpod.dart';
-import 'package:tfc_mcp_server/tfc_mcp_server.dart'
+import 'package:tfc_mcp_server/tfc_mcp_server_data.dart'
     show
         DriftDrawingIndex,
         DriftTechDocIndex,
@@ -36,6 +36,8 @@ import 'plc.dart' show plcCodeIndexProvider;
 import 'proposal.dart' show describeProposalFeedback;
 import 'proposal_state.dart';
 import 'state_man.dart';
+
+import '../core/diagnostic_log.dart';
 
 // describeProposalFeedback moved to proposal.dart when the proposal-feedback
 // bus grew a second consumer for it. Re-exported so the many call sites that
@@ -664,7 +666,7 @@ class ChatNotifier extends Notifier<ChatState> {
         try {
           await bridge.waitForReady();
         } on StateError catch (e) {
-          io.stderr.writeln('ChatNotifier: bridge failed to connect: $e');
+          logDiagnostic('ChatNotifier: bridge failed to connect: $e');
           // Continue without tools -- LLM will respond text-only
         } on TimeoutException catch (_) {
           io.stderr
@@ -830,12 +832,12 @@ class ChatNotifier extends Notifier<ChatState> {
       (m) => m.content == proposalJson,
     );
     if (isDuplicate) {
-      io.stderr.writeln(
+      logDiagnostic(
           'ChatNotifier.injectProposal: skipping duplicate proposal');
       return;
     }
 
-    io.stderr.writeln(
+    logDiagnostic(
         'ChatNotifier.injectProposal: adding proposal as assistant message '
         '(${state.messages.length} existing messages)');
     final messages = List<ChatMessage>.from(state.messages);
@@ -965,7 +967,7 @@ final chatLifecycleProvider = Provider<void>((ref) {
         // providers/mcp_bridge.dart: init() can block indefinitely on an
         // unreachable node, and the bridge must connect regardless.
         unawaited(stateReader.init().catchError((Object e) {
-          io.stderr.writeln('chatLifecycleProvider: state reader init failed: $e');
+          logDiagnostic('chatLifecycleProvider: state reader init failed: $e');
         }));
 
         final alarmReader =
@@ -1002,7 +1004,7 @@ final chatLifecycleProvider = Provider<void>((ref) {
         );
       } catch (e) {
         // StateMan/AlarmMan not available: fall back to subprocess mode
-        io.stderr.writeln(
+        logDiagnostic(
             'chatLifecycleProvider: In-process connection failed ($e), '
             'falling back to subprocess mode');
         _chatLifecycle.disposeReader();
@@ -1059,12 +1061,12 @@ final chatLifecycleProvider = Provider<void>((ref) {
         try {
           ref.read(chatProvider.notifier).injectProposal(proposalJson);
         } catch (e) {
-          io.stderr.writeln(
+          logDiagnostic(
               'chatLifecycleProvider: failed to inject proposal: $e');
         }
       },
       onError: (Object e) {
-        io.stderr.writeln(
+        logDiagnostic(
             'chatLifecycleProvider: proposalStream error: $e');
       },
     );
@@ -1095,7 +1097,7 @@ final chatLifecycleProvider = Provider<void>((ref) {
           ref.read(chatProvider.notifier).injectProposalFeedback(
               describeProposalFeedback(entry.key, entry.value));
         } catch (e) {
-          io.stderr.writeln(
+          logDiagnostic(
               'chatLifecycleProvider: failed to inject proposal feedback: $e');
         }
       }
@@ -1185,7 +1187,7 @@ final chatLifecycleProvider = Provider<void>((ref) {
             toggles: freshConfig.toggles,
           );
         } catch (e) {
-          io.stderr.writeln('Toggle reconnect failed: $e');
+          logDiagnostic('Toggle reconnect failed: $e');
         }
       });
   });
