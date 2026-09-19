@@ -1,0 +1,7 @@
+# One file at a time.
+#
+# Every file here binds sockets and drives open62541 through FFI, and
+# `runIterate` is a blocking call that interrupts the isolate's event loop.
+# Two files at once made a case that passes alone fail in the suite. The
+# relay packages pin this for the same reason.
+concurrency: 1
