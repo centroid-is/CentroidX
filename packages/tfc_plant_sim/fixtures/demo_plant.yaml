@@ -1,0 +1,88 @@
+# A fictional plant. Three lines in a made-up packing hall.
+#
+# NOTHING HERE COMES FROM A CUSTOMER SITE. The names are invented and the
+# shapes are chosen because each one has broken something (see the README's
+# table). A spec taken from a real plant lives outside this repository.
+
+types:
+  - name: RunMode
+    kind: enum
+    values:
+      0: fault
+      1: stopped
+      2: auto
+      3: manual
+      4: clean
+
+  # A drive as a PLC publishes one: a struct whose state member is an enum.
+  # A panel colours the machine from the enum's NAMES, so this is the shape
+  # that reads "unknown" — violet — when the type dictionary does not arrive.
+  - name: DriveStatus
+    kind: struct
+    members:
+      - name: run_mode
+        type: RunMode
+        value: 2
+      - name: speed_hz
+        type: double
+        value: 50
+      - name: fault_code
+        type: int
+        value: 0
+
+servers:
+  - alias: hall1
+    nodes:
+      - id: CN01.drive
+        type: DriveStatus
+        motion: cycle
+        period: 5s
+
+      # A configured setpoint: written once at start-up and never again. A
+      # freshness sweep with no keep-alive badges this stale ten seconds in,
+      # while the value on it is correct.
+      - id: CN01.setpoint_kg
+        type: double
+        value: 12.5
+        motion: once
+
+      - id: CN01.speed_hz
+        type: double
+        motion: ramp
+        min: 0
+        max: 50
+        period: 500ms
+
+      - id: CN01.jammed
+        type: bool
+        value: false
+        motion: constant
+        period: 2s
+
+  - alias: hall2
+    nodes:
+      - id: CN02.drive
+        type: DriveStatus
+        motion: cycle
+        period: 7s
+
+      # A rate that sits at zero all shift. "No data" and "zero" look the
+      # same on a chart, and only one of them is a fault.
+      - id: CN02.boxes_per_minute
+        type: double
+        value: 0
+        motion: constant
+        period: 1s
+
+  - alias: hall3
+    nodes:
+      - id: PKG01.state
+        type: RunMode
+        value: 1
+        motion: cycle
+        period: 3s
+
+      - id: PKG01.label_text
+        type: string
+        value: "batch 7"
+        motion: once

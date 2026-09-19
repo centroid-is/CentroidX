@@ -371,6 +371,40 @@ jobs:
         dart analyze
         dart test
 
+  # packages/tfc_plant_sim stands fake PLCs up: real open62541 servers built
+  # from a written spec, so the HMI and the backend can be run and tested
+  # against something that behaves like a plant without a plant being there.
+  #
+  # Its own tests connect a real client over a real socket, which is why it
+  # gets a job rather than riding along on another package's: a simulator
+  # nothing runs is a simulator that has quietly stopped serving the shapes
+  # the bench depends on. ubuntu only for now — the native build is the same
+  # open62541 the other packages build, and one platform is enough to say the
+  # servers still come up.
+  plant-sim-test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      id: checkout
+      continue-on-error: true
+
+    - name: Checkout (retry)
+      if: steps.checkout.outcome == 'failure'
+      uses: actions/checkout@v4
+    - uses: dart-lang/setup-dart@v1
+
+    - name: Get dependencies (tfc_plant_sim)
+      uses: ./.github/actions/pub-get
+      with:
+        command: dart pub get
+        working-directory: packages/tfc_plant_sim
+
+    - name: Test tfc_plant_sim
+      working-directory: packages/tfc_plant_sim
+      run: |
+        dart analyze
+        dart test
+
   # The updater. Its tests existed but no workflow ran them, so the component
   # that installs every other fix was the one component with no CI at all.
   # Needs setup-flutter rather than setup-dart: the package depends on
