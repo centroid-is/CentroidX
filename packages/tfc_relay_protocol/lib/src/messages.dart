@@ -524,7 +524,18 @@ final class UpdateParams {
   /// reading from a subscription that no longer exists onto a mimic under good
   /// quality. See [SubscribeResult.generation] for why the epoch cannot do
   /// this job.
-  final int generation;
+  ///
+  /// **Null when the frame carried no `g`**, which is what a gateway that
+  /// predates generations sends — and its subscribe answer carries no
+  /// `generation` either, so the client's comparison of null against null
+  /// passes for that gateway and for no other. This used to decode as zero,
+  /// and zero was also what the client held for a page it had *never
+  /// established* or had *given up on*, so a `g`-less frame at such a page
+  /// matched, applied an empty batch, and set a baseline sequence on a page
+  /// with no handle table: every real frame after it was then dropped as the
+  /// wrong generation and nothing rebuilt it. An absence has to decode as an
+  /// absence for the sentinel on the other side to mean anything.
+  final int? generation;
 
   /// Batch timestamp (UTC epoch ms) applying to values without their own.
   ///
@@ -562,7 +573,7 @@ final class UpdateParams {
     required this.sub,
     required this.seq,
     this.t,
-    this.generation = 0,
+    this.generation,
     this.changes = const {},
     this.qualities = const {},
     this.removed = const [],
@@ -628,8 +639,12 @@ final class UpdateParams {
       sub: sub,
       seq: seq.toInt(),
       t: isRepresentableEpochMs(t) ? (t as num).toInt() : null,
+      // Absent decodes as absent — see the field. An unreadable `g` is treated
+      // the same way: a gateway that mints generations and then sends one
+      // this build cannot read has sent a frame that matches no establishment,
+      // and the tick will rebuild the page rather than this frame poisoning it.
       generation:
-          generation is num && generation.isFinite ? generation.toInt() : 0,
+          generation is num && generation.isFinite ? generation.toInt() : null,
       changes: changes,
       qualities: qualities,
       removed: removed,
@@ -641,7 +656,7 @@ final class UpdateParams {
         'sub': sub,
         'seq': seq,
         if (t != null) 't': t,
-        'g': generation,
+        if (generation != null) 'g': generation,
         if (changes.isNotEmpty)
           'c': _stringKeyed(changes, (v) => v.toJson()),
         if (qualities.isNotEmpty)

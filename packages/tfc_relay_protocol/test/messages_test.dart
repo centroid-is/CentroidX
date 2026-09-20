@@ -497,6 +497,26 @@ void main() {
           throwsFormatException);
     });
 
+    test('an absent g decodes as absent, never as a number a page could hold',
+        () {
+      // Zero was what an absent `g` decoded to, and zero was also what the
+      // client held for a page it had never established — so a `g`-less frame
+      // matched that page. An absence has to stay an absence on the wire side
+      // for the sentinel on the client side to mean anything.
+      final u = UpdateParams.fromJson(wire('{"sub":"s1","seq":5}'));
+      expect(u.generation, isNull);
+      expect(UpdateParams(sub: 's1', seq: 5).toJson().containsKey('g'),
+          isFalse,
+          reason: 'a re-emit of a g-less frame must not invent a generation');
+      expect(UpdateParams.fromJson(wire('{"sub":"s1","seq":5,"g":1e999}'))
+          .generation,
+          isNull,
+          reason: 'an unreadable g matches no establishment either');
+      expect(UpdateParams.fromJson(wire('{"sub":"s1","seq":5,"g":7}'))
+          .generation,
+          7);
+    });
+
     test('a batch stamp the frame did not carry is not written back as null',
         () {
       final json = UpdateParams(sub: 's1', seq: 1).toJson();

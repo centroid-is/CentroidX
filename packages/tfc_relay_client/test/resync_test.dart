@@ -600,7 +600,9 @@ void main() {
       expect(s1.lastSeq, isNull,
           reason: 'a surviving baseline makes the next frame another gap, '
               'which asks again, for as long as the socket lives');
-      expect(s1.generation, 0);
+      expect(s1.generation, SubscriptionState.unestablished,
+          reason: 'a value no gateway mints and no absent g decodes to, so a '
+              'frame in flight from the abandoned establishment cannot match');
       expect(storeFor('s1').peek('PACK.rate'), isNull,
           reason: 'values from a page the client can no longer establish must '
               'not stay on screen under good quality');

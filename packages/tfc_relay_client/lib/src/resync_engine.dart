@@ -339,16 +339,21 @@ final class ResyncEngine {
   /// baseline. A surviving baseline would turn the next attempt's first frame
   /// into a false gap.
   ///
-  /// The generation goes back to zero with the rest of it. That is not a
-  /// number any live gateway mints — [SubscriptionRegistry.nextGeneration]
-  /// starts at one — so an in-flight frame from the establishment being
-  /// abandoned cannot match on the way past.
+  /// The generation goes back to [SubscriptionState.unestablished] with the
+  /// rest of it — a number no live gateway mints (`SubscriptionRegistry.
+  /// nextGeneration` starts at one) and, since the finding that made it a
+  /// named constant, one that no *absent* `g` decodes to either. This used
+  /// to say "zero, which cannot match" while `UpdateParams.fromJson` read a
+  /// missing `g` as exactly zero; see `SubscriptionState.generation` for what
+  /// that did to a page. An in-flight frame from the establishment being
+  /// abandoned cannot match on the way past, and neither can a frame from a
+  /// gateway that never minted a generation at all.
   void _unestablish(SubscriptionState sub) {
     storeFor(sub.subId).clear();
     sub.handles = <int, String>{};
     sub.lastSeq = null;
     sub.epoch = '';
-    sub.generation = 0;
+    sub.generation = SubscriptionState.unestablished;
     // The freshness watchdog keeps an `evaluatedAt` per subscription id, and
     // an id nobody re-establishes goes on raising a fault about a value no
     // screen displays (04-REVIEW WR-10). This is the one place a subscription

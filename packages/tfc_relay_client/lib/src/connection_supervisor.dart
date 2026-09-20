@@ -1194,12 +1194,28 @@ final class ConnectionSupervisor {
     // skipped with it. `onUpdate` keeps its own copy of the check — this is a
     // detector shortcut, not a relocation of the rule, and the engine is
     // driven directly by `resync_test.dart` with no supervisor in front of it.
+    //
+    // **A page with no baseline refuses every frame, before the generation
+    // is even read.** `lastSeq == null` is "not yet established" and "given
+    // up on" alike (16-01), and in both there is no handle table: nothing in
+    // the frame can be filed, and the store — having no baseline — would
+    // accept the empty batch and *set* one, after which the page reads as
+    // established with no handles and every real frame is dropped as the
+    // wrong generation. That is not hypothetical: an absent `g` decoded as
+    // zero until the generation sentinel was made distinct, and zero was
+    // also what an unestablished page held, so a `g`-less frame walked
+    // straight through the gate below. The tick is what rebuilds such a
+    // page, at the tick's cadence, through the damper — never a frame.
+    if (state.lastSeq == null) return;
+    // Null against null is a gateway that mints no generations, matching its
+    // own `generation`-less snapshot; `SubscriptionState.unestablished`
+    // matches nothing, and the line above means it is never compared anyway.
     if (update.generation != state.generation) return;
 
-    // Whether this client still believes in the page at all. An unestablished
-    // one has no handle table, so *every* handle in every frame the gateway
-    // goes on pushing is unknown — and none of them is a fault anybody can act
-    // on, because this client threw the table away itself.
+    // Whether this client still believes in the page at all. Always true past
+    // the refusal above, and kept as a name because the two places that read
+    // it — the stranger complaint and the rebuild — are about *that* fact,
+    // not about the sequence.
     final established = state.lastSeq != null;
 
     var sawUnknownHandle = false;

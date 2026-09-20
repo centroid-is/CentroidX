@@ -50,7 +50,13 @@ final class DecodedSubscribeResult {
   /// still in flight from before this snapshot can be told apart from a live
   /// one — including when the two share a socket, which is the case no epoch
   /// and no client-side connection counter can see (04-REVIEW CR-04).
-  final int generation;
+  ///
+  /// Null when the gateway minted none — one that predates generations —
+  /// and then every `u` frame from it carries no `g` either, so null matches
+  /// null for that gateway and for nothing else. See
+  /// [SubscriptionState.generation] for the sentinel this is kept distinct
+  /// from.
+  final int? generation;
 
   /// handle → key. Inverted from the wire's key → handle, because every later
   /// frame arrives holding handles and has to answer with keys.
@@ -84,7 +90,7 @@ final class DecodedSubscribeResult {
     required this.sub,
     required this.epoch,
     required this.seq,
-    this.generation = 0,
+    this.generation,
     required this.handles,
     required this.values,
     required this.meta,
@@ -300,16 +306,18 @@ DecodedSubscribeResult decodeSubscribeResult(Object? raw) {
     }
   }
   final seq = envelope['seq'];
-  // Absent from a gateway that predates the generation, and zero is then what
-  // every one of its frames carries too — so the client's comparison passes
-  // rather than silently dropping the whole stream.
+  // Absent from a gateway that predates the generation — and then absent from
+  // every `u` frame it sends too, so null matches null for that gateway. It
+  // used to decode as zero, which was also the value a page held before any
+  // snapshot and after a failed rebuild; see `SubscriptionState.generation`
+  // for what a `g`-less frame did to such a page.
   final generation = envelope['generation'];
   return DecodedSubscribeResult(
     sub: '${envelope['sub']}',
     epoch: '${envelope['epoch']}',
     seq: seq is num && seq.isFinite ? seq.toInt() : 0,
     generation:
-        generation is num && generation.isFinite ? generation.toInt() : 0,
+        generation is num && generation.isFinite ? generation.toInt() : null,
     handles: handles,
     values: values,
     meta: meta,
@@ -342,19 +350,45 @@ final class SubscriptionState {
   /// handle → key, from the last snapshot.
   Map<int, String> handles;
 
-  /// The generation the last accepted snapshot carried; zero until one has.
+  /// The generation the last accepted snapshot carried: the gateway's number,
+  /// null from a gateway that mints none, or [unestablished] while there is
+  /// no accepted snapshot at all.
   ///
   /// Every update frame is measured against it. A frame from an earlier
   /// establishment is dropped without advancing [lastSeq] — advancing it would
   /// be the poisoning itself, because the genuine frame at that sequence then
   /// reads as a replay and is discarded.
   ///
+  /// **Three values, and the third used to be spelled the same as the
+  /// second.** Before a snapshot, and after `ResyncEngine._unestablish`, this
+  /// held zero — with a doc claiming no gateway mints zero so nothing could
+  /// match it. True of gateways; false of `UpdateParams.fromJson`, which
+  /// decoded an *absent* `g` as zero too. So a `g`-less frame arriving at a
+  /// page with no handle table passed the generation gate, resolved every
+  /// handle to nothing, applied an empty batch, and — the store having no
+  /// baseline — set [lastSeq]. The page then read as established with no
+  /// handles, every later frame carrying a real `g` was dropped as the wrong
+  /// generation, and the tick's "unestablished" door (16-01) stayed shut
+  /// because [lastSeq] was no longer null. Now absence decodes as null,
+  /// "never established" is a number no gateway mints and no absence decodes
+  /// to, and `ConnectionSupervisor._update` refuses a frame for a page with
+  /// no baseline before it reads either.
+  ///
   /// There is deliberately no `lastEvaluatedAt` beside it. The field used to
   /// exist and claimed in its own doc to be "read by the freshness watchdog",
   /// which was false in both halves — nothing assigned it and the watchdog
   /// keeps its own map (04-REVIEW WR-09). Two homes for one fact is what the
   /// class doc above says this object exists to avoid.
-  int generation;
+  int? generation;
+
+  /// The [generation] of a page with no accepted snapshot.
+  ///
+  /// Negative, because `SubscriptionRegistry.nextGeneration` starts at one
+  /// and only ever climbs, and a gateway that mints none decodes as null —
+  /// so this matches neither. Belt to the supervisor's braces: `_update`
+  /// refuses a frame for a page with no baseline before comparing, and this
+  /// is what a `SubscriptionState` dump says while it is in that state.
+  static const int unestablished = -1;
 
   SubscriptionState({
     required this.subId,
@@ -362,7 +396,7 @@ final class SubscriptionState {
     this.epoch = '',
     this.lastSeq,
     Map<int, String>? handles,
-    this.generation = 0,
+    this.generation = unestablished,
   }) : handles = handles ?? <int, String>{};
 
   /// Takes on the epoch, baseline sequence and handle map from a fresh

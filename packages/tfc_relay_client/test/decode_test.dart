@@ -257,9 +257,13 @@ void main() {
           reason: 'no delta has been applied yet, and a baseline of zero '
               'would make the first real frame look like a replay');
       expect(state.handles, isEmpty);
-      expect(state.generation, 0,
-          reason: 'no gateway mints generation zero, so an update frame that '
-              'arrives before any snapshot cannot match one');
+      expect(state.generation, SubscriptionState.unestablished,
+          reason: 'a number no gateway mints and no absent g decodes to, so '
+              'an update frame that arrives before any snapshot cannot match '
+              'one — zero used to be claimed for this and was also what an '
+              'absent g decoded to');
+      expect(SubscriptionState.unestablished, isNegative,
+          reason: 'SubscriptionRegistry.nextGeneration starts at one');
     });
 
     test('adopts a decoded subscribe result', () {
@@ -270,11 +274,14 @@ void main() {
       expect(state.lastSeq, 0,
           reason: 'the snapshot is the baseline the delta chain counts from');
       expect(state.handles[1], 'PIPE.connected');
-      expect(state.generation, 0,
+      expect(state.generation, isNull,
           reason: 'this fixture is the live capture from 04-RESEARCH Finding '
               '7, taken before the gateway minted generations: absent decodes '
-              'as zero, which is what every frame from such a gateway carries '
-              'too, so the comparison passes instead of dropping the stream');
+              'as absent, which is what every g-less frame from such a '
+              'gateway decodes to as well, so the comparison passes instead '
+              'of dropping the stream — and it is distinct from the '
+              'unestablished sentinel, which such a frame must not match');
+      expect(state.generation, isNot(SubscriptionState.unestablished));
     });
   });
 }
