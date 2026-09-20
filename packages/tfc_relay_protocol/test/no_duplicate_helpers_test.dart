@@ -117,11 +117,16 @@ const int declaredCrockfordAccumulations = 2;
 /// `redactUpstreamError` declarations: one, in `src/redact.dart` (18-02).
 const int declaredRedactDeclarations = 1;
 
-/// `redactUpstreamError` call sites — 3 in `tfc_dart`, 7 in `tfc_relay_local`.
+/// `redactUpstreamError` call sites — 3 in `tfc_dart`, 9 in `tfc_relay_local`.
 /// **This number must not FALL**: a falling call-site count is deleted
 /// behaviour, not a successful extraction (18-02's headline rule). It moves
 /// only when a caller is deliberately added or removed.
-const int declaredRedactCallSites = 10;
+///
+/// 10 → 12 on 2026-09-20: commit 5b2953bbf (the Modbus register-range
+/// refusal) added two callers in `modbus_upstream_link.dart`, redacting the
+/// register-write error's message on both of its refusal paths — more
+/// redaction, which is the direction this sweep exists to allow.
+const int declaredRedactCallSites = 12;
 
 /// `maxRedactedErrorLength` declarations: one, in `src/redact.dart`.
 const int declaredRedactCapDeclarations = 1;
@@ -434,7 +439,7 @@ final _liveHolds = <HoldHandle>{};
         'count must not FALL', () {
       final hits = redactCallSiteLines(walk);
       expect(hits, hasLength(declaredRedactCallSites),
-          reason: 'baseline 10 call sites (3 tfc_dart, 7 tfc_relay_local). A '
+          reason: 'baseline 12 call sites (3 tfc_dart, 9 tfc_relay_local). A '
               'FALLING count is deleted behaviour — an adapter that stopped '
               'redacting leaks endpoints and credentials to panels (T-08-33). '
               'A RISING count is fine if deliberate: update this number in '
