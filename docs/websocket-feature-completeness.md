@@ -63,6 +63,30 @@ instead two plain writes: `start_stop_button.dart:26` says so in its own
 words, *"pulses (true on press, false on release)"*, and `_writePulse` sends
 `true` on tap-down and `false` on release as independent commands.
 
+**Four assets do this, and the code already knows the hazard.**
+`button.dart:427,450` (momentary mode), `start_stop_button.dart:186-232`,
+`conveyor_gate.dart:349,490-492` (force pane), and the Festo VTUG valve
+override at `vtug.dart:761` through `festo.dart:302`.
+
+`button.dart:414-419` states it outright: *"a button that then withheld its
+falling edge would leave a momentary command latched on"* — and for that
+reason **a comms failure on the press is deliberately answered as success, so
+the release is still attempted.** That mitigation is aimed at the wrong half.
+The write a dead socket cannot deliver is the release, and nothing mitigates
+that at all.
+
+The other three say the same in their own words: the gate's pane releases on
+dispose because *"closing the pane mid-press would otherwise leave the pusher
+driven out with no way to release it"* (`conveyor_gate.dart:472-477`), and the
+VTUG override documents that *"the coil is energised only while held"*. The
+authors treat these bits as level-sensitive, not self-clearing.
+
+**Nothing in the app stops it.** No asset arms a release timer — the only
+timers are a UI interlock wait and animation. The relay has no deadman for
+plain writes, and exactly-once delivery makes the latch *worse*, not better:
+the press is guaranteed to have been applied once. The only deadman on the
+wire is the `h` tick these four assets do not use.
+
 So the release is an ordinary write with an ordinary write's failure modes. If
 the link dies, the panel is killed, or the operator's finger leaves the glass
 while the socket is stalled, the `true` has landed and the `false` may never
@@ -85,12 +109,23 @@ widget, so nothing measures what a stuck momentary does at the node.
 1. Establish from `~/Projects/sildarvinnsla` whether the SVN commands are
    level- or edge-triggered. That answer decides whether this is a live
    safety gap or a latent one.
-2. Either move the momentary assets onto `holdToRun`, or write down why two
-   plain writes are acceptable for these keys — with the PLC behaviour as the
+2. Either move the four assets onto `holdToRun`, or write down why two plain
+   writes are acceptable for these keys — with the PLC behaviour as the
    evidence, not as an assumption.
-3. Add the missing e2e: press, lose the link before release, and assert at the
-   plant node what state the machine is left in. The bench counts actuations
-   at the node already, so this is a case rather than a new instrument.
+3. Add the missing e2e, one per asset: press, kill the link before release,
+   assert at the plant node what state the machine is left in. The bench
+   counts actuations at the node already, so this is a case rather than a new
+   instrument.
+
+**What conversion costs, if that is the answer.** Each asset swaps its
+press/release `writeTag` pair for `holdToRun(key)` on press and
+`handle.release()` on release, cancel and dispose. `tag_access_guard.dart`
+owns every `.write(` by design (`:274-277`) so it should own `holdToRun` too —
+the assets keep their refusal path. Direct-mode `StateMan` needs a local
+`holdToRun` (a press/release pair with the same release-on-dispose) so the
+assets do not branch on transport. **The server side needs nothing**: the `h`
+lane, the engage guards and the concurrent-engage semantics are built and
+socket-tested.
 
 Everything else in this tier is sound: live values, writes, three-state
 outcomes, `writeStatus` and alarm acknowledge are served, implemented at both
