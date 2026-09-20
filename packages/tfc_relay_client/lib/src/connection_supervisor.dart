@@ -681,11 +681,14 @@ final class ConnectionSupervisor {
     // and a rule spelled at twelve call sites is a rule with a thirteenth.
     // The generation guard is `_subscribe`'s: an answer belonging to a
     // retired connection must not say that *this* one is alive.
+    //
+    // **And the frame ceiling is applied here, on the same seam, for the same
+    // reason** — see [_admit]. This is the one point every inbound frame
+    // crosses before `json_rpc_2` decodes it, on every platform, through every
+    // `dial:` a harness can inject.
     final watched = StreamChannel<String>(
-      channel.stream.map((frame) {
-        if (gen == _generation) watchdog.sawFrame(InboundFrame.rpcResponse);
-        return frame;
-      }),
+      channel.stream.transform(StreamTransformer<String, String>.fromHandlers(
+          handleData: (frame, sink) => _admit(gen, frame, sink))),
       channel.sink,
     );
     final peer = rpc.Peer(watched);
@@ -1536,6 +1539,92 @@ final class ConnectionSupervisor {
             'number is what makes the error itself unencodable, and an '
             'unencodable error on a path with no deadline is a hang',
       };
+
+  /// One inbound frame, measured against [ClientConfig.maxFrameBytes] before
+  /// `json_rpc_2` is allowed to decode it — and what happens when it is over.
+  ///
+  /// **Why there was nothing here.** Every ceiling in this client was on a
+  /// *deadline*: how long a dial, a call, a snapshot or a silence may last.
+  /// Nothing bounded how *large* an answer could be. `ws_transport.dart`
+  /// casts the socket's stream to strings and this class handed each one to
+  /// the `Peer`, whose first act is `jsonDecode` — so a gateway replaced by
+  /// something hostile on a hijacked route, or an honest gateway with a bug in
+  /// its result sizing, could make a plant-floor panel build the object tree
+  /// of whatever it chose to send. The gateway has refused oversized *ingress*
+  /// since 03 (`relay_session.dart`'s `_underCeiling`); the panel, the smaller
+  /// machine of the two, refused nothing.
+  ///
+  /// **What tripping costs: the frame, never the link.** The rule is the one
+  /// `decodeSubscribeResult` applies one level down — one bad entry costs one
+  /// tag, not the page — applied one level up: one unreadable frame costs
+  /// that frame, not the connection. The frame is dropped unread, a complaint
+  /// naming its size and the ceiling goes on the surface an integrator reads,
+  /// and everything else on the socket carries on. What was waiting on the
+  /// frame settles by its own existing rule: a call expires at its deadline
+  /// (`callWithDeadline`), and a page whose push was dropped is rebuilt from
+  /// the next tick, because the tick advertises a sequence this client never
+  /// applied (`_tick`'s "ahead of" branch). Closing the socket instead would
+  /// turn one oversized answer into every page on the panel going grey for a
+  /// backoff period — and for a page whose *snapshot* is the oversized frame,
+  /// into the permanent redial loop `poisoned_snapshot_test.dart` exists to
+  /// forbid.
+  ///
+  /// **Except while the connection is still being established.** In
+  /// `resyncing` the only frames that can arrive are the hello answer and the
+  /// resync's subscribe answers, and an attempt that has just refused one of
+  /// those cannot reach `ready` — it can only sit for
+  /// [ClientConfig.snapshotDeadline] and then fall through the generic catch
+  /// in [_serve] as "the link died before the snapshot landed", which is not
+  /// what happened. So the attempt is ended now, under its own name, on
+  /// [lastDownReason]. That is a redial at the ordinary schedule, and if the
+  /// gateway serves the same oversized snapshot on the next attempt it is a
+  /// redial per backoff period for as long as it does: the same posture this
+  /// client already takes for a subscribe answer that is not a JSON object at
+  /// all (that test's fifth arm), and for the same reason — a page that cannot
+  /// be delivered under the ceiling is a page this panel cannot show, and
+  /// nothing about waiting changes that. What the name buys is that the
+  /// health line says *which* thing to change, the ceiling or the gateway.
+  ///
+  /// **A refused frame does not feed the watchdog.** Every admitted frame
+  /// proves the gateway is speaking the protocol; a refused one proves only
+  /// that something is speaking. If refused frames were all that arrived, the
+  /// freshness deadline ends the link with "the gateway has stopped speaking"
+  /// — which reads wrong against a peer that is shouting — and the complaint
+  /// filed here, timestamped beside it, is what corrects that reading.
+  ///
+  /// **What this cannot bound is stated on [ClientConfig.maxFrameBytes]**: the
+  /// text of the frame has already been assembled and UTF-8 decoded by the
+  /// platform before it can be measured. This refuses the amplification, and
+  /// says so rather than claiming more.
+  void _admit(int gen, String frame, EventSink<String> sink) {
+    if (frame.length <= config.maxFrameBytes) {
+      if (gen == _generation) watchdog.sawFrame(InboundFrame.rpcResponse);
+      sink.add(frame);
+      return;
+    }
+    // A frame for a connection this class has already retired: neither
+    // forwarded nor reported. The retired peer is closing and a complaint
+    // about it would be filed against the connection that replaced it.
+    if (gen != _generation) return;
+    final size = '${frame.length} characters, over this panel\'s '
+        '${config.maxFrameBytes} character ceiling (ClientConfig.maxFrameBytes)';
+    if (_state == LinkState.ready) {
+      _resync.complain('the gateway sent a frame of $size; it was refused '
+          'unread and the link was kept. Whatever was waiting on it settles '
+          'by its own rule: a call expires at its deadline, and a page it '
+          'carried a push for is rebuilt from the next tick. If this repeats, '
+          'the gateway is producing answers larger than this panel is '
+          'configured to read, and one of the two has to change');
+      return;
+    }
+    _resync.complain('the gateway answered with a frame of $size before the '
+        'snapshot landed; the attempt was ended rather than left to expire at '
+        'the snapshot deadline under the wrong name');
+    _down(gen,
+        'the gateway answered with a frame of $size before the snapshot '
+        'landed. Nothing about the next attempt is different unless the '
+        'gateway or the ceiling changes');
+  }
 
   /// The peer's `listen()` finished, either way. Same teardown for both.
   void _transportEnded(int gen) => _down(gen, 'the transport ended');

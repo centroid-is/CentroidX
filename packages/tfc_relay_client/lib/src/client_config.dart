@@ -375,6 +375,52 @@ final class ClientConfig {
   /// so the reconnect loop keeps running, not to make dialling fast.
   final Duration connectTimeout;
 
+  /// The largest inbound frame this panel will hand to the JSON-RPC layer.
+  ///
+  /// **The gateway's `ServerConfig.maxFrameBytes`, from the other end of the
+  /// wire.** Until this field existed the client had no ceiling at all:
+  /// `ws_transport.dart` cast the socket's stream to strings and the
+  /// supervisor handed every frame to `json_rpc_2`, whose first act is
+  /// `jsonDecode`. A gateway that has been replaced by something hostile on a
+  /// hijacked route — or an honest one with a bug in its result sizing — could
+  /// therefore make a plant-floor panel decode whatever it chose to send, and
+  /// a decoded JSON tree is several times the size of its text. The panels are
+  /// the small machines in this system; an out-of-memory there is a screen
+  /// that goes dark in front of an operator with no health line to read.
+  ///
+  /// **What it bounds, honestly.** `relay_session.dart`'s `_underCeiling`
+  /// concedes this at length for the gateway and every word of it applies
+  /// here: neither `dart:io`'s `WebSocket` nor the browser's exposes a
+  /// pre-assembly cap, so by the time a frame can be measured it has already
+  /// been read off the socket and UTF-8 decoded. This ceiling stops the
+  /// *amplification* — the decode, the sanitize walk, the `Map` copies, the
+  /// handler — and it cannot stop the allocation of the text itself. That
+  /// residual is accepted for the reason the gateway accepts its own: the two
+  /// alternatives, hand-rolling the WebSocket framing or fronting every panel
+  /// with a proxy, are larger than the exposure they remove.
+  ///
+  /// The unit is the gateway's too: the decoded string's length, which for the
+  /// plant's ASCII tag names is the byte count and for a frame full of þ/ð/æ
+  /// is slightly *under* it — the permissive direction, which is right for a
+  /// limit whose job is to refuse an order of magnitude rather than a byte.
+  ///
+  /// **16 MiB, from the gateway's own numbers.** The largest thing a
+  /// conforming gateway ever writes in one frame is a result that fits its
+  /// priority lane, and `ServerConfig.maxPendingBytes` caps that lane at
+  /// 8 MiB — an undownsampled month-long history window is about 21 MiB and
+  /// is refused with `ResultTooLarge` rather than sent
+  /// (`oversize_refusal_test.dart`). Twice the lane leaves room for a gateway
+  /// configured generously without ever admitting the hundreds of megabytes
+  /// this exists to refuse.
+  ///
+  /// **What the supervisor does when it trips is documented on
+  /// `ConnectionSupervisor._admit`**, and the short version is: the frame
+  /// costs the frame, never the link — the same containment rule the snapshot
+  /// decode applies one level down — except while a connection is still being
+  /// established, where the attempt is ended at once under its own name rather
+  /// than fifteen seconds later under a deadline's.
+  final int maxFrameBytes;
+
   /// Refuses the combinations of [uri] and this config that cannot work.
   ///
   /// Called by `RemoteStateMan`'s constructor — the first place a panel's
@@ -486,6 +532,7 @@ final class ClientConfig {
     this.tls,
     this.allowTokenOverPlaintext = false,
     this.connectTimeout = const Duration(seconds: 10),
+    this.maxFrameBytes = 16 * 1024 * 1024,
   }) {
     if (!(subscriptionStalenessMultiple > 1)) {
       throw ArgumentError('subscriptionStalenessMultiple '
@@ -524,6 +571,19 @@ final class ClientConfig {
     // give up inside its own budget sets this to a few hundred milliseconds,
     // which is below the deadline floor and has nothing to do with it.
     _positive('connectTimeout', connectTimeout);
+
+    // A ceiling of zero admits nothing, not even the hello answer, and a
+    // negative one is a sign the caller computed it from something that went
+    // wrong. Neither is "no ceiling": there is deliberately no way to switch
+    // this off, because the unbounded case is the defect the field exists to
+    // close. A case that wants the ceiling to trip sets it small, as a fault
+    // case sets `connectTimeout` short.
+    if (maxFrameBytes <= 0) {
+      throw ArgumentError('maxFrameBytes ($maxFrameBytes) must be positive: a '
+          'ceiling that admits no frame is a panel that cannot read the '
+          'hello answer, and there is no unbounded setting because an '
+          'unbounded inbound frame is what this field exists to refuse');
+    }
 
     // The third cadence, validated the third time for the same reason. Zero
     // here would be the worst of the three: `Timer.periodic(Duration.zero)`

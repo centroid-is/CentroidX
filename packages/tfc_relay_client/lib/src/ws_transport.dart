@@ -274,6 +274,14 @@ Future<ConnectAttempt> awaitReady(
 /// Public, and named as the gateway names it, because that second writer is
 /// how the property is provable: a caller holding the socket must still be
 /// able to write to it after this has wrapped it.
+///
+/// **No size ceiling here, on purpose, and there is one.** This cast admits a
+/// frame of any length; the ceiling (`ClientConfig.maxFrameBytes`) is applied
+/// by `ConnectionSupervisor._admit` on the stream it builds over this channel,
+/// because that is the one seam every inbound frame crosses on every platform
+/// and through every `dial:` a harness injects — a ceiling here would cover
+/// the io dial and miss the web one and the seams. What neither place can do
+/// is refuse the frame before `dart:io` has assembled it; `_admit` says so.
 StreamChannel<String> wsChannel(WebSocketChannel ws) =>
     StreamChannel<String>(
       mutedRepublish(ws.stream.cast<String>()),
