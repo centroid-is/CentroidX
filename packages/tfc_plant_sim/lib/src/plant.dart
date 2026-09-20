@@ -27,6 +27,12 @@ const Duration kIteratePeriod = Duration(milliseconds: 10);
 class RunningServer {
   RunningServer._(this.alias, this.port, this._server, this._nodes, this._seeds);
 
+  /// The timer moving each node, by spec id. A node that is taken out of the
+  /// address space stops moving with it — without this, the next tick writes
+  /// to a node that is gone and throws inside a `Timer` callback, which
+  /// surfaces as an unhandled error in whatever happens to be running.
+  final Map<String, Timer> _motions = {};
+
   final String alias;
 
   /// The port it actually bound, which is the interesting one when the spec
@@ -68,6 +74,7 @@ class RunningServer {
     if (node == null) {
       throw ArgumentError.value(id, 'id', 'no such node on "$alias"');
     }
+    _motions.remove(id)?.cancel();
     _server.deleteNode(node);
   }
 
@@ -127,7 +134,10 @@ class FakePlant {
       cranks.add(Timer.periodic(kIteratePeriod, (_) => _crank(server)));
       for (final node in serverSpec.nodes) {
         final motion = _motionFor(running, node, spec.types, typeIds);
-        if (motion != null) motions.add(motion);
+        if (motion != null) {
+          running._motions[node.id] = motion;
+          motions.add(motion);
+        }
       }
     }
     return FakePlant._(servers, cranks, motions);
