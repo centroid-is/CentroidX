@@ -401,15 +401,25 @@ final class BackendAudit implements relay.AuditApi {
     final endMs = params.endMs;
     final beforeMs = params.beforeMs;
     return AuditQuery(
+      // **`.toLocal()`, and it is not cosmetic.** `AuditTrailStore.entries`
+      // compares `at` as TEXT — drift compares two `Expression<DateTime>`
+      // through SQLite's `julianday()`, which Postgres does not have — and
+      // renders the bound with the database's own type mapping. Drift
+      // renders a UTC `DateTime` as `…Z` and a local one as `… +hh:mm`, and
+      // `audit_entry.at` is written by `DateTime.now()`, local. A
+      // UTC-flagged bound therefore compared two spellings that do not sort
+      // against each other: measured on the sibling family, a non-UTC plant
+      // answered ZERO rows for a window that should have held the last
+      // seven days.
       window: startMs == null || endMs == null
           ? null
           : AuditWindow(
-              start: DateTime.fromMillisecondsSinceEpoch(startMs, isUtc: true),
-              end: DateTime.fromMillisecondsSinceEpoch(endMs, isUtc: true),
+              start: DateTime.fromMillisecondsSinceEpoch(startMs).toLocal(),
+              end: DateTime.fromMillisecondsSinceEpoch(endMs).toLocal(),
             ),
       before: beforeMs == null
           ? null
-          : DateTime.fromMillisecondsSinceEpoch(beforeMs, isUtc: true),
+          : DateTime.fromMillisecondsSinceEpoch(beforeMs).toLocal(),
       keyPrefix: params.keyPrefix,
       who: params.who,
       groupNames: params.groupNames,

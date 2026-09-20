@@ -68,7 +68,10 @@ final class BackendConfigHistory implements relay.ConfigHistoryApi {
     return relay.ConfigHistoryPageResult(
       rows: [for (final row in page.rows) _toWire(row)],
       rawCount: page.rawCount,
-      oldestAtMs: page.oldestAt?.toUtc().millisecondsSinceEpoch,
+      // Microseconds, and straight off the row: this value comes back as
+      // the next page's cursor, and the store's `(at, id)` equality half
+      // cannot match a rounded instant.
+      oldestAtUs: page.oldestAt?.microsecondsSinceEpoch,
       oldestId: page.oldestId,
       hasMore: page.hasMore,
     );
@@ -93,37 +96,102 @@ final class BackendConfigHistory implements relay.ConfigHistoryApi {
 
   /// The wire's query onto the store's.
   ///
-  /// **A kind this build does not know is dropped, and that is the honest
-  /// answer.** `ConfigChangeQuery.kinds` is typed on the enum, so an unknown
-  /// name has nowhere to go. Dropping it narrows the filter to the kinds this
-  /// backend can name, which shows the client MORE rows than it asked to see
-  /// rather than fewer — the safe direction for a filter, and the one where
-  /// the client can still tell what it got. Widening a filter cannot hide a
-  /// row; narrowing one silently can.
+  /// **A kind this build does not know is REFUSED, not dropped.**
+  ///
+  /// The first version dropped it, on the reasoning that a narrowed filter
+  /// shows the client more rows rather than fewer and that widening cannot
+  /// hide anything. Both halves were wrong. `ConfigChangeQuery.kinds` is
+  /// typed on the enum and an empty list means **no kind constraint at all**,
+  /// so dropping the only selected name does not narrow the filter — it
+  /// removes it, and the client gets the entire unfiltered log rendered under
+  /// a chip it thinks is selective. Measured: a query for one unknown kind
+  /// returned every row in the table, where the same query on a station would
+  /// have returned that kind's rows or none. And the claim that "the client
+  /// can still tell what it got" was false — nothing on the wire said the
+  /// filter had been dropped.
+  ///
+  /// A panel one build ahead of its gateway is the ordinary case during a
+  /// rollout, so this has to be a refusal the client can read rather than an
+  /// answer it cannot distinguish from a real one.
+  /// An instant off the wire, as a **local** `DateTime`.
+  ///
+  /// ## Why `.toLocal()`, and why it is not cosmetic
+  ///
+  /// `ConfigChangeStore.changesPage` compares `at` **as text**, because drift
+  /// compares two `Expression<DateTime>` through `julianday()` — a SQLite
+  /// function Postgres does not have — and the bound is rendered by the
+  /// database's own type mapping so that it matches what was written byte for
+  /// byte. That works only while both sides are rendered the same way, and
+  /// drift renders a UTC `DateTime` as `…Z` and a local one as `… +hh:mm`.
+  ///
+  /// `config_change.at` is written by `DateTime.now()` — **local**. A bound
+  /// built `isUtc: true` therefore compared `…Z` against `… +00:00`, and
+  /// those do not sort against each other. Measured, on the real store: under
+  /// a UTC clock the Load-more cursor returned the same page forever; under
+  /// Europe/Copenhagen the second page came back empty and the default
+  /// seven-day window answered **zero rows for changes made seconds earlier**
+  /// — a relayed panel telling an engineer nothing had been changed all
+  /// afternoon.
+  ///
+  /// The instant is unchanged by this; only its rendering is. The residual is
+  /// the store's own, stated in its comment and not created here: the text
+  /// comparison holds while every row carries the same offset, which is true
+  /// of a plant whose stations share a timezone and would need `at`
+  /// normalised to UTC on write to hold by construction.
+  static DateTime _instant(int microseconds) =>
+      DateTime.fromMicrosecondsSinceEpoch(microseconds).toLocal();
+
   static ConfigChangeQuery _toQuery(relay.ConfigHistoryQueryParams params) {
     final startMs = params.startMs;
     final endMs = params.endMs;
-    final beforeMs = params.beforeMs;
+    final beforeUs = params.beforeUs;
     return ConfigChangeQuery(
       window: startMs == null || endMs == null
           ? null
           : AuditWindow(
-              start: DateTime.fromMillisecondsSinceEpoch(startMs, isUtc: true),
-              end: DateTime.fromMillisecondsSinceEpoch(endMs, isUtc: true),
+              start: _instant(startMs * 1000),
+              end: _instant(endMs * 1000),
             ),
-      before: beforeMs == null
-          ? null
-          : DateTime.fromMillisecondsSinceEpoch(beforeMs, isUtc: true),
+      before: beforeUs == null ? null : _instant(beforeUs),
       beforeId: params.beforeId,
       entityPrefix: params.entityPrefix,
       who: params.who,
-      kinds: [
-        for (final name in params.kindWireNames)
-          if (ConfigKind.byWireName(name) case final kind?) kind,
-      ],
+      kinds: _kinds(params.kindWireNames),
       scopeWireNames: params.scopeWireNames,
-      limit: params.limit,
+      // Clamped at both ends. A negative limit reached the store's `sublist`
+      // and came back as an internal error; an unbounded one pulled the whole
+      // table — and `config_change` is retention-exempt and carries the full
+      // before/after payload of every page and asset, so one frame could be
+      // the plant's entire configuration history. The cap is the store's own
+      // row limit, which is what a station is held to.
+      limit: params.limit.clamp(1, kConfigChangeRowLimit),
     );
+  }
+
+  /// The selected kinds, or a refusal naming the ones this build cannot.
+  static List<ConfigKind> _kinds(List<String> wireNames) {
+    final kinds = <ConfigKind>[];
+    final unknown = <String>[];
+    for (final name in wireNames) {
+      final kind = ConfigKind.byWireName(name);
+      if (kind == null) {
+        unknown.add(name);
+      } else {
+        kinds.add(kind);
+      }
+    }
+    if (unknown.isNotEmpty) {
+      throw ArgumentError.value(
+          unknown.join(', '),
+          'kindWireNames',
+          'this gateway does not know these configuration kinds, and an '
+              'unknown kind cannot be filtered on: an empty kind list means '
+              '"every kind", so dropping them would answer the whole log '
+              'under a chip the panel believes is selective. The panel is '
+              'newer than the gateway — upgrade the gateway, or deselect '
+              'the kind');
+    }
+    return kinds;
   }
 
   /// The store's decoded record onto the wire's flat row.

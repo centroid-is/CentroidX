@@ -229,6 +229,10 @@ final class _RecordingAudit implements AuditApi {
       {for (final id in actionIds) id: 1};
   @override
   Future<List<String>> distinctWho() async => [tag];
+
+  @override
+  Future<List<AuditRecord>> entriesByAction(List<String> actionIds) async =>
+      const <AuditRecord>[];
 }
 
 final class _RecordingConfig implements BackendConfigApi {

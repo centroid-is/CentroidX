@@ -801,8 +801,14 @@ Map<String, Object?> auditRecordToJson(AuditRecord value) => <String, Object?>{
 /// A row read back out of the trail, never a row a client asked to have
 /// written: [AuditApi] has no member that takes one of these.
 AuditRecord auditRecordFromJson(Map<String, Object?> json) => AuditRecord(
-      at: DateTime.fromMillisecondsSinceEpoch(json['atMs'] as int,
-          isUtc: true),
+      // **Local, not UTC.** The instant is the same either way; the flag is
+      // what a screen renders. A station reads `audit_entry.at` back from
+      // drift as a local instant and the app's `formatTimeOfDay` prints
+      // `.hour` raw, so a UTC-flagged instant here showed a relayed panel a
+      // different time for the same row than the station beside it — and on
+      // a plant that is not on UTC, an hours-wide difference in a trail
+      // people read to reconstruct what happened when.
+      at: DateTime.fromMillisecondsSinceEpoch(json['atMs'] as int).toLocal(),
       who: json['who'] as String,
       station: json['station'] as String,
       roleName: json['roleName'] as String,

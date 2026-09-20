@@ -1593,11 +1593,37 @@ jobs:
                     failed += 1
         green = ran - known_red - other_skips
         print(f"e2e_pages: {ran} case(s) started, {green} ran green, {known_red} known-red, {other_skips} other skip(s), {failed} failed")
-        # 36 green and 13 known-red as of this commit.
-        if other_skips or green < 36 or known_red < 13:
-            print(f"::error::the e2e_pages lane ran {green} case(s) with {other_skips} unexplained skip(s), expected 36 and 0 — the CENTROIDX_E2E_PAGES switch is not reaching the tests, or a case stopped running")
+        # 38 green and 13 known-red as of this commit.
+        if other_skips or green < 38 or known_red < 13:
+            print(f"::error::the e2e_pages lane ran {green} case(s) with {other_skips} unexplained skip(s), expected 38 and 0 — the CENTROIDX_E2E_PAGES switch is not reaching the tests, or a case stopped running")
             sys.exit(1)
         PY
+
+    # The same lane, under a clock that is not UTC.
+    #
+    # Not belt and braces — it catches a defect class this lane is otherwise
+    # blind to, and did. `ConfigChangeStore` and `AuditTrailStore` compare
+    # `at` as TEXT (drift compares two `Expression<DateTime>` through
+    # SQLite's `julianday()`, which Postgres does not have), and drift renders
+    # a UTC `DateTime` as `…Z` where a local one is `… +hh:mm`. The rows are
+    # written local. A bound built `isUtc: true` therefore compared two
+    # spellings that do not sort against each other — invisible on a runner
+    # in UTC, and on a plant that is not, a relayed panel answering "no
+    # changes" for the configuration an engineer changed ten minutes ago.
+    #
+    # Measured: with the bound built UTC and TZ=Europe/Copenhagen, the
+    # history list never rendered and paging lost four of six rows. Under
+    # TZ=UTC the identical code passed every case.
+    #
+    # The whole lane rather than the two suites that found it: any page that
+    # compares an instant is exposed, and naming a subset here is a list
+    # somebody has to remember to extend.
+    - name: Run the lane again under a clock that is not UTC
+      if: always()
+      env:
+        CENTROIDX_E2E_PAGES: '1'
+        TZ: Europe/Copenhagen
+      run: flutter test test/e2e_pages --concurrency=1
 
     # The gated half, and it is not decoration.
     #

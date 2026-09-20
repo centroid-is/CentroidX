@@ -150,6 +150,126 @@ void configHistoryCases(BackendBench Function() bench) {
     });
 
     testWidgets(
+        'Load more walks BACKWARDS through the log — the cursor is not the '
+        'same page forever', (tester) async {
+      // The case that would have caught the worst defect in this family.
+      //
+      // `ConfigChangeStore` compares `at` as TEXT (drift compares two
+      // `Expression<DateTime>` through SQLite's `julianday()`, which Postgres
+      // does not have), and its `(at, id)` cursor has an EQUALITY half: rows
+      // AT the cursor's instant with a smaller id, because one `writeItems`
+      // stamps every row of an action with one `at` and a strict comparison
+      // can never land inside such a group.
+      //
+      // Two things broke that over the wire, and neither shows up in a
+      // single-page test. The bound was built `isUtc: true` while the rows
+      // are written local, so drift rendered `…Z` against `… +00:00` and the
+      // two do not sort against each other. And the cursor travelled in
+      // MILLISECONDS while `at` is stamped in microseconds, so the equality
+      // half could never match the row it came from.
+      //
+      // The symptom was not an error. Page two came back identical to page
+      // one, forever — an engineer scrolling a plant's configuration history
+      // reading the same two rows and concluding that was all there was.
+      await live(tester, () async {
+        final probe = await WireProbe.signedIn(bench().port,
+            username: kEngineer, password: kEngineerPassword);
+
+        Future<(List<int> ids, int? cursorUs, int? cursorId)> page(
+            {int? beforeUs, int? beforeId}) async {
+          final answer = await probe.call(
+              AccessMethods.configHistoryChangesPage, {
+            'query': ConfigHistoryQueryParams(
+              limit: 2,
+              beforeUs: beforeUs,
+              beforeId: beforeId,
+            ).toJson(),
+          });
+          expect(answer.isError, isFalse, reason: '$answer');
+          final result = answer.result as Map;
+          final rows = (result['rows'] as List).cast<Map>();
+          return (
+            [for (final row in rows) row['id'] as int],
+            result['oldestAtUs'] as int?,
+            result['oldestId'] as int?,
+          );
+        }
+
+        // Every row, in one page, as the set paging must reproduce.
+        final whole = await probe.call(
+            AccessMethods.configHistoryChangesPage,
+            {'query': const ConfigHistoryQueryParams(limit: 500).toJson()});
+        expect(whole.isError, isFalse, reason: '$whole');
+        final allIds = [
+          for (final row in ((whole.result as Map)['rows'] as List).cast<Map>())
+            row['id'] as int,
+        ];
+        expect(allIds.length, greaterThan(2),
+            reason: 'the seed writes more than two change rows, so a page of '
+                'two is a page and not the whole log');
+
+        // **The assertion is that paging loses nothing**, not merely that the
+        // cursor moves. The first version of this case checked that page two
+        // differed from page one, and a millisecond-truncated cursor passed
+        // it: one `writeItems` stamps every row of an action with ONE `at`,
+        // so a cursor that cannot match its own row falls back to the strict
+        // comparison and silently skips the rest of that action — page two
+        // is then full of older rows from a different action, different from
+        // page one and missing everything in between.
+        final seen = <int>[];
+        int? beforeUs;
+        int? beforeId;
+        for (var guard = 0; guard < 20; guard++) {
+          final next = await page(beforeUs: beforeUs, beforeId: beforeId);
+          if (next.$1.isEmpty) break;
+          expect(next.$1.toSet().intersection(seen.toSet()), isEmpty,
+              reason: 'a page repeated rows already walked — the cursor is '
+                  'not moving. seen $seen, got ${next.$1}');
+          seen.addAll(next.$1);
+          beforeUs = next.$2;
+          beforeId = next.$3;
+        }
+        expect(seen.toSet(), allIds.toSet(),
+            reason: 'paging two at a time must reach every row the one-page '
+                'read returns. Missing '
+                '${allIds.toSet().difference(seen.toSet())}');
+
+        await probe.close();
+      });
+    });
+
+    testWidgets(
+        'a kind this gateway does not know is refused, not silently dropped',
+        (tester) async {
+      // An empty kind list means "every kind", so dropping an unknown name
+      // does not narrow the filter — it removes it, and the panel gets the
+      // whole log under a chip it believes is selective. A panel one build
+      // ahead of its gateway is the ordinary case during a rollout.
+      await live(tester, () async {
+        final probe = await WireProbe.signedIn(bench().port,
+            username: kEngineer, password: kEngineerPassword);
+        final refused = await probe.call(
+            AccessMethods.configHistoryChangesPage, {
+          'query': const ConfigHistoryQueryParams(
+              kindWireNames: ['kind-from-a-newer-build']).toJson(),
+        });
+        expect(refused.isError, isTrue,
+            reason: 'an answer here is indistinguishable from a real one: '
+                '$refused');
+
+        // The control: a kind it DOES know still filters, so the refusal is
+        // about the unknown name and not about the parameter.
+        final known = await probe.call(
+            AccessMethods.configHistoryChangesPage, {
+          'query': const ConfigHistoryQueryParams(
+              kindWireNames: ['key_mapping']).toJson(),
+        });
+        expect(known.isError, isFalse, reason: '$known');
+        await probe.close();
+      });
+    });
+
+    testWidgets(
         'a refused read leaves a deny row attributed to who was refused',
         (tester) async {
       // D-05: the refusal is the only thing a refused frame leaves behind,

@@ -175,6 +175,12 @@ final class _FakeAudit implements AuditApi {
     reached.add('distinctWho');
     return const ['jon'];
   }
+
+  @override
+  Future<List<AuditRecord>> entriesByAction(List<String> actionIds) async {
+    reached.add('entriesByAction');
+    return const <AuditRecord>[];
+  }
 }
 
 final class _FakeTemplates implements AccessTemplateApi {

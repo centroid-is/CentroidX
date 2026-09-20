@@ -211,6 +211,10 @@ final class _RecordingAuditApi implements AuditApi {
 
   @override
   Future<List<String>> distinctWho() async => const ['ST101-panel'];
+
+  @override
+  Future<List<AuditRecord>> entriesByAction(List<String> actionIds) async =>
+      const <AuditRecord>[];
 }
 
 final AccessTemplate _templateA = AccessTemplate(name: 'conveyor-1', rules: {

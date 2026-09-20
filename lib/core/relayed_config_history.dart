@@ -45,7 +45,11 @@ relay.ConfigHistoryQueryParams configHistoryParamsFor(
     relay.ConfigHistoryQueryParams(
       startMs: query.window?.start.toUtc().millisecondsSinceEpoch,
       endMs: query.window?.end.toUtc().millisecondsSinceEpoch,
-      beforeMs: query.before?.toUtc().millisecondsSinceEpoch,
+      // Microseconds. The store's `(at, id)` cursor has an equality half —
+      // rows AT the cursor's instant with a smaller id — and a millisecond
+      // cursor is never equal to the microsecond-stamped row it came from,
+      // so Load-more returns the same page forever. Measured.
+      beforeUs: query.before?.microsecondsSinceEpoch,
       beforeId: query.beforeId,
       entityPrefix: query.entityPrefix,
       who: query.who,
@@ -72,7 +76,11 @@ ConfigChangeRecord? configChangeRecordFrom(relay.ConfigHistoryRow row) {
   return ConfigChangeRecord(
     id: row.id,
     change: ConfigChange(
-      at: DateTime.fromMillisecondsSinceEpoch(row.atMs, isUtc: true),
+      // Local. A station reads `at` back from drift as a local instant and
+      // `formatTimeOfDay` prints `.hour` raw, so a UTC-flagged instant here
+      // put a relayed panel's clock hours away from the station beside it,
+      // for the same row.
+      at: DateTime.fromMillisecondsSinceEpoch(row.atMs),
       actionId: row.actionId,
       who: row.who,
       station: row.station,
@@ -107,10 +115,17 @@ final class RelayedConfigChangeStore implements ConfigChangeStore {
           // Load-more control, and every row behind it, on the strength of
           // one row written by a newer build.
           rawCount: page.rawCount,
-          oldestAt: page.oldestAtMs == null
+          // Local, not UTC. The panel hands this straight back as the next
+          // page's cursor and the backend renders it for a text comparison
+          // against rows drift wrote in local form; a UTC-flagged instant
+          // renders `…Z` where the rows render `… +hh:mm`, and the two do
+          // not sort against each other. It is also what the page DISPLAYS,
+          // and `formatTimeOfDay` prints `.hour` raw — so a UTC instant here
+          // showed a relayed panel a different time for the same row than
+          // the station beside it.
+          oldestAt: page.oldestAtUs == null
               ? null
-              : DateTime.fromMillisecondsSinceEpoch(page.oldestAtMs!,
-                  isUtc: true),
+              : DateTime.fromMicrosecondsSinceEpoch(page.oldestAtUs!),
           oldestId: page.oldestId,
           hasMore: page.hasMore,
         );

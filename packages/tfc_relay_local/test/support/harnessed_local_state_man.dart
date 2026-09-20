@@ -656,6 +656,9 @@ final class HarnessedLocalStateMan
   ConfigItemsApi get configItems => _man.configItems;
 
   @override
+  ConfigHistoryApi get configHistory => _man.configHistory;
+
+  @override
   Future<void> dispose() => _man.dispose();
 }
 

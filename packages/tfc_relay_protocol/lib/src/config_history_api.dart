@@ -28,7 +28,7 @@
 ///
 /// ## One bad row costs one row
 ///
-/// [ConfigChangePageResult] carries `rawCount`, `oldestAtMs` and `oldestId`
+/// [ConfigChangePageResult] carries `rawCount`, `oldestAtUs` and `oldestId`
 /// beside the decoded rows, because the page judges "reached the cap" and
 /// "where the next page starts" from the RAW read. A mixed-version site where
 /// one row is undecodable must not lose the Load-more control, and the rows
@@ -53,7 +53,7 @@ final class ConfigHistoryQueryParams {
   const ConfigHistoryQueryParams({
     this.startMs,
     this.endMs,
-    this.beforeMs,
+    this.beforeUs,
     this.beforeId,
     this.entityPrefix = '',
     this.who,
@@ -71,10 +71,22 @@ final class ConfigHistoryQueryParams {
   /// Inclusive upper bound, epoch milliseconds UTC.
   final int? endMs;
 
-  /// The "Load more" cursor's instant: rows older than this.
-  final int? beforeMs;
+  /// The "Load more" cursor's instant, in **microseconds** — not
+  /// milliseconds, and that is the whole of what makes paging work.
+  ///
+  /// `config_change.at` is stamped by `DateTime.now()`, which carries
+  /// microseconds, and the store's `(at, id)` cursor has an EQUALITY half:
+  /// rows *at* the cursor's instant with a smaller id are included, because
+  /// one `writeItems` stamps every row of an action with one `at` and a
+  /// strict comparison can never land inside such a group. A cursor rounded
+  /// to milliseconds is never equal to the row it came from, so that half is
+  /// dead and Load-more returns the same page forever.
+  ///
+  /// Measured, not feared: with a millisecond cursor, three successive pages
+  /// of a six-row log came back as the same two rows.
+  final int? beforeUs;
 
-  /// The cursor's other half. With [beforeMs], rows AT that instant with a
+  /// The cursor's other half. With [beforeUs], rows AT that instant with a
   /// smaller id are included too.
   ///
   /// Not decoration, and the reason is in `ConfigChangeQuery.beforeId`: one
@@ -104,7 +116,7 @@ final class ConfigHistoryQueryParams {
   Map<String, Object?> toJson() => <String, Object?>{
         if (startMs != null) 'startMs': startMs,
         if (endMs != null) 'endMs': endMs,
-        if (beforeMs != null) 'beforeMs': beforeMs,
+        if (beforeUs != null) 'beforeUs': beforeUs,
         if (beforeId != null) 'beforeId': beforeId,
         'entityPrefix': entityPrefix,
         if (who != null) 'who': who,
@@ -117,7 +129,7 @@ final class ConfigHistoryQueryParams {
       ConfigHistoryQueryParams(
         startMs: json['startMs'] as int?,
         endMs: json['endMs'] as int?,
-        beforeMs: json['beforeMs'] as int?,
+        beforeUs: json['beforeUs'] as int?,
         beforeId: json['beforeId'] as int?,
         entityPrefix: (json['entityPrefix'] as String?) ?? '',
         who: json['who'] as String?,
@@ -129,7 +141,7 @@ final class ConfigHistoryQueryParams {
   @override
   String toString() => 'ConfigHistoryQueryParams(window: '
       '${startMs == null ? "whole table" : "$startMs..$endMs"}, '
-      'before: $beforeMs/$beforeId, entity: "$entityPrefix", who: $who, '
+      'before: $beforeUs/$beforeId, entity: "$entityPrefix", who: $who, '
       'kinds: $kindWireNames, scopes: $scopeWireNames, limit: $limit)';
 }
 
@@ -227,7 +239,7 @@ final class ConfigHistoryPageResult {
   const ConfigHistoryPageResult({
     required this.rows,
     required this.rawCount,
-    this.oldestAtMs,
+    this.oldestAtUs,
     this.oldestId,
     this.hasMore = false,
   });
@@ -242,8 +254,13 @@ final class ConfigHistoryPageResult {
   /// control and everything behind it.
   final int rawCount;
 
-  /// The `at` of the last RAW row, or null when there were none.
-  final int? oldestAtMs;
+  /// The `at` of the last RAW row, in **microseconds**, or null when there
+  /// were none.
+  ///
+  /// Microseconds for [ConfigHistoryQueryParams.beforeUs]' reason: this value
+  /// comes straight back as the next page's cursor, and a rounded instant
+  /// cannot be equal to the row that produced it.
+  final int? oldestAtUs;
 
   /// The `id` of the last RAW row, or null when there were none.
   final int? oldestId;
@@ -254,7 +271,7 @@ final class ConfigHistoryPageResult {
   Map<String, Object?> toJson() => <String, Object?>{
         'rows': [for (final row in rows) row.toJson()],
         'rawCount': rawCount,
-        if (oldestAtMs != null) 'oldestAtMs': oldestAtMs,
+        if (oldestAtUs != null) 'oldestAtUs': oldestAtUs,
         if (oldestId != null) 'oldestId': oldestId,
         'hasMore': hasMore,
       };
@@ -266,7 +283,7 @@ final class ConfigHistoryPageResult {
             ConfigHistoryRow.fromJson((row as Map).cast<String, Object?>()),
         ],
         rawCount: (json['rawCount'] as int?) ?? 0,
-        oldestAtMs: json['oldestAtMs'] as int?,
+        oldestAtUs: json['oldestAtUs'] as int?,
         oldestId: json['oldestId'] as int?,
         hasMore: (json['hasMore'] as bool?) ?? false,
       );
