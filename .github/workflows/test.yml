@@ -1593,9 +1593,9 @@ jobs:
                     failed += 1
         green = ran - known_red - other_skips
         print(f"e2e_pages: {ran} case(s) started, {green} ran green, {known_red} known-red, {other_skips} other skip(s), {failed} failed")
-        # 35 green and 13 known-red as of this commit.
-        if other_skips or green < 35 or known_red < 13:
-            print(f"::error::the e2e_pages lane ran {green} case(s) with {other_skips} unexplained skip(s), expected 35 and 0 — the CENTROIDX_E2E_PAGES switch is not reaching the tests, or a case stopped running")
+        # 36 green and 13 known-red as of this commit.
+        if other_skips or green < 36 or known_red < 13:
+            print(f"::error::the e2e_pages lane ran {green} case(s) with {other_skips} unexplained skip(s), expected 36 and 0 — the CENTROIDX_E2E_PAGES switch is not reaching the tests, or a case stopped running")
             sys.exit(1)
         PY
 

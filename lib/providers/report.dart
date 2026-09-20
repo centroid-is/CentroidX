@@ -7,6 +7,7 @@ import 'package:tfc_dart/core/config/shared_row_preferences.dart';
 import '../core/guarded_report_store.dart';
 import 'access.dart'; // stationNameProvider
 import 'access_policy.dart'; // sessionInForce, RefAuditSink, reportAccessDenial
+import 'gateway.dart';
 import 'preferences.dart';
 import 'server_database.dart';
 import 'state_man.dart';
@@ -18,12 +19,62 @@ import 'state_man.dart';
 ReportStore? _cachedStore;
 McpDatabase? _storeDb;
 
-/// The report/shift config store, or null while the database is down.
+/// The report/shift config store, or null while the database is down **and
+/// there is no relay to ask instead**.
 ///
-/// Report and shift configuration deliberately bypasses `Preferences`: the
-/// same rows are written by the MCP server (in-process and standalone), and
-/// the store over the shared table is the one path all writers agree on.
+/// ## Direct mode: the table, not `Preferences`
+///
+/// Report and shift configuration deliberately bypasses `Preferences` on a
+/// station: the same rows are written by the MCP server (in-process and
+/// standalone), and the store over the shared table is the one path all
+/// writers agree on.
+///
+/// ## Gateway mode: the preference door, because it lands on the same rows
+///
+/// That argument is about a machine where the table exists. A relayed panel
+/// has no database at all — `mcpDatabaseProvider` follows `databaseProvider`
+/// into null — so this provider answered null, and with it
+/// [guardedReportStoreProvider], the editor and the engine. The editor said
+/// *"Database is not connected"*, which was true about the panel and false
+/// about the plant: the backend was holding the reports the whole time.
+///
+/// The three documents — `report_config`, `shift_config`, `alarm_man_config`
+/// — are shared `config_item` preference rows, and the relay already carries
+/// those: `RelayedPreferences` sends a shared key over the wire, where the
+/// gateway grades it with `KeyPolicy.canWritePreference`, audits it, and
+/// compare-and-swaps it onto the very rows the MCP server writes. So the
+/// gateway branch reaches the one path all writers agree on **through the
+/// door that is already open**, rather than through a report family that
+/// would be a second way to write the same three rows.
+///
+/// Not cached on `identical(db, …)` in that branch: there is no database to
+/// key on. The store is a pair of closures over a provider `Ref`, so
+/// rebuilding it costs nothing and holding a stale one across a transport
+/// change would cost a panel reading a store whose client is gone.
 final reportStoreProvider = Provider<ReportStore?>((ref) {
+  final gateway = ref.watch(gatewayConfigProvider).valueOrNull;
+  if (gateway != null && gateway.isGateway) {
+    _cachedStore = null;
+    _storeDb = null;
+    return ReportStore(
+      null,
+      read: (key) async {
+        final prefs = await ref.read(preferencesProvider.future);
+        return prefs.getString(key);
+      },
+      write: (key, json) async {
+        // `preferencesProvider` is non-nullable and answers a
+        // `RelayedPreferences` in gateway mode, so the save lands on the
+        // backend's shared rows — graded, audited and compare-and-swapped
+        // there. A save that went nowhere while looking successful is the
+        // failure this branch exists to stop, and the wire is what makes it
+        // impossible rather than a check here.
+        final prefs = await ref.read(preferencesProvider.future);
+        await prefs.setString(key, json);
+      },
+    );
+  }
+
   final db = ref.watch(mcpDatabaseProvider);
   if (db == null) {
     _cachedStore = null;
