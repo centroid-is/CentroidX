@@ -51,6 +51,7 @@ import 'package:tfc_dart/core/state_man.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 
 import 'epoch.dart';
+import 'opcua_type_description.dart';
 import 'opcua_write_typing.dart';
 import 'upstream_link.dart';
 import 'write_translation.dart';
@@ -93,7 +94,8 @@ UpstreamLinkState mapEffectiveStatus(EffectiveDeviceStatus status) {
 }
 
 /// One configured OPC UA server, behind the gateway's uniform surface.
-final class OpcUaUpstreamLink implements UpstreamLink, LinkLiveness {
+final class OpcUaUpstreamLink
+    implements UpstreamLink, LinkLiveness, TypeDescriptions {
   OpcUaUpstreamLink({
     required this.alias,
     required String endpoint,
@@ -523,6 +525,9 @@ final class OpcUaUpstreamLink implements UpstreamLink, LinkLiveness {
       // path needs is sitting in the answer. Harvesting it here is what makes
       // the write path's lookup free for every subscribed key.
       _rememberWriteType(key, sample.typeId);
+      // And the same answer is the one place a subscribed key's enum tables
+      // are resolved — see [_learnType] for why the monitor path cannot be.
+      _learnType(key, sample);
     } on TimeoutException {
       // Unanswered is not evidence; do not mark, so a later establish asks.
     } catch (error) {
@@ -571,6 +576,7 @@ final class OpcUaUpstreamLink implements UpstreamLink, LinkLiveness {
       final sample = await client.read(_nodes[ref.key]!).timeout(deadline);
       // Free, and on the path a write-only key would otherwise never take.
       _rememberWriteType(ref.key, sample.typeId);
+      _learnType(ref.key, sample);
       final translated = translateOpcUaSample(
         sample,
         arrivedAt: DateTime.now().toUtc(),
@@ -733,6 +739,123 @@ final class OpcUaUpstreamLink implements UpstreamLink, LinkLiveness {
     }
     return translateWriteAnswer(
         protocol: UpstreamProtocol.opcUa, cmd: cmd, answer: answer);
+  }
+
+  // -------------------------------------------------- the type dictionary
+  //
+  // [TypeDescriptions], for the composer to forward and the relay server to
+  // carry: the enum tables a panel reads names off, once per TYPE rather than
+  // on every sample (`type_descriptor.dart`'s library doc has the arithmetic
+  // and the 2026-09-17 defect). This link is the only layer that can answer,
+  // because it is the only one that sees the binding's sample before
+  // [translateOpcUaSample] keeps value, quality and time and drops the rest.
+
+  /// The descriptor for each type id this link has announced.
+  final Map<String, TypeDescriptor> _types = <String, TypeDescriptor>{};
+
+  /// The type id each key was last announced under.
+  final Map<String, String> _typeOfKey = <String, String>{};
+
+  /// See [TypeDescriptions.typesVersion]. Moved by the four events that can
+  /// change what this link answers: a type learned, a key named, a key
+  /// un-named, and a reprogram forgetting everything.
+  int _typesVersion = 0;
+
+  @override
+  int get typesVersion => _typesVersion;
+
+  @override
+  String? typeIdOf(String key) => _typeOfKey[key];
+
+  @override
+  TypeDescriptor? describe(String typeId) => _types[typeId];
+
+  /// Learns what [sample] says about [key]'s type, from a READ answer.
+  ///
+  /// **From the read paths only, never from the monitor callback**, and that
+  /// is a finding rather than economy. On the plant a struct's monitored-item
+  /// notification carries no `typeId` and no enum table at all — the binding's
+  /// DATATYPE race, measured 2026-09-17: the scalar member got its type, the
+  /// struct never did — so the pipe worker fetches the definition by reading
+  /// the key once (`pipe_worker_endpoint.dart`, `_describeTypeByRead`).
+  /// `client.read` reads DESCRIPTION, DISPLAYNAME, DATATYPE and VALUE in that
+  /// order, so its value is always decoded with the data type known and the
+  /// tables resolved. This link already makes exactly that read for every
+  /// subscribed key, once per key per epoch, in [_probeDecode]; and every
+  /// explicit [read] is the same call. So the dictionary costs no round trip
+  /// this link was not already paying, and no walk over a struct on the
+  /// 10 Hz sample path — the per-value cost the dictionary exists to avoid.
+  ///
+  /// **Only a type with an enum somewhere in it is described.** A double, a
+  /// bool, a struct of numbers: nothing a panel cannot already read off the
+  /// value, and a descriptor minted for one would be a made-up type on the
+  /// wire. The key answers null and stays null, which is the same answer a
+  /// Modbus or M2400 link gives for everything.
+  ///
+  /// **Type ids are qualified by [alias].** Two TwinCAT projects number their
+  /// types independently, so `ns=4;i=3012` on ST101 and on ST201 can be two
+  /// different types, and a gateway that keyed one dictionary by the bare
+  /// node id would serve one PLC's enum names for the other's tag. The
+  /// qualified id is opaque to the server and the panel — a dictionary key
+  /// on the wire and nothing more (`session_handlers.dart` stores it as `ty`,
+  /// `RemoteStateMan.typeOf` looks it up) — while [TypeDescriptor.ua] keeps
+  /// the bare node id for the write path. The price is one duplicated
+  /// descriptor when two PLCs share a type, a few hundred bytes once.
+  void _learnType(String key, ua.DynamicValue sample) {
+    // `describeOpcUaType` is the pipe worker's `describeUaType`, ported —
+    // see `opcua_type_description.dart` for why it is a port and not an
+    // import, and what the honest fix is.
+    var descriptor = describeOpcUaType(sample);
+    final sliced = _arrayIndices.containsKey(key);
+    if (sliced) {
+      // The key's value is one element ([_sliceArrayElement]), so the key's
+      // type is the element's. An array whose sample carried no element to
+      // describe has nothing to say yet.
+      final element = descriptor.element;
+      if (element == null) {
+        _unnameKey(key);
+        return;
+      }
+      descriptor = element;
+    }
+    if (!descriptor.hasEnum) {
+      _unnameKey(key);
+      return;
+    }
+    // The pipe worker's identity rule: the node id when the sample names one,
+    // the struct's shape when it does not, and the key itself as a last
+    // resort. A read almost always carries the id (DATATYPE is read first);
+    // the fallbacks exist so a table the plant DID send is never dropped
+    // over a missing label.
+    final identity = descriptor.ua ??
+        (sliced ? null : opcUaTypeIdentityOf(sample)) ??
+        'key:$key';
+    final typeId = '$alias|$identity';
+    if (!_types.containsKey(typeId)) {
+      // Described once and kept: a type cannot change under an epoch, and a
+      // reprogram — the one moment it can — clears this map in [_bump].
+      _types[typeId] = descriptor;
+      _typesVersion++;
+    }
+    if (_typeOfKey[key] != typeId) {
+      _typeOfKey[key] = typeId;
+      _typesVersion++;
+    }
+  }
+
+  /// [key]'s latest read had no type worth describing. Forgets a name it may
+  /// have had — a tag re-declared from an enum to a plain integer — and bumps
+  /// only if there was one to forget.
+  void _unnameKey(String key) {
+    if (_typeOfKey.remove(key) != null) _typesVersion++;
+  }
+
+  /// A reprogram: nothing this link said about types is evidence any more.
+  void _forgetTypes() {
+    if (_types.isEmpty && _typeOfKey.isEmpty) return;
+    _types.clear();
+    _typeOfKey.clear();
+    _typesVersion++;
   }
 
   /// Each key's DataType, and the epoch it was learned under.
@@ -1166,6 +1289,11 @@ final class OpcUaUpstreamLink implements UpstreamLink, LinkLiveness {
     //    this field, so there is no list of outstanding handles to walk and
     //    therefore none to miss.
     _epoch = next;
+    //    And the type dictionary goes with the handles: the address space
+    //    was rebuilt, so what a type id meant before the download is not
+    //    evidence about what it means now. The re-browse below re-probes every
+    //    key under the new epoch, and that is where it is learned again.
+    _forgetTypes();
     // 2. ONE batch. `_degradeAll` is one pass over the cache; at 1500 keys a
     //    per-key fan-out is a denial of service against the screen the
     //    operator is trying to read.

@@ -190,6 +190,14 @@ abstract interface class LinkLiveness {
   Stream<void> get liveness;
 }
 
+// A third optional capability is not declared here because it already has a
+// name: a link that can say what type a key is implements the protocol's own
+// `TypeDescriptions` (`tfc_relay_protocol`, `type_descriptor.dart`), and the
+// composer forwards it with the same `is` check it uses for [LinkLiveness].
+// Only the OPC UA link does today — it is the only protocol here that carries
+// enum tables at all; a Modbus register or an M2400 weight has no names to
+// describe, and a link that implements nothing answers null for every key.
+
 abstract interface class UpstreamLink {
   /// The configured server alias, as it appears in `StatusParams.alias` and in
   /// the `PIPE.upstream.<alias>.*` keys.

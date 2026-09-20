@@ -87,7 +87,12 @@ import 'upstream_link.dart';
 import 'write_translation.dart';
 
 /// The `StateManApi` the gateway serves every session from.
-final class LocalStateMan implements StateManApi {
+///
+/// Also a [TypeDescriptions], which is **not** a member of `StateManApi` and
+/// is asked for with `api is TypeDescriptions` by the server — see the type
+/// dictionary section below for what it forwards and why it lived nowhere
+/// until 2026-09-20.
+final class LocalStateMan implements StateManApi, TypeDescriptions {
   LocalStateMan({
     required List<UpstreamLink> links,
     required this.router,
@@ -659,6 +664,80 @@ final class LocalStateMan implements StateManApi {
         for (final key in _store.keys)
           if (PipeKeys.isPipeKey(key) && _store.peek(key) != null) key,
       }.toList(growable: false);
+
+  // ------------------------------------------------------ the type dictionary
+  //
+  // The enum tables a panel reads names off, once per TYPE
+  // (`type_descriptor.dart`). Until 2026-09-20 this class implemented none of
+  // it, and the consequence was measured by an asset-level end-to-end test:
+  // `RemoteStateMan.typeOf(key)` was null at the panel for a struct whose
+  // member is an enum, the panel coloured the equipment from a bare integer,
+  // and every conveyor drew violet — the exact shape of the 2026-09-17 plant
+  // defect the plant simulator was built to reproduce. The shipping backend
+  // (`composeBackendRelay`) answers through its pipe, so the plant never saw
+  // this; both e2e lanes stand their gateway up through `buildGateway`, so
+  // neither could pin it.
+  //
+  // **Forwarded, never kept.** The composer owns no dictionary of its own: the
+  // values it ingests carry nothing to learn from — `translateOpcUaSample`
+  // keeps value, quality and time and drops the rest, by design — and the
+  // only layer that sees a binding sample with its DataType resolved is the
+  // OPC UA link, which is where the tables are learned (`OpcUaUpstreamLink.
+  // _learnType`). A link that has no type metadata — Modbus, the M2400
+  // weighers, the in-memory fake — implements nothing, and every key on it
+  // answers null here rather than a descriptor invented from the value's
+  // runtime shape. Same optional-capability rule as `LinkLiveness`.
+
+  /// The type id [key]'s link announced it under, or null.
+  ///
+  /// Routed rather than cached, so a re-pointed keymapping cannot leave a
+  /// key answering the type of the link it used to be on. A `PIPE.*` key is
+  /// the gateway's own and has no plant type; a refused key has no link.
+  @override
+  String? typeIdOf(String key) {
+    final route = router.route(key);
+    if (route is! ClaimedRoute) return null;
+    final link = route.link;
+    // An explicit cast rather than a promoted `is`, `policy_state_man.dart`'s
+    // reason: `TypeDescriptions` is not a subtype of `UpstreamLink`, and Dart
+    // has no intersection type to promote to.
+    if (link is! TypeDescriptions) return null;
+    return (link as TypeDescriptions).typeIdOf(key);
+  }
+
+  /// The descriptor for [typeId], from whichever link announced it.
+  ///
+  /// Asked of the links in order and answered by the first that knows the
+  /// id. No ambiguity to arbitrate: the OPC UA link qualifies every id with
+  /// its alias, so two PLCs cannot announce one id.
+  @override
+  TypeDescriptor? describe(String typeId) {
+    for (final link in links) {
+      if (link is! TypeDescriptions) continue;
+      final descriptor = (link as TypeDescriptions).describe(typeId);
+      if (descriptor != null) return descriptor;
+    }
+    return null;
+  }
+
+  /// See [TypeDescriptions.typesVersion]: bumped whenever any link learns.
+  ///
+  /// The sum of the links' own counters, read on demand. Each link only ever
+  /// increments its number, so the sum moves exactly when one of them does
+  /// and never moves otherwise — which is all the server reads it for, once
+  /// per tick, as an inequality. A sum costs one add per link per tick and
+  /// needs no stream, no callback and no timer, and this class's constructor
+  /// spawns nothing on purpose (the library doc).
+  @override
+  int get typesVersion {
+    var version = 0;
+    for (final link in links) {
+      if (link is TypeDescriptions) {
+        version += (link as TypeDescriptions).typesVersion;
+      }
+    }
+    return version;
+  }
 
   // ------------------------------------------------------------------- ingest
 
