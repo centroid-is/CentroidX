@@ -54,10 +54,26 @@ merge", built an adversarial e2e bench, and fixed what the review found.
    `ConveyorGate` pusher and Festo VTUG coil FBs were never read**; only
    `FB_MButton` (safe, self-clearing) and `FB_ATV320` (latches) were. Read the
    plan's Tier 1 for the catch about comms watchdogs under the relay.
-2. **Five untriaged page cases** in `test/e2e_pages/` — never passed, never
-   diagnosed, deliberately *not* marked `knownRed` because nobody established
-   whether they are defects or unfinished fixtures. The lane has **no CI job**
-   for that reason. Triage first; it may move items into the gap list.
+2. ~~Five untriaged page cases~~ — **done 2026-09-20.** All five run down:
+   one product defect (`page_editor.dart` `setState` after dispose, fixed),
+   three fixture faults (a green case seeded by a `knownRed` one; a finder on
+   a title that is never rendered; a page bounded by a clock `testWidgets`
+   freezes), and one that was never a failure — it only fails under the wrong
+   Flutter SDK. Each case's story is in the file's own doc.
+
+   The `knownRed` set had never been run either, and running it found **two of
+   fifteen already green** — the history-view read floor this branch fixed,
+   and `browse.fetchDetail` against a forged node kind, whose case demanded
+   the wrong remedy (a refusal, where the shipped fix answers as for a node
+   that does not exist — a refusal would confirm the node is there). Both are
+   ordinary cases now.
+
+   The lane is green at **35 pass / 13 known-red** and has a CI job,
+   `e2e-pages-test`, which runs the gated set too and **fails if a known-red
+   case passes** — that is how the two above would have been caught the day
+   their fixes landed rather than months later.
+
+   **It surfaced one new finding, below.**
 3. **Panel-vs-station confusions** (plan Tier 1b) — IP settings and station
    operations act on the *panel's* NetworkManager when relayed. An afternoon
    to make honest; highest safety-per-hour in the document.
@@ -68,6 +84,51 @@ merge", built an adversarial e2e bench, and fixed what the review found.
    one operator action becomes two row sets under two ids.
 6. **Tag bindings refresh** runs only on the token-file poll; should load
    before `server.start()` and fail closed on a failed first load.
+
+---
+
+## New finding — the relayed audit trail hides the newest rows under clock skew
+
+`AuditTrailPage` bounds its default seven-day window at `clock.now()`
+(`lib/pages/audit_trail.dart` `_firstPageOnly` → `AuditTrailFilters.toQuery`),
+and `audit_entry.at` is stamped by whoever wrote the row. On a station those
+are the same machine, which is why the window has never been a problem. **Over
+the relay they are two machines**: the bound comes from the PANEL's clock and
+the rows from the BACKEND's. A panel running even a second behind renders a
+trail that is silently missing its newest rows, and the page has no way to say
+so — it reports "N entries · Last 7 days", which is a claim about the plant's
+history, not about the panel's clock.
+
+This is the same class as the write-status skew this branch already fixed, and
+the same class as the ungated-rows leg the store documents: recorded
+faithfully, never shown, reads as "the trail missed it".
+
+Two candidate fixes, and **neither is taken here** because the window is a
+user-ruled specification ("the two modes, and the user's ruling behind them",
+`audit_trail_store.dart`) and narrowing or widening its top edge is a decision
+about what "Last 7 days" means, not a bug fix:
+
+- **Open the upper bound in the default mode.** "The last seven days" has no
+  natural upper edge; the bound exists only because `AuditWindow` is a closed
+  interval. `AuditQueryParams` asserts both bounds or neither, so this needs a
+  protocol shape for a half-open window.
+- **Add slack** — `end: now + a minute or an hour`. One line, keeps the
+  window closed, and turns a silent omission into a bounded one. It reddens
+  the unit tests that assert the seven-day window exactly, which would need
+  updating with the reason.
+
+Measured, not inferred: the panel's own store answered **0 rows** for the
+page's query and **5 rows** for the same query with the window removed, with
+the rows stamped ~400 ms after the bound.
+
+### Also noticed, not acted on
+
+`BaseScaffold.title` is a **required** constructor parameter that nothing ever
+reads — every page in the app passes one and no app bar renders it. Harmless,
+but it cost an afternoon here: the knowledge-base case anchored on the page
+title and there was no page title to find. Deleting it touches ~20 call sites
+and showing it changes every screen, so it is a product decision rather than a
+cleanup.
 
 ---
 
@@ -83,6 +144,13 @@ merge", built an adversarial e2e bench, and fixed what the review found.
 ## Gotchas that cost time
 - `rm -rf .dart_tool/hooks_runner/shared/open62541/build/dl/src` whenever the
   native build says *"patch does not apply"*. Hit it in four packages.
+- **Check `flutter --version` before reading any failure.** `which flutter` on
+  the dev Mac is homebrew's 3.41.9; `.flutter-version` pins 3.44.9, and the
+  older engine cannot decode the pinned SDK's `ink_sparkle.frag`, so every
+  case that taps a Material surface dies with a shader error that looks like
+  anything but a toolchain fault. The export does not survive between shell
+  invocations either — put `PATH=~/flutter-sdks/$(cat .flutter-version)/bin:$PATH`
+  inline on every command, backgrounded ones included.
 - Parallel agents share this worktree's git index — **pathspec commits only**,
   never `git add -A`. Two agents editing `pubspec.yaml` from separate trees
   produced duplicate YAML keys that tests did not catch because
