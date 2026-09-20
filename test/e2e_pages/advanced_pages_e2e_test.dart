@@ -46,36 +46,79 @@ library;
 /// today and to turn green when the fix lands; nothing here works around
 /// them. The list is in the final report and repeated at each case.
 ///
-/// ## Running it
+/// ## The five that were untriaged, and what each turned out to be
 ///
-/// ## UNFINISHED — five cases fail and nobody has diagnosed them
+/// This lane was committed mid-flight with five cases that had never passed
+/// and had not been diagnosed. They were deliberately not marked `knownRed`,
+/// because `knownRed` asserts "this is a defect in the product" and nobody
+/// had established that. All five were run down on 2026-09-20. **One was a
+/// product defect, three were fixture faults, and one was never a failure at
+/// all.** All five are green; the lane has a CI job because of it.
 ///
-/// This lane is committed mid-flight. The agent writing it reached the last
-/// two page suites and stopped before it could run the lane once end to end,
-/// so five cases have never passed and have not been triaged:
+///  * **server config — an edit landing in the backend's stateman file.**
+///    Never a defect. It fails only under the WRONG Flutter SDK: homebrew's
+///    3.41.9 instead of the pinned 3.44.9, where `build/unit_test_assets`
+///    holds an `ink_sparkle.frag` the older engine reports as *"Unsupported
+///    runtime stages format version. Expected 1, got 2"* — so every case that
+///    taps a Material surface dies, and this is the first case in the lane
+///    that taps one. Check `flutter --version` before reading a failure here.
 ///
-///  * server config — an edit in the widget landing in the backend's stateman
-///    file on disk and being audited
-///  * audit trail — rendering rows from the backend's `audit_entry`
-///  * page editor — opening with its canvas and save control
-///  * page editor — `configItems.items(page)` served to an engineer and
-///    refused to a session holding nothing
-///  * knowledge base — opening for an engineer
+///  * **audit trail — rendering a row written a moment ago.** A fixture
+///    fault, and a subtle one. Inside `testWidgets` the ambient `clock.now()`
+///    is FROZEN at the instant the case body starts, while the backend stamps
+///    `audit_entry.at` from real time; `AuditTrailPage` bounds its seven-day
+///    window at `clock.now()`, so the row the case writes lands after the
+///    window closes and the page correctly renders "0 entries". Measured, not
+///    guessed: the panel's own store answered 0 rows for the page's query and
+///    5 for the same query without the window. Fixed with `withClock`, and
+///    the case carries the reasoning. **The relay-mode half of it is real** —
+///    see the note there.
 ///
-/// **They are not marked `knownRed`, deliberately.** `knownRed` asserts "this
-/// is a defect in the product", and nobody has established that. Each is
-/// equally likely to be an unfinished fixture — the suites they sit in were
-/// the last written. Marking them would be claiming a finding that has not
-/// been made.
+///  * **page editor — opening with its canvas and save control.** A PRODUCT
+///    defect, fixed in `lib/pages/page_editor.dart`: `initState` did
+///    `ref.read(pageManagerProvider.future).then((m) => setState(...))` with
+///    no `mounted` check, so an editor disposed before its pages load — the
+///    access gate swapping the subtree, or an operator leaving the route —
+///    asserts in debug and dereferences a null element in release.
 ///
-/// So the lane is gated and has **no CI job**: a lane whose failures nobody
-/// has read is not evidence, and wiring it into CI would either go red for
-/// reasons no one can explain or be quietly given a tolerance that hides the
-/// rest. Add the job in the change that makes these five green or converts
-/// them, with a reason, into `knownRed`.
+///  * **page editor — `configItems.items(page)` served and refused.** A
+///    fixture fault: the row it asserts on was seeded inside a `knownRed`
+///    case, which runs only under `CENTROIDX_E2E_PAGES_KNOWN_RED=1`. A green
+///    case depending on a skipped one's side effect, failing against an empty
+///    list in a way that reads exactly like the gateway refusing to serve
+///    pages. The seed now belongs to the group's `setUpAll`.
 ///
-/// Everything else in here has run: 28 cases pass and 15 are `knownRed`
+///  * **knowledge base — opening for an engineer.** A fixture fault: it
+///    anchored on `find.text('Knowledge Base')`, which is the ExpansionTile
+///    title `TechDocLibrarySection` renders only when `embedded: true`, and
+///    this page mounts it with `embedded: false`. Nor does the app bar carry
+///    it — **`BaseScaffold.title` is a required parameter that is never
+///    rendered anywhere**, which is worth knowing before anchoring any case
+///    in this lane on a page title.
+///
+/// ## Two `knownRed` cases were green
+///
+/// The `knownRed` set had never been run either — `knownRed` only runs under
+/// `CENTROIDX_E2E_PAGES_KNOWN_RED=1`. Running it on 2026-09-20 found **two of
+/// the fifteen already correct**, and both are now ordinary cases in
+/// `wire_invariants.dart`:
+///
+///  * the history-view read floor, which this branch fixed while the case sat
+///    gated and nobody noticed it had gone green;
+///  * `browse.fetchDetail` against a forged node kind — fixed too, but the
+///    case demanded the **wrong remedy**: it expected the hidden node to be
+///    refused, where the fix answers it the way a node that does not exist is
+///    answered. A refusal confirms the node is there, which is the one thing
+///    hiding must not do. Rewritten against the shipped design, with a
+///    visible key beside it as the control.
+///
+/// A `knownRed` that has quietly gone green is a case protecting nothing, so
+/// the CI job runs the gated set too — see `e2e-pages-test`.
+///
+/// Everything else in here has run: 35 cases pass and 13 are `knownRed`
 /// against defects listed in their own descriptions.
+///
+/// ## Running it
 ///
 /// Gated on `CENTROIDX_E2E_PAGES=1`, because `flutter test test/` in the
 /// `flutter-test` job runs everything under `test/` on three operating

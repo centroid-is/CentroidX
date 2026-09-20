@@ -35,6 +35,26 @@ Finder _saveFab() => find.byWidgetPredicate(
 
 void pageEditorCases(BackendBench Function() bench) {
   group('the page editor', () {
+    // The seeded page belongs to the GROUP, not to one case.
+    //
+    // It used to be written inside the first `knownRed` case, and the wire
+    // case below then asserted `configItems.items('page')` carries it. That
+    // made a green case depend on a skipped one: `knownRed` only runs under
+    // CENTROIDX_KNOWN_RED=1, so on an ordinary run nothing ever seeded the row
+    // and the wire case failed against an empty list -- a fixture fault that
+    // reads exactly like the gateway refusing to serve pages.
+    setUpAll(() => bench().seedPage(
+          _seededPageId,
+          AssetPage(
+            menuItem: const MenuItem(
+                label: _seededPageLabel,
+                path: '/e2e-seeded',
+                icon: Icons.factory),
+            assets: const [],
+            mirroringDisabled: false,
+          ).toJson(),
+        ));
+
     testWidgets('opens for an engineer with its canvas and its save control',
         (tester) async {
       await useDesktopSurface(tester, size: const Size(1600, 1200));
@@ -56,21 +76,9 @@ void pageEditorCases(BackendBench Function() bench) {
         'KNOWN RED (found here): the editor lists a page that exists at the '
         'backend', (tester) async {
       await useDesktopSurface(tester, size: const Size(1600, 1200));
-      await live(tester, () => bench().seedPage(
-            _seededPageId,
-            AssetPage(
-              menuItem: const MenuItem(
-                  label: _seededPageLabel,
-                  path: '/e2e-seeded',
-                  icon: Icons.factory),
-              assets: const [],
-              mirroringDisabled: false,
-            ).toJson(),
-          ));
       final rows = await live(tester, bench().pageRows);
       expect(rows.map((r) => r.id), contains(_seededPageId),
           reason: 'the backend holds the row before the editor is opened');
-
       final panel = await live(tester, () async {
         final p = await Panel.dial(bench().port);
         await p.ready();

@@ -12,6 +12,7 @@
 /// column is whatever the client typed into `session.login`.
 library;
 
+import 'package:clock/clock.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open62541/open62541_types.dart' show DynamicValue;
@@ -35,9 +36,31 @@ const String _setpointNode = 'CN01.setpoint_kg';
 
 void auditTrailCases(BackendBench Function() bench) {
   group('the audit trail page', () {
+    // `withClock(const Clock())`, and it is load-bearing.
+    //
+    // `AuditTrailPage` asks `clock.now()` for the upper bound of its seven-day
+    // window (`audit_trail.dart` `_firstPageOnly`). Inside `testWidgets` the
+    // ambient clock is FROZEN at the instant the case body started and never
+    // advances, while real time — and the backend, which stamps `at` from its
+    // own wall clock — moves on. So the row this case writes lands a few
+    // hundred milliseconds AFTER the window closes, and the page correctly
+    // renders "0 entries": measured, not assumed, by asking the panel's own
+    // store for the page's own query (0 rows) and for the same query without
+    // the window (5 rows).
+    //
+    // A real clock is what the page has in production, so this restores it
+    // rather than widening the window or weakening the assertion. The rest of
+    // the lane does not need it: no other case asks a page to answer about a
+    // row it wrote itself.
+    //
+    // The skew this uncovers is NOT confined to the harness — see the
+    // relay-mode note in the handoff: the bound comes from the PANEL's clock
+    // and the rows are stamped by the BACKEND's, so a panel running behind
+    // hides the newest rows on a real plant too.
     testWidgets(
         'opens for an engineer and renders rows from the backend\'s '
-        'audit_entry — including one made a moment ago', (tester) async {
+        'audit_entry — including one made a moment ago',
+        (tester) => withClock(const Clock(), () async {
       await useDesktopSurface(tester, size: const Size(1400, 2600));
       // A row of known content, made on the wire by the engineer: the home
       // page of the operator's account. Audited by `BackendAccessAdmin`.
@@ -83,7 +106,7 @@ void auditTrailCases(BackendBench Function() bench) {
           describe: 'the row written seconds ago over the same wire');
       expect(find.byKey(kAccessLockedBodyKey), findsNothing);
       await dismount(tester);
-    });
+    }));
 
     testWidgets(
         'the gateway refuses audit.entries and audit.distinctWho to a '

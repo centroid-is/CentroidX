@@ -14,6 +14,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/core/feature_flags.dart' show kKnowledgeEnabled;
 import 'package:tfc/pages/tech_doc_library.dart';
+import 'package:tfc/tech_docs/tech_doc_library_section.dart';
 import 'package:tfc/providers/access.dart';
 import 'package:tfc/widgets/access_gate.dart';
 
@@ -36,8 +37,17 @@ void knowledgeBaseCases(BackendBench Function() bench) {
       });
       await tester.pumpWidget(
           hostRoute(panel, _route, _title, const TechDocLibraryPage()));
-      await untilFound(tester, find.text('Knowledge Base'),
+      // NOT `find.text('Knowledge Base')`. That string is the ExpansionTile
+      // title the section renders only when `embedded: true`
+      // (`tech_doc_library_section.dart:146,154`), and this page mounts it
+      // with `embedded: false`, which returns the content directly. Nor is it
+      // the app bar: `BaseScaffold.title` is accepted and never rendered. The
+      // section itself, and one control an operator can see, is what "opened"
+      // means here.
+      await untilFound(tester, find.byType(TechDocLibrarySection),
           describe: 'the library section');
+      await untilFound(tester, find.text('Upload PDF'),
+          describe: 'the library\'s own controls');
       expect(find.byKey(kAccessLockedBodyKey), findsNothing);
       await dismount(tester);
     });
@@ -55,8 +65,9 @@ void knowledgeBaseCases(BackendBench Function() bench) {
       });
       await tester.pumpWidget(
           hostRoute(panel, _route, _title, const TechDocLibraryPage()));
-      await untilFound(tester, find.text('Knowledge Base'));
-      await tester.tap(find.text('Knowledge Base'));
+      // No tap: `embedded: false` renders the list without an expander, so
+      // the empty state is on screen as soon as the query answers.
+      await untilFound(tester, find.byType(TechDocLibrarySection));
       await settleFrames(tester, frames: 10);
       await neverFound(tester, find.text('No resources found'),
           const Duration(seconds: 3),
