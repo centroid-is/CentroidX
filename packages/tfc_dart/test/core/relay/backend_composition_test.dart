@@ -37,7 +37,12 @@ import 'package:logger/logger.dart';
 import 'package:test/test.dart';
 
 import 'package:tfc_access/tfc_access.dart'
-    show AccessGroup, AccessPolicy, AccessSession, AuthenticatedUser;
+    show
+        AccessGroup,
+        AccessPolicy,
+        AccessSession,
+        AccessTemplate,
+        AuthenticatedUser;
 import 'package:tfc_dart/core/access/access_repository.dart';
 import 'package:tfc_dart/core/secure_storage/secure_storage.dart';
 import 'package:tfc_dart/core/access/drift_audit_sink.dart';
@@ -322,25 +327,59 @@ void main() {
     test('the shipped policy is the one this composition names', () {
       final composed = compose();
 
-      // IDENTITY, not type. `RelayServer`'s default is
-      // `const AllVisibleOperatorWrites()`, and Dart canonicalises const
-      // instances — so an explicit `policy: const AllVisibleOperatorWrites()`
-      // and no argument at all are the same object and indistinguishable by
-      // any assertion about type or equality. `backendRelayPolicy` is a
-      // deliberately non-const instance for exactly this reason: it is what
-      // makes "somebody chose this" a fact a test can read.
-      expect(identical(composed.server.policy, backendRelayPolicy), isTrue,
-          reason: 'a default that ships is a decision nobody made. The policy '
-              'must be the instance backend_composition.dart names, with its '
-              'reason written beside it');
+      // **Behaviour, not identity — and the property got stronger.** This arm
+      // used to assert `identical(policy, backendRelayPolicy)`, because a
+      // module-level non-const instance was what made "somebody chose this" a
+      // readable fact. The policy now carries this gateway's access-template
+      // snapshot, which is read from its own database and therefore cannot be
+      // a module constant. So the choice is named as a function
+      // ([backendRelayPolicyFor]) and proven by what the policy DOES.
+      //
+      // What it must do is the defect this replaced: a bare `const
+      // AccessPolicy()` holds no `tagBindings`, so `groupForTag` answered the
+      // `operate` floor for every key and the socket enforced none of the
+      // templates the app enforced — `setpoints`, `device` and `force` all
+      // collapsed into `operate` the moment a value left the panel.
+      final bindings = composed.tagBindings;
+      expect(bindings, isNotNull,
+          reason: 'a gateway with a database must hold a template snapshot; '
+              'without one every bound key grades at the operate floor');
+      bindings!.setSnapshot(
+        keyToTemplate: const {'ST101.CN01.MOT01': 'drive'},
+        templates: {
+          'drive': AccessTemplate(
+              name: 'drive', rules: {'p_cfg_ManualFreq': AccessGroup.setpoints}),
+        },
+      );
+      final operator = AccessSession(
+          user: AuthenticatedUser(
+              username: 'ST101-panel',
+              roleName: 'Line Panel',
+              stationAccount: true),
+          groups: const {AccessGroup.operate});
+      final station = StationIdentity(
+          user: operator.user!, station: 'ST101', session: operator);
+      expect(
+          composed.server.policy.canWrite('ST101.CN01.MOT01', station,
+              members: const ['p_cfg_ManualFreq']),
+          isFalse,
+          reason: 'the shipped policy must consult the plant\'s access '
+              'templates. If this passes, the socket is grading a setpoint as '
+              'a jog');
+      expect(
+          composed.server.policy.canWrite('ST101.CN01.MOT01', station,
+              members: const ['p_cmd_JogFwd']),
+          isTrue,
+          reason: 'and it must not over-gate: a member the template leaves '
+              'alone stays at the operate floor');
+
       expect(identical(composed.server.policy, const AccessPolicyKeyPolicy()),
           isFalse,
           reason: 'if this is the canonicalised const `AccessPolicyKeyPolicy` '
               'that RelayServer defaults to (relay_server.dart:152), the '
-              'composition let RelayServer default and the arm above is '
-              'vacuous. `backendRelayPolicy` is a deliberately non-const '
-              'instance so "somebody chose it" is a fact a test can read by '
-              'identity');
+              'composition let RelayServer default and the arms above are '
+              'vacuous — a canonicalised const adapter holds no bindings and '
+              'could not enforce the template just seeded');
       expect(composed.server.policy, isA<AccessPolicyKeyPolicy>(),
           reason: '17-11: the shipped policy is the AccessPolicy-backed adapter '
               '(17-07), not the deleted AllVisibleOperatorWrites');

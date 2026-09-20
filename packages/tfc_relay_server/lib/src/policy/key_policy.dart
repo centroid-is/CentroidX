@@ -144,7 +144,18 @@ abstract interface class KeyPolicy {
   /// data.** A hypothetical `canHold` would have had none. This one has
   /// `kPrefAccessRules` behind it the day it lands — thirty-four rules the app
   /// has been enforcing since Phase 3.
-  bool canWrite(String key, StationIdentity identity);
+  ///
+  /// [members] are the member paths the write moves, in the dotted form
+  /// templates are bound against. The default — a single null — is the
+  /// key-level question, which is what every caller asked before member
+  /// grading existed and what a scalar write still means.
+  ///
+  /// **A key-level answer is the LEAST gated one a template can give**, so a
+  /// caller that can name the members must: passing the default for a struct
+  /// write silently grades a setpoint as a jog. `written_members.dart` is how
+  /// the wire names them and its doc carries the cost of the fallback.
+  bool canWrite(String key, StationIdentity identity,
+      {List<String?> members = const <String?>[null]});
 
   /// Whether [identity] may write the **preference** [key].
   ///
@@ -224,9 +235,25 @@ final class AccessPolicyKeyPolicy implements KeyPolicy {
   /// it is the same string a `PolicyStateMan` audit row records in its
   /// `surface` column: the group that was checked and the surface that was
   /// recorded cannot disagree if there is only one place the name comes from.
+  ///
+  /// **Through `gradeTagWrite`, which is also what the app asks.** Until that
+  /// function existed this line read
+  /// `groupForWireSurface(AccessSurface.tag.wireName, key)` with no member —
+  /// so a whole-struct write carrying `p_cfg_ManualFreq` was graded as though
+  /// it carried nothing in particular, and `setpoints`, `device` and `force`
+  /// all collapsed to the operate floor the moment the value left the panel.
+  /// The app graded the same write per moved member. Two answers to one
+  /// question, and the wire's was the permissive one.
   @override
-  bool canWrite(String key, StationIdentity identity) => identity.session
-      .can(_policy.groupForWireSurface(AccessSurface.tag.wireName, key));
+  bool canWrite(String key, StationIdentity identity,
+          {List<String?> members = const <String?>[null]}) =>
+      gradeTagWrite(
+        policy: _policy,
+        session: identity.session,
+        surface: AccessSurface.tag.wireName,
+        key: key,
+        changedMembers: members,
+      ).allowed;
 
   /// Asks the master policy what writing this preference key requires.
   ///

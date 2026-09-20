@@ -146,7 +146,8 @@ final class _SpyPolicy implements KeyPolicy {
   bool canSee(String key, StationIdentity identity) => !hidden.contains(key);
 
   @override
-  bool canWrite(String key, StationIdentity identity) {
+  bool canWrite(String key, StationIdentity identity,
+      {List<String?> members = const <String?>[null]}) {
     askedToWrite.add(key);
     if (hidden.contains(key)) return false;
     return identity.session.can(AccessGroup.operate);

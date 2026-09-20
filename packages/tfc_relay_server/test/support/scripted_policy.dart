@@ -64,7 +64,9 @@ final class ScriptedPolicy implements KeyPolicy {
   bool canSee(String key, StationIdentity identity) => _sees(key, identity);
 
   @override
-  bool canWrite(String key, StationIdentity identity) => _writes(key, identity);
+  bool canWrite(String key, StationIdentity identity,
+          {List<String?> members = const <String?>[null]}) =>
+      _writes(key, identity);
 
   @override
   bool canWritePreference(String key, StationIdentity identity) =>

@@ -58,6 +58,7 @@ import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 import 'error_codes.dart';
 import 'server_config.dart';
 import 'session_handlers.dart' show KeyRejectKinds;
+import 'policy/written_members.dart';
 
 /// The handler bodies for one session's value methods.
 ///
@@ -85,7 +86,9 @@ final class ValueHandlers {
   /// builds exactly that, as do the unit kits in `value_handlers_test.dart`)
   /// must behave as it did before this argument existed. Production never
   /// gets this: `RelaySession` always passes the session's own predicate.
-  static bool _anyKeyWritable(String key) => true;
+  static bool _anyKeyWritable(String key,
+          {List<String?> members = const <String?>[null]}) =>
+      true;
   static void _openToAll(String method) {}
 
   final StateManApi api;
@@ -121,7 +124,12 @@ final class ValueHandlers {
   /// station may not see is refused as nonexistent by the existence check
   /// above this gate and never reaches it — see the comment at the call site,
   /// which is where that ordering is load-bearing.
-  final bool Function(String key) canWriteKey;
+  /// Whether this session may actuate a key, given the members a write moves.
+  ///
+  /// Named rather than positional for [members] so the existing tear-off of
+  /// `PolicyStateMan.canWrite` still satisfies it and every caller that has
+  /// nothing to say about members keeps asking the key-level question.
+  final bool Function(String key, {List<String?> members}) canWriteKey;
 
   /// The read gate, asked **before the existence check** and about the call,
   /// not the key: `PolicyStateMan.requirePlantRead`, through the predicate
@@ -472,7 +480,14 @@ final class ValueHandlers {
     // One check covers `holdToRun` too (ruling OQ5): that seam is reachable
     // only through this method, so a `view` station's engage is refused before
     // a handle is taken and before anything feeds a deadman counter.
-    if (!canWriteKey(request.key)) {
+    // **The members, named.** A whole-struct write carries every member of the
+    // tag whether or not the operator moved them, so the question has to be
+    // asked about the ones that actually moved — otherwise jogging a conveyor
+    // requires whatever its setpoint requires. The baseline is the gateway's
+    // own store and costs no I/O; see `written_members.dart` for the diff and
+    // for what an undiffable value falls back to.
+    if (!canWriteKey(request.key,
+        members: writtenMembers(api.read(request.key), request.value))) {
       throw rpc.RpcException(
           ServerErrorCodes.forbidden,
           'this station may see "${request.key}" but may not actuate it. '

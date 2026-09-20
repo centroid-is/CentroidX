@@ -20,7 +20,7 @@
 /// which serves a `FakeStateMan`: this file serves the `BackendStateMan` that
 /// [composeBackendRelay] assembles — the same function `bin/main.dart` calls,
 /// with the same real `Database`, the same real `Preferences`, the same
-/// `KeyMappingSeriesResolver` and the same [backendRelayPolicy]. Serving a
+/// `KeyMappingSeriesResolver` and the same [backendRelayPolicyFor]. Serving a
 /// hand-assembled graph would make this leg evidence about a fixture, and
 /// criterion 4 (13-10) exists because the graph nothing assembled was the only
 /// one that shipped.

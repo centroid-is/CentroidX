@@ -483,7 +483,9 @@ final class _HidesEgress implements KeyPolicy {
       key != PipeKeys.egressKbps;
 
   @override
-  bool canWrite(String key, StationIdentity identity) => false;
+  bool canWrite(String key, StationIdentity identity,
+          {List<String?> members = const <String?>[null]}) =>
+      false;
 
   @override
   bool canWritePreference(String key, StationIdentity identity) => false;

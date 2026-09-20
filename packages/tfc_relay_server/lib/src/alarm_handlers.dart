@@ -35,7 +35,9 @@ final class AlarmHandlers {
   /// **Production never gets this**: `RelaySession` always passes the session's
   /// own predicate, and `alarm_ack_test.dart`'s view-station arm goes through
   /// the real session for exactly that reason.
-  static bool _anyKeyWritable(String key) => true;
+  static bool _anyKeyWritable(String key,
+          {List<String?> members = const <String?>[null]}) =>
+      true;
   static void _openToAll(String method) {}
 
   /// The session's `PolicyStateMan` view of the source.
@@ -71,7 +73,7 @@ final class AlarmHandlers {
   /// comparison. Two comparisons can drift; one answer cannot. Read late on
   /// every call for `ownerOf`'s reason: these handlers are built during the
   /// session's `_start` and the identity is minted afterwards, by `_hello`.
-  final bool Function(String key) canWriteKey;
+  final bool Function(String key, {List<String?> members}) canWriteKey;
 
   /// The read gate, asked **before the existence check** and about the call,
   /// not the key: `PolicyStateMan.requirePlantRead`, through the predicate

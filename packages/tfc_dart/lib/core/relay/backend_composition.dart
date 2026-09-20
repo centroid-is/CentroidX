@@ -52,14 +52,18 @@ import 'package:tfc_access/tfc_access.dart'
         AccessGroup,
         AccessPolicy,
         AccessRole,
+        AccessSession,
         AuditSink,
         AuthProvider,
-        AuthenticatedUser;
+        AuthenticatedUser,
+        NullAuditSink,
+        TagBindingResolver;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart'
     show AccessAdminApi, AccessTemplateApi, BackendConfigApi;
 import 'package:tfc_relay_server/tfc_relay_server.dart';
 
 import '../access/access_repository.dart';
+import '../access/access_template_store.dart';
 import '../access/drift_audit_sink.dart';
 import '../access/local_auth_provider.dart';
 import '../database.dart';
@@ -112,8 +116,15 @@ import 'relay_config.dart';
 /// object — indistinguishable by any assertion, which would make the
 /// composition test's policy arm vacuous. A distinct instance is what lets
 /// "somebody chose this" be a fact a test can read by identity.
-final KeyPolicy backendRelayPolicy =
-    AccessPolicyKeyPolicy(policy: const AccessPolicy());
+/// **Now a factory, because the tag bindings are per-composition.** It was a
+/// single non-const instance so a test could read "somebody chose this" by
+/// identity; a snapshot read from this gateway's database cannot be a module
+/// constant, so the choice is named here as a function the composition calls
+/// and the property is asserted behaviourally instead — the shipped policy is
+/// the one that consults [bindings], and `backend_composition_test.dart`
+/// proves it by seeding a binding and watching a write be refused.
+KeyPolicy backendRelayPolicyFor(TagBindingResolver bindings) =>
+    AccessPolicyKeyPolicy(policy: AccessPolicy(tagBindings: bindings.groupFor));
 
 /// The assembled graph: everything [composeBackendRelay] built, still unstarted.
 ///
@@ -130,12 +141,30 @@ final class BackendRelayComposition {
     required this.policy,
     required this.server,
     _AccountCache? accounts,
-  }) : _accounts = accounts;
+    _TagBindingCache? tagBindings,
+  })  : _accounts = accounts,
+        _tagBindings = tagBindings;
 
   /// The in-memory account cache the synchronous [UserResolver] answers from,
   /// or null when this deployment configured no credential source and so has
   /// no accounts to resolve. Refreshed by [refreshAccounts].
   final _AccountCache? _accounts;
+
+  /// The access-template snapshot every tag write is graded against, or null
+  /// when this composition has no database to read it from. Refreshed by
+  /// [refreshAccounts] on the same tick, deliberately: both are answers the
+  /// access tables give and a second poll would be a second thing to keep in
+  /// step.
+  final _TagBindingCache? _tagBindings;
+
+  /// The access-template snapshot every tag write on this socket is graded
+  /// against, or null when this composition has none.
+  ///
+  /// Exposed because it is the thing that was silently absent: a gateway whose
+  /// resolver is `neverLoaded` grades every bound key at the `operate` floor
+  /// and looks exactly like one whose plant binds nothing. `state` tells those
+  /// apart, and a deployment that wants to know should ask.
+  TagBindingResolver? get tagBindings => _tagBindings?.resolver;
 
   /// The `StateManApi` the server serves every session from.
   final BackendStateMan api;
@@ -151,7 +180,7 @@ final class BackendRelayComposition {
   /// pipe's workers were registered with.
   final KeyMappingSeriesResolver resolver;
 
-  /// Who may see and who may actuate. See [backendRelayPolicy].
+  /// Who may see and who may actuate. See [backendRelayPolicyFor].
   final KeyPolicy policy;
 
   /// The listening end, **not yet listening**. `await server.start()` binds.
@@ -189,7 +218,86 @@ final class BackendRelayComposition {
   /// throws out of a failed database read into the caller's tick; a stale cache
   /// is the safe answer (it revokes nobody it should not), the same trade
   /// `FileTokenValidator.stillValid`'s unreachable-source swallow makes.
-  Future<void> refreshAccounts() async => _accounts?.refresh();
+  /// Re-reads everything this gateway caches from the access tables: the
+  /// accounts and their roles' groups, and the access-template snapshot that
+  /// grades every tag write.
+  ///
+  /// **One tick for both**, and the name is kept because it is what
+  /// `bin/main.dart` and the composition tests already call. Two polls would
+  /// be two things to keep in step, and the failure mode of the pair drifting
+  /// is a station whose account was revoked still writing against a template
+  /// that was too — or, worse, the reverse.
+  Future<void> refreshAccounts() async {
+    await _accounts?.refresh();
+    await _tagBindings?.refresh();
+  }
+}
+
+/// The gateway's copy of the access-template snapshot, refreshed on the same
+/// tick as the accounts.
+///
+/// **Why the gateway needs one at all.** `AccessPolicy.groupForTag` answers the
+/// `operate` floor for every key when it holds no `tagBindings`, and until this
+/// existed the backend built `AccessPolicyKeyPolicy(policy: const
+/// AccessPolicy())` — no bindings, ever. So a template that raised
+/// `p_cfg_ManualFreq` to `setpoints`, or a member to `force`, was enforced by
+/// the app and **not** by the socket: `setpoints`, `device` and `force` all
+/// collapsed into `operate` the moment a value left the panel. The wire is the
+/// security boundary (`docs/relay-wire-api.md` §10) and it was the permissive
+/// one.
+///
+/// **Synchronous at the point of use**, for `_AccountCache`'s reason: the
+/// lookup runs on the write path of every jog, start and alarm ack, and
+/// `KeyPolicy.canWrite` is synchronous by design (`key_policy_test.dart`
+/// property 4 — an `await` there opens the `SubscriptionLimitExceeded` race).
+/// So the resolver is a mutable object the poll refills, exactly as the panel's
+/// `tagBindingResolverProvider` is, and never a value re-read per write.
+///
+/// **A failed refresh keeps the previous snapshot** — `markStale()`, not a
+/// clear. `TagBindingResolver.markStale`'s own doc gives the reason: dropping
+/// the snapshot would unrestrict every bound key on the plant the moment the
+/// database blinked, which is the fail-open this whole milestone exists to
+/// remove.
+///
+/// **The never-loaded window is real and bounded.** Before the first refresh
+/// every bound key grades at the `operate` floor. `bin/main.dart` refreshes
+/// before it binds the socket, so no session exists during it; the window that
+/// remains is a gateway whose first read fails, and that one is logged.
+final class _TagBindingCache {
+  _TagBindingCache(this._store, {Logger? logger}) : _logger = logger ?? Logger();
+
+  final AccessTemplateStore _store;
+  final Logger _logger;
+
+  /// The object the policy closes over. Never replaced — see the class doc.
+  final TagBindingResolver resolver = TagBindingResolver();
+
+  /// Re-reads `access_template` and `access_key_binding` into the resolver.
+  ///
+  /// Both halves in one [TagBindingResolver.setSnapshot], which is that
+  /// method's own requirement: applying one without the other leaves a window
+  /// in which every binding dangles, and a dangling binding grades at the
+  /// floor.
+  Future<void> refresh() async {
+    try {
+      final templates = await _store.list();
+      final bindings = await _store.bindings();
+      resolver.setSnapshot(
+        keyToTemplate: bindings,
+        templates: {for (final template in templates) template.name: template},
+      );
+    } on Object catch (error, stack) {
+      // The answers survive and are marked older than they should be. Logged
+      // because a cache that silently stopped updating is the defect nobody
+      // finds until a permission does not hold.
+      resolver.markStale();
+      _logger.w(
+          'access templates could not be refreshed; the previous snapshot '
+          'still grades every write',
+          error: error,
+          stackTrace: stack);
+    }
+  }
 }
 
 /// The synchronous [UserResolver]'s backing store: one username → account map,
@@ -605,6 +713,31 @@ BackendRelayComposition composeBackendRelay({
   // "a token file and no database to resolve roles from" — the compose-time
   // refusal the plan asked for — is not a reachable state through this
   // signature; the refusal it maps onto is `start()`'s own, one layer down.
+  // The access-template snapshot every tag write on this socket is graded
+  // against. Built whenever there is a database to read it from — which is
+  // always, on this signature — because the alternative is the `const
+  // AccessPolicy()` that shipped: no bindings, so `groupForTag` answered the
+  // `operate` floor for every key and the wire enforced none of the templates
+  // the app enforced. See [_TagBindingCache].
+  //
+  // The store is constructed for READING only. Its `session`, `audit` and
+  // `station` arguments feed `_requireUsers` and the audit rows on its write
+  // members (`create`, `update`, `bind`, …); `list()` and `bindings()` are
+  // plain selects and touch none of them. An anonymous session and a
+  // discarding sink are therefore the honest arguments for a cache that never
+  // writes — and if a read ever starts recording, `NullAuditSink` is what
+  // makes that a silent no-op rather than a row attributed to nobody, so the
+  // day that changes this line has to change with it.
+  final tagBindingCache = _TagBindingCache(
+    AccessTemplateStore(
+      db: database.db,
+      session: () => AccessSession.anonymous(const <AccessGroup>{}),
+      audit: const NullAuditSink(),
+      station: 'gateway',
+    ),
+    logger: logger,
+  );
+
   final _AccountCache? accountCache =
       config.credentials is RelayTokenFileCredentials
           ? _AccountCache(AccessRepository(database.db), logger: logger)
@@ -710,7 +843,15 @@ BackendRelayComposition composeBackendRelay({
     configItems: BackendConfigItems(database: database.db),
   );
 
-  final chosenPolicy = policy ?? backendRelayPolicy;
+  // **The bindings reach the wire here.** The policy is still named at this
+  // call site rather than left to `RelayServer`'s default — that property is
+  // unchanged and is why [backendRelayPolicyFor] exists as a named function.
+  // What changed is that the policy it builds now carries this gateway's
+  // access-template snapshot, instead of a bare `const AccessPolicy()` whose
+  // `groupForTag` answered the operate floor for every key on the plant. A
+  // caller that passes an explicit `policy` still wins.
+  final chosenPolicy =
+      policy ?? backendRelayPolicyFor(tagBindingCache.resolver);
 
   // Relay errors go to the backend's logger and not to `reportToStderr`, so a
   // session fault appears in the same stream as everything else the plant
@@ -763,7 +904,7 @@ BackendRelayComposition composeBackendRelay({
     server = RelayServer(
       api: api,
       config: serverConfig,
-      // Named, never defaulted. See [backendRelayPolicy].
+      // Named, never defaulted. See [backendRelayPolicyFor].
       policy: chosenPolicy,
       resolver: resolver,
       alarmAcks: alarmAcks,
@@ -804,5 +945,6 @@ BackendRelayComposition composeBackendRelay({
     policy: chosenPolicy,
     server: server,
     accounts: accountCache,
+    tagBindings: tagBindingCache,
   );
 }

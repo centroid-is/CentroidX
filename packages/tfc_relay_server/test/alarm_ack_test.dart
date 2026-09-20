@@ -129,7 +129,8 @@ final class _SpyPolicy implements KeyPolicy {
   /// the only honest answer: a station that may not know a tag exists cannot
   /// meaningfully be permitted to actuate it.
   @override
-  bool canWrite(String key, StationIdentity identity) {
+  bool canWrite(String key, StationIdentity identity,
+      {List<String?> members = const <String?>[null]}) {
     asked.add(key);
     if (hidden.contains(key)) return false;
     return identity.session.can(AccessGroup.operate);

@@ -583,9 +583,17 @@ final class PolicyStateMan implements StateManApi, TypeDescriptions {
   void requirePlantRead(String method) =>
       requireReadFloor(identityOf(), method, 'nothing was read');
 
-  bool canWrite(String key) {
+  /// Whether this session may actuate [key], moving [members].
+  ///
+  /// [members] carries the member paths the write moves, so a template that
+  /// raises one member of a struct above the operate floor is enforced here
+  /// rather than flattened. The default is the key-level question, which is
+  /// what a scalar write means and what every caller asked before member
+  /// grading reached the wire — `ValueHandlers` names the members it can.
+  bool canWrite(String key, {List<String?> members = const <String?>[null]}) {
     final identity = identityOf();
-    return identity != null && policy.canWrite(key, identity);
+    return identity != null &&
+        policy.canWrite(key, identity, members: members);
   }
 
   // -------------------------------------------------------------------------
