@@ -109,6 +109,27 @@ void main() {
       await awaitConnected(link);
     });
 
+    test('the link proves itself alive once per publishing interval while '
+        'nothing changes, from the server\'s own clock', () async {
+      // Nothing on this session changes during the window: no key is
+      // subscribed and no value is set. What arrives is the wrapper's
+      // heartbeat — the server's CurrentTime, sampled every publishing
+      // interval — which is the proof HARD-01 anchors freshness on.
+      final before = link.livenessTicks;
+      var events = 0;
+      final watch = link.liveness.listen((_) => events++);
+      addTearDown(watch.cancel);
+
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+
+      expect(link.livenessTicks - before, greaterThanOrEqualTo(3),
+          reason: 'the default publishing interval is 100 ms; three ticks in '
+              '600 ms is the loosest bound a loaded runner still meets, and '
+              'zero is a link that would age its constant tags out');
+      expect(events, link.livenessTicks - before,
+          reason: 'every tick reaches the composer\'s seam');
+    });
+
     test('read answers with the server\'s own source time, not with now',
         () async {
       // The cheap half of the headline claim, on the read path: the instant

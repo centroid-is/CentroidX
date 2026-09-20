@@ -189,6 +189,100 @@ void main() {
       expect(man.sweepInterval, staleAfter ~/ 4);
     });
   });
+
+  // HARD-01, ported from `backend_freshness.dart` (16024ca80). OPC UA
+  // notifies on CHANGE, so a constant value on a live session arrives once
+  // and never again; a sweep anchored on arrivals alone badged 1103 of 1437
+  // plant values `badStale` while every PLC was fine, and this stack measured
+  // the same: 192 → 516 at t≈2.5 s against a 2 s deadline, link healthy.
+  // `transmission_attack_test.dart` characterised it as "a live, correct,
+  // unchanging value is withheld"; these are the cases that replace it.
+  group('a live link vouches for its constant values', () {
+    late LocalStateMan man;
+    late FakeUpstreamLink link;
+
+    setUp(() async {
+      final built = build();
+      man = built.man;
+      link = built.link;
+      await man.start();
+      addTearDown(man.dispose);
+    });
+
+    /// Pulses [link]'s proof of life well inside the deadline, until cancelled.
+    Timer keepAlive() =>
+        Timer.periodic(staleAfter ~/ 6, (_) => link.proveAlive());
+
+    test('a value that never changes stays good while its link proves itself '
+        'alive, and goes stale once the link falls silent', () async {
+      final watch = man.subscribe(st101Key).listen((_) {});
+      addTearDown(watch.cancel);
+      man.applyUpstreamBatch({st101Key: DynamicValue(value: 0)});
+
+      final pulse = keepAlive();
+      final sweepsBefore = man.freshnessSweeps;
+      await Future<void>.delayed(staleAfter * 5);
+      expect(man.freshnessSweeps - sweepsBefore, greaterThan(4),
+          reason: 'anti-vacuity: the clock ran and the sweep looked, so a '
+              'good verdict below is the sweep\'s and not the absence of one');
+      expect(man.read(st101Key)!.quality, Quality.good,
+          reason: 'a rate at zero on a healthy line is a good value that is '
+              'five deadlines old, not a stale one. The link has been proving '
+              'itself alive the whole time and a monitored item on a live '
+              'session that has not notified has not changed');
+      expect(man.read(st101Key)!.value, 0);
+
+      // The dead-link case, kept: a frozen session or a PLC that stopped
+      // scanning goes quiet on every tag at once, and the link anchor ages
+      // with them.
+      pulse.cancel();
+      await until(() => man.read(st101Key)!.quality == Quality.badStale,
+          reason: 'with no proof of life the constant value must go stale at '
+              'the deadline exactly as before — this is the fault the sweep '
+              'exists to report');
+    });
+
+    test('a neighbour that changes vouches for the constant beside it, on the '
+        'same link', () async {
+      final watch = man.subscribe(st101Key).listen((_) {});
+      addTearDown(watch.cancel);
+      man.applyUpstreamBatch({st101Key: DynamicValue(value: 42)});
+
+      // st201Key is served by the same fake link in this fixture: its
+      // arrivals are that link speaking.
+      var tick = 0;
+      final neighbour = Timer.periodic(staleAfter ~/ 6, (_) {
+        man.applyUpstreamBatch({st201Key: DynamicValue(value: tick++)});
+      });
+      addTearDown(neighbour.cancel);
+      await Future<void>.delayed(staleAfter * 5);
+
+      expect(man.read(st101Key)!.quality, Quality.good,
+          reason: 'a data change on any tag of a session proves that '
+              'session\'s publish loop alive — the `heardKeys` half of the '
+              'backend\'s anchor, and free here because the health producer '
+              'already keeps one instant per alias');
+
+      neighbour.cancel();
+      await until(() => man.read(st101Key)!.quality == Quality.badStale);
+    });
+
+    test('a link proving itself alive puts nothing on a key that never '
+        'arrived', () async {
+      final watch = man.subscribe(st101Key).listen((_) {});
+      addTearDown(watch.cancel);
+      final pulse = keepAlive();
+      addTearDown(pulse.cancel);
+      await Future<void>.delayed(staleAfter * 2);
+
+      expect(man.read(st101Key), isNull,
+          reason: 'a proof of life moves one instant per alias and touches '
+              'no key: no data and stale are different statements, and a '
+              'link chattering is not evidence this key ever produced a '
+              'value — the anchor is null until one arrives, whatever the '
+              'link has been doing');
+    });
+  });
 }
 
 /// Waits for [predicate] to hold, or fails naming what never happened.

@@ -69,6 +69,50 @@
 /// list. An enumerated list is a list a new key gets added outside of, and the
 /// symptom of forgetting is an indicator that reads stale exactly when an
 /// operator is deciding whether to believe the rest of the screen.
+///
+/// ## Freshness is anchored per link as well as per key (HARD-01)
+///
+/// A key's age is measured from the **later** of two anchors: the last value
+/// heard for that key, and the last time its link spoke — by any value on
+/// it, or by a proof of life (`LinkLiveness`). The per-key anchor alone was
+/// the defect the backend measured on the plant on 2026-09-16 and fixed in
+/// `16024ca80` ("a link's keep-alive proves its values, as OPC UA does"):
+/// OPC UA notifies on **change**, so a healthy line's stable signals — a
+/// stopped drive's 0 Hz, a setpoint, a mode in auto all shift — arrive once
+/// and then never again, and the sweep badged 1103 of 1437 values `badStale`
+/// while the PLC was fine. That fix landed only in
+/// `tfc_dart/lib/core/relay/backend_freshness.dart`; this sweep never got
+/// it, and the same stack measured it here: a node published every 200 ms
+/// with an unchanging value went 192 → 516 at t≈2.5 s against a 2 s deadline
+/// with the link healthy throughout. Two sweeps disagreeing on the one
+/// question they exist to answer is precisely what `freshness.dart`'s doc
+/// says must never happen.
+///
+/// A data change on any tag of a session proves that session's publish loop
+/// alive, and a monitored item on a live session that has not notified has
+/// not changed — that is what the protocol promises; a heartbeat sample
+/// proves the same thing with no tag attached. So the link's last arrival
+/// vouches for its constant tags. What it cannot vouch for is a link nobody
+/// has heard from at all: a frozen session or a PLC that stopped scanning
+/// goes quiet on every tag at once, the link anchor ages with them, and every
+/// key on it still goes stale at the deadline — which is the failure this
+/// file exists to catch, and it is caught exactly as before. The trade is a
+/// single blackholed tag on an otherwise talking link, which now reads
+/// fresh; the backend's doc records why that window was already accepted.
+///
+/// `linkAnchor` is a seam and not a lookup this file does itself: the
+/// composer knows which alias serves a key and keeps the per-alias instant
+/// in its health producer, and hands in one function. Without it the sweep
+/// is per-key, as it was — a fake built without one is judged exactly as
+/// before, which is what keeps the dead-link cases honest.
+///
+/// **Still degrade-only.** The backend's port also restores a badge it put on
+/// when the link speaks again; this sweep does not, because the kernel's
+/// doc rules a sweep must never raise a quality, and a raise is a decision
+/// for the person who owns that rule rather than a line smuggled into a port.
+/// The window it leaves is recorded rather than hidden: a key badged between
+/// the deadline and the OPC UA wrapper's 15 s heartbeat verdict stays badged
+/// until it changes or the session cycles.
 library;
 
 import 'dart:async';
@@ -83,8 +127,10 @@ final class FreshnessSweep {
     required Map<String, int> lastArrival,
     required void Function(Map<String, DynamicValue>) degrade,
     required int Function() elapsedMs,
+    int? Function(String key)? linkAnchor,
   })  : _store = store,
         _lastArrival = lastArrival,
+        _linkAnchor = linkAnchor,
         _degrade = degrade,
         _elapsedMs = elapsedMs;
 
@@ -97,6 +143,10 @@ final class FreshnessSweep {
   /// Arrival instants **on the elapsed anchor**, in milliseconds. Owned by
   /// `LocalStateMan` and read here.
   final Map<String, int> _lastArrival;
+
+  /// When [key]'s link last spoke, on the same anchor, or null for a key no
+  /// link serves or a sweep built without the seam. See the library doc.
+  final int? Function(String key)? _linkAnchor;
   final void Function(Map<String, DynamicValue>) _degrade;
 
   /// The elapsed clock, and there is deliberately no wall-clock alternative to
@@ -211,11 +261,26 @@ final class FreshnessSweep {
   bool _isStale(String key, DynamicValue cached, int nowMs) => isStaleNow(
         key: key,
         quality: cached.quality,
-        lastHeardMs: _lastArrival[key],
+        lastHeardMs: _anchorOf(key),
         nowMs: nowMs,
         staleAfter: staleAfter,
         skipAlarmKeys: false,
       );
+
+  /// The later of the key's own last arrival and its link's — or null when
+  /// nothing has ever arrived for the key, whatever the link has been doing.
+  ///
+  /// The null rule is the kernel's: no data and stale are different
+  /// statements, and a link chattering about other keys is not evidence this
+  /// one ever produced a value. Same arithmetic as
+  /// `BackendFreshnessSweep._anchorOf`, so the two sides of the pipe age a
+  /// key the same way.
+  int? _anchorOf(String key) {
+    final own = _lastArrival[key];
+    if (own == null) return null;
+    final onLink = _linkAnchor?.call(key);
+    return onLink == null || onLink < own ? own : onLink;
+  }
 
   /// Teardown. A timer that outlives its source keeps the isolate alive and
   /// keeps sweeping a store nobody is watching, so a leak in one case surfaces

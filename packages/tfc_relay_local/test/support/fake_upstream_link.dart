@@ -124,7 +124,8 @@ abstract interface class UpstreamLinkDriver {
 /// `createM2400DeviceClients`'s division of labour (`state_man.dart:1292-1293`)
 /// rather than arriving already connected — the lifecycle the real adapters
 /// have is the lifecycle the contract should be exercising.
-final class FakeUpstreamLink implements UpstreamLink, UpstreamLinkDriver {
+final class FakeUpstreamLink
+    implements UpstreamLink, UpstreamLinkDriver, LinkLiveness {
   FakeUpstreamLink({
     required this.alias,
     Iterable<String> keys = const <String>[],
@@ -159,6 +160,12 @@ final class FakeUpstreamLink implements UpstreamLink, UpstreamLinkDriver {
   final StreamController<UpstreamLinkState> _states =
       StreamController<UpstreamLinkState>.broadcast();
   final StreamController<String> _epochs = StreamController<String>.broadcast();
+
+  /// Proofs of life, emitted only by [proveAlive]. A fake that is never told
+  /// to prove itself is a link whose keys age exactly as they did before the
+  /// per-link anchor existed — which is what keeps every dead-link case in
+  /// the suite honest.
+  final StreamController<void> _liveness = StreamController<void>.broadcast();
 
   UpstreamLinkState _state = UpstreamLinkState.disconnected;
   int _epochSeq = 1;
@@ -235,6 +242,16 @@ final class FakeUpstreamLink implements UpstreamLink, UpstreamLinkDriver {
 
   @override
   int get upstreamSubscriptionsCreated => _subscriptionsCreated;
+
+  @override
+  Stream<void> get liveness => _liveness.stream;
+
+  /// The plant's keep-alive: this link is alive right now, and nothing on it
+  /// changed. On the test class, not the kit — a real OPC UA link proves
+  /// itself from the server's clock and no driver can make it.
+  void proveAlive() {
+    if (!_liveness.isClosed) _liveness.add(null);
+  }
 
   @override
   UpstreamRef? resolve(String key, Object mappingEntry) {
@@ -376,6 +393,7 @@ final class FakeUpstreamLink implements UpstreamLink, UpstreamLinkDriver {
     _staleFeeds.clear();
     await _states.close();
     await _epochs.close();
+    await _liveness.close();
   }
 
   // ------------------------------------------------------ the nine kit levers

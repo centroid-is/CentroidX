@@ -168,6 +168,28 @@ abstract interface class PollCacheReads {
   bool get readIsPollCache;
 }
 
+/// A link that can prove itself alive between value changes.
+///
+/// OPC UA reports on **change**, so a healthy session whose tags are constant
+/// — a setpoint, a recipe number, a mode in auto all shift, a rate at zero —
+/// delivers nothing for hours, and a freshness sweep anchored on arrivals
+/// alone badges every one of them `badStale` while the PLC is fine. The
+/// project measured that on the plant (1103 of 1437 values, `16024ca80`) and
+/// ruled, to OPC UA's own model, that what proves a session alive when
+/// nothing changes is its keep-alive. This is the seam that carries that
+/// proof to the composer's sweep: one event per proof of life, and the
+/// composer anchors every key on the link to it (see `freshness_sweep.dart`).
+///
+/// An optional capability rather than a member of [UpstreamLink], because a
+/// polled protocol has no separate proof — every poll delivers every key, so
+/// the arrivals already are one — and a fake that never speaks is a link
+/// whose keys should go stale exactly as before.
+abstract interface class LinkLiveness {
+  /// One event per proof that the device is alive right now: a heartbeat
+  /// sample, a keep-alive, a poll that returned. Broadcast.
+  Stream<void> get liveness;
+}
+
 abstract interface class UpstreamLink {
   /// The configured server alias, as it appears in `StatusParams.alias` and in
   /// the `PIPE.upstream.<alias>.*` keys.

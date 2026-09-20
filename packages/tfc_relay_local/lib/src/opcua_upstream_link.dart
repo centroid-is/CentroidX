@@ -93,7 +93,7 @@ UpstreamLinkState mapEffectiveStatus(EffectiveDeviceStatus status) {
 }
 
 /// One configured OPC UA server, behind the gateway's uniform surface.
-final class OpcUaUpstreamLink implements UpstreamLink {
+final class OpcUaUpstreamLink implements UpstreamLink, LinkLiveness {
   OpcUaUpstreamLink({
     required this.alias,
     required String endpoint,
@@ -195,6 +195,45 @@ final class OpcUaUpstreamLink implements UpstreamLink {
   final StreamController<String> _epochs = StreamController<String>.broadcast();
   StreamSubscription<EffectiveDeviceStatus>? _statusSub;
 
+  /// The proof of life ([LinkLiveness]): one event per tick of
+  /// `ClientWrapper`'s heartbeat — its monitored item on the server's own
+  /// clock, `Server_ServerStatus_CurrentTime` (ns=0, i=2258;
+  /// `state_man.dart:606-608`), which the server samples once per
+  /// publishing interval whether or not any tag changed.
+  ///
+  /// **Detected on the wrapper's own tick, not monitored a second time.** The
+  /// first cut of this put a second item on i=2258, and the file's
+  /// two-clients-on-one-server case then died inside `UA_Client_delete` with
+  /// "Callback invoked after it has been deleted": the binding closes a
+  /// cancelled item's native callable before the server has acked the
+  /// delete, and the extra item widened the window in which the wrapper's
+  /// already-cancelled heartbeat item still published into it. A second
+  /// native surface for a fact the wrapper already has is a second teardown
+  /// to get right, so the fact is read where it lives instead.
+  ///
+  /// The wrapper keeps the tick private and exposes only a wall-clock age
+  /// (`heartbeatAgeSec`), which the composer's elapsed-anchored sweep may
+  /// not consume (08-REVIEW CR-02) — so it is not consumed. [_noteHeartbeat]
+  /// reads it on every iterate tick purely as an **edge detector**: an age
+  /// smaller than the last one seen means a tick landed in between, and
+  /// that edge is the event; the composer stamps it on its own elapsed
+  /// clock when it arrives. An NTP step can at worst mint one spurious
+  /// proof (a backwards step shrinks the age once) or delay one by a tick,
+  /// and neither moves a verdict by more than a publishing interval. What
+  /// matters is preserved: the heartbeat stops the instant the session
+  /// stops publishing, so a frozen session stops proving itself long before
+  /// the wrapper's own 15 s verdict, and every key on it still goes stale at
+  /// the deadline. A server that refuses the heartbeat item (the
+  /// `opcuaUnmonitored` case of #539) yields no proof, and the link's keys
+  /// age on their own arrivals as they did before — the status quo, not a
+  /// regression.
+  final StreamController<void> _liveness = StreamController<void>.broadcast();
+  int _livenessTicks = 0;
+
+  /// The heartbeat age at the previous iterate tick. Infinity until the first
+  /// heartbeat, so the first age seen reads as an edge.
+  double _lastHeartbeatAge = double.infinity;
+
   UpstreamLinkState _state = UpstreamLinkState.disconnected;
   String _epoch = unconnectedEpoch;
 
@@ -239,6 +278,13 @@ final class OpcUaUpstreamLink implements UpstreamLink {
 
   /// Driver ticks so far.
   int get iterateTicks => _iterateTicks;
+
+  /// How many proofs of life the wrapper's heartbeat has delivered. The
+  /// number a case reads to know the edge detector is actually seeing ticks.
+  int get livenessTicks => _livenessTicks;
+
+  @override
+  Stream<void> get liveness => _liveness.stream;
 
   /// Everything the driver's supervisor caught.
   List<Object> get iterateErrors => List<Object>.unmodifiable(_iterateErrors);
@@ -875,6 +921,22 @@ final class OpcUaUpstreamLink implements UpstreamLink {
     // assertion written against it read `connecting`.
   }
 
+  /// The edge detector behind [liveness]; see [_liveness] for the argument.
+  /// Called once per iterate tick, which at the default 10 ms period is
+  /// ten looks per 100 ms heartbeat — two double reads and a comparison.
+  void _noteHeartbeat() {
+    final wrapper = _wrapper;
+    if (wrapper == null) return;
+    final age = wrapper.heartbeatAgeSec;
+    // -1 is the wrapper's "never ticked", and not an edge.
+    if (age < 0) return;
+    final ticked = age < _lastHeartbeatAge;
+    _lastHeartbeatAge = age;
+    if (!ticked) return;
+    _livenessTicks++;
+    if (!_liveness.isClosed) _liveness.add(null);
+  }
+
   /// The keys this link currently holds a monitored item for.
   ///
   /// A resubscribe must re-establish the **same set**. A set that grew means
@@ -1282,6 +1344,7 @@ final class OpcUaUpstreamLink implements UpstreamLink {
     if (client == null) return;
     _iterating = true;
     _iterateTicks++;
+    _noteHeartbeat();
     _reopenSessionIfNeeded(client);
     if (client is ua.Client) {
       try {
@@ -1487,6 +1550,7 @@ final class OpcUaUpstreamLink implements UpstreamLink {
       await monitored.controller.close();
     }
     _monitors.clear();
+    if (!_liveness.isClosed) await _liveness.close();
     // The one-shot feeds handed to stale-handle subscribes. 08-REVIEW WR-09:
     // these were never tracked and `_monitors` cannot see them, so each one
     // leaked an unclosed controller — on the path that runs *exactly* when a

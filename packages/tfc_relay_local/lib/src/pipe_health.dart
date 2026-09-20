@@ -162,8 +162,25 @@ final class PipeHealth {
     publish(link.alias);
   }
 
+  /// When [alias]'s link last spoke, on the elapsed anchor, or null if it
+  /// never has.
+  ///
+  /// The freshness sweep's per-link anchor (`freshness_sweep.dart`,
+  /// HARD-01's port). It is this producer's instant and not a second map
+  /// because the two answer the same question — "how long since anything
+  /// came from this PLC" — and `data_age_ms` and a stale badge disagreeing
+  /// about it would be the two-copies drift `freshness.dart`'s doc warns of.
+  int? lastArrivalOn(String alias) => _newestArrival[alias];
+
   /// Values arrived on [aliases] at elapsed millisecond [at]. Moves
   /// `data_age_ms` and nothing else.
+  ///
+  /// Also fed by a link's proof of life ([LinkLiveness]) — a heartbeat sample
+  /// from the server, with no key attached. That counts as data age for the
+  /// reason `ClientWrapper.lastDataAgeSec` counts its heartbeat (it "used to
+  /// read the heartbeat clock alone, which reported a server with no
+  /// heartbeat and a busy data plane as having ancient data", and now takes
+  /// the newer of the two): the server's clock arriving is a value arriving.
   void noteArrivals(Iterable<String> aliases, int at) {
     final batch = <String, DynamicValue>{};
     for (final alias in aliases) {

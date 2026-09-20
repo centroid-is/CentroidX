@@ -127,6 +127,11 @@ final class LocalStateMan implements StateManApi {
       staleAfter: staleAfter,
       store: _store,
       lastArrival: _lastArrival,
+      // The per-link anchor, HARD-01's port: a key is aged from the later of
+      // its own last arrival and its link's, and the link's is what the
+      // health producer already keeps for `data_age_ms` — one instant per
+      // alias, moved by every arrival and by every proof of life.
+      linkAnchor: _linkAnchorOf,
       degrade: _degrade,
       elapsedMs: _elapsed,
     );
@@ -348,6 +353,14 @@ final class LocalStateMan implements StateManApi {
       // link has already degraded and re-browsed by the time this fires — all
       // that is owed here is republishing what it now says about itself.
       _linkEpochs.add(link.epochStream.listen((_) => _health.onLinkEvent(link)));
+      // The third thing a link can say about itself: that it is alive right
+      // now, with nothing having changed. Fed to the same per-alias instant
+      // an arrival moves, so the sweep's link anchor cannot tell a heartbeat
+      // from a value — which is the ruling (`16024ca80`): a keep-alive proves
+      // a session's values exactly as a data change does.
+      if (link case final LinkLiveness alive) {
+        _linkLiveness.add(alive.liveness.listen((_) => _heardLink(link.alias)));
+      }
       try {
         await link.connect(deadline: connectDeadline);
       } catch (error) {
@@ -393,6 +406,10 @@ final class LocalStateMan implements StateManApi {
       await subscription.cancel();
     }
     _linkEpochs.clear();
+    for (final subscription in _linkLiveness) {
+      await subscription.cancel();
+    }
+    _linkLiveness.clear();
     await _status.close();
     // Before the links, because it is the only thing here holding a
     // subscription on a connection this object does not own: the preference
@@ -1809,6 +1826,22 @@ final class LocalStateMan implements StateManApi {
   /// exactly one of them.
   final List<StreamSubscription<String>> _linkEpochs =
       <StreamSubscription<String>>[];
+
+  /// And for proofs of life, on the links that can give one ([LinkLiveness]).
+  final List<StreamSubscription<void>> _linkLiveness =
+      <StreamSubscription<void>>[];
+
+  /// [alias]'s link proved itself alive: the same instant an arrival on it
+  /// would move, and nothing else — no value changed, so no key is touched.
+  void _heardLink(String alias) =>
+      _health.noteArrivals(<String>[alias], _elapsed());
+
+  /// The freshness sweep's link anchor for [key]: when its link last spoke,
+  /// by value or by proof of life, or null for a key no link serves.
+  int? _linkAnchorOf(String key) {
+    final alias = aliasOfKey(key);
+    return alias == null ? null : _health.lastArrivalOn(alias);
+  }
 
   /// Link-state announcements, **one per link event and never one per key**.
   ///
