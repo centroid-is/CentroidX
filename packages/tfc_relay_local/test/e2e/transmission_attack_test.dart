@@ -470,7 +470,8 @@ void main() {
   });
 
   group('the shapes that broke things, through the gateway', () {
-    test('an enum inside a struct keeps its field names across a reconnect',
+    test('a struct keeps its MEMBER names across a reconnect (the enum names '
+        'are a separate gap, see the comment)',
         () async {
       final bench = await standUpPlant();
       expect(bench.panel.read(driveKey)!.toString(), contains('run_mode'),
@@ -479,10 +480,18 @@ void main() {
 
       await breakAndHeal(bench, pull: bench.link.killOnce);
 
-      // The defect this shape is named for: a panel colours equipment from
-      // enum NAMES, so a run_mode that survives a resync as a bare integer
-      // draws every conveyor violet. A resync is a fresh snapshot, and a
-      // fresh snapshot is exactly where a type dictionary can be dropped.
+      // **Scope, stated honestly.** This holds the MEMBER names across a
+      // resync — `run_mode` is still a named member and not an index — which
+      // is carried by the struct value itself.
+      //
+      // The enum NAMES are a different thing and this arm does not reach
+      // them: they ride in the type dictionary, and a gateway composed by
+      // `buildGateway` serves none, because `LocalStateMan` implements no
+      // `TypeDescriptions`. A resync is a fresh snapshot and is precisely
+      // where a dictionary can be dropped, so that IS the case worth pinning
+      // — it is pinned in `test/e2e_assets/`, parked on the same gap. When
+      // the gap closes this arm should assert the enum names survive the
+      // resync too, which is the half the 2026-09-17 plant defect was about.
       //
       // Asserted on the value the wait itself accepted, never on a re-read:
       // after a resync the store is re-seeded, so a second `read` can answer a

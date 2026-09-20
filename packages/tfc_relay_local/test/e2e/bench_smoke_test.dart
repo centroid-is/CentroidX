@@ -50,7 +50,7 @@ void main() {
         19.5);
   });
 
-  test('the enum inside a struct keeps its names across the whole chain',
+  test('a struct crosses the whole chain with its member names intact',
       () async {
     final bench = await standUpPlant();
     final drive = plantKey('HALL1', 'CN01.drive');
@@ -59,10 +59,24 @@ void main() {
         describe: 'the drive struct to reach the panel');
     final value = bench.panel.read(drive)!;
 
-    // #588's headline shape. The panel colours equipment from enum NAMES, so
-    // a struct whose run_mode arrives as a bare integer draws every conveyor
-    // violet. That was only ever asserted in direct mode; this is the arm
-    // that asserts it through the gateway and the socket.
+    // **What this proves, and what it does NOT.** It proves the struct
+    // crosses with its MEMBER names intact — `run_mode` arrives as a named
+    // member rather than an index — which is a property of the struct value
+    // itself and travels on every sample.
+    //
+    // It does **not** prove the enum NAMES cross, and an earlier version of
+    // this comment claimed it did. Enum names ride in the type dictionary
+    // (`types` on the subscribe result), which the server carries only when
+    // its source implements `TypeDescriptions`. `LocalStateMan` implements
+    // none, so a gateway composed by `buildGateway` serves no dictionary at
+    // all and `RemoteStateMan.typeOf` is null here. The panel colours
+    // equipment from enum names, so on this gateway every conveyor would
+    // still draw violet.
+    //
+    // That gap is exactly why the member-name assertion read as sufficient
+    // for so long: the half that was crossing is the half that is easy to
+    // see. `test/e2e_assets/` carries the case that pins the enum names and
+    // is parked on this gap; when it closes, strengthen this arm to match.
     expect(value.value, isNotNull,
         reason: 'the struct crossed at all');
     expect(value.toString(), contains('run_mode'),
