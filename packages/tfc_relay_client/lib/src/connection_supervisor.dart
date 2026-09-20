@@ -667,7 +667,28 @@ final class ConnectionSupervisor {
 
   /// The socket is up: build the peer, arm it, and drive it to a snapshot.
   Future<void> _serve(int gen, StreamChannel<String> channel) async {
-    final peer = rpc.Peer(channel);
+    // **Every inbound frame resets the freshness clock**, which is what the
+    // design says (§4.4) and what the code did not do: the watchdog was fed
+    // from notifications, `hello` and `subscribe` only. A session holding no
+    // subscription is sent no ticks by the gateway (`tick_engine.dart`), so a
+    // link that was up and answering — pings, reads, writes — was reported
+    // every freshness deadline as a gateway that had stopped speaking, and
+    // redialled. `setKeys({})`, a browser between boot and its first mapping
+    // fetch, and signing out all reach that state; after a sign-out the panel
+    // held every value as good for three seconds and then blamed the gateway.
+    //
+    // Fed here rather than at each call site because "any frame" is the rule,
+    // and a rule spelled at twelve call sites is a rule with a thirteenth.
+    // The generation guard is `_subscribe`'s: an answer belonging to a
+    // retired connection must not say that *this* one is alive.
+    final watched = StreamChannel<String>(
+      channel.stream.map((frame) {
+        if (gen == _generation) watchdog.sawFrame(InboundFrame.rpcResponse);
+        return frame;
+      }),
+      channel.sink,
+    );
+    final peer = rpc.Peer(watched);
     _peer = peer;
 
     peer.registerMethod(Methods.update,
@@ -942,6 +963,25 @@ final class ConnectionSupervisor {
   /// arithmetic for the number.
   Future<DecodedSubscribeResult> _subscribe(String sub, Set<String> keys) async {
     final gen = _generation;
+    _snapshotsInFlight++;
+    try {
+      return await _subscribeInner(sub, keys, gen);
+    } finally {
+      _snapshotsInFlight--;
+    }
+  }
+
+  /// How many subscribe answers this connection is waiting for.
+  ///
+  /// While one is outstanding the link watchdog stands down and
+  /// [ClientConfig.snapshotDeadline] is the only clock — see
+  /// [_linkWentQuiet]. Counted rather than a flag: a page change can start a
+  /// second subscribe while the first is still crossing, and a flag the
+  /// second one cleared would re-arm the watchdog under the first.
+  int _snapshotsInFlight = 0;
+
+  Future<DecodedSubscribeResult> _subscribeInner(
+      String sub, Set<String> keys, int gen) async {
     final raw = await callWithDeadline(
       () => _peerFor(gen),
       Methods.subscribe,
@@ -1528,6 +1568,17 @@ final class ConnectionSupervisor {
     // by the close, which is how a held socket can end. The watchdog re-arms
     // on the first frame the resync after sign-in brings in.
     if (_awaitingSignIn || _readsWithheld) return;
+    // A snapshot is crossing. The gateway writes the subscribe answer first
+    // and every later tick queues behind it, so on a slow link NOTHING
+    // arrives until the whole page has crossed — and the freshness deadline
+    // (3 s) is shorter than the snapshot deadline (15 s) that was written for
+    // exactly this. Measured before this guard: a page throttled to 900 B/s
+    // never came up at all, because each attempt was abandoned at three
+    // seconds and redialled into the same congestion, pushing the same page
+    // again. While a subscribe is outstanding, `snapshotDeadline` is the
+    // clock, and it ends the attempt honestly if the page really is not
+    // coming.
+    if (_snapshotsInFlight > 0) return;
     _down(_generation,
         'no frame of any kind for ${config.freshnessDeadline.inMilliseconds} '
         'ms: the socket is open and the gateway has stopped speaking, which '
