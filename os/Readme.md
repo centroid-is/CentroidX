@@ -208,7 +208,7 @@ drive the same screen the operator is looking at. The header band shows what to
 connect to and the credential for it:
 
 ```
-https://10.104.29.5   root / k4m2p9qd
+https://<address>   <user> / <password>
 ```
 
 - **Browser**: `https://<address>/vnc.html`. https is not cosmetic — noVNC's
