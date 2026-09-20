@@ -207,6 +207,56 @@ Still open in this tier: the **knowledge base** and **config-store sync**,
 both of which are Tier 2 gaps rather than wrong answers about a host, and
 neither of which a banner fixes.
 
+### The keystone — the gateway cannot write a `config_item` row
+
+**Found 2026-09-20 by driving the real socket, and it is the single highest-value
+item left in this document.**
+
+`BackendSharedPreferences` refuses **every** shared-preference write by name —
+`setString`, `setBool`, `setInt`, `setDouble`, `setStringList`, `remove`,
+`clear` (`backend_shared_preferences.dart:174-218`). Its own library header
+calls this *"a live gap, not a resolved one: gateway panels could write shared
+preferences through this route before the merge, and cannot now. Closing it
+means a backend-side writer that shares the relay's `action_id` with its audit
+row — a design, not a merge fix."*
+
+**It is a regression from #465**, merged into this branch at `22f18cdbb` on
+2026-09-13. Before it the backend served `Preferences.create(db: db)`, which
+wrote `flutter_preferences`; #465 moved the plant's shared configuration onto
+`config_item` rows and that table stopped being where the configuration lives.
+So there is **no old code to restore** — the write has to be re-implemented
+against rows, which is what "a design, not a merge fix" means.
+
+What it blocks, and it is the plant's configuration rather than a panel's
+preferences:
+
+| Key | Group | Edited from |
+|---|---|---|
+| `page_editor_data`, `page_editor_top_level_order`, `page_editor_image:*` | `configure` | page editor |
+| `key_mappings` | `configure` | key repository |
+| `alarm_man_config` | `configure` | alarm editor |
+| `report_config`, `shift_config` | `configure` | report editor |
+| `startup_url` | `operate` | preferences |
+| `collector_config` | `administer` | collector settings |
+
+**Device-local preferences are unaffected** and already work relayed:
+`theme_mode`, `color_scheme`, `asset_stack_config`,
+`color_picker_recent_colors`, the five dbus login fields, `update_channel`,
+`ntp_servers` and the config-items cache are routed to the panel's own disk by
+`isDeviceLocalPreferenceKey` and never reach the wire. **`state_man_config` is
+unaffected too** — it has its own family, `backendConfig.*`, which works and is
+proven end to end by the server-config case.
+
+The same missing capability is behind **page-editor save**
+(`page_manager.dart:223-233`, an explicit `UnsupportedError`) and
+**config-store sync/undo**: pages and assets are `config_item` rows of kind
+`page` and `asset`, and `configItems` is deliberately reads-only. So one
+writer closes three families, not one.
+
+Pinned by four `knownRed` cases — report editor save, the `preferences.setString`
+door itself, the preferences JSON editor and the alarm editor — and the CI job
+fails the day any of them starts passing without being promoted.
+
 ### Tier 2 — features with NO wire path at all
 
 **Six families, not three.** 18 individual features across them; 51 of 78 are

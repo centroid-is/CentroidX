@@ -101,6 +101,45 @@ merge", built an adversarial e2e bench, and fixed what the review found.
 
 ---
 
+## The keystone, and the next commit
+
+**The gateway cannot write a `config_item` row.** `BackendSharedPreferences`
+refuses all seven mutators by name (`backend_shared_preferences.dart:174-218`).
+It is a regression from #465, merged here at `22f18cdbb` on 2026-09-13: before
+it the backend served `Preferences.create(db: db)`, which wrote
+`flutter_preferences`, and #465 moved the plant's configuration onto
+`config_item` rows. **There is no old code to restore** — which is what the
+file's own header means by "a design, not a merge fix".
+
+One writer closes three families: shared preferences (report editor, alarm
+editor, preferences JSON editor), **page-editor save** and **config-store
+sync/undo** — pages and assets are `config_item` rows too, and `configItems`
+is deliberately reads-only.
+
+Fable's design answer, which I have not yet implemented:
+
+- The decorator mints `newActionId()` in `_PolicyPreferences._graded`, records
+  it on the deny/allow row, puts the method name in `member`, and hands
+  attribution to the writer through an **optional interface**
+  (`_source is AttributedPreferenceWrites`). Not a `PreferencesApi`
+  parameter — that would put a client-supplied action id on the wire, the
+  forgery surface `AuditApi` refuses a write member for. Not a per-call field
+  — json_rpc_2 dispatches concurrently and the source is composition-wide.
+- **`actionId: method` is what reaches `audit_entry.action_id` today** for
+  every relayed decision row, pinned by `policy_audit_test.dart:170`. So every
+  relayed `preferences.setString` ever recorded is ONE action in the trail,
+  whose tile names whoever wrote last. Fixing that is part of this work.
+- **Before the writer lands**, add a reserved-key refusal on `remove` and
+  `clear(allowList:)`: they are only group-graded, so today the blanket
+  refusal is the only thing stopping a `configure` session deleting the
+  gateway's own `key_mappings` row over the wire.
+- The bench already builds a `ConfigStore` over the backend database with an
+  in-memory mirror (`backend_bench.dart:287-296`); whether the compare-and-swap
+  is sound over an unsynced mirror is the open question, and a Postgres-direct
+  `writeItems` reading the live rev is the honest alternative.
+
+---
+
 ## New finding — the relayed audit trail hides the newest rows under clock skew
 
 `AuditTrailPage` bounds its default seven-day window at `clock.now()`
