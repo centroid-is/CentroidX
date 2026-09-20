@@ -138,21 +138,36 @@ dev_dependencies:
     sdk: flutter
   flutter_lints: ^5.0.0
   drift_dev: ^2.28.0
-  # The end-to-end lanes under test/e2e_assets/ and test/e2e_pages/, and
-  # nothing else. **Dev-only, deliberately**: the app must not carry a PLC
-  # simulator or the gateway's plant side into a station build — tfc_plant_sim
-  # stands up open62541 *servers*, and a panel that shipped one could bind the
-  # port of the PLC it is pretending to be.
+  # The end-to-end lanes — `test/e2e_assets/` and `test/e2e_pages/` — and
+  # nothing else: the real mimic widgets and the real advanced pages over the
+  # real relay client, over a real gateway, over real PLC servers, in one
+  # process. These are what stand the far end up.
   #
-  # The app already depends on tfc_relay_client (the panel's half of the
-  # socket); what these two add is the other end, so a widget test can drive a
-  # real gateway over a real socket against a real PLC instead of a fake
-  # StateMan. That is the difference between proving a widget agrees with its
-  # stub and proving an operator's screen is right.
+  # **Dev-only, and they must stay dev-only.** `tfc_relay_local` and
+  # `tfc_relay_server` bind ports and hold the gateway's side of the pipe,
+  # which no panel ships; `tfc_plant_sim` stands up open62541 *servers*, so a
+  # panel that shipped one could bind the port of the PLC it is pretending to
+  # be, and it is fiction by charter besides. A `flutter build` never sees any
+  # of them.
+  #
+  # The app already depends on `tfc_relay_client` — the panel's half of the
+  # socket. What these three add is the other end, so a widget test can drive
+  # a real gateway over a real socket against a real PLC instead of a fake
+  # `StateMan`. That is the difference between proving a widget agrees with
+  # its stub and proving an operator's screen is right.
+  #
+  # `tfc_stateman_contract` is deliberately NOT here, and the asset lane's link
+  # proxy is its own sixty lines because of it: that package carries
+  # `package:test` as a real dependency, and `test` pins a `matcher`/`test_api`
+  # that flutter_test's SDK pin refuses (measured 2026-09-20: "flutter_test
+  # from sdk is incompatible with tfc_stateman_contract from path"). Its own
+  # pubspec predicts exactly this.
   tfc_plant_sim:
     path: packages/tfc_plant_sim
   tfc_relay_local:
     path: packages/tfc_relay_local
+  tfc_relay_server:
+    path: packages/tfc_relay_server
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
@@ -225,21 +240,3 @@ dependency_overrides:
 #   meta: ^1.16.0
 #   collection: ^1.19.0
 #   async: ^2.12.0
-  # The asset-level end-to-end lane, `test/e2e_assets/`: the real mimic widgets
-  # over the real relay client, over a real gateway, over real PLC servers, in
-  # one process. These four are what stand the far end up. Dev-only, and they
-  # must stay dev-only: tfc_relay_local and tfc_relay_server bind ports and
-  # hold the gateway's side of the pipe, which no panel ships; tfc_plant_sim is
-  # fiction by charter. A `flutter build` never sees any of them.
-  #
-  # tfc_stateman_contract is NOT here, and the lane's link proxy is its own
-  # sixty lines because of it: that package carries package:test as a real
-  # dependency, and `test` pins a `matcher`/`test_api` that flutter_test's SDK
-  # pin refuses (tried 2026-09-20: "flutter_test from sdk is incompatible with
-  # tfc_stateman_contract from path"). Its own pubspec predicts exactly this.
-  tfc_plant_sim:
-    path: packages/tfc_plant_sim
-  tfc_relay_local:
-    path: packages/tfc_relay_local
-  tfc_relay_server:
-    path: packages/tfc_relay_server
