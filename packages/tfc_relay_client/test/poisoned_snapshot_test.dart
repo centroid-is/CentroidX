@@ -79,11 +79,15 @@ String _keyOfHandle(int handle) => _keyAt(handle - 1);
 ///
 /// [poison] replaces the entry at a handle with whatever a hostile or skewed
 /// gateway sent instead; [rejected] is passed through verbatim so an arm can
-/// hand over a `rejected` entry with no `kind`.
+/// hand over a `rejected` entry with no `kind`; [meta] and [extra] are
+/// spliced in verbatim for the arms about depth, where the poison is in a
+/// lane the snapshot loop never reads.
 Map<String, Object?> _rawResult(
   String sub, {
   Map<int, Object?> poison = const {},
   Map<String, Object?> rejected = const {},
+  Map<String, Object?> meta = const {},
+  Map<String, Object?> extra = const {},
   int keys = _keyCount,
 }) {
   final handles = <String, int>{};
@@ -102,8 +106,14 @@ Map<String, Object?> _rawResult(
     'handles': handles,
     'snapshot': snapshot,
     if (rejected.isNotEmpty) 'rejected': rejected,
+    if (meta.isNotEmpty) 'meta': meta,
+    ...extra,
   };
 }
+
+/// A list nested [depth] deep — past `maxValueDepth` (64) when [depth] is,
+/// which is where `sanitize` stops walking and throws.
+Object? _nested(int depth) => depth == 0 ? 1 : <Object?>[_nested(depth - 1)];
 
 /// The keys [_rawResult] announces, as a subscription would have asked for
 /// them.
@@ -251,6 +261,47 @@ void main() {
           reason: 'a dropped timestamp says so: ${engine.complaints}');
       // Anti-vacuity again: nothing else lost its timestamp or its value.
       expect(store.peek(_keyOfHandle(1))?.value, 0);
+    });
+  });
+
+  group('a value nested past the sanitizer\'s bound', () {
+    // `decodeSubscribeResult` used to run `sanitize` over the whole envelope
+    // before any per-entry loop, and `sanitize` throws an `ArgumentError` at
+    // `maxValueDepth`. So a value sixty-five deep under `meta`, `types`,
+    // `rejected` — or under a key this client never reads — threw out of the
+    // whole decode, ahead of every try WSH-08 added, and through `onHello`
+    // that is the permanent loop the group above is about.
+    test('in a meta entry costs that meta entry only', () async {
+      register('p');
+      script.results['p'] = _rawResult('p', meta: {
+        '$_poisonedHandle': _nested(70),
+        '${_poisonedHandle + 1}': <String, Object?>{'typeId': 'double'},
+      });
+
+      await engine.onHello('E1');
+
+      expect(subs['p']!.lastSeq, _snapshotSeq,
+          reason: 'the page must still be established');
+      expect(storeFor('p').keys, hasLength(_keyCount),
+          reason: 'the snapshot lane is untouched by a bad meta entry');
+      expect(
+          engine.complaints.where((line) =>
+              line.contains('meta') && line.contains('$_poisonedHandle')),
+          hasLength(1),
+          reason: 'the dropped meta entry is reported: ${engine.complaints}');
+    });
+
+    test('under a key this client does not read costs nothing', () async {
+      register('p');
+      script.results['p'] =
+          _rawResult('p', extra: {'futureLane': _nested(70)});
+
+      await engine.onHello('E1');
+
+      expect(subs['p']!.lastSeq, _snapshotSeq);
+      expect(storeFor('p').keys, hasLength(_keyCount));
+      expect(engine.complaints, isEmpty,
+          reason: 'a lane nobody reads cannot have cost anything');
     });
   });
 

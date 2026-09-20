@@ -4,6 +4,7 @@
 library;
 
 import 'quality.dart';
+import 'redact.dart' show clipForComplaint;
 import 'sanitize.dart';
 import 'wire_value.dart';
 
@@ -295,18 +296,6 @@ final class HelloResult {
         if (publisherId != null) 'publisherId': publisherId,
       };
 
-  /// [raw] as a string-keyed object, or empty when it is anything else.
-  ///
-  /// Rebuilt rather than `cast`, because `Map.cast` is a lazy view that
-  /// throws on the first non-string key *at the read*, which would move the
-  /// `TypeError` this factory exists to remove from the decode into
-  /// `capabilities[...]` a few lines later in the supervisor.
-  static Map<String, Object?> _objectOrEmpty(Object? raw) => raw is Map
-      ? {for (final entry in raw.entries) '${entry.key}': entry.value}
-      : const {};
-
-  static String _stringOrEmpty(Object? raw) => raw is String ? raw : '';
-
   /// [raw] as a [PeerInfo], or one with no name when it cannot be read. The
   /// strict [PeerInfo.fromJson] stays strict for the request direction, where
   /// the gateway answers a malformed `client` with an error the panel sees.
@@ -482,12 +471,35 @@ final class TypesLearnedParams {
   /// handle → type id, for handles whose type has become known.
   final Map<int, String> keys;
 
-  factory TypesLearnedParams.fromJson(Map<String, Object?> json) =>
-      TypesLearnedParams(
-        sub: json['sub'] as String,
-        types: (json['types'] as Map? ?? const {}).cast<String, Object?>(),
-        keys: _intKeyed(json['keys'], (v) => v as String),
-      );
+  /// Per entry, like every notification decoder here since 16-10's finding
+  /// was re-read: a `keys` entry whose handle does not parse or whose type id
+  /// is not a string costs that handle its enum names, not the dictionary.
+  /// The `types` map is handed on as-is; `TypeDescriptor.fromJson` is
+  /// forgiving inside an entry and the client wraps each one.
+  ///
+  /// A frame naming no subscription is refused: there is nothing to merge it
+  /// into, and guessing would file one page's dictionary under another.
+  factory TypesLearnedParams.fromJson(Map<String, Object?> json) {
+    final sub = json['sub'];
+    if (sub is! String) {
+      throw FormatException(
+          'typesLearned names no subscription (${sub.runtimeType})');
+    }
+    final keys = <int, String>{};
+    final wireKeys = json['keys'];
+    if (wireKeys is Map) {
+      for (final entry in wireKeys.entries) {
+        final handle = int.tryParse('${entry.key}');
+        final typeId = entry.value;
+        if (handle != null && typeId is String) keys[handle] = typeId;
+      }
+    }
+    return TypesLearnedParams(
+      sub: sub,
+      types: _objectOrEmpty(json['types']),
+      keys: keys,
+    );
+  }
 
   Map<String, Object?> toJson() => {
         'sub': sub,
@@ -515,7 +527,13 @@ final class UpdateParams {
   final int generation;
 
   /// Batch timestamp (UTC epoch ms) applying to values without their own.
-  final int t;
+  ///
+  /// Null when the frame carried none, or carried something that is not an
+  /// instant (`1e999`, a string, a number past `DateTime`'s range). The
+  /// consumer already treats "no batch stamp" as a state — `sourceTime` stays
+  /// null and the value's age is not computable — so an unreadable one reads
+  /// as that state rather than as a reason to lose the frame.
+  final int? t;
 
   /// handle → changed value (slim).
   final Map<int, WireValue> changes;
@@ -526,31 +544,103 @@ final class UpdateParams {
   /// handles no longer available.
   final List<int> removed;
 
+  /// Entries [fromJson] could not decode, one line each, naming the lane and
+  /// the (clipped) wire key and the failure's type — never its message.
+  ///
+  /// **Not a diagnostic only: a dropped `c` entry is a diverged cache behind
+  /// an intact sequence.** The surviving entries are applied and the sequence
+  /// advances, so nothing downstream can tell the frame was short, and under
+  /// a quiet plant the gateway never re-sends a value it believes it
+  /// delivered. That is the exact hazard `ConnectionSupervisor._update`
+  /// rebuilds the page for when a frame names a handle it never announced
+  /// (07-07), and a dropped entry has to reach the same rebuild — which is
+  /// why the drops are carried on the frame rather than swallowed the way
+  /// [PingParams.fromJson] swallows its own (an ack has nothing to diverge).
+  final List<String> dropped;
+
   const UpdateParams({
     required this.sub,
     required this.seq,
-    required this.t,
+    this.t,
     this.generation = 0,
     this.changes = const {},
     this.qualities = const {},
     this.removed = const [],
+    this.dropped = const [],
   });
 
-  factory UpdateParams.fromJson(Map<String, Object?> json) => UpdateParams(
-        sub: json['sub'] as String,
-        seq: (json['seq'] as num).toInt(),
-        t: (json['t'] as num).toInt(),
-        generation: (json['g'] as num?)?.toInt() ?? 0,
-        changes: _intKeyed(
-            json['c'], (v) => WireValue.fromJson((v as Map).cast())),
-        qualities: _intKeyed(json['q'], Quality.fromWire),
-        removed: (json['r'] as List? ?? const []).cast<int>(),
-      );
+  /// **Per entry, at last** (the containment rule `decodeSubscribeResult`
+  /// has kept since WSH-08, applied to the hot path). This used to be five
+  /// hard casts and two `_intKeyed` calls, so one `c` entry that was not an
+  /// object, one `q` key that was not a number, or one `r` element that was
+  /// not an `int` threw out of the whole frame — the `r` case *lazily*, at
+  /// iteration, from `.cast<int>()`, which is outside the try of any decoder
+  /// that called this. Through `_armored` that was one frame lost per bad
+  /// entry for as long as the gateway kept sending it, and every lost frame
+  /// is a sequence gap and a full-page snapshot.
+  ///
+  /// `sub` and `seq` are still required: a frame that names no page or
+  /// carries no sequence cannot be applied to anything, and refusing it as a
+  /// [FormatException] is the honest answer. Everything else degrades:
+  /// [t] to null, [generation] to its absent value, and each lane entry to a
+  /// line in [dropped].
+  factory UpdateParams.fromJson(Map<String, Object?> json) {
+    final sub = json['sub'];
+    if (sub is! String) {
+      throw FormatException('update names no subscription (${sub.runtimeType})');
+    }
+    final seq = json['seq'];
+    if (seq is! num || !seq.isFinite) {
+      throw FormatException(
+          'update for "${clipForComplaint(sub)}" carries no usable seq '
+          '(${seq.runtimeType})');
+    }
+    final t = json['t'];
+    final generation = json['g'];
+    final dropped = <String>[];
+
+    final changes = <int, WireValue>{};
+    _eachHandled(json['c'], 'c', dropped, (handle, value) {
+      changes[handle] = WireValue.fromJson(_asObject(value));
+    });
+    final qualities = <int, Quality>{};
+    _eachHandled(json['q'], 'q', dropped, (handle, value) {
+      // `Quality.fromWire` clamps an unknown code and never throws; only the
+      // handle can refuse here.
+      qualities[handle] = Quality.fromWire(value);
+    });
+    final removed = <int>[];
+    final wireRemoved = json['r'];
+    if (wireRemoved is List) {
+      // Eager, element by element: `.cast<int>()` is a lazy view whose
+      // failure surfaces at the consumer's `for`, not here.
+      for (final element in wireRemoved) {
+        if (element is int) {
+          removed.add(element);
+        } else {
+          dropped.add('r entry ${clipForComplaint(element)} is not a handle '
+              '(${element.runtimeType})');
+        }
+      }
+    }
+
+    return UpdateParams(
+      sub: sub,
+      seq: seq.toInt(),
+      t: isRepresentableEpochMs(t) ? (t as num).toInt() : null,
+      generation:
+          generation is num && generation.isFinite ? generation.toInt() : 0,
+      changes: changes,
+      qualities: qualities,
+      removed: removed,
+      dropped: dropped,
+    );
+  }
 
   Map<String, Object?> toJson() => {
         'sub': sub,
         'seq': seq,
-        't': t,
+        if (t != null) 't': t,
         'g': generation,
         if (changes.isNotEmpty)
           'c': _stringKeyed(changes, (v) => v.toJson()),
@@ -568,10 +658,24 @@ final class SubTick {
   final int evaluatedAt;
   const SubTick({required this.seq, required this.evaluatedAt});
 
-  factory SubTick.fromJson(Map<String, Object?> json) => SubTick(
-        seq: (json['seq'] as num).toInt(),
-        evaluatedAt: (json['evaluatedAt'] as num).toInt(),
-      );
+  /// Refuses a tick entry whose sequence or instant is not a finite number,
+  /// as a [FormatException] the enclosing [TickParams.fromJson] contains to
+  /// that entry. `1e999` decodes to Infinity and `Infinity.toInt()` throws
+  /// an `UnsupportedError`, which is the wrong type to be answering a decode
+  /// with and used to leave the whole tick.
+  factory SubTick.fromJson(Map<String, Object?> json) {
+    final seq = json['seq'];
+    final evaluatedAt = json['evaluatedAt'];
+    if (seq is! num || !seq.isFinite) {
+      throw FormatException('tick entry carries no usable seq '
+          '(${seq.runtimeType})');
+    }
+    if (!isRepresentableEpochMs(evaluatedAt)) {
+      throw FormatException('tick entry carries no usable evaluatedAt '
+          '(${evaluatedAt.runtimeType})');
+    }
+    return SubTick(seq: seq.toInt(), evaluatedAt: (evaluatedAt as num).toInt());
+  }
 
   Map<String, Object?> toJson() => {'seq': seq, 'evaluatedAt': evaluatedAt};
 }
@@ -664,12 +768,35 @@ final class TickParams {
   final Map<String, SubTick> subs;
   const TickParams({required this.serverTime, this.subs = const {}});
 
-  factory TickParams.fromJson(Map<String, Object?> json) => TickParams(
-        serverTime: (json['serverTime'] as num).toInt(),
-        subs: (json['subs'] as Map? ?? const {})
-            .cast<String, Object?>()
-            .map((k, v) => MapEntry(k, SubTick.fromJson((v as Map).cast()))),
-      );
+  /// Per entry: a `subs` entry that is not an object, or whose numbers are not
+  /// numbers, costs that subscription its judgement on *this* tick and nothing
+  /// else — the next tick judges it again. One malformed entry used to cost
+  /// every subscription on the frame, and through `_armored` every tick the
+  /// gateway sent it on. The `serverTime` is still required: a tick that
+  /// cannot say when it was evaluated has nothing to say about staleness, and
+  /// the frame's liveness was already credited on the transport seam.
+  factory TickParams.fromJson(Map<String, Object?> json) {
+    final serverTime = json['serverTime'];
+    if (!isRepresentableEpochMs(serverTime)) {
+      throw FormatException(
+          'tick carries no usable serverTime (${serverTime.runtimeType})');
+    }
+    final subs = <String, SubTick>{};
+    final wireSubs = json['subs'];
+    if (wireSubs is Map) {
+      for (final entry in wireSubs.entries) {
+        try {
+          subs['${entry.key}'] = SubTick.fromJson(_asObject(entry.value));
+        } on FormatException {
+          // This subscription is not judged on this tick. Not carried as a
+          // drop list: unlike a `u` entry there is nothing to diverge — the
+          // next tick carries the same judgement again.
+        }
+      }
+    }
+    return TickParams(
+        serverTime: (serverTime as num).toInt(), subs: subs);
+  }
 
   Map<String, Object?> toJson() => {
         'serverTime': serverTime,
@@ -695,12 +822,25 @@ final class ResyncParams {
       required this.reason,
       this.stalledMs});
 
-  factory ResyncParams.fromJson(Map<String, Object?> json) => ResyncParams(
-        sub: json['sub'] as String,
-        epoch: json['epoch'] as String,
-        reason: json['reason'] as String,
-        stalledMs: (json['stalledMs'] as num?)?.toInt(),
-      );
+  /// The subscription is required — a resync naming no page rebuilds nothing
+  /// — and everything else degrades: an unreadable `reason` is the empty
+  /// string, which the client treats as "not a stall" exactly as it treats
+  /// any reason it does not know, and an unusable `stalledMs` is absent.
+  factory ResyncParams.fromJson(Map<String, Object?> json) {
+    final sub = json['sub'];
+    if (sub is! String) {
+      throw FormatException(
+          'resync names no subscription (${sub.runtimeType})');
+    }
+    final stalledMs = json['stalledMs'];
+    return ResyncParams(
+      sub: sub,
+      epoch: _stringOrEmpty(json['epoch']),
+      reason: _stringOrEmpty(json['reason']),
+      stalledMs:
+          stalledMs is num && stalledMs.isFinite ? stalledMs.toInt() : null,
+    );
+  }
 
   Map<String, Object?> toJson() => {
         'sub': sub,
@@ -1043,6 +1183,57 @@ final class WriteStatusParams {
   }
 
   Map<String, Object?> toJson() => {'cmds': cmds};
+}
+
+/// [raw] as a string-keyed object, or empty when it is anything else.
+///
+/// Rebuilt rather than `cast`, because `Map.cast` is a lazy view that throws
+/// on the first non-string key *at the read*, which would move a decode-time
+/// `TypeError` into `capabilities[...]` a few lines later in the supervisor.
+Map<String, Object?> _objectOrEmpty(Object? raw) => raw is Map
+    ? {for (final entry in raw.entries) '${entry.key}': entry.value}
+    : const {};
+
+/// [raw] as a string-keyed object, refused as a [FormatException] otherwise —
+/// for the places where "not an object" is a decode failure of that entry
+/// rather than an absence.
+Map<String, Object?> _asObject(Object? raw) => raw is Map
+    ? {for (final entry in raw.entries) '${entry.key}': entry.value}
+    : throw FormatException('expected a JSON object, got ${raw.runtimeType}');
+
+String _stringOrEmpty(Object? raw) => raw is String ? raw : '';
+
+/// Walks a handle-keyed wire map one entry at a time, calling [decode] for
+/// each handle that parses and filing a line in [dropped] — naming [lane],
+/// the clipped wire key and the failure's type — for each that does not or
+/// whose decode refuses it.
+///
+/// **The try is inside the loop.** A try around the loop is the behaviour
+/// this replaces at a finer grain: the first bad entry would still take every
+/// entry after it. A bare catch, so `Error` subtypes are contained too — the
+/// cast that failed was applied to a peer's data, so a `TypeError` here is a
+/// statement about the gateway and not about this build.
+void _eachHandled(
+  Object? raw,
+  String lane,
+  List<String> dropped,
+  void Function(int handle, Object? value) decode,
+) {
+  if (raw is! Map) return;
+  for (final entry in raw.entries) {
+    final handle = int.tryParse('${entry.key}');
+    if (handle == null) {
+      dropped.add('$lane entry for handle ${clipForComplaint(entry.key)} is '
+          'not a handle');
+      continue;
+    }
+    try {
+      decode(handle, entry.value);
+    } catch (error) {
+      dropped.add('$lane entry for handle $handle could not be decoded '
+          '(${error.runtimeType})');
+    }
+  }
 }
 
 // JSON objects key by String; handles are ints. Convert at the boundary.

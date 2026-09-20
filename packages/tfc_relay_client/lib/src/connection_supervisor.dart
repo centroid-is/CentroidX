@@ -1134,15 +1134,33 @@ final class ConnectionSupervisor {
   /// keys, exactly as it is for a snapshot. A handle this client does not
   /// know is skipped rather than guessed — a type filed under the wrong key
   /// would name an enum for a value that is not of that type.
+  ///
+  /// **No envelope-wide `sanitize`, on this or the three handlers below**
+  /// (`_update`, `_tick`, `_resynced`). Each used to run `sanitize` over the
+  /// whole `params` before decoding, and `sanitize` throws at
+  /// `maxValueDepth` — so one value nested sixty-five deep anywhere in the
+  /// frame, under a key this client reads or not, cost the whole frame
+  /// through `_armored`, once per frame, for as long as the gateway kept
+  /// sending it. The decoders now contain their own entries (`messages.dart`,
+  /// per lane), the lanes that keep a value sanitize inside that containment
+  /// (`WireValue.fromJson`), and nothing decoded by any of the four is ever
+  /// echoed into an error response, which was the sanitize's other job.
   void _typesLearned(rpc.Parameters params) {
-    final frame = TypesLearnedParams.fromJson(
-        (sanitize(params.asMap).value as Map).cast<String, Object?>());
+    final frame = TypesLearnedParams.fromJson(_asJson(params.asMap));
     final state = subscriptions[frame.sub];
     if (state == null) return;
     final types = <String, TypeDescriptor>{};
     frame.types.forEach((typeId, json) {
-      if (json is Map) {
-        types[typeId] = TypeDescriptor.fromJson(json.cast<String, Object?>());
+      // `TypeDescriptor.fromJson` is forgiving inside an entry; the try is
+      // for what it cannot forgive — a members tree deep enough to exhaust
+      // the stack — so that costs one type, not the dictionary.
+      try {
+        types[typeId] = TypeDescriptor.fromJson(json);
+      } catch (error) {
+        _resync.complain('typesLearned for "${frame.sub}" carried a type '
+            '"${clipForComplaint(typeId)}" that could not be decoded '
+            '(${error.runtimeType}); values of that type render without '
+            'their enum names');
       }
     });
     final keyToType = <String, String>{};
@@ -1156,7 +1174,7 @@ final class ConnectionSupervisor {
 
   Future<void> _update(rpc.Parameters params) async {
     watchdog.sawFrame(InboundFrame.update);
-    final update = UpdateParams.fromJson(_asJson(sanitize(params.asMap).value));
+    final update = UpdateParams.fromJson(_asJson(params.asMap));
     final state = subscriptions[update.sub];
     if (state == null) return;
 
@@ -1209,23 +1227,36 @@ final class ConnectionSupervisor {
       return null;
     }
 
-    // The batch timestamp, as a `DateTime` or absent.
-    //
-    // **Range-checked, because `UpdateParams.fromJson` does not check this
-    // one.** `WireValue` has carried [isRepresentableEpochMs] since 16-05 —
-    // `1e17` is finite, passes an `isFinite` guard, and makes
-    // `DateTime.fromMillisecondsSinceEpoch` throw — but the batch `t` is
-    // decoded straight through `(json['t'] as num).toInt()` with no such
-    // guard. Without this check a single hostile or broken batch stamp would
-    // throw out of the fallback below and cost the whole frame through
-    // `_armored`, once per frame, for as long as the gateway kept sending
-    // them. Out of range is treated as **absent**, which is `WireValue.of`'s
-    // own rule and for its reason: a clamped timestamp is a lie about
-    // freshness, and `null` is the honest answer every consumer already
-    // handles.
-    final batchTime = isRepresentableEpochMs(update.t)
-        ? DateTime.fromMillisecondsSinceEpoch(update.t, isUtc: true)
-        : null;
+    // **An entry the decoder could not read is a stranger, for the same
+    // reason a handle this session never announced is one**: the surviving
+    // entries are applied and the sequence advances, so the cache has
+    // diverged behind an intact sequence and nothing downstream can tell.
+    // `UpdateParams.fromJson` contains each bad entry to itself (one entry
+    // costs one entry, never the frame) and carries the drops here so they
+    // reach the *same* rebuild, through the same budget — a second detector
+    // with its own path would be S14 by the back way. Complained about only
+    // on an established page, on WR-07's grounds: for an unestablished one
+    // the table is empty and every entry is a stranger anyway.
+    for (final drop in update.dropped) {
+      sawUnknownHandle = true;
+      if (established) {
+        _resync.complain('update for "${update.sub}": $drop; the page will '
+            'be rebuilt from a snapshot so the cache does not diverge behind '
+            'an intact sequence');
+      }
+    }
+
+    // The batch timestamp, as a `DateTime` or absent. `UpdateParams.fromJson`
+    // reads `t` through [isRepresentableEpochMs] since 16-10's finding was
+    // re-read — `1e17` is finite, passes an `isFinite` guard, and makes
+    // `DateTime.fromMillisecondsSinceEpoch` throw — and hands over null for
+    // anything else, which is `WireValue.of`'s own rule and for its reason:
+    // a clamped timestamp is a lie about freshness, and null is the honest
+    // answer every consumer already handles.
+    final batchT = update.t;
+    final batchTime = batchT == null
+        ? null
+        : DateTime.fromMillisecondsSinceEpoch(batchT, isUtc: true);
 
     for (final entry in update.changes.entries) {
       final key = keyFor(entry.key);
@@ -1412,7 +1443,7 @@ final class ConnectionSupervisor {
   /// at the tick's cadence, through the damper — not one rebuild per inbound
   /// frame, which is the storm that arm is about.
   Future<void> _tick(rpc.Parameters params) async {
-    final tick = TickParams.fromJson(_asJson(sanitize(params.asMap).value));
+    final tick = TickParams.fromJson(_asJson(params.asMap));
     watchdog.sawTick(tick);
     for (final entry in tick.subs.entries) {
       // A subscription this client does not hold: skipped, and not a
@@ -1484,7 +1515,7 @@ final class ConnectionSupervisor {
   /// `ResyncParams`' own (`messages.dart:455-464`).
   Future<void> _resynced(rpc.Parameters params) async {
     watchdog.sawFrame(InboundFrame.update);
-    final asked = ResyncParams.fromJson(_asJson(sanitize(params.asMap).value));
+    final asked = ResyncParams.fromJson(_asJson(params.asMap));
     if (asked.reason == _gatewayStalled) {
       // The absolute figure the gateway sent, stored as-is: a panel renders it
       // as "the plant view was frozen for N ms", and recomputing it from this

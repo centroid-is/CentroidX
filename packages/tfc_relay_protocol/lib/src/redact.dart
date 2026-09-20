@@ -149,3 +149,31 @@ String? redactUpstreamError(String? raw) {
 /// verbose stack trace cannot push kilobytes per event at every subscriber of
 /// `PIPE.upstream.<alias>.last_error`.
 const int maxRedactedErrorLength = 200;
+
+/// A peer-supplied identifier — a handle key, a subscription name, a value
+/// that failed to parse — cut to a length a complaint line can carry.
+///
+/// **Why a complaint may name the identifier and not the message.**
+/// `docs/relay-wire-api.md` §5's rule is that a complaint carries an error's
+/// *type*, never its message, because a message raised while decoding
+/// gateway-supplied data can quote gateway-supplied text of unbounded length
+/// and the line reaches a panel standing where anybody can read it. The
+/// identifier is different in kind — the handle or key is *what* the
+/// complaint is about, and a line that cannot name it cannot be acted on —
+/// but not different in origin: it came off the same wire. So it is named,
+/// and it is cut. [maxComplaintIdentifierLength] is long enough for every tag
+/// name in the plant (`AREAnn.DEVnn.SUBnn.member` is under forty characters)
+/// and short enough that a handle key which is itself a megabyte does not
+/// become a megabyte on the complaint surface, 256 times over.
+///
+/// `toString` first, so a non-string that arrived where a string belonged is
+/// still described rather than refused a description.
+String clipForComplaint(Object? raw) {
+  final text = '$raw';
+  return text.length <= maxComplaintIdentifierLength
+      ? text
+      : '${text.substring(0, maxComplaintIdentifierLength)}…';
+}
+
+/// See [clipForComplaint].
+const int maxComplaintIdentifierLength = 64;

@@ -146,17 +146,28 @@ int? _handleKey(Object? raw) =>
 DecodedSubscribeResult decodeSubscribeResult(Object? raw) {
   final json = _asJson(raw);
 
-  // Sanitize before decode, every time, on every ingress path:
-  // `jsonDecode('1e999')` yields Infinity in silence, and an Infinity that
-  // reaches an error response makes the *error* unencodable (the 02-05 hang).
+  // **No envelope-wide sanitize, and that is the fix, not an omission.** This
+  // used to run `sanitize` over the whole answer minus the snapshot before
+  // any per-entry loop began — and `sanitize` throws an `ArgumentError` at
+  // `maxValueDepth`, so one value nested sixty-five deep under `meta`,
+  // `types`, `rejected` *or any unknown key the gateway had added* threw out
+  // of the whole decode, ahead of every try below. Reached from
+  // `ResyncEngine.onHello`, that is the permanent reconnect loop this file's
+  // doc describes, from a key this client does not even read.
   //
-  // The snapshot is deliberately held out and sanitized per value below,
-  // through `WireValue.of`. Sanitizing it here would work — the Infinity would
-  // become null — but the null would carry *good* quality, which reads as an
-  // absent value rather than a bad one. `Quality.badNonFinite` can only be
-  // attached where the replacement happens, so that is where it happens.
+  // What the sanitize was for still happens, where it belongs: `1e999`
+  // decodes to Infinity in silence, and the lanes that keep a value — the
+  // snapshot through `WireValue.of`, `meta` per entry below — sanitize it
+  // inside their own per-entry try, so a poisoned or too-deep entry costs that
+  // entry. The snapshot goes through `WireValue.of` rather than a bare
+  // `sanitize` for the reason it always did: the null it produces has to
+  // carry `Quality.badNonFinite`, which can only be attached where the
+  // replacement happens. The scalar fields (`sub`, `epoch`, `seq`,
+  // `generation`) are read through type checks that an Infinity cannot pass,
+  // and nothing decoded here is ever echoed into an error response — the one
+  // place an unencodable Infinity could still hang a peer.
   final snapshot = json['snapshot'];
-  final envelope = sanitize({...json}..remove('snapshot')).value as Map;
+  final envelope = json;
 
   final complaints = <String>[];
 
@@ -241,7 +252,12 @@ DecodedSubscribeResult decodeSubscribeResult(Object? raw) {
     return WireValue.fromJson(wire).toDynamicValue();
   });
 
-  final meta = byKey<Object?>(envelope['meta'], 'meta', (_, __, v) => v);
+  // Sanitized per entry, inside `byKey`'s try: meta is kept and handed to the
+  // app, so an Infinity in it would be the one that detonates on a later
+  // encode, and a too-deep entry is refused by `sanitize` as this entry's
+  // failure rather than the page's.
+  final meta = byKey<Object?>(
+      envelope['meta'], 'meta', (_, __, v) => sanitize(v).value);
 
   // Absent, null and `{}` all mean the same thing: nothing was rejected.
   // Finding 7 observed the live server omitting the field entirely.

@@ -455,6 +455,90 @@ void main() {
     expect(json.containsKey('r'), isFalse);
   });
 
+  group('a notification frame contains a bad entry to that entry', () {
+    // The snapshot decode has kept "one bad entry costs one tag" since
+    // WSH-08; the hot path did not. One `c` entry that was not an object, one
+    // `q` key that was not a number, or one `r` element that was not an int
+    // threw out of the whole frame — the `r` case lazily, at the consumer's
+    // iteration, from `.cast<int>()`.
+    Map<String, Object?> wire(String json) =>
+        jsonDecode(json) as Map<String, Object?>;
+
+    test('UpdateParams keeps every readable lane entry and names the rest',
+        () {
+      final u = UpdateParams.fromJson(wire('{"sub":"s1","seq":5,"t":1e999,'
+          '"c":{"1":{"v":1.5},"2":3,"x":{"v":2}},'
+          '"q":{"3":${Quality.badStale.code},"y":1},'
+          '"r":[7,"8"]}'));
+      expect(u.changes.keys, [1]);
+      expect(u.changes[1]!.v, 1.5);
+      expect(u.qualities, {3: Quality.badStale});
+      // Eager: the old `.cast<int>()` view threw here, not at decode.
+      expect(() => [for (final h in u.removed) h], returnsNormally);
+      expect(u.removed, [7]);
+      expect(u.t, isNull, reason: 'an Infinity batch stamp reads as absent');
+      expect(u.seq, 5);
+      expect(u.dropped, hasLength(4), reason: '${u.dropped}');
+      expect(u.dropped.where((d) => d.startsWith('c entry')), hasLength(2));
+      expect(u.dropped.where((d) => d.startsWith('q entry')), hasLength(1));
+      expect(u.dropped.where((d) => d.startsWith('r entry')), hasLength(1));
+      expect(u.dropped.join(), isNot(contains('Exception:')),
+          reason: 'the type, never the message');
+    });
+
+    test('UpdateParams still refuses a frame with no sub or no seq', () {
+      // Nothing can be applied without either; a decoder that shrugged would
+      // be applying a frame to a page it guessed.
+      expect(() => UpdateParams.fromJson(wire('{"seq":1}')),
+          throwsFormatException);
+      expect(() => UpdateParams.fromJson(wire('{"sub":"s1"}')),
+          throwsFormatException);
+      expect(() => UpdateParams.fromJson(wire('{"sub":"s1","seq":1e999}')),
+          throwsFormatException);
+    });
+
+    test('a batch stamp the frame did not carry is not written back as null',
+        () {
+      final json = UpdateParams(sub: 's1', seq: 1).toJson();
+      expect(json.containsKey('t'), isFalse);
+      expect(UpdateParams.fromJson(viaJson(json)).t, isNull);
+    });
+
+    test('TickParams keeps the subscriptions it can judge', () {
+      final tick = TickParams.fromJson(wire('{"serverTime":1786000000123,'
+          '"subs":{"s1":{"seq":1,"evaluatedAt":2},"s2":5,'
+          '"s3":{"seq":1e999,"evaluatedAt":2},'
+          '"s4":{"seq":1,"evaluatedAt":1e17}}}'));
+      expect(tick.subs.keys, ['s1']);
+      expect(tick.serverTime, 1786000000123);
+      expect(() => TickParams.fromJson(wire('{"serverTime":"now"}')),
+          throwsFormatException,
+          reason: 'a tick that cannot say when it was evaluated has nothing '
+              'to say about staleness');
+    });
+
+    test('ResyncParams degrades everything but the subscription', () {
+      final r = ResyncParams.fromJson(
+          wire('{"sub":"s1","epoch":7,"reason":["gateway_stalled"],'
+              '"stalledMs":1e999}'));
+      expect(r.sub, 's1');
+      expect(r.epoch, '');
+      expect(r.reason, '', reason: 'an unreadable reason is not a stall');
+      expect(r.stalledMs, isNull);
+      expect(() => ResyncParams.fromJson(wire('{"reason":"overrun"}')),
+          throwsFormatException);
+    });
+
+    test('TypesLearnedParams keeps the handles whose type id it can read', () {
+      final t = TypesLearnedParams.fromJson(
+          wire('{"sub":"s1","types":{"T":{}},"keys":{"1":"T","2":5,"z":"T"}}'));
+      expect(t.keys, {1: 'T'});
+      expect(t.types.keys, ['T']);
+      expect(() => TypesLearnedParams.fromJson(wire('{"keys":{}}')),
+          throwsFormatException);
+    });
+  });
+
   test('TickParams carries per-subscription liveness', () {
     final tick = TickParams(
       serverTime: 1786000000123,
