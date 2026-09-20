@@ -264,6 +264,29 @@ void main() {
     });
   });
 
+  group('a complaint names the identifier it is about, clipped', () {
+    // §5: type, never message — and the identifier the line is *about* is
+    // named, because a line that cannot name it cannot be acted on, but it
+    // came off the same wire and is clipped for the same reason.
+    test('a megabyte of key name does not become a megabyte of complaint',
+        () async {
+      register('p', keys: 4);
+      final huge = 'K' * (1024 * 1024);
+      final raw = _rawResult('p', keys: 4);
+      final handles = {...raw['handles'] as Map, huge: 'not-a-number'};
+      script.results['p'] = {...raw, 'handles': handles};
+
+      await engine.onHello('E1');
+
+      expect(subs['p']!.lastSeq, _snapshotSeq);
+      final named = engine.complaints.where((line) => line.contains('KKKK'));
+      expect(named, hasLength(1), reason: '${engine.complaints.length}');
+      expect(named.single.length, lessThan(400),
+          reason: 'the line names the key and cuts it; it must not carry it');
+      expect(named.single, contains('…'));
+    });
+  });
+
   group('a value nested past the sanitizer\'s bound', () {
     // `decodeSubscribeResult` used to run `sanitize` over the whole envelope
     // before any per-entry loop, and `sanitize` throws an `ArgumentError` at

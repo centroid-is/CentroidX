@@ -1640,23 +1640,49 @@ final class RemoteStateMan implements StateManApi {
   }
 
   /// The type dictionary the gateway sent, by type id, merged across
-  /// establishments.
+  /// establishments **within one gateway session**.
   ///
   /// A resync re-sends the dictionary for the keys it establishes and a client
   /// may hold several subscriptions, so merging rather than replacing keeps a
   /// type described by one establishment usable by the next. A type cannot
   /// change under a session — which is why the gateway describes it once.
+  ///
+  /// **Across sessions it can, and until [_typesEpoch] existed nothing here
+  /// noticed.** The map grew by `addAll` and was never cleared, so a
+  /// reprogrammed PLC behind a restarted gateway — the `plc_reprogrammed`
+  /// resync reason exists for exactly that — left every old descriptor
+  /// standing beside the new ones. Two things follow: an id the new gateway
+  /// no longer mints keeps answering [typeOf] with the old enum names for as
+  /// long as the panel runs, and a plant whose type ids carry a hash of the
+  /// type's shape grows this map by one dictionary per reprogram, never
+  /// shrinking. The epoch is the wire's own statement that the session
+  /// changed (`HelloResult.epoch`, carried onto every subscribe answer), so
+  /// a snapshot from a new epoch starts the dictionary over.
   final Map<String, TypeDescriptor> _types = <String, TypeDescriptor>{};
 
   /// key -> the type id its meta named, so [typeOf] is one lookup.
   final Map<String, String> _typeIdByKey = <String, String>{};
+
+  /// The epoch the current dictionary was learned under; null before the
+  /// first establishment. See [_types].
+  String? _typesEpoch;
 
   /// Keeps the dictionary an establishment carried.
   ///
   /// Forgiving by construction: a gateway with nothing to describe sends
   /// neither field, and a key whose meta names no type simply has no
   /// descriptor — its value still crosses, it is the enum names that do not.
+  ///
+  /// A snapshot from a different epoch than the dictionary was learned under
+  /// replaces it rather than merging into it — see [_types]. An empty epoch
+  /// (a gateway that sends none) merges for ever, which is what it did
+  /// before and the most that can be known about a session nobody numbers.
   void _adoptTypes(DecodedSubscribeResult result) {
+    if (result.epoch.isNotEmpty && result.epoch != _typesEpoch) {
+      _types.clear();
+      _typeIdByKey.clear();
+      _typesEpoch = result.epoch;
+    }
     _types.addAll(result.types);
     for (final entry in result.meta.entries) {
       final meta = entry.value;

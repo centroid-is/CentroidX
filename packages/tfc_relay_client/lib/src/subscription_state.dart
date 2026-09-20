@@ -183,8 +183,12 @@ DecodedSubscribeResult decodeSubscribeResult(Object? raw) {
     for (final entry in wireHandles.entries) {
       final handle = _handleKey(entry.value);
       if (handle == null) {
-        complaints.add('handle for "${entry.key}" is not a number: '
-            '${entry.value}');
+        // Both halves came off the wire and both are clipped: the key so the
+        // line can name the tag, the value because "not a number" is the
+        // fact and a megabyte of what it was instead is not.
+        complaints.add('handle for "${clipForComplaint(entry.key)}" is not a '
+            'number: ${clipForComplaint(entry.value)} '
+            '(${entry.value.runtimeType})');
         continue;
       }
       handles[handle] = '${entry.key}';
@@ -217,16 +221,18 @@ DecodedSubscribeResult decodeSubscribeResult(Object? raw) {
       final handle = _handleKey(entry.key);
       final key = handle == null ? null : handles[handle];
       if (key == null) {
-        complaints.add('$what entry for handle ${entry.key} has no announced '
-            'key and was dropped rather than filed under a guess');
+        complaints.add('$what entry for handle ${clipForComplaint(entry.key)} '
+            'has no announced key and was dropped rather than filed under a '
+            'guess');
         continue;
       }
       try {
         out[key] = decode(handle!, key, entry.value);
       } catch (error) {
-        complaints.add('$what entry for handle $handle ("$key") could not be '
-            'decoded (${error.runtimeType}) and was dropped. One typo costs '
-            'one tag, not the page');
+        complaints.add('$what entry for handle $handle '
+            '("${clipForComplaint(key)}") could not be decoded '
+            '(${error.runtimeType}) and was dropped. One typo costs one tag, '
+            'not the page');
       }
     }
     return out;
@@ -245,9 +251,10 @@ DecodedSubscribeResult decodeSubscribeResult(Object? raw) {
     // that it happened and which handle it happened to.
     final t = wire['t'];
     if (t != null && !isRepresentableEpochMs(t)) {
-      complaints.add('snapshot entry for handle $handle ("$key") carried a '
-          'source timestamp outside the range DateTime can represent and was '
-          'adopted without one; its freshness cannot be computed');
+      complaints.add('snapshot entry for handle $handle '
+          '("${clipForComplaint(key)}") carried a source timestamp outside '
+          'the range DateTime can represent and was adopted without one; its '
+          'freshness cannot be computed');
     }
 
     // `WireValue.fromJson` sanitizes the value and composes
@@ -281,7 +288,8 @@ DecodedSubscribeResult decodeSubscribeResult(Object? raw) {
       try {
         rejected[key] = KeyReject.fromJson(_asJson(entry.value));
       } catch (error) {
-        complaints.add('rejected entry for "$key" could not be decoded '
+        complaints.add('rejected entry for "${clipForComplaint(key)}" could '
+            'not be decoded '
             '(${error.runtimeType}) and was dropped. The gateway refused the '
             'key but did not say how, so treat the key as unusable');
       }
@@ -299,7 +307,8 @@ DecodedSubscribeResult decodeSubscribeResult(Object? raw) {
       try {
         types[id] = TypeDescriptor.fromJson(entry.value);
       } catch (error) {
-        complaints.add('types entry "$id" could not be decoded '
+        complaints.add('types entry "${clipForComplaint(id)}" could not be '
+            'decoded '
             '(${error.runtimeType}) and was dropped; values of that type '
             'render without their enum names');
       }
