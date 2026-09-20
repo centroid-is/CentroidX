@@ -105,6 +105,31 @@ Carry-over items, tracked but not feature gaps:
   should load before `server.start()` and fail closed if that first load
   fails.
 
+### Tier 1b — features that answer about the PANEL as if about the STATION
+
+**Ranked above the unserved families, because an error is honest and a
+plausible wrong answer is not.** Each of these has no `isGateway` branch at
+all, so on a relayed panel it silently reports the panel host instead of the
+plant's station — and nothing on screen says which machine is being described.
+
+| Feature | Reaches past the relay at | What an engineer actually sees |
+|---|---|---|
+| **IP settings; station operations (D-Bus)** | `lib/pages/ip_settings.dart`, `lib/widgets/tfc_operations.dart`, `lib/widgets/dbus_gate.dart` — no `isGateway` branch | edits the **panel's** NetworkManager, restarts the **panel's** services, believing they are the station's |
+| **About Linux: temperatures, system clock, update channel** | `lib/core/hardware_temperatures.dart:105-111,272` reads `/sys/class/hwmon` via `File()` | the panel host's temperatures and clock, presented as the station's |
+| **Database stats pane** | `lib/widgets/panes/database_stats_pane.dart:74,125` | says "this database is local storage, not a Postgres" about the **panel** |
+| **Knowledge base** | `lib/providers/tech_doc.dart:35-40,94` returns `[]` | the library opens and lists **nothing, with no error** — there is no empty-state message |
+| **Config-store sync / undo** | `lib/providers/config_store.dart:146-150` detaches the remote when the database is null | the store runs local-only; undo and sync are silently absent |
+
+The IP-settings row is the one to fix first in this tier. The others mislead;
+that one lets somebody change the wrong machine's network configuration, and
+`test/e2e_pages/pages/ip_settings.dart` exercises only the access gate, never
+which host is being addressed.
+
+The cheap first move for all five is the same and is not a feature: **make
+them say which machine they are describing, or refuse when relayed.** That
+converts a wrong answer into an honest one in an afternoon, and can land well
+before any of them gets a wire path.
+
 ### Tier 2 — features with NO wire path at all
 
 **Six families, not three.** 18 individual features across them; 51 of 78 are
@@ -115,9 +140,11 @@ served, 9 partially.
 | **Reports** | editor opens, lists nothing; a report the backend holds is invisible |
 | **Knowledge base** (tech docs, PLC code, drawings) | the library says it cannot be reached |
 | **Configuration history** | the gateway answers method-not-found |
-| **Page-editor save** | edits cannot be persisted |
-| **Config-store sync** | the station's own config cannot round-trip |
-| **Chat / MCP** | unavailable |
+| **Page-editor save** | `UnsupportedError` — "edit the pages on a station"; reads work via `configItems` |
+| **Config-store sync** | see Tier 1b — silent, not an error |
+| **Chat / MCP** | `StateError('Database not connected')`, behind `kChatEnabled` (default true) |
+| **First-account page** | account creation impossible from a relayed panel |
+| **UMAS browse (Modbus)** | dials its own `UmasClient` over TCP **from the panel**, so it reaches the wrong network |
 
 All six hang off the same root: `databaseProvider` answers `null` when
 `gateway.isGateway` (`lib/providers/database.dart:50-52`), and
@@ -171,13 +198,17 @@ edge-triggered, then either move the momentary assets onto `holdToRun` or
 record why two plain writes are safe for these keys. Nothing else in this
 document is worth scheduling ahead of a possible stuck-machine hazard.
 
-### Step 1 — triage the five untriaged page cases (half a day)
+### Step 1 — make the panel/station confusions honest (an afternoon)
+Tier 1b. Add the `isGateway` branch, or a banner naming the host. Cheapest
+safety-per-hour in this document, and independent of every other step.
+
+### Step 2 — triage the five untriaged page cases (half a day)
 They are the cheapest source of new Tier 2 entries. Each is either a defect
 (convert to `knownRed` with a named reason) or a fixture bug (fix it). Then
 add the CI job the lane is deliberately missing: it has none today because a
 lane whose failures nobody has read is not evidence.
 
-### Step 2 — build the three missing families (the bulk)
+### Step 3 — build the six missing families (the bulk)
 Per family, in this order, because each one is a smaller version of the next:
 **config history → knowledge base → reports.**
 
@@ -193,11 +224,11 @@ For each:
 4. The `knownRed` case in `test/e2e_pages/` flipped to a live assertion. That
    is the acceptance test: it already exists and already fails.
 
-### Step 3 — close the audit gap (after the id decision)
+### Step 4 — close the audit gap (after the id decision)
 Decide one action id, then record tag writes and alarm acks on the wire, and
 turn the three audit-trail `knownRed` cases live.
 
-### Step 4 — make coverage self-checking
+### Step 5 — make coverage self-checking
 The lesson from the enum case: a hand-set skip is a step somebody forgets, and
 a green lane then says nothing about the thing it was skipping. Prefer a test
 that **asks the system** what it supports and asserts accordingly. A sweep
