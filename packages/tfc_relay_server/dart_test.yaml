@@ -23,6 +23,17 @@ concurrency: 1
 # lesson: an undeclared tag does not select, it warns — so `--tags ws` on a
 # misspelling runs everything and looks like it ran nothing.
 tags:
+  measurement:
+    # Benchmarks. They print what they measured and assert only a ceiling one
+    # to two orders of magnitude above it, so they catch a change in the SHAPE
+    # of a cost — an accidental quadratic, a per-leaf allocation, a lookup
+    # that starts hitting a database — without becoming a flake on a loaded
+    # box. Declared because an undeclared tag does not select, it warns.
+    #
+    # They run in the ordinary lane on purpose: a benchmark behind a flag is a
+    # benchmark that is broken on the morning somebody needs it, which is the
+    # same argument the soak's short arm makes for itself.
+
   contract:
     # The shared 44-check StateManApi suite from tfc_stateman_contract, run
     # over this transport rather than in memory.
