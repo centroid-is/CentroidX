@@ -936,7 +936,7 @@ machine. Two runs, in order:
 dart run tfc_relay_server:relay_certs --ca --out /etc/relay/pki
 dart run tfc_relay_server:relay_certs --leaf \
     --ca-cert /etc/relay/pki/ca.pem --ca-key /etc/relay/pki/ca-key.pem \
-    --san relay.svn.local --san 10.104.29.71 --days 365 \
+    --san relay.plant.local --san <gateway-address> --days 365 \
     --out /etc/relay/pki
 ```
 
@@ -949,7 +949,7 @@ one. Private keys are written `0600` on POSIX.
 every address a panel dials, and an address dialled as an IP literal needs an
 IP SAN.** The reason is worth one sentence, because the obvious library gets
 it wrong: `basic_utils` encodes every subject-alternative name as a `dNSName`,
-so `10.104.29.71` goes into the certificate as a DNS *string*, which passes a
+so `<gateway-address>` goes into the certificate as a DNS *string*, which passes a
 hostname test and is refused by every panel in the plant. `relay_certs` writes
 a real `iPAddress` GeneralName (DER tag `0x87`, four octets) and a unit test
 asserts the tag byte on both branches, so a cleanup that unifies them cannot

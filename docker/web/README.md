@@ -12,7 +12,7 @@ in gateway mode is.
 centroidx-web:
   image: ghcr.io/centroid-is/centroid-web:latest
   environment:
-    CENTROIDX_GATEWAY_URL: wss://10.104.60.84:9443
+    CENTROIDX_GATEWAY_URL: wss://<panel-address>:9443
   ports: ["8090:80"]
 ```
 

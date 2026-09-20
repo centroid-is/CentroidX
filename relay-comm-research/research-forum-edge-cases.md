@@ -63,7 +63,7 @@ Server restart invalidates every SubscriptionId (BadSubscriptionIdInvalid). Afte
 ## Theme 10: Operational/network hazards
 
 - **Cert expiry:** OPC UA client certs 12–24 mo typical. Staged rotation (new cert 30 d out, trust stores 14 d, present at 7 d — OPC UA permits multiple valid certs). **Monitor days-to-expiry as a plant alarm** (gateway cert + every PLC's).
-- **Duplicate IP:** intermittent connection instability that looks like a flaky app (113538, 81729). Weighers on hand-configured static 10.104.29.71–78 = exactly where the next contractor introduces a duplicate.
+- **Duplicate IP:** intermittent connection instability that looks like a flaky app (113538, 81729). Weighers on hand-configured static <gateway-address>–78 = exactly where the next contractor introduces a duplicate.
 - **Endpoint security agents:** AV exclusions for gateway data dirs standing practice; agent auto-updates reboot machines (49362).
 - **Windows Update:** no safe default; deliberate per-machine decision (8805). HMI desktops reboot on Patch Tuesday unless decided.
 - **Wi-Fi roaming (future tablets):** client-driven; sticky clients "show bars but can't pull data"; forklift cages are Faraday cages; roaming = routine 2–10 s blackouts → reconnect must be cheap enough to run many times per shift without visible resync flash.
