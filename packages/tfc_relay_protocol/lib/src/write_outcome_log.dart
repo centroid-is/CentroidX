@@ -64,6 +64,7 @@
 library;
 
 import 'json_equality.dart';
+import 'ulid.dart';
 import 'write_result.dart';
 
 /// The write a recorded outcome belongs to: the tag, the payload, and the
@@ -199,6 +200,35 @@ final class WriteOutcomeLog {
 
   final _entries = <String, WriteOutcomeEntry>{};
 
+  /// The newest MINT instant this log has ever forgotten.
+  ///
+  /// **The upper bound on every `not_received`**, and the counterpart of
+  /// [startedAtMs] at the other end of the window. `LocalStateMan` has carried
+  /// one since 08-REVIEW CR-03 (`local_state_man.dart:1080-1118`); this log
+  /// shipped without one, and its own doc said it did not need an "eviction
+  /// era to remember". That was wrong, because the two clocks in this class
+  /// are not the same clock:
+  ///
+  ///  * [prune] drops an entry on **this source's** record time, `entry.atMs`;
+  ///  * [insideWindow] judges on the **panel's** mint time, from its ULID.
+  ///
+  /// A panel running Δ ahead mints at `atMs + Δ`, so for `ttl < (now - atMs)
+  /// <= ttl + Δ` the entry is gone while its mint instant still reads inside
+  /// the window — and the gateway answers `not_received` about a write it
+  /// applied. That is the one verdict meaning *safe to re-send*, and a re-send
+  /// is a second command to a machine.
+  ///
+  /// [witnessed]'s future bound does not cover this. It refuses a command
+  /// minted ahead of `now()`, which holds only until this source's clock
+  /// passes the mint instant; after that the skew is indistinguishable from a
+  /// wider window. The gap is exactly the interval a panel re-queries in after
+  /// an outage.
+  ///
+  /// Raised from the mint time rather than from `atMs` so it bounds the same
+  /// quantity [insideWindow] tests. An unparseable cmd contributes its record
+  /// time, which is the conservative reading.
+  int _forgottenBeforeMs = 0;
+
   /// How many outcomes are being held. Read by the arms that pin the log's
   /// bound (T-04-06); nothing in production depends on it.
   int get recordedOutcomes => _entries.length;
@@ -238,12 +268,25 @@ final class WriteOutcomeLog {
   /// **Inclusive at the TTL**: `now() - mintedAtMs == ttl` is inside. The flip
   /// to an exclusive bound is a one-character mutation and it changes which
   /// verdict an operator is given, so it is pinned directly.
+  ///
+  /// **And never inside it for an instant already forgotten.** See
+  /// [_forgottenBeforeMs]: without this clause the answer for a skewed panel
+  /// is drawn from the absence of an entry this log deleted itself.
   bool insideWindow(int mintedAtMs) =>
+      mintedAtMs > _forgottenBeforeMs &&
       now() - mintedAtMs <= ttl.inMilliseconds;
 
-  /// Drops everything past the TTL.
+  /// Drops everything past the TTL, remembering how far the forgetting went.
   void prune() {
     final horizon = now() - ttl.inMilliseconds;
-    _entries.removeWhere((_, entry) => entry.atMs < horizon);
+    _entries.removeWhere((cmd, entry) {
+      if (entry.atMs >= horizon) return false;
+      // The mint instant, because that is the quantity `insideWindow` tests.
+      // `ulidMs` answers null for an id this gateway could not have dated, and
+      // the record time is the conservative substitute.
+      final minted = ulidMs(cmd) ?? entry.atMs;
+      if (minted > _forgottenBeforeMs) _forgottenBeforeMs = minted;
+      return true;
+    });
   }
 }
