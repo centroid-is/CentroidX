@@ -1043,6 +1043,14 @@ class _PageEditorState extends ConsumerState<PageEditor> {
       // staged batch there.
     }
     ref.read(pageManagerProvider.future).then((pageManager) {
+      // The editor can be gone before the manager resolves -- the access gate
+      // swaps this subtree out the moment the session answers, and an operator
+      // can leave the route while the pages are still loading. `setState` on a
+      // defunct state asserts in debug and dereferences a null element in
+      // release, so the load has to check before it lands. Found by
+      // `test/e2e_pages`'s page-editor case, which pumped the editor over the
+      // relay and took the assertion every time.
+      if (!mounted) return;
       setState(() {
         _temporaryPages = pageManager.copyWith().pages;
         _baselineItems = pageManager.baselineItems;
