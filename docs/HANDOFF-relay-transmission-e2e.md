@@ -116,6 +116,98 @@ editor, preferences JSON editor), **page-editor save** and **config-store
 sync/undo** — pages and assets are `config_item` rows too, and `configItems`
 is deliberately reads-only.
 
+### The design, settled by adversarial review and ready to implement
+
+**One backend mechanism, two wire doors.** Every write of every kind already
+funnels to `ConfigStore.writeItems` — preferences via `SharedRowPreferences`
+→ the guard (`guarded_config_store.dart:812-830`), pages via `PageManager`
+(`page_manager.dart:104-110`), key mappings via `saveKeyMappings`, undo via
+`config_undo.dart:665-673`. So the gateway needs exactly **one** writer.
+
+- `ConfigStore` in the composition: `local:` an ephemeral in-memory
+  `AppDatabase`, `remote:` the backend's existing `Database`. Verified safe:
+  the sync engine **never writes the remote** (`config_sync.dart:456-503`),
+  removals derive from the caller's `derivedFrom` and not from the snapshot
+  (`config_store.dart:722-735`), so an empty mirror can neither delete nor
+  resurrect a shared row — the worst pre-reconcile case is a spurious
+  `ConfigConflict`, closed by awaiting `store.syncSettled` before building the
+  replace set. `stationScope` never reaches Postgres (`:672-681`).
+- A **thin, stateless per-identity writer** minted in `scopeFactory`. It has
+  to be per identity: `writeItems` takes `who` and `roleName` per call, so a
+  composition-wide writer would put a constant in `config_change.who` while
+  the audit row carries the verified username — one action id, two answers to
+  "who did this", in the history this branch just put on the socket.
+- **`writeItems` needs a `String? station` override** so `config_change.station`
+  matches the audit row instead of always reading the gateway's name.
+- **Two doors, because the grading genuinely differs.** Preferences are graded
+  per *key*; a generic kind-graded member would have to grade a preference
+  replace-set at the strictest key in the plant (`server_config_envelope`,
+  `administer`) and lock a `configure` user out of saving `alarm_man_config`.
+  So: keep `preferences.*`, and add `configItems.write` for `{page, asset}` /
+  `{key_mapping}` with the check key derived **server-side from the kinds**
+  and `preference` refused by name. Pin the two derived strings against
+  `kConfigWriteKeys` with a test in `tfc_dart` — it can import both packages,
+  `tfc_relay_server` cannot.
+- **The action id: a non-wire capability interface**, type-tested by the
+  decorator. Precedent is `TypeDescriptions` (`type_descriptor.dart:159`,
+  tested at `policy_state_man.dart:555`). `_requireGroup` and `_recordAllowed`
+  gain an `actionId` parameter; mint before the check, as
+  `GuardedConfigStore.write` does.
+  **Not** a `PreferencesApi` parameter — that puts a client-supplied action id
+  on the wire, the forgery surface `AuditApi` refuses a write member for.
+  **Not** a mutable "next action id" field: json_rpc_2 dispatches without
+  awaiting between frames (`server.dart:114-115`), and the `await syncSettled`
+  this design needs is exactly what would make request B's id land on request
+  A's change rows.
+- **Undo closes on the same store.** `executeUndo`'s seven inputs all exist at
+  the backend, so `configHistory.undo(originalActionId)` plans and executes
+  server-side and the client sends one string — the plan never crosses the
+  wire, which is what keeps it from being a forgery surface. Two wrinkles: the
+  gate is `undoGate(policy, plan)`, knowable only *after* planning, so the
+  deny row comes from the plan's gate or the caught `AccessDenied` rather than
+  from a constant; and the app's rule that a ready plan writing an empty diff
+  is a contradiction must be mirrored.
+
+### Before it lands — three things that are not optional
+
+1. **`libsqlite3` is not in the backend image.** `docker/backend/Dockerfile:78-80`
+   installs `ca-certificates` and nothing else; `sqlite3` 2.9.4 `dlopen`s
+   `libsqlite3.so`. The gateway would construct the in-memory `AppDatabase`,
+   throw `Failed to load dynamic library`, and **crash-loop under
+   `restart: unless-stopped` with the plant's acquisition down** — while the
+   macOS e2e bench passes, because macOS has a system libsqlite3. Add
+   `libsqlite3-0` to the runtime apt line **and** build the store behind a
+   try/catch that degrades to today's "writes refused", never to "backend
+   down".
+2. **A reserved-key refusal on `remove` and `clear(allowList:)`.** They are
+   only group-graded, so once the blanket refusal lifts a `configure` session
+   can delete the gateway's own `key_mappings` row over the wire.
+3. **`ConfigStoreUnsafePoolException`** fires when the backend's pool is > 1
+   (`config_store.dart:702-710`). Default is 1 and unset in compose, so it
+   works today — but a deployment that raises `CENTROID_DB_MAX_POOL_CONNECTIONS`
+   refuses every relayed write. Attach a dedicated pool-of-one `Database` or
+   document it at the env knob.
+
+### Deferred by name, not forgotten
+
+**The relayed *station-build* panel's mirror.** `config_store.dart:146-150`
+detaches the remote when the database is null, so such a panel holds a mirror
+frozen at boot while `PageManager` never consults the relayed rows on that
+build (`page_manager.dart:104`). Every save would carry hours-old revs and
+conflict. That is a client-side two-sources-of-truth design, untouched by any
+backend writer: scope `configItems.write` to the mirror-less (browser) build
+and leave the station-build refusal in place with a message.
+
+### Known, pre-existing, now visible
+
+`_PolicyPreferences._graded` fires the **allow row after the delegate is
+initiated, not after it completes** (`policy_state_man.dart:1530-1532`). Every
+family does this. It is harmless while the backend cannot refuse; the moment
+it can — CAS conflict, offline, pool — that row claims a save that never
+landed.
+
+### The earlier notes
+
 Fable's design answer, which I have not yet implemented:
 
 - The decorator mints `newActionId()` in `_PolicyPreferences._graded`, records
