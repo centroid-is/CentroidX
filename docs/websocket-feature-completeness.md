@@ -6,8 +6,10 @@ everything a direct-mode station can.
 
 **Out of scope, by decision:** cameras and media. Deferred.
 
-**Status of this document.** The gaps below are established from the code, not
-assumed — each names its evidence. The sequencing is a proposal.
+**Status of this document.** Derived from a full inventory: **78 features in
+12 families**, of which 51 are served by the wire, 9 partially, and 18 not at
+all; 29 are covered end to end over a real socket. Each gap names its
+evidence. The sequencing is a proposal.
 
 ---
 
@@ -17,7 +19,8 @@ Three questions, and a feature is only done when all three are yes.
 
 1. **Is it on the wire?** A relay method or a `StateManApi` member exists.
    The registered surface is `relay_session.dart`'s method table, frozen by
-   `surface_test.dart`. Today it carries ten families beside the value
+   `surface_test.dart`. It carries **88 request methods and 6
+   server-to-client notifications**, in ten families beside the value
    surfaces: `accessAdmin`, `accessTemplates`, `audit`, `backendConfig`,
    `browse`, `configItems`, `historyViews`, `preferences`, `session`,
    `timeseries`.
@@ -51,37 +54,100 @@ operator loses.
 
 ### Tier 1 — the plant's controls
 
-Nothing outstanding. Live values, writes, three-state write outcomes,
-`writeStatus`, hold-to-run and alarm acknowledge are all served, implemented
-at both ends, and covered end to end — including actuation counted **at the
-plant node** rather than inferred from what the panel was told
-(`packages/tfc_relay_local/test/e2e/`, `test/e2e_assets/`).
+**The socket carries everything. The app does not use the safest part of it.**
 
-Carry-over items already known, tracked but not feature gaps:
-- **No audit row for a tag write or an alarm ack over the wire.** The access
-  spec requires every hand-made write recorded, and the audit trail page
-  therefore cannot show plant writes. Needs a decision first: the app's guard
-  already mints an `actionId` in gateway mode while `RemoteStateMan` mints a
-  separate `cmd`, so recording on both sides makes one operator action two
-  row sets under two ids. Decide the id, then build.
+`holdToRun` and `HoldHandle` are implemented on the wire, in both gateway
+compositions and in the client — and **no code under `lib/` calls either**
+(grep: zero references outside `tfc_relay_client`). Every momentary control is
+instead two plain writes: `start_stop_button.dart:26` says so in its own
+words, *"pulses (true on press, false on release)"*, and `_writePulse` sends
+`true` on tap-down and `false` on release as independent commands.
+
+So the release is an ordinary write with an ordinary write's failure modes. If
+the link dies, the panel is killed, or the operator's finger leaves the glass
+while the socket is stalled, the `true` has landed and the `false` may never
+be sent. Whether the machine then keeps running is a property of the PLC
+program — a level-triggered `runKey` keeps running; an edge-triggered one does
+not — so this is not a defect that can be confirmed or dismissed from this
+repository alone. **It needs an answer from the PLC source before anything
+else in this document is scheduled.**
+
+That is precisely the hazard `hold`/`h` exists to remove: one key is one
+counter, the counter stops the moment the ticks stop, and the gateway releases
+every hold on session teardown. The deadman is built, tested and unused.
+
+The hazard *is* covered at the gate level
+(`packages/tfc_relay_local/test/gate/stuck_momentary_gate_test.dart`) — but
+against a fake upstream, and never against a real plant with a real button
+widget, so nothing measures what a stuck momentary does at the node.
+
+**Action, ahead of every feature below:**
+1. Establish from `~/Projects/sildarvinnsla` whether the SVN commands are
+   level- or edge-triggered. That answer decides whether this is a live
+   safety gap or a latent one.
+2. Either move the momentary assets onto `holdToRun`, or write down why two
+   plain writes are acceptable for these keys — with the PLC behaviour as the
+   evidence, not as an assumption.
+3. Add the missing e2e: press, lose the link before release, and assert at the
+   plant node what state the machine is left in. The bench counts actuations
+   at the node already, so this is a case rather than a new instrument.
+
+Everything else in this tier is sound: live values, writes, three-state
+outcomes, `writeStatus` and alarm acknowledge are served, implemented at both
+ends, and covered end to end with actuation counted at the plant node.
+
+Carry-over items, tracked but not feature gaps:
+- **No audit row for a tag write or an alarm ack over the wire.** Needs a
+  decision first: the app's guard mints an `actionId` in gateway mode while
+  `RemoteStateMan` mints a separate `cmd`, so recording on both sides makes
+  one operator action two row sets under two ids.
 - **Tag bindings refresh only on the token-file poll** (`bin/main.dart`), and
   should load before `server.start()` and fail closed if that first load
   fails.
 
 ### Tier 2 — features with NO wire path at all
 
-These are the real feature gaps. Each needs a protocol family, a backend
-implementation, a `relayed_*` client store, and an e2e case.
+**Six families, not three.** 18 individual features across them; 51 of 78 are
+served, 9 partially.
 
-| Feature | Evidence | What a relayed panel gets today |
-|---|---|---|
-| **Reports** | no `report*` method on the wire; `guarded_report_store.dart` has no `relayed_` twin | the editor opens and lists nothing; a report the backend holds is invisible |
-| **Knowledge base** | no `knowledge*` method; `guarded_knowledge_stores.dart` has no twin | the library says it cannot be reached |
-| **Configuration history** | no `configHistory*` method; the gateway answers method-not-found | the page cannot show the plant's own config history |
+| Family | What a relayed panel gets |
+|---|---|
+| **Reports** | editor opens, lists nothing; a report the backend holds is invisible |
+| **Knowledge base** (tech docs, PLC code, drawings) | the library says it cannot be reached |
+| **Configuration history** | the gateway answers method-not-found |
+| **Page-editor save** | edits cannot be persisted |
+| **Config-store sync** | the station's own config cannot round-trip |
+| **Chat / MCP** | unavailable |
 
-All three are already pinned by cases in `test/e2e_pages/` — two as
-`knownRed`, one as a passing assertion that the method is absent. When each is
-built, those cases become the acceptance test.
+All six hang off the same root: `databaseProvider` answers `null` when
+`gateway.isGateway` (`lib/providers/database.dart:50-52`), and
+`mcpDatabaseProvider` follows it (`lib/providers/server_database.dart:11-14`).
+That is deliberate — the gateway is not supposed to hold a second connection
+to the plant's Postgres — which is exactly why each family needs a wire path
+rather than a database.
+
+Three of the six are already pinned by cases in `test/e2e_pages/`. Those
+become the acceptance tests.
+
+### Tier 2b — the two gateway compositions disagree
+
+`LocalStateMan` refuses, unconditionally, what `composeBackendRelay` serves:
+`accessTemplates`, `accessAdmin`, `audit`, `backendConfig`, `configItems`
+(`packages/tfc_relay_local/lib/src/local_state_man.dart:1739-1751`),
+`preferences` without a database (`:1689`), and `timeseries`/`historyViews`
+without a historian (`:1616-1648`). It also has **no alarm engine** — alarms
+live only in `packages/tfc_dart/lib/core/relay/backend_alarms.dart`.
+
+This matters for testing rather than for the plant: `buildGateway` is what
+both e2e lanes compose, so every feature in that list is untestable by the
+lanes that exist. Decide deliberately whether `LocalStateMan` is a harness
+that should grow these, or whether the lanes should compose
+`composeBackendRelay` and pay for a Postgres.
+
+**And four pages that touch the plant are in no socket lane at all:**
+`AlarmViewPage`, `StopTimeline` (downtime), `HistoryViewPage`, `ReportsPage`.
+Reports is unserved; the other three are *served but untested over a socket*,
+which is the more dangerous category — nothing would notice them breaking.
 
 ### Tier 3 — served, but coverage or correctness unverified
 
@@ -99,13 +165,11 @@ built, those cases become the acceptance test.
 
 ## 3. The plan
 
-### Step 0 — finish the inventory (half a day)
-Answer the three questions for every remaining feature family, with
-`file:line`. The method table, the `relayed_`/`guarded_` split and the
-`databaseProvider` consumer list are the three inputs; the output is this
-document's Tier 2 and Tier 3 made complete. **Do this before building
-anything** — the point of the exercise is that nobody has to enumerate
-features by hand later either.
+### Step 0 — settle the momentary-control question (first, and blocking)
+See Tier 1. Read the PLC source for whether the commands are level- or
+edge-triggered, then either move the momentary assets onto `holdToRun` or
+record why two plain writes are safe for these keys. Nothing else in this
+document is worth scheduling ahead of a possible stuck-machine hazard.
 
 ### Step 1 — triage the five untriaged page cases (half a day)
 They are the cheapest source of new Tier 2 entries. Each is either a defect
