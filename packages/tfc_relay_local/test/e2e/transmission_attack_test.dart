@@ -221,44 +221,86 @@ void main() {
   });
 
   group('a write is never applied twice, counted at the machine', () {
-    test('a write whose answer never arrives actuates at most once', () async {
+    test(
+        'a write that REACHED the plant but whose answer was lost is never '
+        'actuated a second time', () async {
       final bench = await standUpPlant();
       expect(bench.actuations(setpointNode), 0,
           reason: 'nothing has commanded this node yet');
 
-      // Cut the answer's way home the moment the command is on the wire. The
-      // command may or may not reach the plant; that is the whole point of the
-      // three-state outcome.
+      // The command's way out stays open and only its answer is held
+      // (`fault_proxy.dart:728-736` — "forwarding client->server keeps the
+      // server side alive and answering, so the peer does not time out while
+      // its replies are held"). So the machine really does move, and the panel
+      // really does not hear that it did.
+      //
+      // This is the exact case `WriteUnknown` exists for, and the only case
+      // where a retry would be a second command to a machine. A blackhole in
+      // both directions cannot test it: there the write may never arrive, and
+      // "at most one actuation" is then satisfied by zero — which is how the
+      // earlier shape of this case passed against a mutant that wrote to the
+      // plant twice.
+      bench.link.bufferServerToClient = true;
       final pending = bench.panel.write(setpointKey, 21.5);
-      bench.link.blackhole();
+
+      await until(() => bench.actuations(setpointNode) == 1,
+          within: const Duration(seconds: 30),
+          describe: 'the command to reach the plant while its answer is '
+              'withheld — if this times out the case is vacuous and proves '
+              'nothing about retries');
 
       final outcome = await pending;
       expect(outcome, isNot(isA<WriteApplied>()),
           reason: 'an answer that never came back cannot be reported as a '
               'fact about the machine');
+      expect(outcome, isNot(isA<WriteNotReceived>()),
+          reason: 'THE PLANT MOVED. `notReceived` is the one outcome that '
+              'says "safe to re-send", and saying it about a command that has '
+              'already actuated is how a machine gets commanded twice by a '
+              'panel doing exactly what it was told');
+
+      bench.link.bufferServerToClient = false;
+      await until(() => bench.panel.linkState == LinkState.ready,
+          within: const Duration(seconds: 60),
+          describe: 'the panel to recover and re-query its unresolved '
+              'command through writeStatus');
+      // Time for a retry to have happened, if one were going to.
+      await Future<void>.delayed(const Duration(seconds: 3));
+
+      expect(bench.actuations(setpointNode), 1,
+          reason: 'NOTHING auto-retries: not the RPC layer, not the send '
+              'buffer, not the client. A second actuation here is a second '
+              'command to a machine that nobody issued. Actuations seen: '
+              '${bench.server().actuationsOf(setpointNode)}');
+    });
+
+    test(
+        'a write whose command may never have left actuates at most once',
+        () async {
+      // The other half: both directions cut, so the command may or may not
+      // have reached the plant. Zero actuations is a legitimate outcome here,
+      // which is why this case asserts the OUTCOME AND THE COUNT AGREE rather
+      // than a bare upper bound.
+      final bench = await standUpPlant();
+
+      final pending = bench.panel.write(setpointKey, 26.5);
+      bench.link.blackhole();
+      final outcome = await pending;
+      expect(outcome, isNot(isA<WriteApplied>()));
 
       bench.link.blackhole(enabled: false);
       await until(() => bench.panel.linkState == LinkState.ready,
-          within: const Duration(seconds: 45),
-          describe: 'the panel to reconnect and re-query its unresolved '
-              'command');
-      // Time for a retry to have happened, if one were going to.
+          within: const Duration(seconds: 60),
+          describe: 'the panel to reconnect');
       await Future<void>.delayed(const Duration(seconds: 3));
 
       final count = bench.actuations(setpointNode);
       expect(count, lessThanOrEqualTo(1),
-          reason: 'NOTHING auto-retries: not the RPC layer, not the send '
-              'buffer, not the client. A second actuation here is a second '
-              'command to a machine that nobody issued');
-
-      // The sharper half: the outcome and the count must agree. A
-      // `notReceived` is the only outcome that says "safe to re-send", so it
-      // must be backed by the plant never having moved.
+          reason: 'one command cannot become two movements');
       if (outcome is WriteNotReceived) {
         expect(count, 0,
-            reason: 'notReceived is the one outcome that invites a re-send; '
-                'if the plant moved, that invitation is a duplicate '
-                'actuation waiting to happen');
+            reason: 'notReceived is an affirmative claim that the plant was '
+                'not touched, and a panel is entitled to re-send on it');
       }
     });
 

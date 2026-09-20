@@ -43,12 +43,52 @@ File checkedDestination(String destination, {String? repoRoot}) {
   final resolvedRoot = _resolve(root.path);
   if (resolvedRoot == null) return file;
 
-  final resolvedFile = _resolve(file.parent.path) ?? p.normalize(file.parent.path);
+  final resolvedFile = _resolveThroughMissing(file.parent.path);
   if (p.equals(resolvedFile, resolvedRoot) ||
       p.isWithin(resolvedRoot, resolvedFile)) {
     throw ForbiddenDestination(file.path, resolvedRoot);
   }
   return file;
+}
+
+/// Resolves [path] through symlinks even when its tail does not exist yet.
+///
+/// **The guard failed open without this, and failed open on the ordinary
+/// first use.** `_resolve` answers null for a directory that is not there, and
+/// the old fallback compared an UNRESOLVED destination against a RESOLVED
+/// root. On any system where the repository is reached through a symlink the
+/// two can then never match, `p.isWithin` is false, and a spec derived from a
+/// customer's key mappings is written inside the tree — which is the one thing
+/// this file exists to prevent.
+///
+/// It is the normal case, not a corner: `--out <repo>/snapshots/plant.yaml`
+/// with `snapshots/` not yet created is how somebody takes a first snapshot.
+///
+/// macOS reproduces it directly (`/var` -> `/private/var`, so every
+/// `Directory.systemTemp` path is a symlink); a Linux CI box with a literal
+/// `/tmp` does not, which is why the arm that pins this passed in the CI the
+/// package shipped with and failed on the machine it was written on.
+///
+/// So the nearest existing ancestor is resolved and the missing tail is put
+/// back on it. A path whose every ancestor is missing cannot be compared at
+/// all, and the caller refuses rather than allows — a destination this cannot
+/// place is not a destination it may bless.
+String _resolveThroughMissing(String path) {
+  var dir = p.normalize(p.absolute(path));
+  final missing = <String>[];
+  while (true) {
+    final resolved = _resolve(dir);
+    if (resolved != null) {
+      return missing.isEmpty
+          ? resolved
+          : p.joinAll(<String>[resolved, ...missing.reversed]);
+    }
+    final parent = p.dirname(dir);
+    // The filesystem root itself did not resolve: nothing to anchor against.
+    if (p.equals(parent, dir)) return p.normalize(path);
+    missing.add(p.basename(dir));
+    dir = parent;
+  }
 }
 
 String? _resolve(String path) {

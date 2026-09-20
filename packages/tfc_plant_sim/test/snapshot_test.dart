@@ -89,6 +89,34 @@ void main() {
       );
     });
 
+    test(
+        'a destination whose directory does not exist yet is still refused, '
+        'through a symlinked repository path', () {
+      // The fail-open case, pinned on every platform rather than on the one
+      // whose temp directory happens to be a symlink.
+      //
+      // The guard resolves the repository root through symlinks. If it cannot
+      // also resolve the destination — and it cannot, when the destination's
+      // directory has not been created yet — then comparing the two is
+      // comparing `/private/var/...` against `/var/...`, they never match, and
+      // a spec derived from a customer's plant is written inside the tree.
+      //
+      // `<repo>/snapshots/plant.yaml` with no `snapshots/` directory is how a
+      // first snapshot is taken, so this is the ordinary path and not a corner.
+      final link = Directory.systemTemp.createTempSync('plant-sim-link');
+      addTearDown(() => link.deleteSync(recursive: true));
+      final aliased = '${link.path}/repo';
+      Link(aliased).createSync(repo.path);
+
+      expect(
+        () => checkedDestination('$aliased/snapshots/plant.yaml',
+            repoRoot: aliased),
+        throwsA(isA<ForbiddenDestination>()),
+        reason: 'a directory that does not exist yet must not be able to '
+            'defeat the check that keeps plant data out of the repository',
+      );
+    });
+
     test('a path that walks back into the repository is refused', () {
       final sneaky = '${outside.path}/../${_leaf(repo.path)}/plant.yaml';
       expect(
