@@ -5,7 +5,8 @@
 /// own IP address is the one thing a backend has no say over. What the relay
 /// DOES decide is who may open it — the session's groups come from
 /// `session.login` — so that is the property proven here: the gate reads the
-/// GATEWAY's answer. The NetworkManager behind the body is the fake the page's
+/// GATEWAY's answer, and the page says out loud that the interfaces it is
+/// showing are this panel's rather than the station's ([ThisPanelNotice]). The NetworkManager behind the body is the fake the page's
 /// own tests use (`test/helpers/fake_network_manager.dart`); a D-Bus daemon
 /// is not something a CI runner has, and it is not what this lane is about.
 library;
@@ -16,6 +17,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/pages/ip_settings.dart';
 import 'package:tfc/providers/access.dart';
 import 'package:tfc/widgets/access_gate.dart';
+import 'package:tfc/widgets/this_panel_notice.dart';
 
 import '../../helpers/fake_network_manager.dart';
 import '../support/backend_bench.dart';
@@ -77,6 +79,19 @@ void ipSettingsCases(BackendBench Function() bench) {
       await untilFound(tester, find.textContaining('10.104.29.10'),
           describe: 'its address');
       expect(find.byKey(kAccessLockedBodyKey), findsNothing);
+
+      // And it says WHICH machine those belong to.
+      //
+      // This is the case that can prove it rather than assert it: the panel
+      // here is genuinely relayed — `Panel.dial` writes
+      // `TransportMode.gateway` into its own device-local store — so the
+      // notice is answering the real transport and not an override. eth0 and
+      // 10.104.29.10 are this panel's, and on a station nothing above would
+      // change while the sentence would correctly disappear.
+      await untilFound(tester, find.byKey(kThisPanelNoticeKey),
+          describe: 'the notice naming which machine these interfaces are on');
+      expect(find.textContaining('not the station serving the plant'),
+          findsOneWidget);
       await dismount(tester);
     });
 

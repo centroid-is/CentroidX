@@ -180,21 +180,32 @@ plant's station — and nothing on screen says which machine is being described.
 
 | Feature | Reaches past the relay at | What an engineer actually sees |
 |---|---|---|
-| **IP settings; station operations (D-Bus)** | `lib/pages/ip_settings.dart`, `lib/widgets/tfc_operations.dart`, `lib/widgets/dbus_gate.dart` — no `isGateway` branch | edits the **panel's** NetworkManager, restarts the **panel's** services, believing they are the station's |
+| **IP settings** | `lib/pages/ip_settings.dart`, `lib/widgets/dbus_gate.dart` — no `isGateway` branch | edits the **panel's** NetworkManager, believing it is the station's |
+| ~~station operations (D-Bus)~~ | `lib/widgets/tfc_operations.dart` | **not a live hazard — the file is dead code.** `OperationModeAppBarLeftWidgetProvider` is never constructed and `globalAppBarLeftWidgetProvider` answers `null` unconditionally with no override anywhere in the repository, so the Start/Stop/Cleaning control never renders on any transport (checked 2026-09-20) |
 | **About Linux: temperatures, system clock, update channel** | `lib/core/hardware_temperatures.dart:105-111,272` reads `/sys/class/hwmon` via `File()` | the panel host's temperatures and clock, presented as the station's |
 | **Database stats pane** | `lib/widgets/panes/database_stats_pane.dart:74,125` | says "this database is local storage, not a Postgres" about the **panel** |
 | **Knowledge base** | `lib/providers/tech_doc.dart:35-40,94` returns `[]` | the library opens and lists **nothing, with no error** — there is no empty-state message |
 | **Config-store sync / undo** | `lib/providers/config_store.dart:146-150` detaches the remote when the database is null | the store runs local-only; undo and sync are silently absent |
 
-The IP-settings row is the one to fix first in this tier. The others mislead;
-that one lets somebody change the wrong machine's network configuration, and
-`test/e2e_pages/pages/ip_settings.dart` exercises only the access gate, never
-which host is being addressed.
+The cheap first move is the same for all of them and is not a feature: **make
+them say which machine they are describing.** Not *refuse* — a relayed panel
+is a real computer whose network may genuinely need configuring, and taking
+that away would break a legitimate job to prevent a misreading. The same
+choice the database card already makes: gate what the page SAYS, never what it
+lets an operator change.
 
-The cheap first move for all five is the same and is not a feature: **make
-them say which machine they are describing, or refuse when relayed.** That
-converts a wrong answer into an honest one in an afternoon, and can land well
-before any of them gets a wire path.
+**Done 2026-09-20** for the three that act on the host:
+`lib/widgets/this_panel_notice.dart` names both machines, renders nothing on a
+direct station, and is wired into **IP settings** and **About Linux** (whose
+power buttons restart whichever machine the page is describing — the same
+hazard as the network cards, and the card that names the host does not say
+which of the two it is). The **database stats pane** got a sentence of its own
+rather than a banner: it was saying "this database is local storage, not a
+Postgres server" on a relayed panel, which is false twice over.
+
+Still open in this tier: the **knowledge base** and **config-store sync**,
+both of which are Tier 2 gaps rather than wrong answers about a host, and
+neither of which a banner fixes.
 
 ### Tier 2 — features with NO wire path at all
 

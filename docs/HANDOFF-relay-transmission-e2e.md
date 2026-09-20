@@ -74,9 +74,23 @@ merge", built an adversarial e2e bench, and fixed what the review found.
    their fixes landed rather than months later.
 
    **It surfaced one new finding, below.**
-3. **Panel-vs-station confusions** (plan Tier 1b) — IP settings and station
-   operations act on the *panel's* NetworkManager when relayed. An afternoon
-   to make honest; highest safety-per-hour in the document.
+3. ~~Panel-vs-station confusions~~ (plan Tier 1b) — **done 2026-09-20** for
+   the three surfaces that act on the host. `lib/widgets/this_panel_notice.dart`
+   names both machines and renders nothing on a direct station; it is wired
+   into **IP settings** and **About Linux**. The **database stats pane** got
+   its own sentence instead of a banner.
+
+   Two corrections to the plan came out of it. **`lib/widgets/tfc_operations.dart`
+   is dead code** — `OperationModeAppBarLeftWidgetProvider` is never
+   constructed and `globalAppBarLeftWidgetProvider` answers `null` with no
+   override anywhere in the repository, so the Start/Stop/Cleaning control
+   never renders on any transport. And **About Linux is the worse hazard of
+   the two live ones**, not IP settings: its power buttons restart whichever
+   machine the page is describing.
+
+   The fix **names**, it does not refuse. A relayed panel is a real computer
+   whose network may genuinely need configuring, and locking the page would
+   break a legitimate job to prevent a misreading.
 4. **Six dark families** — reports, knowledge base, config history,
    page-editor save, config-store sync, chat/MCP. One null darkens them all:
    `lib/providers/database.dart:50-52`.
