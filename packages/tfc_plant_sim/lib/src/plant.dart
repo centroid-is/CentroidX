@@ -369,6 +369,24 @@ class FakePlant {
         value[member.name] = _enumValue(memberType, seed)
           ..name = member.name
           ..typeId = forWire ? NodeId.int32 : typeIds[member.type];
+      } else if (memberType != null) {
+        // **A struct inside a struct.** Without this arm a struct-typed member
+        // fell through to `_scalar`, which knows only the four built-ins, and
+        // the member was served as whatever that made of a type name it had
+        // never heard of. A PLC publishes nested structures routinely — a
+        // drive carrying a motor carrying its own status — and every path this
+        // package exists to exercise is deeper than one level: dotted member
+        // paths in access templates, the wire's per-entry containment, and the
+        // type dictionary's own recursion over members.
+        //
+        // `forWire` is carried down unchanged: the nested value is part of the
+        // same encoding decision as its parent, and a member that disagreed
+        // with its container about whether an enum is an Int32 would be a
+        // struct the serializer cannot write.
+        value[member.name] =
+            _structValue(memberType, types, typeIds, forWire: forWire)
+              ..name = member.name
+              ..typeId = forWire ? null : typeIds[member.type];
       } else {
         value[member.name] = _scalar(member.type, member.value)
           ..name = member.name;

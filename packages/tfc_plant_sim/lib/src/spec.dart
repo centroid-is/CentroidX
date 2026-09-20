@@ -173,6 +173,17 @@ class PlantSpec {
         }
         types[type.name] = type;
       }
+      // **Every member names something that exists, and nothing names
+      // itself.** Both are checked here, after the whole table is read,
+      // because a member may legally name a type declared later in the file.
+      //
+      // The cycle check is not tidiness. A struct that contains itself makes
+      // `_structValue` recurse until the stack goes, and a stack overflow
+      // while building a fixture reads as a crash in whatever happened to be
+      // running. Refusing it at the file is where it is cheapest to diagnose
+      // — the same argument `GatewayConfig` makes for refusing two links that
+      // share an alias.
+      _checkTypeGraph(types, origin);
     }
 
     final rawServers = _asList(doc['servers'] ?? [], '$origin.servers');
@@ -192,6 +203,43 @@ class PlantSpec {
       servers.add(server);
     }
     return PlantSpec(types: types, servers: servers);
+  }
+
+  /// Refuses a member naming an unknown type, and any cycle among structs.
+  ///
+  /// Depth-first with a path, so the message can name the loop rather than
+  /// just report that there is one: "DriveStatus -> Motor -> DriveStatus" is
+  /// something a person can fix, "a cycle exists" is not.
+  static void _checkTypeGraph(Map<String, TypeSpec> types, String origin) {
+    final settled = <String>{};
+
+    void walk(TypeSpec type, List<String> path) {
+      if (settled.contains(type.name)) return;
+      final loop = path.indexOf(type.name);
+      if (loop >= 0) {
+        throw PlantSpecError('$origin.types',
+            'the struct "${type.name}" contains itself: '
+            '${[...path.sublist(loop), type.name].join(' -> ')}. A value of '
+            'that type has no size, so nothing can serve it');
+      }
+      for (final member in type.members) {
+        if (_builtins.contains(member.type)) continue;
+        final named = types[member.type];
+        if (named == null) {
+          throw PlantSpecError('$origin.types',
+              'the member "${type.name}.${member.name}" is typed '
+              '"${member.type}", which is neither a built-in '
+              '(${_builtins.join(', ')}) nor a declared type');
+        }
+        if (named.isEnum) continue;
+        walk(named, [...path, type.name]);
+      }
+      settled.add(type.name);
+    }
+
+    for (final type in types.values.where((t) => !t.isEnum)) {
+      walk(type, const <String>[]);
+    }
   }
 
   static TypeSpec _type(Object? raw, String path) {
