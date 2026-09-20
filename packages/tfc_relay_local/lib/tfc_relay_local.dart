@@ -58,6 +58,10 @@ export 'src/opcua_upstream_link.dart';
 // write and no write, and a table with that much riding on it is judged
 // per-type by a suite that does not need a server on a socket to run.
 export 'src/opcua_write_typing.dart';
+// The same decision for the register map: `shapeModbusWrite` refuses what a
+// register cannot hold, with the same two reason codes, so an operator gets
+// one explanation whichever protocol the tag is behind.
+export 'src/modbus_write_typing.dart';
 export 'src/pipe_health.dart';
 export 'src/string_encoding.dart';
 export 'src/upstream_link.dart';

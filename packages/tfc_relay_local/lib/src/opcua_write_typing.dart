@@ -102,7 +102,10 @@ const Map<ua.Namespace0Id, (int, int)> _integerRanges =
 
 /// The largest finite IEEE-754 **single**, so a `Float` tag can refuse a
 /// magnitude that would reach the wire as infinity.
-const double _maxFinite32 = 3.4028234663852886e38;
+///
+/// Public because `modbus_write_typing.dart` owes a `float32` register the
+/// same refusal, and two spellings of one constant is how the two paths drift.
+const double maxFiniteFloat32 = 3.4028234663852886e38;
 
 /// The type this layer assumes for an `int` when the tag's own type could not
 /// be learned. See [shapeOpcUaWrite]'s `targetType: null` contract.
@@ -179,13 +182,13 @@ TypedWrite shapeOpcUaWrite(Object? value, {ua.NodeId? targetType}) {
       if (asDouble == null) {
         return _mismatch(value, id == ua.Namespace0Id.float ? 'Float' : 'Double');
       }
-      if (id == ua.Namespace0Id.float && asDouble.abs() > _maxFinite32) {
+      if (id == ua.Namespace0Id.float && asDouble.abs() > maxFiniteFloat32) {
         // A finite number that reaches the wire as infinity is failure mode 3
         // in the library doc, and a REAL tag is where it would happen.
         return TypedWriteRefused(
             writeValueOutOfRangeCode,
             '$asDouble does not fit a Float (REAL) tag, whose largest finite '
-            'magnitude is $_maxFinite32; nothing was sent');
+            'magnitude is $maxFiniteFloat32; nothing was sent');
       }
       return TypedWriteReady(ua.DynamicValue(
           value: asDouble,
@@ -206,7 +209,7 @@ TypedWrite shapeOpcUaWrite(Object? value, {ua.NodeId? targetType}) {
         // is a whole number this machine can carry both ways. When it is not,
         // rounding or saturating it would move the setpoint by an amount
         // nothing downstream would ever mention.
-        final whole = _asInt(value);
+        final whole = integralValueOf(value);
         if (whole == null) {
           return TypedWriteRefused(
               writeValueOutOfRangeCode,
@@ -216,7 +219,7 @@ TypedWrite shapeOpcUaWrite(Object? value, {ua.NodeId? targetType}) {
         }
         return _rangedInteger(whole, id, _integerTypeId(id));
       }
-      final asInt = _asInt(value);
+      final asInt = integralValueOf(value);
       if (asInt == null) {
         return _mismatch(value, id.name);
       }
@@ -335,7 +338,10 @@ double? _asDouble(Object value) {
 /// is `9223372036854775807`, so a `1e30` written to a LINT tag would otherwise
 /// arrive as int64-max and be reported applied. Requiring `i.toDouble() ==
 /// value` catches that and every other magnitude a double cannot carry back.
-int? _asInt(Object value) {
+///
+/// Public for `modbus_write_typing.dart`, which owes an integer register the
+/// same two answers for the same two reasons.
+int? integralValueOf(Object value) {
   if (value is int) return value;
   if (value is double) {
     if (!value.isFinite || value != value.roundToDouble()) return null;

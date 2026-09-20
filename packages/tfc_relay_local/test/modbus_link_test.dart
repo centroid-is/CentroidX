@@ -24,6 +24,8 @@ library;
 
 import 'dart:async';
 
+import 'package:modbus_client/modbus_client.dart'
+    show ModbusException, ModbusNumRegister;
 import 'package:open62541/open62541.dart' as ua;
 import 'package:tfc_dart/core/modbus_client_wrapper.dart' show ModbusDataType;
 import 'package:tfc_dart/core/state_man.dart';
@@ -366,6 +368,162 @@ void main() {
       expect(link.fake.writes, hasLength(1),
           reason: 'ONE crossing into the plant. No retry shape anywhere near '
               'it — readback is the only confirmation');
+    });
+  });
+
+  // ------------------------------------------ what the register can hold
+  //
+  // `modbus_write_typing_test.dart` judges the decision per type; this group
+  // judges that the LINK asks for it. Before it did, 70000 went from here to
+  // `ByteData.setUint16` untouched, reached the wire as 4464, and came back
+  // `WriteApplied`. The assertions are on the values and on the count of
+  // writes that reached the double: a refusal is a claim that nothing was
+  // sent, and `fake.writes` is what makes that claim falsifiable.
+  group('a value the register cannot hold is refused, never narrowed', () {
+    late DrivableModbusLink link;
+
+    setUp(() async {
+      link = DrivableModbusLink(alias: alias);
+      await link.connect(deadline: generous);
+      addTearDown(link.dispose);
+    });
+
+    KeyMappingEntry typed(ModbusDataType dataType,
+            {ModbusRegisterType registerType =
+                ModbusRegisterType.holdingRegister}) =>
+        KeyMappingEntry(
+          modbusNode: ModbusNodeConfig(
+            serverAlias: alias,
+            registerType: registerType,
+            address: 100,
+            dataType: dataType,
+          ),
+        );
+
+    test('70000, 65536, -5 and 5.9 into a uint16 register are each REJECTED '
+        'out_of_range, and none of them reaches the adapter', () async {
+      final ref = link.resolve(setpointKey, typed(ModbusDataType.uint16))!;
+
+      for (final value in <Object>[70000, 65536, -5, 5.9]) {
+        final result = await link.write(ref, DynamicValue.of(value),
+            cmd: 'cmd-$value', deadline: generous);
+
+        expect(result, isA<WriteRejected>(),
+            reason: '$value: measured before the guard, this reached the wire '
+                'as ${<Object, int>{70000: 4464, 65536: 0, -5: 65531, 5.9: 5}[value]} '
+                'and was reported applied');
+        expect((result as WriteRejected).reason.kind, writeValueOutOfRangeCode,
+            reason: 'the same code the OPC UA path refuses with, so an '
+                'operator reads one explanation whichever protocol the tag '
+                'is behind');
+        expect(result.reason.message, contains('nothing was sent'));
+      }
+      expect(link.fake.writes, isEmpty,
+          reason: 'REJECTED is a claim with evidence: not one of the four '
+              'crossed into the plant');
+    });
+
+    test('5.0 into a uint16 register applies, and reaches the adapter as the '
+        'int 5', () async {
+      final ref = link.resolve(setpointKey, typed(ModbusDataType.uint16))!;
+
+      final result = await link.write(ref, DynamicValue.of(5.0),
+          cmd: 'cmd-five', deadline: generous);
+
+      expect(result, isA<WriteApplied>());
+      expect(link.fake.writes.single.value.value, 5);
+      expect(link.fake.writes.single.value.value, isA<int>(),
+          reason: 'the register holds an int and the poll delivers one back; '
+              'the wrapper\'s optimistic echo must carry the same type');
+    });
+
+    test('a String into a float32 register and a 2 into a coil are REJECTED '
+        'type_mismatch', () async {
+      final setpoint = link.resolve(setpointKey, typed(ModbusDataType.float32))!;
+      final coil = link.resolve(speedKey,
+          typed(ModbusDataType.bit, registerType: ModbusRegisterType.coil))!;
+
+      final text = await link.write(setpoint, DynamicValue.of('1.5'),
+          cmd: 'cmd-text', deadline: generous);
+      final two = await link.write(coil, DynamicValue.of(2),
+          cmd: 'cmd-two', deadline: generous);
+
+      expect((text as WriteRejected).reason.kind, writeTypeMismatchCode);
+      expect((two as WriteRejected).reason.kind, writeTypeMismatchCode,
+          reason: 'the coil encoder read "not zero, therefore on": a 2 '
+              'energised the coil');
+      expect(link.fake.writes, isEmpty);
+    });
+
+    test('a multi-bit field value the read-modify-write would truncate is '
+        'REJECTED out_of_range, even under an expect', () async {
+      final ref = link.resolve(
+          setpointKey, registerEntry(setpointKey, bitMask: 0x00F0, bitShift: 4))!;
+
+      final result = await link.write(ref, DynamicValue.of(20),
+          cmd: 'cmd-wide', deadline: generous, hasExpect: true);
+
+      expect((result as WriteRejected).reason.kind, writeValueOutOfRangeCode,
+          reason: '(20 << 4) & 0xF0 is 0x40: the adapter would have written 4 '
+              'into the field and reported 20 applied');
+      expect(link.fake.writes, isEmpty);
+    });
+
+    test('the UMAS encoder\'s own range refusal is REJECTED out_of_range — '
+        'it used to be reported APPLIED', () async {
+      // `umas_types.dart:991` (TD-006) throws `UmasException(errorCode: 0,
+      // message: 'Value … exceeds range of INT [-32768..32767]')` before
+      // sending. The link handed that zero to `translateWriteAnswer`, whose
+      // UMAS arm reads code 0 as applied.
+      final ref = link.resolve(setpointKey, umasEntry(setpointKey))!;
+      link.fake.failWriteWith(const UmasException(
+          errorCode: 0,
+          message: 'Value 100000 exceeds range of INT [-32768..32767]'));
+
+      final result = await link.write(ref, DynamicValue.of(100000),
+          cmd: 'cmd-umas-range', deadline: generous);
+
+      expect(result, isA<WriteRejected>(),
+          reason: 'a thrown zero is not a PLC status — a successful service '
+              'does not throw — so it can only be the adapter refusing before '
+              'it sent anything');
+      expect((result as WriteRejected).reason.kind, writeValueOutOfRangeCode);
+      expect(result.reason.message, contains('exceeds range of INT'));
+    });
+
+    test('the UMAS encoder\'s type refusal, and a server with UMAS off, are '
+        'REJECTED too — never applied', () async {
+      final ref = link.resolve(setpointKey, umasEntry(setpointKey))!;
+
+      link.fake.failWriteWith(const UmasException(
+          errorCode: 0, message: 'Expected int for INT, got String'));
+      final mismatch = await link.write(ref, DynamicValue.of('x'),
+          cmd: 'cmd-umas-type', deadline: generous);
+      expect((mismatch as WriteRejected).reason.kind, writeTypeMismatchCode);
+
+      link.fake.failWriteWith(const UmasException(
+          errorCode: 0,
+          message: "Server 'ST101' does not have UMAS enabled — variable name "
+              "'M_Elevator.i_isAuto' cannot be written"));
+      final off = await link.write(ref, DynamicValue.of(1),
+          cmd: 'cmd-umas-off', deadline: generous);
+      expect((off as WriteRejected).reason.kind, 'umas_unavailable');
+    });
+
+    test('the element encoder\'s backstop refusal is graded REJECTED '
+        'out_of_range, not the text branch\'s unknown', () async {
+      // Reachable only if this link's table and `modbus_client`'s element
+      // disagree about a register — which is what a backstop is for.
+      final ref = link.resolve(setpointKey, typed(ModbusDataType.uint16))!;
+      link.fake.failWriteWith(ModbusException(
+          context: ModbusNumRegister.writeRefusalContext,
+          msg: 'r: 70000 does not fit 0..65535; nothing was sent, so the '
+              'register still holds what it held'));
+
+      final result = await link.write(ref, DynamicValue.of(7),
+          cmd: 'cmd-element', deadline: generous);
+
+      expect((result as WriteRejected).reason.kind, writeValueOutOfRangeCode);
     });
   });
 }

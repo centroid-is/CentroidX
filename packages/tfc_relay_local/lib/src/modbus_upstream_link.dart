@@ -49,16 +49,21 @@ library;
 
 import 'dart:async';
 
+import 'package:modbus_client/modbus_client.dart'
+    show ModbusException, ModbusNumRegister;
 import 'package:open62541/open62541.dart' as ua;
 import 'package:tfc_dart/core/modbus_client_wrapper.dart'
-    show ModbusAddressRefusal;
+    show ModbusAddressRefusal, ModbusDataType;
 import 'package:tfc_dart/core/modbus_device_client.dart';
 import 'package:tfc_dart/core/state_man_types.dart';
 import 'package:tfc_dart/core/umas_types.dart' show UmasException;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 
 import 'ingest.dart';
+import 'modbus_write_typing.dart';
 import 'opcua_upstream_link.dart' show mapEffectiveStatus;
+import 'opcua_write_typing.dart'
+    show writeTypeMismatchCode, writeValueOutOfRangeCode;
 import 'upstream_link.dart';
 import 'write_translation.dart';
 
@@ -357,9 +362,35 @@ abstract class DeviceClientUpstreamLink implements UpstreamLink {
           {bool hasExpect = false}) =>
       null;
 
+  /// The value as the device will be handed it, or the refusal that stops it.
+  ///
+  /// The default knows nothing about the protocol and refuses only a null:
+  /// the base cannot see a register map, and passing a null through would
+  /// have the adapter actuate with a value nobody chose. The Modbus subclass
+  /// overrides this with `shapeModbusWrite`, which is where the width lives.
+  ModbusWrite shapeWrite(UpstreamRef ref, DynamicValue value) {
+    final payload = value.value;
+    if (payload == null) {
+      return const ModbusWriteRefused(WriteReason(writeTypeMismatchCode,
+          message: 'a null is not a value to write; nothing was sent'));
+    }
+    return ModbusWriteReady(payload);
+  }
+
   /// Sends one write. May throw; [write] classifies whatever comes out.
   Future<void> performWrite(UpstreamRef ref, DynamicValue value) =>
       client.write(ref.key, ua.DynamicValue(value: value.value));
+
+  /// A thrown [error] that is this process refusing **before** the crossing,
+  /// as the outcome it should be reported as — or null when the error is news
+  /// from the wire and belongs to [classifyWriteError].
+  ///
+  /// Consulted first, because the two are different claims: an encoder that
+  /// declined to build the request has definitively not touched the plant,
+  /// and grading that `unknown` (the text branch's honest default for a
+  /// sentence it cannot read) tells an operator to worry about a write that
+  /// never left this process. The base knows no encoder and answers null.
+  WriteResult? refusalFrom(Object error, String cmd) => null;
 
   /// What a thrown [error] says about whether the device refused.
   ///
@@ -396,16 +427,33 @@ abstract class DeviceClientUpstreamLink implements UpstreamLink {
     }
     final refusal = writeGuard(ref, cmd, hasExpect: hasExpect);
     if (refusal != null) return refusal;
+    // **The width, decided here and not on the wire.** A value the register
+    // cannot hold is REJECTED with evidence — nothing was sent, so the tag
+    // still holds what it held — and never narrowed into something the device
+    // would acknowledge. See `modbus_write_typing.dart` for what used to reach
+    // the wire instead.
+    final Object payload;
+    switch (shapeWrite(ref, value)) {
+      case ModbusWriteReady(value: final shaped):
+        payload = shaped;
+      case ModbusWriteRefused(reason: final reason):
+        return WriteRejected(cmd, reason,
+            at: DateTime.now().millisecondsSinceEpoch);
+    }
+    final sent = DynamicValue(
+        value: payload, quality: value.quality, sourceTime: value.sourceTime);
     _roundTrips++;
     // ONE crossing into the plant, and no retry shape anywhere near it.
     WriteAnswer answer;
     try {
-      await performWrite(ref, value).timeout(deadline);
+      await performWrite(ref, sent).timeout(deadline);
       answer = WriteAcknowledged(at: DateTime.now().millisecondsSinceEpoch);
     } on TimeoutException {
       answer = const WriteDeadlineExpired();
     } catch (error) {
       recordUpstreamError(error);
+      final refused = refusalFrom(error, cmd);
+      if (refused != null) return refused;
       answer = classifyWriteError(error);
     }
     return translateWriteAnswer(
@@ -762,11 +810,20 @@ class ModbusUpstreamLink extends DeviceClientUpstreamLink {
   final Map<String, String> _pollGroups = <String, String>{};
 
   /// Keys whose mapping carries a bit mask, and are therefore a
-  /// read-modify-write of a whole register.
-  final Set<String> _bitMasked = <String>{};
+  /// read-modify-write of a whole register — with the mask, and its shift,
+  /// because the write shaping needs the width of the field.
+  final Map<String, ({int mask, int shift})> _bitMasked =
+      <String, ({int mask, int shift})>{};
 
   /// Keys routed by UMAS symbol rather than by register address.
   final Set<String> _bySymbol = <String>{};
+
+  /// Each claimed key's declared register kind and width, from its
+  /// `modbus_node`. Recorded in [claim] because that is the one call that
+  /// sees the entry, and read by [shapeWrite], which is the one call that
+  /// must not guess.
+  final Map<String, ({ModbusRegisterType register, ModbusDataType data})>
+      _declared = <String, ({ModbusRegisterType register, ModbusDataType data})>{};
 
   /// The poll group [key] was configured into, or null if it is not claimed.
   String? pollGroupOf(String key) => _pollGroups[key];
@@ -788,8 +845,10 @@ class ModbusUpstreamLink extends DeviceClientUpstreamLink {
       return null;
     }
     _pollGroups[key] = node.pollGroup;
-    if (entry.bitMask != null) {
-      _bitMasked.add(key);
+    _declared[key] = (register: node.registerType, data: node.dataType);
+    final mask = entry.bitMask;
+    if (mask != null) {
+      _bitMasked[key] = (mask: mask, shift: entry.bitShift ?? 0);
     } else {
       _bitMasked.remove(key);
     }
@@ -830,16 +889,105 @@ class ModbusUpstreamLink extends DeviceClientUpstreamLink {
   @override
   WriteResult? writeGuard(UpstreamRef ref, String cmd,
           {bool hasExpect = false}) =>
-      _bitMasked.contains(ref.key)
+      _bitMasked.containsKey(ref.key)
           ? guardArrayElementWrite(cmd: cmd, hasExpect: hasExpect)
           : null;
+
+  /// The register map's answer to "can this register hold this value".
+  ///
+  /// `modbus_write_typing.dart` is the decision; this is the lookup that
+  /// feeds it what [claim] recorded. A key this link never claimed cannot
+  /// reach here — `write` refuses a stale or foreign handle first — so the
+  /// null-check is a statement, not a guess.
+  @override
+  ModbusWrite shapeWrite(UpstreamRef ref, DynamicValue value) {
+    final declared = _declared[ref.key]!;
+    final field = _bitMasked[ref.key];
+    return shapeModbusWrite(
+      value.value,
+      registerType: declared.register,
+      dataType: declared.data,
+      bitMask: field?.mask,
+      bitShift: field?.shift,
+      bySymbol: _bySymbol.contains(ref.key),
+    );
+  }
+
+  /// The two encoders' own refusals, reported as what they are.
+  ///
+  /// **A thrown `UmasException` with `errorCode == 0` is not a PLC status.**
+  /// A successful service does not throw, so a zero can only come from the
+  /// adapter refusing before it sent anything: the UMAS encoder's range and
+  /// type guard (`umas_types.dart:991-1020`, TD-006 — `Value 100000 exceeds
+  /// range of INT [-32768..32767]`, `Expected int for INT, got String`) or a
+  /// server whose Data Dictionary is off (`modbus_device_client.dart:1203`).
+  /// [classifyWriteError] used to hand that zero to `translateWriteAnswer`,
+  /// whose UMAS arm reads code 0 as **applied** — so a setpoint the encoder
+  /// had just refused for not fitting an INT was reported to the operator as
+  /// written. The two TD-006 sentences map to the same two codes the register
+  /// path and the OPC UA path use; anything else with a zero is refused under
+  /// its own name rather than laundered into a success.
+  ///
+  /// `modbus_client`'s element refuses the same way for the register path
+  /// ([ModbusNumRegister.writeRefusalContext]). [shapeWrite] should catch
+  /// every one of those first; this arm is the backstop for a mapping this
+  /// link's table and the element's disagree about, and it grades the
+  /// element's refusal as the rejection it is instead of the text branch's
+  /// `unknown`.
+  @override
+  WriteResult? refusalFrom(Object error, String cmd) {
+    final at = DateTime.now().millisecondsSinceEpoch;
+    if (error is UmasException && error.errorCode == 0) {
+      final message = redactUpstreamError(error.message);
+      if (_umasOutOfRange.hasMatch(error.message)) {
+        return WriteRejected(
+            cmd, WriteReason(writeValueOutOfRangeCode, message: message),
+            at: at);
+      }
+      if (_umasTypeMismatch.hasMatch(error.message)) {
+        return WriteRejected(
+            cmd, WriteReason(writeTypeMismatchCode, message: message),
+            at: at);
+      }
+      return WriteRejected(
+          cmd,
+          WriteReason('umas_unavailable',
+              message: message ??
+                  'the adapter refused the write before sending it; nothing '
+                      'reached the device'),
+          at: at);
+    }
+    if (error is ModbusException &&
+        error.context == ModbusNumRegister.writeRefusalContext) {
+      final message = redactUpstreamError(error.msg);
+      return WriteRejected(
+          cmd,
+          WriteReason(
+              _elementTypeRefusal.hasMatch(error.msg)
+                  ? writeTypeMismatchCode
+                  : writeValueOutOfRangeCode,
+              message: message),
+          at: at);
+    }
+    return null;
+  }
+
+  /// TD-006's two sentences, by their fixed prefixes (`umas_types.dart`).
+  static final RegExp _umasOutOfRange = RegExp(r'^Value .* exceeds range of ');
+  static final RegExp _umasTypeMismatch = RegExp(r'^Expected \w+ for ');
+
+  /// `modbus_element_num.dart` / `modbus_element_bit.dart`'s type refusals,
+  /// as opposed to their range ones.
+  static final RegExp _elementTypeRefusal =
+      RegExp(r'cannot be written to |neither a bool nor');
 
   /// A typed [UmasException] is the device declining **by name**.
   ///
   /// The same standing as a classic Modbus exception PDU: the slave parsed the
   /// request and said no, and there is no service layer above the write that
   /// could have failed after the variable moved. Everything else stays a text
-  /// answer, which 08-06 reads conservatively.
+  /// answer, which 08-06 reads conservatively. A zero code never reaches here
+  /// — [refusalFrom] takes it first, because a thrown zero is not a status.
   @override
   WriteAnswer classifyWriteError(Object error) => error is UmasException
       ? WriteStatusAnswer(error.errorCode, text: error.message)

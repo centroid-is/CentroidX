@@ -45,6 +45,17 @@ dependencies:
   # keepalive fixes. Reached through tfc_dart's adapter, but named directly
   # because this package's types appear in the adapter's signatures.
   modbus_client_tcp: {path: ../modbus_client_tcp}
+  # The element encoder's own write refusal (`ModbusNumRegister
+  # .writeRefusalContext`), which the Modbus link grades as the rejection it is
+  # rather than the text branch's `unknown`; and, in the tests, the
+  # ModbusResponseCode and mock-socket base for the refusal arms
+  # (modbus_refusal_link_test.dart). Was dev-only until the link needed the
+  # name in `lib/`. Already in the graph transitively through
+  # modbus_client_tcp — declared so the import is honest rather than a lint
+  # suppression. The same vendored path the rest of the repo uses
+  # (modbus_client_tcp pins it by path, so a hosted constraint here fails
+  # resolution).
+  modbus_client: {path: ../modbus_client}
   # Structural equality for the key/value fingerprints the routing layer
   # compares, at the version already resolved across this repository.
   collection: ^1.18.0
@@ -125,15 +136,6 @@ dependency_overrides:
 dev_dependencies:
   # StreamQueue, for the slow-upstream rig's command/reply channel.
   async: ^2.11.0
-  # ModbusResponseCode and the mock-socket base for the refusal arms
-  # (modbus_refusal_link_test.dart): the case that proves an
-  # IllegalDataAddress answer comes out of the production wrapper → adapter →
-  # `.wrapping` stack as errorConfig needs to speak the wire's own vocabulary.
-  # Already in the graph transitively through modbus_client_tcp — declared so
-  # the import is honest rather than a lint suppression. The same vendored
-  # path the rest of the repo uses (modbus_client_tcp pins it by path, so a
-  # hosted constraint here fails resolution).
-  modbus_client: {path: ../modbus_client}
   # Same analyzer-recommended lint set as the other relay packages.
   lints: ^4.0.0
   # The suite runner. Never a production dependency here for the same reason it
