@@ -105,27 +105,58 @@ The hazard *is* covered at the gate level
 against a fake upstream, and never against a real plant with a real button
 widget, so nothing measures what a stuck momentary does at the node.
 
-**Action, ahead of every feature below:**
-1. Establish from `~/Projects/sildarvinnsla` whether the SVN commands are
-   level- or edge-triggered. That answer decides whether this is a live
-   safety gap or a latent one.
-2. Either move the four assets onto `holdToRun`, or write down why two plain
-   writes are acceptable for these keys — with the PLC behaviour as the
-   evidence, not as an assumption.
-3. Add the missing e2e, one per asset: press, kill the link before release,
-   assert at the plant node what state the machine is left in. The bench
-   counts actuations at the node already, so this is a case rather than a new
-   instrument.
+### RULED 2026-09-20: the PLC owns the latch, not the HMI
 
-**What conversion costs, if that is the answer.** Each asset swaps its
-press/release `writeTag` pair for `holdToRun(key)` on press and
-`handle.release()` on release, cancel and dispose. `tag_access_guard.dart`
-owns every `.write(` by design (`:274-277`) so it should own `holdToRun` too —
-the assets keep their refusal path. Direct-mode `StateMan` needs a local
-`holdToRun` (a press/release pair with the same release-on-dispose) so the
-assets do not branch on transport. **The server side needs nothing**: the `h`
-lane, the engage guards and the concurrent-engage semantics are built and
-socket-tested.
+**Decision (Jón): the PLC is responsible for a command bit that stops
+changing. The HMI is not being converted to `holdToRun`.** The judgement is
+that a release lost to a dead link is an edge case, and that a control system
+should not depend on a screen to stop a machine.
+
+That is a defensible rule and it is the stronger one — a PLC that stops when
+it loses its operator is safe against every cause, including the ones no HMI
+change would cover (a panel losing power mid-press, an operator walking away
+from a frozen screen).
+
+**What it has to mean, concretely**, for the jog path where the latch is real
+(`FB_ATV320`, `p_stat_JogFwd := p_cmd_JogFwd`, no edge and no self-clear):
+the PLC needs a bound on how long it will honour an unchanging `p_cmd_*` bit
+before clearing it. `FB_MButton` already has the shape of the answer — it
+consumes a rising edge and writes the bit back to `FALSE` in the same scan.
+
+**The one thing that would make this fail silently, and it is specific to the
+relay.** The obvious PLC-side implementation is a comms watchdog: if the HMI
+connection drops, clear the HMI command bits. **That no longer works for a
+relayed panel.** The OPC UA client the PLC can see is the *gateway*, not the
+panel. A panel that dies mid-press leaves the gateway's session perfectly
+healthy, so the PLC sees a live client and a steady `true`, and clears
+nothing.
+
+So a comms watchdog is sufficient in direct mode and insufficient under the
+relay. What works under both is a **timeout on the bit itself** — and that has
+a cost to weigh rather than to discover later: a genuine hold longer than the
+timeout will stop, unless the HMI re-asserts the bit periodically. Re-asserting
+periodically is what `holdToRun`'s `h` tick already is, which is why the two
+designs converge; the difference is which side owns the deadline.
+
+**What the HMI side should do regardless, and it is cheap:** the gateway
+already releases every hold on session teardown. It does *not* do anything
+about plain writes. If the plant wants a belt to the PLC's braces, the natural
+place is the same teardown path — but that is a decision for whoever owns the
+PLC change, not a reason to hold up this document.
+
+**Follow-up owned by the PLC work, not by this branch:**
+1. Bound the honouring of an unchanging `p_cmd_*` on `FB_ATV320`'s jog path.
+2. Check the ConveyorGate pusher and the Festo VTUG coil FBs for the same
+   shape — they were not read, and their HMI-side comments
+   (`conveyor_gate.dart:472-477`, `vtug.dart:761`) describe level-sensitive
+   bits.
+3. When it lands, the e2e is one case per asset on the existing bench: press,
+   kill the link, assert at the plant node that the bit falls. The instrument
+   exists; only the case is missing.
+
+`holdToRun` stays on the wire, built and socket-tested, unused by the app by
+this decision rather than by oversight. That is worth writing down so nobody
+deletes it as dead code.
 
 Everything else in this tier is sound: live values, writes, three-state
 outcomes, `writeStatus` and alarm acknowledge are served, implemented at both
@@ -227,11 +258,10 @@ which is the more dangerous category — nothing would notice them breaking.
 
 ## 3. The plan
 
-### Step 0 — settle the momentary-control question (first, and blocking)
-See Tier 1. Read the PLC source for whether the commands are level- or
-edge-triggered, then either move the momentary assets onto `holdToRun` or
-record why two plain writes are safe for these keys. Nothing else in this
-document is worth scheduling ahead of a possible stuck-machine hazard.
+### Step 0 — hand the latch to the PLC (ruled; not this branch's work)
+See Tier 1. The question is settled: the PLC owns it. What this branch owes is
+the e2e case per asset once the PLC change lands, and the note that a comms
+watchdog alone does not cover a relayed panel.
 
 ### Step 1 — make the panel/station confusions honest (an afternoon)
 Tier 1b. Add the `isGateway` branch, or a banner naming the host. Cheapest
