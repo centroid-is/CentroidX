@@ -155,7 +155,7 @@ abstract interface class KeyPolicy {
   /// write silently grades a setpoint as a jog. `written_members.dart` is how
   /// the wire names them and its doc carries the cost of the fallback.
   bool canWrite(String key, StationIdentity identity,
-      {List<String?> members = const <String?>[null]});
+      {required List<String?> members});
 
   /// Whether [identity] may write the **preference** [key].
   ///
@@ -246,7 +246,7 @@ final class AccessPolicyKeyPolicy implements KeyPolicy {
   /// question, and the wire's was the permissive one.
   @override
   bool canWrite(String key, StationIdentity identity,
-          {List<String?> members = const <String?>[null]}) =>
+          {required List<String?> members}) =>
       gradeTagWrite(
         policy: _policy,
         session: identity.session,

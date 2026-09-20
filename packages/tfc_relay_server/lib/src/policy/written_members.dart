@@ -48,16 +48,69 @@ const Object _absent = Object();
 
 /// The member paths [written] moves on a tag currently holding [baseline].
 ///
-/// Returns a list containing a single null when the members cannot be
-/// determined — a scalar write, a value with no baseline, or a shape change —
-/// which is the key-level question.
+/// Returns `[null]` — the key-level question — **only when the frame carries
+/// no members at all**: a scalar, an array, anything that is not an object.
+/// Everything else names members, one way or the other.
+///
+/// ## Why a missing baseline does NOT fall back to the key-level question
+///
+/// It did, and that was an authorisation bypass a client could take on
+/// purpose. The baseline comes from the gateway's own store, and the store
+/// holds a key only once something has asked for it — `BackendLiveValues.read`
+/// answers null until a value has arrived, and the pipe worker "pipes only
+/// what it was asked for". A mapped key nobody subscribes, nothing historises
+/// and no alarm rule watches has **no baseline ever**. The existence check on
+/// the write path passes for any mapped key, and nothing requires a prior
+/// subscribe.
+///
+/// So a session holding `operate` could write the whole struct of a cold key,
+/// take the null baseline, get the key-level answer — the operate floor, for a
+/// template with no whole-key row — and actuate a `force`-bound member. Not a
+/// window: a path the caller chooses. A last sample the PLC marked Bad does
+/// the same thing, because a bad-quality value carries a null value and so is
+/// not a Map either.
+///
+/// The app's reason for the permissive fallback — a slow PLC read must not
+/// take a jog off the floor — does not transfer. There the missing baseline is
+/// the plant being slow; here it is the client's choice, and every honest
+/// panel already subscribes what it writes.
+///
+/// So with no baseline the frame is graded **on presence**: every member it
+/// carries. That is strictly stricter than the diff, needs no baseline, and
+/// costs an honest caller nothing, because a caller that has never read the
+/// tag is in no position to claim it is only moving one member of it.
 List<String?> writtenMembers(DynamicValue? baseline, Object? written) {
-  if (baseline == null) return const <String?>[null];
-  final base = baseline.toJson(slim: true);
-  if (base is! Map || written is! Map) return const <String?>[null];
+  // Not an object: there are no members to name, and the key-level question is
+  // the only honest one. A scalar or array cannot actuate a struct member —
+  // the wire's type inference answers a type mismatch — so this arm cannot be
+  // used to reach one.
+  if (written is! Map) return const <String?>[null];
+  final base = baseline?.toJson(slim: true);
+  if (base is! Map) {
+    // No baseline, or one that is not an object (a Bad sample carries null).
+    // Grade on presence.
+    final carried = <String?>[];
+    _presenceInto(carried, null, written);
+    // An empty object moves nothing and names nothing; the key-level question
+    // is right for it and `gradeTagWrite` reads an empty list as exactly that.
+    return carried;
+  }
   final changed = <String?>[];
   _diffInto(changed, null, base, written);
   return changed;
+}
+
+/// Appends every member path [value] carries below [path].
+void _presenceInto(List<String?> carried, String? path, Object? value) {
+  if (value is Map && value.isNotEmpty) {
+    for (final entry in value.entries) {
+      final childPath =
+          path == null ? '${entry.key}' : '$path.${entry.key}';
+      _presenceInto(carried, childPath, entry.value);
+    }
+    return;
+  }
+  if (path != null) carried.add(path);
 }
 
 /// Appends to [changed] every member path below [path] whose value differs.
@@ -89,8 +142,42 @@ void _diffInto(
     }
     return;
   }
-  // `jsonEquals` rather than `==`: it compares maps regardless of key order
-  // and holds numbers to their runtime type, which is the distinction a PLC
-  // cares about — a DINT 1 and a REAL 1.0 are two different writes.
-  if (!jsonEquals(base, next)) changed.add(path);
+  if (!_sameLeaf(base, next)) changed.add(path);
+}
+
+/// Whether two decoded leaf values are the same reading.
+///
+/// **Numbers compare by value, not by runtime type**, and that is the one
+/// place this deliberately differs from `jsonEquals`. That function holds
+/// `1 != 1.0` on purpose — it backs the idempotency fingerprint, where a DINT
+/// 1 and a REAL 1.0 really are two different writes to two different tag
+/// types. This question is a different one: *did the operator move this
+/// member*, and 50 and 50.0 are the same setpoint.
+///
+/// It is not academic. The only web arm is gateway mode, and on dart2js an
+/// integral double encodes as `50`, not `50.0`; the baseline from the worker
+/// is a double. Under `jsonEquals` every integral REAL member of a
+/// whole-struct jog therefore read as *moved*, so a browser jogging a conveyor
+/// needed `setpoints` — exactly the outcome this file exists to prevent. Worse,
+/// gateway mode also wraps the app in `GuardedStateMan`, which compares with
+/// `==`: the app would allow the write and the wire refuse it, which is two
+/// answers to one question again, in the other direction.
+bool _sameLeaf(Object? a, Object? b) {
+  if (a is num && b is num) return a == b;
+  if (a is List && b is List) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (!_sameLeaf(a[i], b[i])) return false;
+    }
+    return true;
+  }
+  if (a is Map && b is Map) {
+    if (a.length != b.length) return false;
+    for (final entry in a.entries) {
+      if (!b.containsKey(entry.key)) return false;
+      if (!_sameLeaf(entry.value, b[entry.key])) return false;
+    }
+    return true;
+  }
+  return a == b;
 }

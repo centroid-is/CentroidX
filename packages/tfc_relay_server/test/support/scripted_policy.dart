@@ -65,7 +65,7 @@ final class ScriptedPolicy implements KeyPolicy {
 
   @override
   bool canWrite(String key, StationIdentity identity,
-          {List<String?> members = const <String?>[null]}) =>
+          {required List<String?> members}) =>
       _writes(key, identity);
 
   @override

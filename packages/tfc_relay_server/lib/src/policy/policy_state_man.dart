@@ -590,7 +590,7 @@ final class PolicyStateMan implements StateManApi, TypeDescriptions {
   /// rather than flattened. The default is the key-level question, which is
   /// what a scalar write means and what every caller asked before member
   /// grading reached the wire — `ValueHandlers` names the members it can.
-  bool canWrite(String key, {List<String?> members = const <String?>[null]}) {
+  bool canWrite(String key, {required List<String?> members}) {
     final identity = identityOf();
     return identity != null &&
         policy.canWrite(key, identity, members: members);
@@ -789,11 +789,22 @@ final class _PolicyBrowse implements BrowseApi {
 
   /// Whether this station may know [node] is in the address space.
   ///
-  /// Rule 2 above, in the order the checks have to happen: kind first, then
-  /// the mapping, then the policy. Reordering them would ask `canSee` about a
-  /// folder id, which is a string the policy was never written about.
+  /// **The ID decides, never the kind the caller claims.** This used to read
+  /// `if (!node.isVariable) return true;` first, on the reasoning that asking
+  /// `canSee` about a folder id would be asking the policy about a string it
+  /// was never written about. The reasoning was sound and the placement was
+  /// not: on `fetchDetail` the [BrowseNode] is **decoded from the caller's own
+  /// frame** (`browse.dart:70-78`), so `isVariable` is a field the caller
+  /// fills in. A client that sent `{"id":"CN02.MOT01.speed","type":"folder"}`
+  /// for a hidden variable took the early return and was handed the live
+  /// reading of a tag it may not know exists.
+  ///
+  /// The guard it removed was never needed: a folder id maps to no key, so
+  /// `keyForNode` answers null and the node is visible by the line below —
+  /// the same answer the kind check gave, reached from the one thing the
+  /// caller cannot forge. A node's identity is its id; its `type` is a
+  /// rendering hint.
   bool _visible(BrowseNode node) {
-    if (!node.isVariable) return true;
     final key = _resolver.keyForNode(node.id);
     if (key == null) return true;
     return _canSee(key);
@@ -806,10 +817,24 @@ final class _PolicyBrowse implements BrowseApi {
     return (await _source.fetchRoots()).where(_visible).toList();
   }
 
+  /// The children of [parent], filtered — **and nothing at all for a parent
+  /// this station may not see.**
+  ///
+  /// The parent was not checked, so a hidden node's members could be listed by
+  /// asking about it directly: the children are struct members, and a struct
+  /// member's id maps to no key of its own
+  /// (`key_mapping_series_resolver.dart:199`), so every one of them passed
+  /// [_visible] on its own account. The shape of a tag is disclosure about the
+  /// tag, which is what rule 2 exists to prevent.
+  ///
+  /// An empty list rather than a refusal, for the hiding rule's reason: a
+  /// station that may not see a node must get the answer a node with no
+  /// children gets, not one that says there was something here.
   @override
   Future<List<BrowseNode>> fetchChildren(BrowseNode parent) async {
     requireReadFloor(_identityOf(), DataServiceMethods.browseFetchChildren,
         'no nodes were listed');
+    if (!_visible(parent)) return const <BrowseNode>[];
     return (await _source.fetchChildren(parent)).where(_visible).toList();
   }
 
@@ -1164,6 +1189,26 @@ final class _PolicyHistoryViews with _GroupGate implements HistoryViewApi {
   Future<int> createHistoryView(String name, List<String> keys,
       [Map<String, HistoryViewKeyRecord>? keyConfigs,
       Map<int, HistoryViewGraphRecord>? graphConfigs]) {
+    // **The read floor, asked first.** `groupForHistoryView` answers null for
+    // the three creative members — a deliberate decision, argued at
+    // `access_policy.dart:477-482`: an operator saving a view of the line they
+    // run is doing their job. But `_requireGroup(null, …)` returns before it
+    // reads the identity at all, so "open to an operator" was implemented as
+    // "open to anyone", including a session nobody has signed in on and one
+    // whose account holds nothing.
+    //
+    // The asymmetry is what gives it away: since 2026-09-16 the READS of this
+    // family take the floor (`_requireReadView`), so a session could be
+    // refused the list of saved views and still overwrite one. `updateView`
+    // takes any id, so that is somebody else's saved chart, wiped by a socket
+    // that may not read the plant.
+    //
+    // The floor and not the group: raising `historyViewUpdate` to `configure`
+    // would overturn D-04 — ruled in both directions — and take renaming a
+    // view away from the operator it was given to. An operator holds
+    // `operate`, so the documented case is untouched; what is refused is the
+    // session that could not have read the view it is replacing.
+    _requireReadView('history.createView', 'no view was saved');
     final group = _groupForMember(AccessPolicy.historyViewCreate);
     _requireGroup(group, 'history.createView', 'no view was saved',
         itemKey: AccessPolicy.historyViewCreate);
@@ -1182,6 +1227,9 @@ final class _PolicyHistoryViews with _GroupGate implements HistoryViewApi {
   Future<void> updateHistoryView(int id, String name, List<String> keys,
       [Map<String, HistoryViewKeyRecord>? keyConfigs,
       Map<int, HistoryViewGraphRecord>? graphConfigs]) {
+    // The same floor the creative members above ask, and for the reason
+    // written there.
+    _requireReadView('history.updateView', 'view \$id is unchanged');
     final group = _groupForMember(AccessPolicy.historyViewUpdate);
     _requireGroup(group, 'history.updateView', 'view $id is unchanged',
         itemKey: AccessPolicy.historyViewUpdate, member: '$id');
@@ -1311,6 +1359,9 @@ final class _PolicyHistoryViews with _GroupGate implements HistoryViewApi {
   @override
   Future<int> addHistoryViewPeriod(
       int viewId, String name, DateTime start, DateTime end) {
+    // The same floor the other two creative members ask, and for the reason
+    // written at `createHistoryView`.
+    _requireReadView('history.addPeriod', 'no period was added');
     final group = _groupForMember(AccessPolicy.historyViewAddPeriod);
     _requireGroup(group, 'history.addPeriod',
         'no window was added to view $viewId',

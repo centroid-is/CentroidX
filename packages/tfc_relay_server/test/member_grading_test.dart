@@ -113,13 +113,13 @@ void main() {
     final adapter = AccessPolicyKeyPolicy(policy: policy);
     final operator = stationHolding(const {AccessGroup.operate});
 
-    test('an unnamed member takes the key-level answer', () {
-      // Documented rather than approved. `written_members.dart` answers
-      // `[null]` when it cannot diff, and the key-level answer is the LEAST
-      // gated one the template can give. The gateway's baseline is
-      // synchronous, so this window is narrower here than in the app — but it
-      // is the same window, and it is the one way member gating is bypassed.
-      expect(adapter.canWrite(_key, operator, members: const [null]), isTrue,
+    test('a scalar write takes the key-level answer', () {
+      // The one shape that legitimately has no members to name. This arm used
+      // to be titled "an unnamed member takes the key-level answer" and was
+      // reached by a Map-shaped write with no baseline — which made it a pin
+      // on an authorisation bypass rather than on a fallback. See
+      // `written_members.dart` and the cold-key arms below.
+      expect(adapter.canWrite(_key, operator, members: kWholeKeyWrite), isTrue,
           reason: 'the template has no whole-key row, so the key falls to the '
               'operate floor');
     });
@@ -137,10 +137,65 @@ void main() {
         );
       final gated = AccessPolicyKeyPolicy(
           policy: AccessPolicy(tagBindings: resolver.groupFor));
-      expect(gated.canWrite(_key, operator, members: const [null]), isFalse,
+      expect(gated.canWrite(_key, operator, members: kWholeKeyWrite), isFalse,
           reason: 'the fallback is the key-level ANSWER, not the absence of '
               'one — a template that gates the whole key still gates an '
               'undiffable write');
+    });
+  });
+
+  group('a cold key cannot be used to dodge member grading', () {
+    // The bypass an architecture review caught after the first version of this
+    // fix shipped its member diff. `writtenMembers` answered `[null]` whenever
+    // it had no baseline, and the gateway has no baseline for any mapped key
+    // nobody subscribes, nothing historises and no alarm rule watches — the
+    // pipe "pipes only what it was asked for". The write path's existence
+    // check passes for any MAPPED key and requires no prior subscribe, so the
+    // missing baseline was not a window: it was a path a caller could choose.
+    //
+    // An `operate` session wrote the whole struct of a cold key, took the
+    // key-level answer, and actuated a `force`-bound member.
+    final forced = AccessPolicyKeyPolicy(
+        policy: _policyRaising('p_frc_Out', AccessGroup.force));
+    final operator = stationHolding(const {AccessGroup.operate});
+
+    test('with no baseline, every member the frame carries is graded', () {
+      expect(writtenMembers(null, {'p_cmd_JogFwd': true, 'p_frc_Out': 1}),
+          containsAll(<String>['p_cmd_JogFwd', 'p_frc_Out']),
+          reason: 'presence, not silence: a caller that has never read the '
+              'tag is in no position to claim it is moving only one member');
+    });
+
+    test('so the raised member is still refused on a cold key', () {
+      expect(
+          forced.canWrite(_key, operator,
+              members: writtenMembers(null, {'p_frc_Out': 1})),
+          isFalse,
+          reason: 'THE BYPASS. If this passes, an operate-only session can '
+              'force an output on any tag the gateway has not sampled — which '
+              'is every mapped tag nobody happens to be watching');
+    });
+
+    test('a Bad last sample is the same case', () {
+      // A bad-quality relay value carries a null value, so the baseline is
+      // not an object either. It must take the presence path, not the
+      // key-level one.
+      final bad = DynamicValue(value: null, quality: Quality.badCommFault);
+      expect(
+          forced.canWrite(_key, operator,
+              members: writtenMembers(bad, {'p_frc_Out': 1})),
+          isFalse,
+          reason: 'a tag whose last sample the PLC marked Bad must not become '
+              'a way to write its protected members');
+    });
+
+    test('and an honest cold jog is still allowed', () {
+      expect(
+          forced.canWrite(_key, operator,
+              members: writtenMembers(null, {'p_cmd_JogFwd': true})),
+          isTrue,
+          reason: 'grading on presence costs an honest caller nothing: the '
+              'frame carries only the member it is moving');
     });
   });
 
@@ -176,10 +231,13 @@ void main() {
           ['p_frc_Out']);
     });
 
-    test('no baseline is the key-level question', () {
-      expect(writtenMembers(null, {'p_cfg_ManualFreq': 60.0}), [null],
-          reason: 'a value with nothing to compare against has no members to '
-              'name');
+    test('no baseline names what the frame carries, not nothing', () {
+      expect(writtenMembers(null, {'p_cfg_ManualFreq': 60.0}),
+          ['p_cfg_ManualFreq'],
+          reason: 'this arm used to expect [null] — the key-level question — '
+              'and that was the cold-key bypass above. A frame with members '
+              'in it always names members; only a shape with none takes the '
+              'key-level answer');
     });
 
     test('a scalar write is the key-level question', () {
@@ -191,6 +249,29 @@ void main() {
       expect(writtenMembers(baseline, {'p_cfg_ManualFreq': 50.0}), isEmpty,
           reason: 'and gradeTagWrite reads an empty list as the key-level '
               'question, exactly as the app reads an empty diff');
+    });
+
+    test('an integral REAL is not "moved" when the client sends it as an int',
+        () {
+      // dart2js encodes an integral double as `50`, not `50.0`, and gateway
+      // mode is the only web arm. Compared with `jsonEquals` — which holds
+      // 1 != 1.0 on purpose, because it backs the idempotency fingerprint —
+      // every integral REAL member of a whole-struct jog read as moved, so a
+      // browser jogging a conveyor needed `setpoints`.
+      //
+      // Worse than over-gating: gateway mode also wraps the app in
+      // GuardedStateMan, which compares with `==`. The app would allow the
+      // write and the wire refuse it — two answers to one question again, in
+      // the other direction.
+      final baseline =
+          struct({'p_cmd_JogFwd': false, 'p_cfg_ManualFreq': 50.0});
+      expect(
+          writtenMembers(
+              baseline, {'p_cmd_JogFwd': true, 'p_cfg_ManualFreq': 50}),
+          ['p_cmd_JogFwd'],
+          reason: '50 and 50.0 are the same setpoint. The runtime-type '
+              'distinction belongs to the write fingerprint, where a DINT 1 '
+              'and a REAL 1.0 really are two different writes');
     });
 
     test('nested members carry a dotted path', () {

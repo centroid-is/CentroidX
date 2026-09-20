@@ -774,11 +774,32 @@ void main() {
       final update = UpdateParams.fromJson(paramsOf(frame));
       final value = update.changes.values.single;
 
-      expect((update.t - hello.serverTime).abs(), lessThan(60_000),
+      // `UpdateParams.t` became nullable when the `u` frame gained per-entry
+      // containment: an unreadable batch stamp degrades to "no batch stamp",
+      // a state every consumer already handles, rather than costing the whole
+      // frame. The SERVER still always stamps, so a null here is a defect in
+      // the thing under test and not a tolerated shape — asserted separately
+      // so the failure says which of the two went wrong.
+      // Both fields became nullable when the wire gained its containment
+      // rules: an unreadable batch stamp on `u`, and a `hello` whose
+      // `serverTime` is not a usable instant, each degrade to "absent" rather
+      // than costing the frame or the connection. The GATEWAY still always
+      // sends both, so a null in either is a defect in the thing under test —
+      // asserted separately so a failure says which of the two went wrong
+      // instead of dying on a null check.
+      final stamp = update.t;
+      final helloClock = hello.serverTime;
+      expect(stamp, isNotNull,
+          reason: 'the gateway stamps every batch; a u frame with no stamp '
+              'means the tick engine stopped doing so');
+      expect(helloClock, isNotNull,
+          reason: 'and it answers hello with its own clock; the client '
+              'derives its offset from this field');
+      expect((stamp! - helloClock!).abs(), lessThan(60_000),
           reason: 'hello.serverTime is the clock the client derives its offset '
               'from, and it always carried genuine epoch ms; a u frame stamped '
               'from a different clock makes that offset a lie');
-      expect((update.t - (value.t ?? update.t)).abs(), lessThan(60_000),
+      expect((stamp - (value.t ?? stamp)).abs(), lessThan(60_000),
           reason: 'WireValue.t comes from the source\'s own sourceTime in '
               'epoch ms (session_handlers.dart:266). Two clocks in one object '
               'is the shape of this bug that no single-field assertion could '

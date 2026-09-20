@@ -56,19 +56,19 @@ void main() {
       final operating = stationHolding(const {AccessGroup.operate});
       final nothing = stationHolding(const <AccessGroup>{});
 
-      expect(adapter.canWrite(_tag, operating), isTrue);
-      expect(adapter.canWrite(_tag, nothing), isFalse,
+      expect(adapter.canWrite(_tag, operating, members: kWholeKeyWrite), isTrue);
+      expect(adapter.canWrite(_tag, nothing, members: kWholeKeyWrite), isFalse,
           reason: 'the two halves of one claim: a station holding operate '
               'writes and a station holding nothing does not. Without the '
               'second, an adapter returning true for everybody passes');
 
-      expect(adapter.canWrite(_tag, operating),
+      expect(adapter.canWrite(_tag, operating, members: kWholeKeyWrite),
           operating.session.can(policy.groupForWireSurface('tag', _tag)),
           reason: 'the equality, not just the answer. This is the rule "a tag '
               'write needs operate" being asked for rather than restated: it '
               'is stated once, in AccessPolicy.groupForTag\'s operate floor, '
               'and PROJECT.md says it must exist once');
-      expect(adapter.canWrite(_tag, nothing),
+      expect(adapter.canWrite(_tag, nothing, members: kWholeKeyWrite),
           nothing.session.can(policy.groupForWireSurface('tag', _tag)));
     });
 
@@ -86,12 +86,12 @@ void main() {
       final operating = stationHolding(const {AccessGroup.operate});
       final administering = stationHolding(const {AccessGroup.administer});
 
-      expect(adapter.canWrite(_tag, operating), isFalse,
+      expect(adapter.canWrite(_tag, operating, members: kWholeKeyWrite), isFalse,
           reason: 'the template raised this key to administer, and a station '
               'holding only operate no longer writes it. An adapter that '
               'compared against a role enum could not see this at all');
-      expect(adapter.canWrite(_tag, administering), isTrue);
-      expect(adapter.canWrite('ST101.CN02.MOT01.cmd', operating), isTrue,
+      expect(adapter.canWrite(_tag, administering, members: kWholeKeyWrite), isTrue);
+      expect(adapter.canWrite('ST101.CN02.MOT01.cmd', operating, members: kWholeKeyWrite), isTrue,
           reason: 'the anti-vacuity half: an unbound key beside it still takes '
               'the operate floor, so the refusal above is the binding and not '
               'a policy that refuses everything');
@@ -181,7 +181,7 @@ void main() {
           reason: 'the anti-vacuity half: the same station still writes what a '
               'panel writes about itself, so the refusal above is the key\'s '
               'grading and not a station that can write nothing');
-      expect(adapter.canWrite('key_mappings', operateOnly), isTrue,
+      expect(adapter.canWrite('key_mappings', operateOnly, members: kWholeKeyWrite), isTrue,
           reason: 'and the two members really do answer differently for the '
               'same string: as a *tag* it takes the operate floor, as a '
               '*preference* it takes configure. A canWritePreference that '
@@ -271,7 +271,7 @@ void main() {
       final panel = stationHolding(const {AccessGroup.operate});
 
       expect(policy.canSee(_tag, panel), isTrue);
-      expect(policy.canWrite(_tag, panel), isFalse);
+      expect(policy.canWrite(_tag, panel, members: kWholeKeyWrite), isFalse);
       expect(policy.canWritePreference('theme_mode', panel), isFalse);
     });
 
@@ -285,7 +285,7 @@ void main() {
       final panel = stationHolding(const {AccessGroup.operate});
 
       expect(policy.canSee(_tag, panel), isFalse);
-      expect(policy.canWrite(_tag, panel), isTrue,
+      expect(policy.canWrite(_tag, panel, members: kWholeKeyWrite), isTrue,
           reason: 'this is the whole point: under this double a write that '
               'comes back refused can only have been refused by the existence '
               'check, and under readOnly() it can only have been refused by '
@@ -303,9 +303,9 @@ void main() {
       expect(
           [
             seesNotWrites.canSee(_tag, panel),
-            seesNotWrites.canWrite(_tag, panel),
+            seesNotWrites.canWrite(_tag, panel, members: kWholeKeyWrite),
             writesNotSees.canSee(_tag, panel),
-            writesNotSees.canWrite(_tag, panel),
+            writesNotSees.canWrite(_tag, panel, members: kWholeKeyWrite),
           ],
           [true, false, false, true],
           reason: 'all four corners, for one key and one identity. A double '
@@ -319,7 +319,7 @@ void main() {
       final panel = stationHolding(const {AccessGroup.operate});
 
       expect(policy.canSee(_tag, panel), isFalse);
-      expect(policy.canWrite(_tag, panel), isTrue,
+      expect(policy.canWrite(_tag, panel, members: kWholeKeyWrite), isTrue,
           reason: '`hiding` hides and does nothing else. `_HidesTags` was '
               'named for this and did two jobs, one of them invisibly');
     });

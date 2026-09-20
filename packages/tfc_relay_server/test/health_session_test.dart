@@ -484,7 +484,7 @@ final class _HidesEgress implements KeyPolicy {
 
   @override
   bool canWrite(String key, StationIdentity identity,
-          {List<String?> members = const <String?>[null]}) =>
+          {required List<String?> members}) =>
       false;
 
   @override

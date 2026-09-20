@@ -308,6 +308,32 @@ final class _MapsTheRealTags implements SeriesResolver {
   String? keyForNode(String nodeId) => nodeId;
 }
 
+/// `keyForNode` the shape production has it: a **leaf tag** maps to a plant
+/// key and a folder maps to nothing.
+///
+/// [PermissiveSeriesResolver] maps every id to itself, folders included, and
+/// its own doc says what that would mean in production — "`canSee` is asked
+/// about a string the caller supplied". That is harmless for the arms whose
+/// subject is a tag, and it is the whole subject of the folder arm below: the
+/// rule is that a node the resolver does not map to a key is not a tag and is
+/// never pruned. Under the identity resolver there are no such nodes, so the
+/// arm could only be written against a resolver that can decline.
+final class _MapsLeavesOnly implements SeriesResolver {
+  const _MapsLeavesOnly();
+
+  static const _tags = {_key, _hidden, _ghost};
+
+  @override
+  ResolvedSeries? resolve(String wireName) =>
+      const PermissiveSeriesResolver().resolve(wireName);
+
+  @override
+  String? keyForTable(String table) => table;
+
+  @override
+  String? keyForNode(String nodeId) => _tags.contains(nodeId) ? nodeId : null;
+}
+
 /// A panel next to a machine, a display on a wall, and the engineer's station
 /// that holds every group the master system has.
 ///
@@ -1587,24 +1613,33 @@ void main() {
       });
     }
 
-    test('a station holding nothing may create, update and add a period — '
-        'deliberate parity with kHistoryViewWriteGroup == null', () async {
-      // NOT a hole. `guarded_history_views.dart` leaves the three creative
-      // members open to any session, anonymous included — an operator saving
-      // a view of the line they run is doing their job — and the app's split
-      // wins in both directions (D-04). The relay used to gate `update` and
-      // `addPeriod` at operate where the panel leaves them open; these arms
-      // are that disagreement closing from the loosening side, and the two
-      // delete arms above are it closing from the tightening side.
-      final gateway = await _Gateway.start(identity: _display);
+    test('an OPERATE station may create, update and add a period — D-04, '
+        'pinned on the case its text actually argues', () async {
+      // D-04 (`access_policy.dart:477-491`) leaves the three creative members
+      // open on the GROUP: "an operator saving a view of the line they run is
+      // doing their job", and the app's split wins in both directions. The
+      // subject of that sentence is an operator, and an operator holds
+      // `operate`. This is the arm that protects D-04 from a future "raise it
+      // to configure".
+      //
+      // It replaces one that used `_display` — a station holding NOTHING —
+      // and called that "deliberate parity". It was not: when D-04 was ruled,
+      // reads on this wire were ungated, so a station holding nothing could
+      // already see the chart it was saving. The 2026-09-16 read floor
+      // redefined that session (it is now refused `history.selectViews` by
+      // `_requireReadView`) and this pin was never revisited, so it had come
+      // to assert "a session refused the LIST of views may replace any of
+      // them". Nobody decided that; it was the residue of two rulings that
+      // were each right and were never composed.
+      final gateway = await _Gateway.start(identity: _panel);
       final station = await gateway.station();
 
       final id = (await station.request(DataServiceMethods.historyCreateView,
           params: const {'name': 'Vaktir', 'keys': <String>[_key]},
-          what: 'a station holding no groups saving a chart'))! as int;
+          what: 'an operate station saving a chart'))! as int;
       await station.request(DataServiceMethods.historyUpdateView,
           params: {'id': id, 'name': 'Endurskírt', 'keys': const <String>[_key]},
-          what: 'a station holding no groups renaming its chart');
+          what: 'an operate station renaming its chart');
       await station.request(DataServiceMethods.historyAddPeriod,
           params: {
             'viewId': id,
@@ -1612,11 +1647,79 @@ void main() {
             'start': _ms(_tsBase),
             'end': _ms(_tsBase.add(const Duration(hours: 8))),
           },
-          what: 'a station holding no groups bookmarking a window');
+          what: 'an operate station bookmarking a window');
 
       expect(await storedViews(gateway), ['Endurskírt'],
-          reason: 'all three creative members reached the store for a session '
-              'holding nothing at all, exactly as they do at a panel');
+          reason: 'all three creative members reach the store on the group '
+              'the panel takes, exactly as they do at a panel');
+    });
+
+    test('a configure-only station may too — historyViewReadAlso, both ways',
+        () async {
+      // `access_group.dart`'s `historyViewReadAlso` says whoever may save a
+      // view may list them without also holding the plant floor. The converse
+      // has to hold or the family contradicts itself: an engineer who holds
+      // `configure` and not `operate` must still be able to save.
+      final gateway = await _Gateway.start(
+          identity: stationHolding(const {AccessGroup.configure}));
+      final station = await gateway.station();
+
+      final id = (await station.request(DataServiceMethods.historyCreateView,
+          params: const {'name': 'Stillingar', 'keys': <String>[_key]},
+          what: 'a configure station saving a chart'))! as int;
+      expect(id, isA<int>());
+      expect(await storedViews(gateway), ['Stillingar']);
+    });
+
+    test('a station holding NOTHING is refused all three, and the seeded '
+        'view is untouched', () async {
+      // The 2026-09-16 read floor, composed with D-04 rather than overturning
+      // it. The group stays null; what is added beneath it is the floor, so
+      // the only session refused is one §10 already says gets nothing.
+      //
+      // **Pre-effect, against a seeded view**, the way the delete arms do it:
+      // the point is not that an error came back, it is that somebody else's
+      // saved chart is still there. `updateView` takes any id, so this is the
+      // case that mattered — a socket that cannot read the chart replacing it.
+      final gateway = await _Gateway.start(identity: _display);
+      final id = await gateway.plant.historyViews
+          .createHistoryView('Vaktir', [_key]);
+      await gateway.plant.historyViews.addHistoryViewPeriod(
+          id, 'Vakt 1', _tsBase, _tsBase.add(const Duration(hours: 8)));
+      final station = await gateway.station();
+
+      for (final call in <({String method, Map<String, Object?> params})>[
+        (
+          method: DataServiceMethods.historyCreateView,
+          params: const {'name': 'Nýtt', 'keys': <String>[_key]}
+        ),
+        (
+          method: DataServiceMethods.historyUpdateView,
+          params: {'id': id, 'name': 'Wiped', 'keys': const <String>[_key]}
+        ),
+        (
+          method: DataServiceMethods.historyAddPeriod,
+          params: {
+            'viewId': id,
+            'name': 'Vakt 2',
+            'start': _ms(_tsBase),
+            'end': _ms(_tsBase.add(const Duration(hours: 1))),
+          }
+        ),
+      ]) {
+        final refusal = await station.refusal(call.method,
+            params: call.params,
+            what: 'a station holding nothing calling ${call.method}');
+        expect(refusal.code, ServerErrorCodes.forbidden,
+            reason: 'the floor refuses by permission, not by existence: '
+                'every view is visible to whoever passes it');
+      }
+
+      expect(await storedViews(gateway), ['Vaktir'],
+          reason: 'the chart still carries the name its owner gave it');
+      expect(await gateway.plant.historyViews.listHistoryViewPeriods(id),
+          hasLength(1),
+          reason: 'and its one saved window was neither replaced nor added to');
     });
 
     test('an operate-and-configure station deletes, and the store records it',
@@ -2332,11 +2435,25 @@ void main() {
 
     test('a folder is never asked about', () async {
       // The rule the plan states and the one a reader will not guess:
-      // `canSee` takes a **plant key**, and a folder is not one. A resolver
-      // that happens to answer for a folder id — this file's identity one
-      // does — must not turn a policy entry into a pruned branch.
-      final gateway =
-          await _Gateway.start(policy: ScriptedPolicy.hiding(const {_hiddenParent}));
+      // `canSee` takes a **plant key**, and a folder is not one. Pruning a
+      // folder takes every tag under it off the tree, including tags the
+      // station may see.
+      //
+      // **What decides is the resolver, not the node's claimed kind.** The
+      // guard used to read `if (!node.isVariable) return true` first, and on
+      // `fetchDetail` that field is decoded from the CALLER's own frame — so
+      // claiming `type: "folder"` for a hidden variable handed back its live
+      // reading (`browse_hiding_test.dart`). The kind check is gone; what
+      // keeps a folder unpruned is `keyForNode` answering null for it, which
+      // is the server's own knowledge and not the caller's word.
+      //
+      // So this arm needs a resolver that can DECLINE a name.
+      // `PermissiveSeriesResolver` maps every id to itself, folders included,
+      // which is exactly the state its doc warns about; under it there is no
+      // such thing as a node that is not a tag.
+      final gateway = await _Gateway.start(
+          resolver: const _MapsLeavesOnly(),
+          policy: ScriptedPolicy.hiding(const {_hiddenParent}));
       final station = await gateway.station();
 
       final ids = await _reachableNodeIds(station);

@@ -87,7 +87,7 @@ final class ValueHandlers {
   /// must behave as it did before this argument existed. Production never
   /// gets this: `RelaySession` always passes the session's own predicate.
   static bool _anyKeyWritable(String key,
-          {List<String?> members = const <String?>[null]}) =>
+          {required List<String?> members}) =>
       true;
   static void _openToAll(String method) {}
 
@@ -129,7 +129,8 @@ final class ValueHandlers {
   /// Named rather than positional for [members] so the existing tear-off of
   /// `PolicyStateMan.canWrite` still satisfies it and every caller that has
   /// nothing to say about members keeps asking the key-level question.
-  final bool Function(String key, {List<String?> members}) canWriteKey;
+  final bool Function(String key, {required List<String?> members})
+      canWriteKey;
 
   /// The read gate, asked **before the existence check** and about the call,
   /// not the key: `PolicyStateMan.requirePlantRead`, through the predicate
@@ -451,6 +452,27 @@ final class ValueHandlers {
     // through this method (`:541-556`), so an engage on an unserved tag is
     // refused before a handle is taken and before anything starts feeding a
     // deadman counter this gateway invented.
+    // **The read floor, above the existence check** — the same ordering
+    // `read`, `readFresh`, `readMany`, `subscribe` and `alarmHistory` use, and
+    // for the reason §10 of the wire doc gives: the floor is asked about the
+    // WHOLE CALL, before either the existence check or the permission one, so
+    // a session that may not read the plant is refused once, by name, and
+    // never told which of the tags it asked about exist.
+    //
+    // Without it this method was a key-namespace oracle for a session holding
+    // nothing. The two refusals below are deliberately different — a tag this
+    // source does not serve answers `-32602`, a tag it serves but will not
+    // actuate answers `-32005` — and that difference is exactly what an
+    // enumerator reads: sweep `AREAnn.DEVnn.SUBnn`, keep the names answered
+    // `forbidden`, and the plant's address space is yours without a byte of
+    // it ever being read. `anonymous_session_test.dart:264-267` pins the
+    // ordering of those two; this adds the floor ABOVE both, so that ordering
+    // is unchanged for every session entitled to see it at all.
+    //
+    // Refuses nobody who could have written: every tag write requires at
+    // least `operate` (the 2026-09-02 floor, and bindings only raise it),
+    // which is the same group the read floor asks for.
+    requirePlantRead(Methods.write);
     if (!api.keys.contains(request.key)) {
       throw _refuseUnknownKey(Methods.write, request.key);
     }

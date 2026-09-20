@@ -8,6 +8,7 @@ library;
 
 import 'package:json_rpc_2/error_code.dart' as rpc_errors;
 import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
+import 'package:tfc_access/tfc_access.dart' show kWholeKeyWrite;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 
 import 'alarm_ack_sink.dart';
@@ -36,7 +37,7 @@ final class AlarmHandlers {
   /// own predicate, and `alarm_ack_test.dart`'s view-station arm goes through
   /// the real session for exactly that reason.
   static bool _anyKeyWritable(String key,
-          {List<String?> members = const <String?>[null]}) =>
+          {required List<String?> members}) =>
       true;
   static void _openToAll(String method) {}
 
@@ -73,7 +74,8 @@ final class AlarmHandlers {
   /// comparison. Two comparisons can drift; one answer cannot. Read late on
   /// every call for `ownerOf`'s reason: these handlers are built during the
   /// session's `_start` and the identity is minted afterwards, by `_hello`.
-  final bool Function(String key, {List<String?> members}) canWriteKey;
+  final bool Function(String key, {required List<String?> members})
+      canWriteKey;
 
   /// The read gate, asked **before the existence check** and about the call,
   /// not the key: `PolicyStateMan.requirePlantRead`, through the predicate
@@ -126,6 +128,19 @@ final class AlarmHandlers {
           'and neither one names it alone');
     }
 
+    // **The read floor, above the existence check**, for the reason
+    // `value_handlers.dart`'s `write` gives at the same position: the floor is
+    // asked about the whole call, so a session that may not read the plant
+    // learns nothing from the two refusals below about what this gateway
+    // serves. `alarmHistory` in this same file has asked it since 2026-09-16;
+    // the ack did not, and the pair were answering differently about one
+    // family.
+    //
+    // Refuses nobody who could have acked: the gate below is the same
+    // `canWriteKey` a tag write takes, and a tag write requires at least
+    // `operate` — the group the floor asks for.
+    requirePlantRead(Methods.ackAlarm);
+
     // **Existence first, and the placement is the property.** See step 2 above.
     // The sentence is the write path's, deliberately: one refusal a client
     // decodes one way, whichever surface produced it.
@@ -148,7 +163,11 @@ final class AlarmHandlers {
     // **The message names the method and the rule and never the alarm.**
     // Echoing the uid back to a station that may not see the key is the
     // disclosure the ordering above exists to prevent, undone one line later.
-    if (!canWriteKey(AlarmKeys.active)) {
+    // `kWholeKeyWrite`, stated rather than defaulted: `AlarmKeys.active` is
+    // backend-minted, the ack does not write the key, and there is no member
+    // question to ask. Saying so is the point — the defect this grading fixes
+    // was a caller taking the key-level answer because nothing made it choose.
+    if (!canWriteKey(AlarmKeys.active, members: kWholeKeyWrite)) {
       throw rpc.RpcException(
           ServerErrorCodes.forbidden,
           'this station may not acknowledge alarms: ${Methods.ackAlarm} is '

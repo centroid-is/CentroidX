@@ -35,6 +35,15 @@ import 'access_group.dart';
 import 'access_policy.dart';
 import 'access_session.dart';
 
+/// The member list a caller passes when the write genuinely has no members:
+/// a scalar tag, a hold-to-run engage, an alarm acknowledge.
+///
+/// Named rather than spelled `const [null]` at each call site so that asking
+/// the key-level question is a claim somebody made, not a default somebody
+/// got. The defect this grading exists to fix was exactly a caller asking the
+/// key-level question because it was the only question the signature offered.
+const List<String?> kWholeKeyWrite = <String?>[null];
+
 /// The verdict on one tag write.
 final class TagWriteGrade {
   TagWriteGrade({
