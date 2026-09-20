@@ -174,7 +174,17 @@ final class HelloResult {
 
   /// Server wall clock at handshake (UTC epoch ms) — the client derives its
   /// clock offset from this so staleness is measured against one clock.
-  final int serverTime;
+  ///
+  /// **Nullable, and null means "the gateway did not say".** A gateway
+  /// always sends it ([toJson] always writes it), so null only ever comes out
+  /// of [fromJson], for a frame whose `clock` was absent, not an object, or
+  /// carried a number that is not a usable instant (`1e999`, or one past
+  /// [maxRepresentableEpochMs]). Every reader has to decide what to do without
+  /// it, and the one that matters — `ConnectionSupervisor` — leaves the clock
+  /// offset at "clocks agree" and says so on its complaint surface, because
+  /// the alternative of defaulting to zero would be read as a panel whose
+  /// clock is 56 years out and blamed on the panel.
+  final int? serverTime;
 
   /// A stable name for the *gateway process*, from server config. Null when
   /// the deployment configured none. 08-13 wires the config; nothing in this
@@ -215,21 +225,55 @@ final class HelloResult {
     this.publisherId,
   });
 
+  /// Decodes a hello answer, and **never throws on its shape**.
+  ///
+  /// This used to be six hard casts — `json['session'] as Map`,
+  /// `session['id'] as String`, `(clock['serverTime'] as num).toInt()` and
+  /// the rest — and a hello is the one frame every reconnect performs. A
+  /// `TypeError` out of here is not an `RpcException`, so it reached
+  /// `ConnectionSupervisor._serve`'s generic catch as "the link died before
+  /// the snapshot landed", was backed off from, and was redialled into the
+  /// same frame: a permanent reconnect loop with the wrong diagnosis, from a
+  /// gateway that had restructured one object in its handshake. The library
+  /// doc's rule — decoders read known keys and ignore everything else — and
+  /// `docs/relay-wire-api.md` §5's promise that a newer backend must never be
+  /// able to make a panel go dark were both being kept for every frame except
+  /// the first one.
+  ///
+  /// So every field degrades. A string where an object belongs, an object
+  /// where a string belongs, a `1e999` where an instant belongs: each reads
+  /// as *absent* — `''`, an empty map, a null [serverTime], an unnamed
+  /// [server] — and the caller decides what an absence costs. Only two of
+  /// them cost anything on the client ([epoch] and [serverTime]) and the
+  /// supervisor names both on its complaint surface, which is where a "the
+  /// gateway's hello carried no epoch" belongs: beside the values it did
+  /// manage to show, not in place of them.
+  ///
+  /// What this cannot make tolerable is a hello that is not a JSON object at
+  /// all; that never reaches this factory, and the supervisor names it as the
+  /// peer problem it is.
   factory HelloResult.fromJson(Map<String, Object?> json) {
-    final session = (json['session'] as Map).cast<String, Object?>();
-    final clock = (json['clock'] as Map).cast<String, Object?>();
+    final session = _objectOrEmpty(json['session']);
+    final clock = _objectOrEmpty(json['clock']);
+    final serverTime = clock['serverTime'];
     return HelloResult(
-      protocol: json['protocol'] as String,
-      server: PeerInfo.fromJson((json['server'] as Map).cast()),
-      capabilities:
-          (json['capabilities'] as Map? ?? const {}).cast<String, Object?>(),
-      sessionId: session['id'] as String,
-      epoch: session['epoch'] as String,
+      protocol: _stringOrEmpty(json['protocol']),
+      server: _peerOrUnnamed(json['server']),
+      capabilities: _objectOrEmpty(json['capabilities']),
+      sessionId: _stringOrEmpty(session['id']),
+      epoch: _stringOrEmpty(session['epoch']),
       // No `resumed` read. A frame that still carries the key is decoded and
       // the key ignored, which is this library's general rule rather than a
       // special case; see the block where the field was declared.
-      serverTime: (clock['serverTime'] as num).toInt(),
-      publisherId: json['publisherId'] as String?,
+      //
+      // The range check is `WireValue`'s, because this is the same number in
+      // the same unit: `isFinite` alone admits `1e17`, and the client hands
+      // this to `DateTime.fromMillisecondsSinceEpoch` for the clock warning.
+      serverTime:
+          isRepresentableEpochMs(serverTime) ? (serverTime as num).toInt() : null,
+      publisherId: json['publisherId'] is String
+          ? json['publisherId'] as String
+          : null,
     );
   }
 
@@ -244,9 +288,33 @@ final class HelloResult {
         // the object whole would break every reconnection in the plant while
         // looking like the same deletion.
         'session': {'id': sessionId, 'epoch': epoch},
-        'clock': {'serverTime': serverTime},
+        // Omitted when unknown rather than written as `null`, the library
+        // rule: a gateway never constructs one without it, so this arm only
+        // ever fires when a decoded frame is re-emitted by a harness.
+        if (serverTime != null) 'clock': {'serverTime': serverTime},
         if (publisherId != null) 'publisherId': publisherId,
       };
+
+  /// [raw] as a string-keyed object, or empty when it is anything else.
+  ///
+  /// Rebuilt rather than `cast`, because `Map.cast` is a lazy view that
+  /// throws on the first non-string key *at the read*, which would move the
+  /// `TypeError` this factory exists to remove from the decode into
+  /// `capabilities[...]` a few lines later in the supervisor.
+  static Map<String, Object?> _objectOrEmpty(Object? raw) => raw is Map
+      ? {for (final entry in raw.entries) '${entry.key}': entry.value}
+      : const {};
+
+  static String _stringOrEmpty(Object? raw) => raw is String ? raw : '';
+
+  /// [raw] as a [PeerInfo], or one with no name when it cannot be read. The
+  /// strict [PeerInfo.fromJson] stays strict for the request direction, where
+  /// the gateway answers a malformed `client` with an error the panel sees.
+  static PeerInfo _peerOrUnnamed(Object? raw) {
+    final json = _objectOrEmpty(raw);
+    return PeerInfo(
+        _stringOrEmpty(json['name']), _stringOrEmpty(json['version']));
+  }
 
   /// [HelloCapabilities.heartbeatDeadlineMs], or null when this gateway
   /// advertised nothing usable.

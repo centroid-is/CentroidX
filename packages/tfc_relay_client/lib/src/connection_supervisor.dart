@@ -760,8 +760,29 @@ final class ConnectionSupervisor {
       if (_disposed || gen != _generation) return;
       watchdog.sawFrame(InboundFrame.rpcResponse);
 
-      final hello =
-          HelloResult.fromJson(_asJson(sanitize(raw).value));
+      final HelloResult hello;
+      try {
+        hello = HelloResult.fromJson(_asJson(sanitize(raw).value));
+      } on FormatException catch (error) {
+        // Not a JSON object. `HelloResult.fromJson` degrades every *field*
+        // (the newer-backend promise), but a hello that is not an object at
+        // all is a peer problem, not a data problem — the same line
+        // `decodeSubscribeResult` draws, and `poisoned_snapshot_test.dart`'s
+        // fifth arm keeps. It is named here rather than left to the generic
+        // catch below, whose "the link died" is the wrong diagnosis: the
+        // link is fine, and what is on the other end of it is not a gateway.
+        _down(gen, 'the hello answer could not be read as a JSON object '
+            '(${error.runtimeType}): whatever answered is not speaking this '
+            'protocol, or is standing in for something that does');
+        return;
+      } on ArgumentError catch (error) {
+        // `sanitize` refuses a value nested past its bound, which on a hello
+        // — five fields deep at most — is the same peer problem.
+        _down(gen, 'the hello answer could not be read '
+            '(${error.runtimeType}): it is nested deeper than any hello this '
+            'protocol produces');
+        return;
+      }
       // Who the gateway verified this session as, for attribution prose and
       // nothing else — see [verifiedAccount]. Assigned unconditionally so an
       // absent capability reads as "the gateway did not say" rather than as
@@ -784,12 +805,47 @@ final class ConnectionSupervisor {
       // handshake is the least-delayed sample of it this connection will ever
       // see — half a round trip rather than a queue — which is why the anchor
       // is taken here and only refined from ticks (07-REVIEW CR-01).
-      watchdog.anchorServerClock(hello.serverTime);
-      _clockOffset = ClockOffset.fromHello(
-        hello.serverTime,
-        _now(),
-        threshold: config.implausibleClockThreshold,
-      );
+      //
+      // **Or not said at all**, since `HelloResult.fromJson` stopped throwing
+      // on a `clock` it could not read. Then the offset stays at "clocks
+      // agree" and the anchor waits for the first tick, which carries the
+      // same clock and refines it anyway (`FreshnessWatchdog.sawTick`). What
+      // must not happen is a default of zero: that is 1970, the offset
+      // becomes fifty-odd years, and `ClockOffset.fromHello` files a warning
+      // telling the operator to fix the *panel's* clock for a number the
+      // gateway failed to send. Said on the complaint surface instead, under
+      // the gateway's name.
+      final serverTime = hello.serverTime;
+      if (serverTime == null) {
+        _clockOffset = ClockOffset.none;
+        _resync.complain('the gateway\'s hello carried no usable '
+            'clock.serverTime, so this connection\'s clock offset is left at '
+            '"clocks agree" until the first tick anchors it. Values are '
+            'still shown; if this panel\'s clock is wrong, freshness is '
+            'measured against the wrong clock until then. A gateway that '
+            'answers hello without its time is a gateway newer or older than '
+            'this panel expects');
+      } else {
+        watchdog.anchorServerClock(serverTime);
+        _clockOffset = ClockOffset.fromHello(
+          serverTime,
+          _now(),
+          threshold: config.implausibleClockThreshold,
+        );
+      }
+      if (hello.epoch.isEmpty) {
+        // The other field this class actually depends on. An empty epoch is
+        // fed to `ResyncEngine.onHello` exactly as a real one would be, and
+        // costs nothing on screen: every hello re-establishes every page from
+        // a snapshot regardless, and the epoch only decides whether the old
+        // cache is cleared before the subscribe or by it. What is lost is
+        // the wire's own statement that the session changed, so it is said.
+        _resync.complain('the gateway\'s hello carried no usable '
+            'session.epoch. Every page is rebuilt from a snapshot on every '
+            'hello anyway, so nothing on screen is wrong, but this panel '
+            'cannot tell one gateway session from the next by its epoch '
+            'until a gateway that sends one answers');
+      }
 
       // The hello is answered and the peer is usable: open the session gate
       // NOW, before the resync that may not complete, so `session.login` can

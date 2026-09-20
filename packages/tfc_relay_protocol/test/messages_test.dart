@@ -331,6 +331,89 @@ void main() {
             'it, and staleness is measured against that offset');
   });
 
+  group('a hello answer degrades rather than throws', () {
+    // The frame every reconnect performs. Until this group existed the decoder
+    // was six hard casts, and a gateway that restructured any one of `session`,
+    // `clock` or `server` put every older panel into a permanent reconnect
+    // loop diagnosed as "the link died" — the one frame §5's newer-backend
+    // promise was not being kept for.
+    HelloResult decode(String wire) =>
+        HelloResult.fromJson(jsonDecode(wire) as Map<String, Object?>);
+
+    test('a restructured session and a missing clock cost their fields, not '
+        'the decode', () {
+      final r = decode('{"protocol":"2026-08-13","server":{"name":"g",'
+          '"version":"1"},"session":"S1/E1","sessionEpoch":"E1"}');
+      expect(r.protocol, '2026-08-13');
+      expect(r.server.name, 'g');
+      expect(r.sessionId, '', reason: 'absent reads as empty, never throws');
+      expect(r.epoch, '');
+      expect(r.serverTime, isNull,
+          reason: 'null is the honest answer for a clock the gateway did not '
+              'send; zero would be 1970 and blamed on the panel');
+      expect(r.capabilities, isEmpty);
+    });
+
+    test('a clock that is not an instant reads as no clock', () {
+      // `1e999` decodes to Infinity, and `Infinity.toInt()` throws; `1e17` is
+      // finite and `DateTime` refuses it. Both used to leave the decode.
+      expect(decode('{"clock":{"serverTime":1e999}}').serverTime, isNull);
+      expect(decode('{"clock":{"serverTime":1e17}}').serverTime, isNull);
+      expect(decode('{"clock":{"serverTime":"soon"}}').serverTime, isNull);
+      expect(decode('{"clock":{"serverTime":1786000000123.0}}').serverTime,
+          1786000000123,
+          reason: 'a gateway written in a language with one number type '
+              'sends a double, and it is the same instant');
+    });
+
+    test('every other field of the wrong shape reads as absent', () {
+      final r = decode('{"protocol":5,"server":"gateway","capabilities":7,'
+          '"session":{"id":9,"epoch":["e1"]},"clock":[1],"publisherId":3}');
+      expect(r.protocol, '');
+      expect(r.server.name, '');
+      expect(r.server.version, '');
+      expect(r.capabilities, isEmpty);
+      expect(r.sessionId, '');
+      expect(r.epoch, '');
+      expect(r.serverTime, isNull);
+      expect(r.publisherId, isNull);
+    });
+
+    test('capabilities with a non-string key do not throw at the read', () {
+      // `Map.cast` is a lazy view: the old decoder passed, and the supervisor
+      // threw a `TypeError` at `capabilities['tickMs']` a few lines later.
+      final r = HelloResult.fromJson({
+        'capabilities': <Object?, Object?>{1: 'x', 'tickMs': 100},
+      });
+      expect(r.capabilities['tickMs'], 100);
+      expect(r.capabilities['1'], 'x');
+    });
+
+    test('an unknown clock is omitted from a re-emit, never written as null',
+        () {
+      final json = decode('{"session":{"id":"s","epoch":"e"}}').toJson();
+      expect(json.containsKey('clock'), isFalse);
+      expect(HelloResult.fromJson(json).serverTime, isNull);
+    });
+
+    test('the good frame still decodes to the same values', () {
+      // Anti-vacuity: a decoder that read everything as absent would pass the
+      // arms above.
+      final r = decode('{"protocol":"2026-08-13","server":{"name":"g",'
+          '"version":"1"},"capabilities":{"tickMs":100},"session":{"id":"S1",'
+          '"epoch":"E1"},"clock":{"serverTime":1786000000123},'
+          '"publisherId":"plant"}');
+      expect(r.protocol, '2026-08-13');
+      expect(r.server.name, 'g');
+      expect(r.server.version, '1');
+      expect(r.capabilities['tickMs'], 100);
+      expect(r.sessionId, 'S1');
+      expect(r.epoch, 'E1');
+      expect(r.serverTime, 1786000000123);
+      expect(r.publisherId, 'plant');
+    });
+  });
+
   test('SubscribeResult: handles, snapshot, meta, and per-key rejection', () {
     final result = SubscribeResult(
       sub: 's1',
