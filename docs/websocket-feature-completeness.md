@@ -140,13 +140,13 @@ served, 9 partially.
 | **Reports** | editor opens, lists nothing; a report the backend holds is invisible |
 | **Knowledge base** (tech docs, PLC code, drawings) | the library says it cannot be reached |
 | **Configuration history** | the gateway answers method-not-found |
-| **Page-editor save** | `UnsupportedError` — "edit the pages on a station"; reads work via `configItems` |
+| **Page-editor save** | `UnsupportedError` — "edit the pages on a station" (`lib/providers/page_manager.dart:228-233`); reads work via `configItems` |
 | **Config-store sync** | see Tier 1b — silent, not an error |
 | **Chat / MCP** | `StateError('Database not connected')`, behind `kChatEnabled` (default true) |
 | **First-account page** | account creation impossible from a relayed panel |
 | **UMAS browse (Modbus)** | dials its own `UmasClient` over TCP **from the panel**, so it reaches the wrong network |
 
-All six hang off the same root: `databaseProvider` answers `null` when
+**One null darkens all of them.** `databaseProvider` answers `null` when
 `gateway.isGateway` (`lib/providers/database.dart:50-52`), and
 `mcpDatabaseProvider` follows it (`lib/providers/server_database.dart:11-14`).
 That is deliberate — the gateway is not supposed to hold a second connection
