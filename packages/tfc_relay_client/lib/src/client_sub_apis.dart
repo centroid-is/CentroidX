@@ -791,6 +791,13 @@ final class ClientAuditApi implements AuditApi {
   }
 
   @override
+  Future<List<AuditRecord>> entriesByAction(List<String> actionIds) async => [
+        for (final raw in jsonArray(await _send(
+            AccessMethods.auditEntriesByAction, {'actionIds': actionIds})))
+          auditRecordFromJson(jsonObject(raw)),
+      ];
+
+  @override
   Future<List<String>> distinctWho() async => [
         for (final who
             in jsonArray(await _send(AccessMethods.auditDistinctWho, const {})))
@@ -857,4 +864,53 @@ final class ClientConfigItemsApi implements ConfigItemsApi {
   Future<ConfigItemsFingerprint> fingerprint(List<String> kinds) async =>
       ConfigItemsFingerprint.fromJson(jsonObject(await _send(
           AccessMethods.configItemsFingerprint, {'kinds': kinds})));
+}
+
+/// `config_change` over the socket.
+///
+/// Three reads and no write, matching the interface. The decoding is
+/// per-entry: a row this build cannot read costs that row and not the page,
+/// which is the same bargain the direct reader strikes and the reason
+/// [ConfigHistoryPageResult] carries `rawCount` beside the rows.
+final class ClientConfigHistoryApi implements ConfigHistoryApi {
+  ClientConfigHistoryApi(this._call);
+
+  final RemoteCall _call;
+
+  Future<Object?> _send(String method, Map<String, Object?> params) =>
+      withAccessErrors(() => _call(method, params));
+
+  @override
+  Future<ConfigHistoryPageResult> changesPage(
+          ConfigHistoryQueryParams query) async =>
+      ConfigHistoryPageResult.fromJson(jsonObject(await _send(
+          AccessMethods.configHistoryChangesPage, {'query': query.toJson()})));
+
+  @override
+  Future<Map<String, List<ConfigHistoryRow>>> changesByAction(
+      List<String> actionIds) async {
+    final raw = jsonObject(await _send(
+        AccessMethods.configHistoryChangesByAction, {'actionIds': actionIds}));
+    return <String, List<ConfigHistoryRow>>{
+      // Absent stays absent. Filling in an empty list for an action the
+      // server did not mention would turn "there is no such action" into
+      // "that action changed nothing".
+      for (final entry in raw.entries)
+        entry.key: [
+          for (final row in jsonArray(entry.value))
+            ConfigHistoryRow.fromJson(jsonObject(row)),
+        ],
+    };
+  }
+
+  @override
+  Future<Map<String, int>> changeCountsByAction(
+      List<String> actionIds) async {
+    final raw = jsonObject(await _send(
+        AccessMethods.configHistoryCountsByAction, {'actionIds': actionIds}));
+    return <String, int>{
+      for (final entry in raw.entries)
+        if (entry.value is int) entry.key: entry.value as int,
+    };
+  }
 }

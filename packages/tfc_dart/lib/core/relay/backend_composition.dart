@@ -73,6 +73,7 @@ import '../state_man.dart' show KeyMappings;
 import 'backend_access.dart';
 import 'backend_alarm_ack.dart';
 import 'backend_alarm_history_source.dart';
+import 'backend_config_history.dart';
 import 'backend_config_items.dart';
 import 'backend_config_store.dart';
 import 'backend_alarms.dart' show GatewayAlarmEngine;
@@ -841,6 +842,10 @@ BackendRelayComposition composeBackendRelay({
     // scoped families: it reads and never attributes, and the session
     // gate is the policy layer's (`_PolicyConfigItems`).
     configItems: BackendConfigItems(database: database.db),
+    // Composition-wide for `configItems`' reason, and read-only for the
+    // audit family's: the log is written by whoever changed the
+    // configuration, never by a client asking to read it.
+    configHistory: BackendConfigHistory(database: database.db),
   );
 
   // **The bindings reach the wire here.** The policy is still named at this

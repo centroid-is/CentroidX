@@ -1750,6 +1750,9 @@ final class LocalStateMan implements StateManApi, TypeDescriptions {
   @override
   ConfigItemsApi get configItems => _noAccessStore('configItems');
 
+  @override
+  ConfigHistoryApi get configHistory => _noAccessStore('configHistory');
+
   // ---------------------------------------------------------------- internals
 
   /// Establishes what the gateway can say about [key] before it is read.

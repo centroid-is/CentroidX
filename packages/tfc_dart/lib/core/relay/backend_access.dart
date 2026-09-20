@@ -385,6 +385,10 @@ final class BackendAudit implements relay.AuditApi {
       _require('memberCountsByAction').memberCountsByAction(actionIds);
 
   @override
+  Future<List<AuditRecord>> entriesByAction(List<String> actionIds) async =>
+      _require('entriesByAction').entriesByAction(actionIds);
+
+  @override
   Future<List<String>> distinctWho() async =>
       _require('distinctWho').distinctWho();
 

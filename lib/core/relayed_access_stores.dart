@@ -477,25 +477,22 @@ final class RelayedAuditTrailStore implements AuditTrailStore {
       relayedAccessErrors(
           () => _api.memberCountsByAction(actionIds.toList()));
 
-  /// The action headers the configuration-history page reads, which the wire
-  /// does not carry yet.
+  /// The action headers the configuration-history page joins its change rows
+  /// to.
   ///
-  /// **An empty list, not a throw** — the opposite call to the one
-  /// `RelayedAccessAdminStore.setRoleOrder` makes, because this is a read and
-  /// the page has a defined behaviour for a header it cannot find:
-  /// `HistoryAction.isParentless`, which renders the action from its
-  /// `config_change` rows and flags that the header is missing. Every row still
-  /// says what changed, who changed it and when — both tables carry `who`. So
-  /// the degradation is visible and the page works, where a throw would take
-  /// the whole history down over a column of authors.
+  /// This used to answer `const []` — an empty list, not a throw, because the
+  /// page has a defined behaviour for a header it cannot find
+  /// (`HistoryAction.isParentless`: the action still renders from its
+  /// `config_change` rows, and the missing header is flagged). That was a
+  /// visible degradation rather than a silent one, which is why it was a gap
+  /// and not a bug — but on this transport EVERY action read as parentless,
+  /// including the ones whose header was sitting in the backend's table.
   ///
-  /// It is still a gap: on this transport every action reads as parentless,
-  /// including the ones whose header is sitting in the backend's table. Closing
-  /// it is one more [AuditApi] method beside [memberCountsByAction], which is
-  /// its exact shape.
+  /// `audit.entriesByAction` closed it, and it was exactly the one method
+  /// this comment said it would be.
   @override
-  Future<List<AuditRecord>> entriesByAction(Iterable<String> actionIds) async =>
-      const [];
+  Future<List<AuditRecord>> entriesByAction(Iterable<String> actionIds) =>
+      relayedAccessErrors(() => _api.entriesByAction(actionIds.toList()));
 
   @override
   Future<List<String>> distinctWho() =>

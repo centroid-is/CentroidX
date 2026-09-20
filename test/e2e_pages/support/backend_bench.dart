@@ -54,6 +54,7 @@ import 'package:tfc_dart/core/access/audit_trail_store.dart';
 import 'package:tfc_dart/core/access/guarded_config_store.dart';
 import 'package:tfc_dart/core/alarm.dart';
 import 'package:tfc_dart/core/boolean_expression.dart';
+import 'package:tfc_dart/core/config/config_change_store.dart';
 import 'package:tfc_dart/core/config/config_item.dart';
 import 'package:tfc_dart/core/config/config_store.dart';
 import 'package:tfc_dart/core/config/key_mapping_rows.dart'
@@ -188,6 +189,14 @@ final class BackendBench {
       (await auditRows(keyPrefix: keyPrefix))
           .where((r) => r.surface != kAuditAuthSurface)
           .toList();
+
+  /// Every `config_change` row the backend holds, newest first.
+  ///
+  /// The direct reader, not the wire: this is what a case asserts the WIRE
+  /// against, so it must not go through the thing under test.
+  Future<List<ConfigChangeRecord>> configChangeRows() =>
+      ConfigChangeStore(db: database.db)
+          .changes(ConfigChangeQuery(limit: 500));
 
   /// A shared preference as the backend's own reader decodes it — the value a
   /// gateway panel is served, read straight off the row.

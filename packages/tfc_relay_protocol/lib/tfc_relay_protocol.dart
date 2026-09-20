@@ -43,5 +43,6 @@ export 'src/state_man_api.dart';
 export 'src/write_outcome_log.dart';
 export 'src/access_api.dart';
 export 'src/config_items_api.dart';
+export 'src/config_history_api.dart';
 export 'src/hold_registry.dart';
 export 'src/session_auth.dart';

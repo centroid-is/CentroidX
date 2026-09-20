@@ -528,6 +528,20 @@ class AccessPolicy {
   /// graded more finely without becoming circular.
   AccessGroup groupForAdmin(String member) => AccessGroup.users;
 
+  /// The group required to read the configuration history.
+  ///
+  /// [AccessGroup.configure] for every member and for an unrecognised name —
+  /// **the group the route already demands**
+  /// (`kRaisedRoutes[kConfigHistoryRoute]`), so a panel and the wire cannot
+  /// disagree about who may see who changed what. The route is the app's
+  /// answer to the same question and this is the wire's; two answers to one
+  /// question is how a relayed panel ends up stricter or looser than the
+  /// station beside it.
+  ///
+  /// Never null. There is no open member here: the log names people and what
+  /// they changed, which is disclosure even when every row is mundane.
+  AccessGroup groupForConfigHistory(String member) => AccessGroup.configure;
+
   /// The group required to write [section] of the backend's `StateManConfig`.
   /// **Never null.**
   ///

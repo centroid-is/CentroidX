@@ -672,6 +672,9 @@ final class _RemoteAccessLeg implements StateManApi, StateManAccessHarness {
   ConfigItemsApi get configItems => _client.configItems;
 
   @override
+  ConfigHistoryApi get configHistory => _client.configHistory;
+
+  @override
   ValueListenable<DynamicValue> listen(String key) => _client.listen(key);
 
   @override

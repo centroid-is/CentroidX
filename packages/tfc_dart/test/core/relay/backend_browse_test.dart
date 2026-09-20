@@ -116,6 +116,10 @@ final class _BrowseOnlyApi implements StateManApi {
       _notPartOfThisFixture('config item store');
 
   @override
+  relay.ConfigHistoryApi get configHistory =>
+      _notPartOfThisFixture('configuration history');
+
+  @override
   relay.AccessTemplateApi get accessTemplates =>
       _notPartOfThisFixture('access template store');
 

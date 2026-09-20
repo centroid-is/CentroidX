@@ -691,6 +691,13 @@ final class ChannelAuditApi implements AuditApi {
             in jsonArray(await _send(HarnessMethods.auditDistinctWho, const {})))
           '$w',
       ];
+
+  @override
+  Future<List<AuditRecord>> entriesByAction(List<String> actionIds) async => [
+        for (final raw in jsonArray(await _send(
+            HarnessMethods.auditEntriesByAction, {'actionIds': actionIds})))
+          auditRecordFromJson(jsonObject(raw)),
+      ];
 }
 
 /// [BackendConfigApi] over the channel.
@@ -748,4 +755,53 @@ final class ChannelConfigItemsApi implements ConfigItemsApi {
   Future<ConfigItemsFingerprint> fingerprint(List<String> kinds) async =>
       ConfigItemsFingerprint.fromJson(jsonObject(await _send(
           HarnessMethods.configItemsFingerprint, {'kinds': kinds})));
+}
+
+/// [ConfigHistoryApi] over the harness channel.
+///
+/// Carried here rather than stubbed out, so the cross-implementation contract
+/// covers the configuration history the way it covers the audit trail: a
+/// family that only one implementation answers is a family whose two
+/// implementations have never been compared.
+final class ChannelConfigHistoryApi implements ConfigHistoryApi {
+  ChannelConfigHistoryApi(this._call);
+
+  final ChannelCall _call;
+
+  Future<Object?> _send(String method, Map<String, Object?> params) =>
+      _withAccessErrors(() => _call(method, params));
+
+  @override
+  Future<ConfigHistoryPageResult> changesPage(
+          ConfigHistoryQueryParams query) async =>
+      ConfigHistoryPageResult.fromJson(jsonObject(await _send(
+          HarnessMethods.configHistoryChangesPage,
+          {'query': query.toJson()})));
+
+  @override
+  Future<Map<String, List<ConfigHistoryRow>>> changesByAction(
+      List<String> actionIds) async {
+    final raw = jsonObject(await _send(
+        HarnessMethods.configHistoryChangesByAction,
+        {'actionIds': actionIds}));
+    return <String, List<ConfigHistoryRow>>{
+      for (final entry in raw.entries)
+        entry.key: [
+          for (final row in (entry.value as List))
+            ConfigHistoryRow.fromJson(jsonObject(row)),
+        ],
+    };
+  }
+
+  @override
+  Future<Map<String, int>> changeCountsByAction(
+      List<String> actionIds) async {
+    final raw = jsonObject(await _send(
+        HarnessMethods.configHistoryCountsByAction,
+        {'actionIds': actionIds}));
+    return <String, int>{
+      for (final entry in raw.entries)
+        if (entry.value is int) entry.key: entry.value as int,
+    };
+  }
 }

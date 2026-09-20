@@ -1189,6 +1189,9 @@ class FakeStateMan
   @override
   ConfigItemsApi get configItems => _access;
 
+  @override
+  ConfigHistoryApi get configHistory => _access;
+
   // -------------------------------------------------- the access control lever
 
   @override

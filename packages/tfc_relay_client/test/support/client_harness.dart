@@ -285,6 +285,9 @@ final class _PlantAddressSpace implements StateManApi {
   ConfigItemsApi get configItems => _plant.configItems;
 
   @override
+  ConfigHistoryApi get configHistory => _plant.configHistory;
+
+  @override
   Future<void> dispose() => _plant.dispose();
 }
 
@@ -651,6 +654,9 @@ final class RelayServedFake
 
   @override
   ConfigItemsApi get configItems => _client.configItems;
+
+  @override
+  ConfigHistoryApi get configHistory => _client.configHistory;
 
   /// Releases the whole fixture, not merely the client.
   ///

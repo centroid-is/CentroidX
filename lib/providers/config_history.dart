@@ -38,18 +38,23 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/access/guarded_config_store.dart'
     show GuardedConfigStore, auditSummaryOf;
+import 'package:tfc_dart/core/access/guarded_state_man.dart';
 import 'package:tfc_dart/core/config/config_store.dart' show ConfigWriteResult;
 import 'package:tfc_dart/core/config/config_store_errors.dart';
 import 'package:tfc_dart/core/config/config_undo.dart';
 
 import '../core/audit_trail_grouping.dart';
 import '../core/config_change_store.dart';
+import '../core/gateway_state_man.dart';
+import '../core/relayed_config_history.dart';
 import 'access.dart' show auditSinkProvider, stationNameProvider;
 import 'access_policy.dart'
     show accessPolicyProvider, reportAccessDenial, sessionInForce;
 import 'audit_trail.dart';
 import 'config_store.dart' show configStoreProvider;
 import 'database.dart';
+import 'gateway.dart';
+import 'state_man.dart';
 
 part 'config_history.g.dart';
 
@@ -66,10 +71,38 @@ part 'config_history.g.dart';
 /// releasing.
 @Riverpod(keepAlive: true)
 Future<ConfigChangeStore?> configChangeStore(Ref ref) async {
+  // `ref.watch`, never `ref.read`, on the config AND the StateMan — the same
+  // rule `auditTrailStoreProvider` next door states and for the same reason:
+  // a `ref.read` behind a `keepAlive` leaves a stale transport over a
+  // disposed client whose streams CLOSE rather than error, so nothing reports
+  // it.
+  final gateway = await ref.watch(gatewayConfigProvider.future);
+  if (gateway.isGateway) {
+    // The relayed route: the log the page reads is `config_change` behind the
+    // backend, through the one client this panel holds.
+    final stateMan = await ref.watch(stateManProvider.future);
+    final remote = stateMan is GuardedStateMan
+        ? stateMan.innerAs<GatewayStateMan>()?.remote
+        : null;
+    if (remote == null) {
+      // Refuse by name rather than fall back to the database — a route that
+      // exists will be taken, and this one must not exist here.
+      throw UnsupportedError(
+          'configChangeStoreProvider is not available in gateway mode: this '
+          'station resolved a StateMan with no relay client behind it. Fix '
+          'the gateway branch of lib/providers/state_man.dart — do not fall '
+          'back to the database here.');
+    }
+    return RelayedConfigChangeStore(api: remote.configHistory);
+  }
+
   final db = await ref.watch(databaseProvider.future);
   if (db == null) return null;
   // One argument. No session, no sink, no station: this store cannot deny and
-  // cannot record. The enforcement is the route gate.
+  // cannot record. The enforcement is the route gate — and, over the relay,
+  // the gateway's own `_PolicyConfigHistory`, which grades every read at
+  // `configure` because that is what `kRaisedRoutes[kConfigHistoryRoute]`
+  // already demands.
   return ConfigChangeStore(db: db.db);
 }
 

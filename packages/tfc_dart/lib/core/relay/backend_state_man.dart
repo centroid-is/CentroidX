@@ -66,6 +66,7 @@ final class BackendStateMan
     relay.AuditApi? audit,
     relay.BackendConfigApi? backendConfig,
     relay.ConfigItemsApi? configItems,
+    relay.ConfigHistoryApi? configHistory,
   })  : _browse = browse,
         _timeseries = timeseries,
         _historyViews = historyViews,
@@ -75,6 +76,7 @@ final class BackendStateMan
         _audit = audit,
         _backendConfig = backendConfig,
         _configItems = configItems,
+        _configHistory = configHistory,
         _types = types;
 
   /// The live half: the pipe's cache and its refcounted subscriptions.
@@ -116,6 +118,7 @@ final class BackendStateMan
   final relay.AuditApi? _audit;
   final relay.BackendConfigApi? _backendConfig;
   final relay.ConfigItemsApi? _configItems;
+  final relay.ConfigHistoryApi? _configHistory;
 
   /// The one shape every refusal in this class takes.
   ///
@@ -348,6 +351,18 @@ final class BackendStateMan
               'composition root, so a client with no mirror — a browser — '
               'has no pages and no key mappings to show; wire '
               'BackendConfigItems in the relay block.');
+
+  @override
+  relay.ConfigHistoryApi get configHistory =>
+      _configHistory ??
+      _missing(
+          'configHistory',
+          'ConfigHistoryApi',
+          'The configuration log was not handed to the composition root, so '
+              'a relayed panel has no history to show — and an empty history '
+              'reads as a plant nobody has ever configured, which is the one '
+              'wrong answer this family can give; wire BackendConfigHistory '
+              'in the relay block.');
 
   @override
   relay.BackendConfigApi get backendConfig =>

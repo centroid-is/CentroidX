@@ -540,6 +540,9 @@ final class SessionHealthStateMan implements StateManApi, TypeDescriptions {
   @override
   ConfigItemsApi get configItems => source.configItems;
 
+  @override
+  ConfigHistoryApi get configHistory => source.configHistory;
+
   /// Releases this overlay's own store, then delegates — but **only** from the
   /// server-mode instance.
   ///

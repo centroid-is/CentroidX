@@ -849,7 +849,14 @@ void main() {
     late String source;
 
     setUpAll(() {
-      final file = File('lib/core/config_change_store.dart');
+      // The file the store actually lives in, **not** `lib/core/`'s ten-line
+      // re-export. The store moved to `tfc_dart` so the backend could serve
+      // the same class the panel calls; an assertion left pointing at the
+      // shim would pass vacuously against an export directive and say
+      // nothing about the reader it is meant to pin. The same step the audit
+      // store's own source assertions took when that file moved.
+      final file =
+          File('packages/tfc_dart/lib/core/config/config_change_store.dart');
       expect(file.existsSync(), isTrue,
           reason: 'run this suite from the repository root. Without the file '
               'these source assertions would pass vacuously.');

@@ -217,7 +217,7 @@ void main() {
       });
     });
 
-    test('arm 2: all is the union of the five families and nothing else', () {
+    test('arm 2: all is the union of the six families and nothing else', () {
       expect(
           AccessMethods.all,
           {
@@ -226,19 +226,21 @@ void main() {
             ...AccessMethods.auditMethods,
             ...AccessMethods.configMethods,
             ...AccessMethods.configItemsMethods,
+            ...AccessMethods.configHistoryMethods,
           },
-          reason: 'all is spelled from the five family sets, so a name in one '
+          reason: 'all is spelled from the six family sets, so a name in one '
               'of them that never reaches all is a method the closure test '
               'would never demand a handler for');
     });
 
-    test('arm 2b: the five families are pairwise disjoint', () {
+    test('arm 2b: the six families are pairwise disjoint', () {
       final sets = <String, Set<String>>{
         'templateMethods': AccessMethods.templateMethods,
         'adminMethods': AccessMethods.adminMethods,
         'auditMethods': AccessMethods.auditMethods,
         'configMethods': AccessMethods.configMethods,
         'configItemsMethods': AccessMethods.configItemsMethods,
+        'configHistoryMethods': AccessMethods.configHistoryMethods,
       };
 
       final names = sets.keys.toList();
@@ -257,7 +259,8 @@ void main() {
               AccessMethods.adminMethods.length +
               AccessMethods.auditMethods.length +
               AccessMethods.configMethods.length +
-              AccessMethods.configItemsMethods.length),
+              AccessMethods.configItemsMethods.length +
+              AccessMethods.configHistoryMethods.length),
           reason: 'the union is exactly as long as the five parts added up, '
               'which is the same disjointness said as arithmetic — a set that '
               'swallowed a duplicate would be shorter and nothing above would '
@@ -352,8 +355,9 @@ void main() {
     });
   });
 
-  group('StateManApi grew by exactly five getters', () {
-    test('arm 6: the sub-API getters are the agreed ten and nothing more', () {
+  group('StateManApi grew by exactly six getters', () {
+    test('arm 6: the sub-API getters are the agreed eleven and nothing more',
+        () {
       // A literal list, on api_surface_test.dart's own argument: a set computed
       // from the type would agree with any change and assert nothing.
       const expected = <String>{
@@ -367,13 +371,17 @@ void main() {
         'audit',
         'backendConfig',
         'configItems',
+        'configHistory',
       };
 
       expect(_gettersOf(StateManApi), expected,
-          reason: 'Phase 17 adds five getters — accessTemplates, accessAdmin, '
-              'audit, backendConfig and configItems — and no others. A sixth '
-              'getter is a sixth family of things any connected client may '
-              'invoke, and this file is where that decision is written down');
+          reason: 'Phase 17 added five getters — accessTemplates, '
+              'accessAdmin, audit, backendConfig and configItems — and the '
+              'configuration history added the sixth. Each one is a family of '
+              'things any connected client may invoke, and this file is where '
+              'that decision is written down. A getter that appears here '
+              'without a line in the changelog is wire surface nobody '
+              'decided on');
     });
 
     test('arm 6b: each family segment is the getter it hangs off', () {

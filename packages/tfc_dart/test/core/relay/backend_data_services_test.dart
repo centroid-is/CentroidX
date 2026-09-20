@@ -477,6 +477,10 @@ final class _DataOnlyApi implements StateManApi, StateManDataHarness {
       _notPartOfThisFixture('config item store');
 
   @override
+  relay.ConfigHistoryApi get configHistory =>
+      _notPartOfThisFixture('configuration history');
+
+  @override
   relay.AccessAdminApi get accessAdmin =>
       _notPartOfThisFixture('access admin store');
 

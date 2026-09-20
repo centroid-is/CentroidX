@@ -249,6 +249,16 @@ abstract interface class AuditApi {
   /// grouping.
   Future<Map<String, int>> memberCountsByAction(List<String> actionIds);
 
+  /// The rows of each of [actionIds], flat and newest first — the **action
+  /// headers** the configuration-history page joins its change rows to.
+  ///
+  /// Added with the `configHistory` family and for it. Without this member a
+  /// relayed panel had no headers at all, so every action on that page read
+  /// as `HistoryAction.isParentless` — the degradation was visible and the
+  /// page still worked, which is why it survived as a gap rather than as a
+  /// bug, and why closing it was one method rather than a redesign.
+  Future<List<AuditRecord>> entriesByAction(List<String> actionIds);
+
   /// Every distinct `who` in the table, for the filter bar's dropdown.
   ///
   /// A read about people, not an attribution of one: this family has no write

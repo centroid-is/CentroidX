@@ -463,6 +463,7 @@ final class ServedStateMan {
     _on(HarnessMethods.auditEntries, _audEntries);
     _on(HarnessMethods.auditMemberCounts, _audMemberCounts);
     _on(HarnessMethods.auditDistinctWho, _audDistinctWho);
+    _on(HarnessMethods.auditEntriesByAction, _audEntriesByAction);
 
     _on(HarnessMethods.configRead, _cfgRead);
     _on(HarnessMethods.configValidate, _cfgValidate);
@@ -472,6 +473,10 @@ final class ServedStateMan {
 
     _on(HarnessMethods.configItemsItems, _cfgItemsItems);
     _on(HarnessMethods.configItemsFingerprint, _cfgItemsFingerprint);
+
+    _on(HarnessMethods.configHistoryChangesPage, _cfgHistoryPage);
+    _on(HarnessMethods.configHistoryChangesByAction, _cfgHistoryByAction);
+    _on(HarnessMethods.configHistoryCountsByAction, _cfgHistoryCounts);
   }
 
   /// Answers an access method, mapping the refusal shapes as D-09 requires.
@@ -722,6 +727,13 @@ final class ServedStateMan {
       _access(HarnessMethods.auditDistinctWho,
           () async => await api.audit.distinctWho());
 
+  Future<Object?> _audEntriesByAction(rpc.Parameters params) =>
+      _access(HarnessMethods.auditEntriesByAction, () async => [
+            for (final row in await api.audit.entriesByAction(
+                [for (final id in params['actionIds'].asList) '$id']))
+              auditRecordToJson(row),
+          ]);
+
   // backend config
 
   Future<Object?> _cfgRead(rpc.Parameters _) => _access(
@@ -766,6 +778,35 @@ final class ServedStateMan {
           (await api.configItems
                   .fingerprint(params['kinds'].asList.cast<String>()))
               .toJson());
+
+  // config history
+
+  Future<Object?> _cfgHistoryPage(rpc.Parameters params) =>
+      _access(HarnessMethods.configHistoryChangesPage, () async =>
+          (await api.configHistory.changesPage(
+                  ConfigHistoryQueryParams.fromJson(
+                      params['query'].asMap.cast<String, Object?>())))
+              .toJson());
+
+  /// A map, because an action nobody wrote must stay **absent** — a list of
+  /// pairs would invite a reader to fill the gaps in with empty lists, which
+  /// turns "there is no such action" into "that action changed nothing".
+  Future<Object?> _cfgHistoryByAction(rpc.Parameters params) =>
+      _access(HarnessMethods.configHistoryChangesByAction, () async {
+        final byAction = await api.configHistory.changesByAction([
+          for (final id in params['actionIds'].asList) id as String,
+        ]);
+        return <String, Object?>{
+          for (final entry in byAction.entries)
+            entry.key: [for (final row in entry.value) row.toJson()],
+        };
+      });
+
+  Future<Object?> _cfgHistoryCounts(rpc.Parameters params) =>
+      _access(HarnessMethods.configHistoryCountsByAction, () async =>
+          api.configHistory.changeCountsByAction([
+            for (final id in params['actionIds'].asList) id as String,
+          ]));
 
   /// One subscription, however many clients are listening on the far side.
   ///

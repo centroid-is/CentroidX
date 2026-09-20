@@ -717,6 +717,11 @@ final class PolicyStateMan implements StateManApi, TypeDescriptions {
   ConfigItemsApi get configItems =>
       _PolicyConfigItems(() => source.configItems, identityOf, _ledger);
 
+  @override
+  ConfigHistoryApi get configHistory => _PolicyConfigHistory(
+      () => source.configHistory, identityOf, _ledger,
+      groupFor: master.groupForConfigHistory);
+
   /// Delegates, and owns nothing of its own to release.
   ///
   /// The source is **one instance shared by every session** on this gateway
@@ -2069,6 +2074,16 @@ final class _PolicyAudit with _GroupGate implements AuditApi {
   }
 
   @override
+  Future<List<AuditRecord>> entriesByAction(List<String> actionIds) {
+    _requireGroup(
+        _groupFor('entriesByAction'),
+        AccessMethods.auditEntriesByAction,
+        'no action headers were read',
+        itemKey: 'entriesByAction');
+    return _source().entriesByAction(actionIds);
+  }
+
+  @override
   Future<List<String>> distinctWho() {
     _requireGroup(_groupFor('distinctWho'), AccessMethods.auditDistinctWho,
         'no names were read',
@@ -2132,6 +2147,71 @@ final class _PolicyConfigItems with _GroupGate implements ConfigItemsApi {
   Future<ConfigItemsFingerprint> fingerprint(List<String> kinds) {
     _requireRead(AccessMethods.configItemsFingerprint, 'no rows were counted');
     return _source().fingerprint(kinds);
+  }
+}
+
+/// `config_change` behind the policy.
+///
+/// Graded through the decorator and never at the call site, so the gate is
+/// the same object every other family's is and a new handler cannot forget
+/// to ask. `groupForConfigHistory` answers `configure` — the group
+/// `kRaisedRoutes[kConfigHistoryRoute]` already demands — so a relayed panel
+/// and a station cannot disagree about who may read the log.
+///
+/// **Three reads and no write.** There is nothing here to record an allow row
+/// for: a guard that wrote a row every time somebody read the history would
+/// bury the log in reads of itself, which is the defect the audit store
+/// documents at length. Refusals still leave their deny row, because a
+/// refusal that leaves no trace is the one kind of guard nobody can audit.
+final class _PolicyConfigHistory with _GroupGate implements ConfigHistoryApi {
+  const _PolicyConfigHistory(this._source, this.identityOf, this.ledger,
+      {required AccessGroup Function(String member) groupFor})
+      : _groupFor = groupFor;
+
+  final ConfigHistoryApi Function() _source;
+
+  @override
+  final StationIdentity? Function() identityOf;
+
+  @override
+  final _DecisionLedger ledger;
+
+  /// The rows are the shared configuration, which is the `pref` surface's
+  /// domain — the same answer `_PolicyConfigItems` gives, and for the same
+  /// reason: a surface of its own would be a second name for one thing.
+  @override
+  String get gateSurface => AccessSurface.pref.wireName;
+
+  final AccessGroup Function(String member) _groupFor;
+
+  @override
+  Future<ConfigHistoryPageResult> changesPage(
+      ConfigHistoryQueryParams query) {
+    _requireGroup(_groupFor('changesPage'),
+        AccessMethods.configHistoryChangesPage, 'no history rows were read',
+        itemKey: 'changesPage');
+    return _source().changesPage(query);
+  }
+
+  @override
+  Future<Map<String, List<ConfigHistoryRow>>> changesByAction(
+      List<String> actionIds) {
+    _requireGroup(
+        _groupFor('changesByAction'),
+        AccessMethods.configHistoryChangesByAction,
+        'no history rows were read',
+        itemKey: 'changesByAction');
+    return _source().changesByAction(actionIds);
+  }
+
+  @override
+  Future<Map<String, int>> changeCountsByAction(List<String> actionIds) {
+    _requireGroup(
+        _groupFor('changeCountsByAction'),
+        AccessMethods.configHistoryCountsByAction,
+        'no counts were read',
+        itemKey: 'changeCountsByAction');
+    return _source().changeCountsByAction(actionIds);
   }
 }
 

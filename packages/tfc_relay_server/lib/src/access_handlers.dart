@@ -318,6 +318,13 @@ final class AccessHandlers {
   Future<Object?> auditDistinctWho(rpc.Parameters _) =>
       source.audit.distinctWho();
 
+  Future<Object?> auditEntriesByAction(rpc.Parameters params) async => [
+        for (final row in await source.audit.entriesByAction([
+          for (final id in params['actionIds'].asList) id as String,
+        ]))
+          auditRecordToJson(row),
+      ];
+
   // ----------------------------------------------------- config (five names)
 
   Future<Object?> configRead(rpc.Parameters _) async =>
@@ -353,4 +360,29 @@ final class AccessHandlers {
       (await source.configItems.fingerprint(
               params['kinds'].asList.cast<String>()))
           .toJson();
+
+  // ----------------------------------------------------- config history
+
+  Future<Object?> configHistoryChangesPage(rpc.Parameters params) async =>
+      (await source.configHistory.changesPage(ConfigHistoryQueryParams.fromJson(
+              params['query'].asMap.cast<String, Object?>())))
+          .toJson();
+
+  /// The map is serialised as a map, which is what it is: an action nobody
+  /// wrote is **absent** rather than present with an empty list, and a list of
+  /// pairs would invite a reader to fill the gaps in.
+  Future<Object?> configHistoryChangesByAction(rpc.Parameters params) async {
+    final byAction = await source.configHistory.changesByAction([
+      for (final id in params['actionIds'].asList) id as String,
+    ]);
+    return <String, Object?>{
+      for (final entry in byAction.entries)
+        entry.key: [for (final row in entry.value) row.toJson()],
+    };
+  }
+
+  Future<Object?> configHistoryCountsByAction(rpc.Parameters params) =>
+      source.configHistory.changeCountsByAction([
+        for (final id in params['actionIds'].asList) id as String,
+      ]);
 }

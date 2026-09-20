@@ -379,6 +379,7 @@ abstract final class AccessMethods {
   static const auditEntries = 'audit.entries';
   static const auditMemberCountsByAction = 'audit.memberCountsByAction';
   static const auditDistinctWho = 'audit.distinctWho';
+  static const auditEntriesByAction = 'audit.entriesByAction';
 
   /// Every `AuditApi` method, as data — three reads, and there is no fourth.
   ///
@@ -390,6 +391,7 @@ abstract final class AccessMethods {
     auditEntries,
     auditMemberCountsByAction,
     auditDistinctWho,
+    auditEntriesByAction,
   };
 
   static const configRead = 'backendConfig.read';
@@ -424,12 +426,32 @@ abstract final class AccessMethods {
     configItemsFingerprint,
   };
 
-  /// Every access **request** name: thirty — twenty-eight, and the whole wire surface
+  /// The sixth family: `config_change`, the log of who changed which piece of
+  /// configuration and when — `config_history_api.dart`.
+  ///
+  /// Three reads and **no write**. The log is written by whoever changed the
+  /// configuration, through `ConfigStore`; a client-supplied history row would
+  /// be the same forgery surface the audit family refuses a write member for.
+  static const configHistoryChangesPage = 'configHistory.changesPage';
+  static const configHistoryChangesByAction =
+      'configHistory.changesByAction';
+  static const configHistoryCountsByAction =
+      'configHistory.changeCountsByAction';
+
+  static const configHistoryMethods = <String>{
+    configHistoryChangesPage,
+    configHistoryChangesByAction,
+    configHistoryCountsByAction,
+  };
+
+  /// Every access **request** name. Thirty-three: twenty-eight, and the whole wire surface
   /// Phase 17 adds to the gateway. (Twenty-nine originally; the access audit
   /// cut `accessTemplates.template` — no caller anywhere, including its own
   /// store; remote implementations derive it from `list()`.)
   ///
-  /// Plus the two `configItems.*` reads the browser build added.
+  /// Plus the two `configItems.*` reads the browser build added, and the
+  /// three `configHistory.*` reads that took the configuration history off
+  /// `databaseProvider` — which a relayed panel answers null.
   ///
   /// Spelled from the five sets above rather than as a second copy of the
   /// strings, so a name can only be in one place.
@@ -439,6 +461,7 @@ abstract final class AccessMethods {
     ...auditMethods,
     ...configMethods,
     ...configItemsMethods,
+    ...configHistoryMethods,
   };
 }
 

@@ -64,6 +64,7 @@ library;
 
 import 'access_api.dart';
 import 'browse.dart';
+import 'config_history_api.dart';
 import 'config_items_api.dart';
 import 'dynamic_value.dart';
 import 'history_view.dart';
@@ -285,6 +286,15 @@ abstract interface class StateManApi {
   /// signed in on; see [ConfigItemsApi] for the size bound and why
   /// freshness rides `preferences.changed`.
   ConfigItemsApi get configItems;
+
+  /// Reads of `config_change` — who changed which piece of configuration,
+  /// when, and what it was before.
+  ///
+  /// Read-only by construction, for [AuditApi]'s reason: the log is written
+  /// by whoever changed the configuration, and a client-supplied row would be
+  /// a forgery surface. Graded `configure`, the group the page already
+  /// demands, so the two transports cannot disagree about who may read it.
+  ConfigHistoryApi get configHistory;
 
   /// Releases the subscription, the store and the transport.
   ///

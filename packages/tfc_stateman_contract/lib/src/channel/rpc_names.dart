@@ -464,11 +464,14 @@ abstract final class HarnessMethods {
   static const auditEntries = '${prefix}access.audit.entries';
   static const auditMemberCounts = '${prefix}access.audit.memberCountsByAction';
   static const auditDistinctWho = '${prefix}access.audit.distinctWho';
+  static const auditEntriesByAction =
+      '${prefix}access.audit.entriesByAction';
 
   static const auditMethods = <String>{
     auditEntries,
     auditMemberCounts,
     auditDistinctWho,
+    auditEntriesByAction,
   };
 
   // backend config
@@ -490,6 +493,18 @@ abstract final class HarnessMethods {
   static const configItemsItems = '${prefix}access.configItems.items';
   static const configItemsFingerprint =
       '${prefix}access.configItems.fingerprint';
+  static const configHistoryChangesPage =
+      '${prefix}access.configHistory.changesPage';
+  static const configHistoryChangesByAction =
+      '${prefix}access.configHistory.changesByAction';
+  static const configHistoryCountsByAction =
+      '${prefix}access.configHistory.changeCountsByAction';
+  static const configHistoryMethods = <String>{
+    configHistoryChangesPage,
+    configHistoryChangesByAction,
+    configHistoryCountsByAction,
+  };
+
   static const configItemsMethods = <String>{
     configItemsItems,
     configItemsFingerprint,
@@ -502,6 +517,7 @@ abstract final class HarnessMethods {
     ...auditMethods,
     ...configMethods,
     ...configItemsMethods,
+    ...configHistoryMethods,
   };
 
   // There is deliberately no name here for `upstreamWriteAttempts` or

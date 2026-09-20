@@ -1402,6 +1402,7 @@ final class RelaySession {
     _on(AccessMethods.auditMemberCountsByAction,
         access.auditMemberCountsByAction);
     _on(AccessMethods.auditDistinctWho, access.auditDistinctWho);
+    _on(AccessMethods.auditEntriesByAction, access.auditEntriesByAction);
     _on(AccessMethods.configRead, access.configRead);
     _on(AccessMethods.configValidate, access.configValidate);
     _on(AccessMethods.configWrite, access.configWrite);
@@ -1409,6 +1410,12 @@ final class RelaySession {
     _on(AccessMethods.configRestorePrevious, access.configRestorePrevious);
     _on(AccessMethods.configItemsItems, access.configItemsItems);
     _on(AccessMethods.configItemsFingerprint, access.configItemsFingerprint);
+    _on(AccessMethods.configHistoryChangesPage,
+        access.configHistoryChangesPage);
+    _on(AccessMethods.configHistoryChangesByAction,
+        access.configHistoryChangesByAction);
+    _on(AccessMethods.configHistoryCountsByAction,
+        access.configHistoryCountsByAction);
   }
 
   /// The client's end vanished — a graceful close, a reset, a yanked cable.
@@ -2297,6 +2304,9 @@ final class _IdentityScopedSource implements StateManApi, TypeDescriptions {
   // so it has no per-identity slot; the session gate is the policy layer's.
   @override
   ConfigItemsApi get configItems => _inner.configItems;
+
+  @override
+  ConfigHistoryApi get configHistory => _inner.configHistory;
 
   @override
   ValueListenable<DynamicValue> listen(String key) => _inner.listen(key);

@@ -566,6 +566,10 @@ final class ChannelStateMan
   @override
   late final ConfigItemsApi configItems = ChannelConfigItemsApi(_request);
 
+  @override
+  late final ConfigHistoryApi configHistory =
+      ChannelConfigHistoryApi(_request);
+
   // ------------------------------------------------ the access control lever
   //
   // The session lever, the recording readout and the stored-password probe are

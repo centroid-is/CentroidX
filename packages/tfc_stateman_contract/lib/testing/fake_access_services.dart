@@ -102,7 +102,8 @@ class FakeAccessServices
         AccessAdminApi,
         AuditApi,
         BackendConfigApi,
-        ConfigItemsApi {
+        ConfigItemsApi,
+        ConfigHistoryApi {
   FakeAccessServices({
     AccessSession? session,
     String backendConfigJson = _defaultConfigJson,
@@ -637,6 +638,19 @@ class FakeAccessServices
     return {for (final row in _audit) row.who}.toList()..sort();
   }
 
+  /// The action headers, newest first. An action nobody wrote contributes
+  /// nothing rather than an empty entry — this member answers a flat list, so
+  /// the absence is simply the absence.
+  @override
+  Future<List<AuditRecord>> entriesByAction(List<String> actionIds) async {
+    requireRead('audit', 'entriesByAction', floor: AccessGroup.users);
+    final wanted = actionIds.toSet();
+    return [
+      for (final row in _audit)
+        if (wanted.contains(row.actionId)) row,
+    ]..sort((a, b) => b.at.compareTo(a.at));
+  }
+
   // ============================================================ backend config
 
   @override
@@ -689,6 +703,76 @@ class FakeAccessServices
       throw ArgumentError.value(kind, 'kind', 'not a configuration kind');
     }
     return [for (final r in configItems) if (r.kind == kind) r];
+  }
+
+  // ------------------------------------------------ the configuration history
+  //
+  /// Rows a case can seed, newest first — the order the wire promises.
+  final List<ConfigHistoryRow> configHistoryRows = <ConfigHistoryRow>[];
+
+  /// Gated at `configure`, the group `groupForConfigHistory` answers and the
+  /// one `kRaisedRoutes[kConfigHistoryRoute]` demands. The fake grades it
+  /// itself so a contract case can drive the refusal without a policy
+  /// decorator in the way.
+  @override
+  Future<ConfigHistoryPageResult> changesPage(
+      ConfigHistoryQueryParams query) async {
+    requireGroup(AccessGroup.configure, 'changesPage',
+        AccessMethods.configHistoryChangesPage);
+    final rows = <ConfigHistoryRow>[
+      for (final row in configHistoryRows)
+        if (query.entityPrefix.isEmpty ||
+            row.entityId.startsWith(query.entityPrefix))
+          if (query.who == null || row.who == query.who)
+            if (query.kindWireNames.isEmpty ||
+                query.kindWireNames.contains(row.kind))
+              if (query.scopeWireNames.isEmpty ||
+                  query.scopeWireNames.contains(row.scope))
+                if (query.startMs == null ||
+                    (row.atMs >= query.startMs! && row.atMs <= query.endMs!))
+                  row,
+    ];
+    final capped = rows.take(query.limit).toList(growable: false);
+    return ConfigHistoryPageResult(
+      rows: capped,
+      rawCount: capped.length,
+      oldestAtMs: capped.isEmpty ? null : capped.last.atMs,
+      oldestId: capped.isEmpty ? null : capped.last.id,
+      hasMore: rows.length > capped.length,
+    );
+  }
+
+  /// An action nobody wrote stays **absent**, which is the whole of what a
+  /// contract case about this member has to pin: an empty list would say the
+  /// action changed nothing.
+  @override
+  Future<Map<String, List<ConfigHistoryRow>>> changesByAction(
+      List<String> actionIds) async {
+    requireGroup(AccessGroup.configure, 'changesByAction',
+        AccessMethods.configHistoryChangesByAction);
+    final wanted = actionIds.toSet();
+    final out = <String, List<ConfigHistoryRow>>{};
+    for (final row in configHistoryRows) {
+      if (!wanted.contains(row.actionId)) continue;
+      (out[row.actionId] ??= <ConfigHistoryRow>[]).add(row);
+    }
+    for (final rows in out.values) {
+      rows.sort((a, b) => a.id.compareTo(b.id));
+    }
+    return out;
+  }
+
+  @override
+  Future<Map<String, int>> changeCountsByAction(List<String> actionIds) async {
+    requireGroup(AccessGroup.configure, 'changeCountsByAction',
+        AccessMethods.configHistoryCountsByAction);
+    final wanted = actionIds.toSet();
+    final counts = <String, int>{};
+    for (final row in configHistoryRows) {
+      if (!wanted.contains(row.actionId)) continue;
+      counts[row.actionId] = (counts[row.actionId] ?? 0) + 1;
+    }
+    return counts;
   }
 
   @override
