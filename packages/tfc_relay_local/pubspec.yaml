@@ -158,3 +158,10 @@ dev_dependencies:
   # DeviceClients. It binds ports and pulls package:test into whatever solve
   # names it, so dev-only is not negotiable.
   tfc_stateman_contract: {path: ../tfc_stateman_contract}
+  # The fake plant, for the adversarial end-to-end bench and nothing else.
+  # **Dev-only, deliberately**: it stands up open62541 *servers*, and a gateway
+  # that carried a PLC simulator into a plant build would be shipping a second
+  # thing that can bind port 4840 on the same box as the PLC it is pretending
+  # to be. The bench needs it because the one question a FakeStateMan cannot
+  # answer is how many times a machine actually moved.
+  tfc_plant_sim: {path: ../tfc_plant_sim}
