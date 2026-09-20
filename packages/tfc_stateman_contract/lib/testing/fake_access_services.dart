@@ -708,7 +708,40 @@ class FakeAccessServices
   // ------------------------------------------------ the configuration history
   //
   /// Rows a case can seed, newest first — the order the wire promises.
-  final List<ConfigHistoryRow> configHistoryRows = <ConfigHistoryRow>[];
+  final List<ConfigHistoryRow> configHistoryRows = <ConfigHistoryRow>[
+    // Two rows of ONE action, newest first. One action with more than one row
+    // is the case the contract has to carry: it is what `changesByAction`
+    // answers, what `changeCountsByAction` counts, and — on a real store —
+    // what makes the `(at, id)` cursor's equality half load-bearing, because
+    // one `writeItems` stamps every row of an action with one `at`.
+    ConfigHistoryRow(
+      id: 2,
+      atMs: 1700000000000,
+      actionId: 'act-1',
+      who: 'eng',
+      station: 'ST101',
+      roleName: 'Engineering',
+      kind: 'page',
+      entityId: '/line-2',
+      scope: 'shared',
+      op: 'update',
+      oldValue: '{"label":"Line 2"}',
+      newValue: '{"label":"Line two"}',
+    ),
+    ConfigHistoryRow(
+      id: 1,
+      atMs: 1700000000000,
+      actionId: 'act-1',
+      who: 'eng',
+      station: 'ST101',
+      roleName: 'Engineering',
+      kind: 'asset',
+      entityId: '/line-2#conveyor',
+      scope: 'shared',
+      op: 'insert',
+      newValue: '{"type":"conveyor"}',
+    ),
+  ];
 
   /// Gated at `configure`, the group `groupForConfigHistory` answers and the
   /// one `kRaisedRoutes[kConfigHistoryRoute]` demands. The fake grades it
@@ -736,7 +769,9 @@ class FakeAccessServices
     return ConfigHistoryPageResult(
       rows: capped,
       rawCount: capped.length,
-      oldestAtMs: capped.isEmpty ? null : capped.last.atMs,
+      // Microseconds, matching the wire: the cursor comes straight back and
+      // the store's `(at, id)` equality half cannot match a rounded instant.
+      oldestAtUs: capped.isEmpty ? null : capped.last.atMs * 1000,
       oldestId: capped.isEmpty ? null : capped.last.id,
       hasMore: rows.length > capped.length,
     );

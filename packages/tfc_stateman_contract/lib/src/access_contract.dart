@@ -807,6 +807,61 @@ Future<void> checkConfigItemsListRefusesWithoutOperatePermitsWithIt(
       reason: 'parentId crosses the wire, or a page cannot find its assets');
 }
 
+/// `config_change` over the wire: graded `configure`, and **an action nobody
+/// wrote stays absent**.
+///
+/// The absence is the half worth a contract. An implementation that filled
+/// the gap with an empty list would turn "there is no such action" into "that
+/// action changed nothing" — a claim about an action rather than the lack of
+/// one — and every hop between the store and the panel has to preserve it:
+/// the backend, the handler's map, the client proxy and the relayed store.
+/// One implementation answering correctly says nothing about the other, which
+/// is what this suite exists to catch.
+Future<void> checkConfigHistoryRefusesWithoutConfigureAndKeepsAbsentActionsAbsent(
+    StateManApi api) async {
+  final h = accessHarnessOf(api);
+  h.actAs(operateSession);
+  final refusal = await within(
+      _thrown(() => api.configHistory.changesPage(
+          const ConfigHistoryQueryParams())),
+      'reading the configuration history');
+  expect(refusal, isA<AccessDenied>(),
+      reason: 'configHistory is graded configure — the group the history '
+          'route already demands — and an operate session read who changed '
+          'the plant anyway ($refusal)');
+
+  h.actAs(configureSession);
+  final page = await within(
+      api.configHistory.changesPage(const ConfigHistoryQueryParams()),
+      'reading the configuration history');
+  expect(page.rows, isNotEmpty, reason: 'the fake seeds one action of two');
+  expect(page.rawCount, page.rows.length,
+      reason: 'rawCount is the RAW read, which the page judges "reached the '
+          'cap" and its cursor by; a decoded count here would hide the '
+          'Load-more control behind one unreadable row');
+
+  final byAction = await within(
+      api.configHistory.changesByAction(['act-1', 'no-such-action']),
+      'joining an action');
+  expect(byAction['act-1'], hasLength(2),
+      reason: 'one writeItems is one action with many rows');
+  expect(byAction['act-1']!.map((r) => r.id), [1, 2],
+      reason: 'ascending by id WITHIN an action — the order an undo has to '
+          'reverse, and the opposite of the newest-first the actions '
+          'themselves are in');
+  expect(byAction.containsKey('no-such-action'), isFalse,
+      reason: 'an action nobody wrote is ABSENT, not present with an empty '
+          'list');
+
+  final counts = await within(
+      api.configHistory.changeCountsByAction(['act-1', 'no-such-action']),
+      'counting an action');
+  expect(counts['act-1'], 2,
+      reason: 'the unfiltered total the "N of M hidden by filters" line is '
+          'built from');
+  expect(counts.containsKey('no-such-action'), isFalse);
+}
+
 /// The fingerprint is graded exactly as the list is, and it counts what the
 /// lists it stands for would return.
 Future<void> checkConfigItemsFingerprintFollowsListGatingAndCounts(
@@ -1046,6 +1101,10 @@ const accessChecks = <String, Check<StateManApi>>{
   'the config-item fingerprint follows list\'s gating and counts what list '
           'returns':
       checkConfigItemsFingerprintFollowsListGatingAndCounts,
+  // configuration history
+  'configuration history reads refuse a session holding operate and permit '
+          'configure, and an action nobody wrote stays absent':
+      checkConfigHistoryRefusesWithoutConfigureAndKeepsAbsentActionsAbsent,
 };
 
 /// Registers the access contract against implementations from [make].

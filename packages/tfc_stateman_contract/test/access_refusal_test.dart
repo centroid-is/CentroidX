@@ -41,6 +41,7 @@ const accessFamilies = <String>[
   'audit',
   'backendConfig',
   'configItems',
+  'configHistory',
 ];
 
 /// Every public member `StateManApi` declares, inherited members included.
@@ -102,6 +103,7 @@ void main() {
           'audit' => 'audit',
           'backendConfig' => 'config',
           'configItems' => 'config item',
+          'configHistory' => 'configuration history',
           _ => family,
         };
         expect(judged, contains(surface),

@@ -101,6 +101,7 @@ const Set<String> expectedStateManApi = {
   'audit',
   'backendConfig',
   'configItems',
+  'configHistory',
   'dispose',
 };
 
@@ -246,6 +247,19 @@ const Set<String> expectedAuditApi = {
   'entries',
   'memberCountsByAction',
   'distinctWho',
+  // The action headers the configuration-history page joins its change rows
+  // to. Without it a relayed panel read EVERY action as parentless, including
+  // the ones whose header the backend was holding.
+  'entriesByAction',
+};
+
+/// `config_change` — three reads and no write, for [AuditApi]'s reason: the
+/// log is written by whoever changed the configuration, and a client-supplied
+/// row would be a forgery surface.
+const Set<String> expectedConfigHistoryApi = {
+  'changesPage',
+  'changesByAction',
+  'changeCountsByAction',
 };
 
 /// The five backend-configuration members (ACCESS-04).
@@ -280,6 +294,7 @@ const Map<String, Set<String>> wireSurface = {
   'AccessTemplateApi': expectedAccessTemplateApi,
   'AccessAdminApi': expectedAccessAdminApi,
   'AuditApi': expectedAuditApi,
+  'ConfigHistoryApi': expectedConfigHistoryApi,
   'BackendConfigApi': expectedBackendConfigApi,
   'ConfigItemsApi': expectedConfigItemsApi,
 };
@@ -294,6 +309,7 @@ const List<Type> wireTypes = [
   AccessTemplateApi,
   AccessAdminApi,
   AuditApi,
+  ConfigHistoryApi,
   BackendConfigApi,
   ConfigItemsApi,
 ];
@@ -362,7 +378,7 @@ void main() {
       });
     }
 
-    test('the whole surface is 87 members over ten types, 85 distinct names',
+    test('the whole surface is 94 members over eleven types, 92 distinct names',
         () {
       final actual = <String>{
         for (final type in wireTypes) ...declaredMemberNames(type),
@@ -385,7 +401,10 @@ void main() {
       // .setUserPages — a widening this guard is supposed to catch, and did.
       // 84 since the second merge from main brought multi-role accounts and
       // per-account inactivity timeouts, adding .setUserRoles and
-      // .setUserInactivityTimeout beside them. 87 over TEN types since the
+      // .setUserInactivityTimeout beside them. 94 over ELEVEN types since
+      // `configHistory` — three reads of `config_change` plus the
+      // `audit.entriesByAction` that gives its actions their headers.
+      // Previously 87 over TEN types since the
       // relational config replaced the configuration blobs: ConfigItemsApi is
       // a tenth wire type with `items` and `fingerprint` on it, hanging off a
       // tenth StateManApi getter. Three members, and the widening is the
@@ -396,7 +415,7 @@ void main() {
       final total = wireTypes
           .map((type) => declaredMemberNames(type).length)
           .fold<int>(0, (sum, length) => sum + length);
-      expect(total, 89,
+      expect(total, 94,
           reason: 'the count is written down so a same-size swap — one member '
               'removed, another added — cannot slip through as a coincidence. '
               '82 = 49 before Phase 17, plus four StateManApi getters, plus '
@@ -413,10 +432,10 @@ void main() {
       // happen to share a verb, kept apart on the wire by the
       // `backendConfig.` family segment. Asserting both numbers is what stops
       // a future collision from being absorbed silently by the set.
-      expect(actual, hasLength(87),
+      expect(actual, hasLength(92),
           reason: 'exactly two names appear on two types — read and write, on '
               'StateManApi and BackendConfigApi. A third collision would drop '
-              'this to 86 while the per-type tables above still passed, so it '
+              'this to 91 while the per-type tables above still passed, so it '
               'is counted here on purpose');
       expect(
           expectedStateManApi
@@ -425,7 +444,7 @@ void main() {
             ..sort(),
           ['read', 'write'],
           reason: 'and the two are named, not merely counted — a different '
-              'pair of colliding names would keep the length at 87 and mean '
+              'pair of colliding names would keep the length at 92 and mean '
               'something entirely different');
     });
   });
