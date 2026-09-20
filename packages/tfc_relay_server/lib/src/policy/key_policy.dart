@@ -62,12 +62,21 @@
 /// be standing. CONTEXT asks what happens to the `u` and resync frames of a
 /// live subscription whose key becomes hidden. **In Phase 6 that state is
 /// unreachable**, and it is unreachable structurally rather than by luck:
-/// policy is static per session (the [StationIdentity] is minted once, in
-/// `_hello`, and `relay_session.dart` assigns it with `??=` so it cannot be
-/// replaced),
-/// and the only thing that changes a live session's authorization is
-/// revocation — which does not re-evaluate anything, it closes the session
-/// with `CloseCodes.authExpired`. There is no live re-evaluation path, and the
+/// the group set a session is graded by does not move between a hello, a
+/// sign-in, a sign-out and a close, and the only thing that changes a live
+/// session's authorization is revocation — which does not re-evaluate
+/// anything, it closes the session with `CloseCodes.authExpired`.
+///
+/// **That sentence used to say the [StationIdentity] "is minted once, in
+/// `_hello`, and assigned with `??=` so it cannot be replaced".** It is
+/// replaced twice — `relay_session.dart`'s `session.login` and
+/// `session.logout` each build a new identity and rebuild the scoped families
+/// beside it — so the `??=` was guarding the hello race, not immutability for
+/// the life of the socket. The property the paragraph below actually depends
+/// on is the one now stated: nothing re-grades a session *in place*, so no
+/// live subscription outlives the grant that admitted it. Both replacements
+/// are client-initiated and both clear the subscriptions, which is why
+/// neither opens the case this section is about. There is no live re-evaluation path, and the
 /// push machinery has no arm for one: `TickEngine` fans out from
 /// `SubscriptionState.watch` listeners attached at subscribe time and never
 /// re-consults a key list.

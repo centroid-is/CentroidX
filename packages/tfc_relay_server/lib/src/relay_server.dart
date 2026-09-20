@@ -809,8 +809,17 @@ final class RelayServer {
       // is the belt to this brace).
       // 17-07 spillover, mechanical only: `stationId` became `station` when
       // 17-04b replaced `Identity` with `StationIdentity` (see relay_session).
-      unawaited(session.close(CloseCodes.authExpired,
-          'credential revoked for station ${identity.station}'));
+      // **Two reasons, because there are two causes.** A session nobody has
+      // signed in on has no credential to revoke and no station to name —
+      // `identity.station` reads `no-station-signed-in` — so the station
+      // sentence was wrong twice for it. What retired it is an edit to what
+      // the plant grants an anonymous session, and that is what a log reader
+      // needs to see.
+      unawaited(session.close(
+          CloseCodes.authExpired,
+          identity.isAnonymous
+              ? 'anonymous grants changed'
+              : 'credential revoked for station ${identity.station}'));
     }
   }
 

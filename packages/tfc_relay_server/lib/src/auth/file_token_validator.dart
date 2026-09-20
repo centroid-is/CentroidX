@@ -337,7 +337,7 @@ final class FileTokenValidator implements RevocableTokenValidator {
     // removed, or any other edit to who this is. A hello made now would mint
     // a different identity, so the one being carried is stale.
     if (resolved.user != identity.user) return false;
-    return _sameGroups(resolved.groups, identity.session.groups);
+    return sameGroups(resolved.groups, identity.session.groups);
   }
 
   @override
@@ -672,10 +672,14 @@ final class _TokenRow {
 
 /// Whether two group sets hold the same members.
 ///
+/// Public because the anonymous sweep asks the same question of the same
+/// vocabulary; a second four-line copy is how the two sweeps start disagreeing
+/// about what "the groups changed" means.
+///
 /// Hand-written rather than `package:collection`'s `SetEquality` so this
 /// package's dependency list does not grow a direct edge for four lines. The
 /// sets are at most seven elements.
-bool _sameGroups(Set<AccessGroup> a, Set<AccessGroup> b) =>
+bool sameGroups(Set<AccessGroup> a, Set<AccessGroup> b) =>
     a.length == b.length && a.every(b.contains);
 
 /// Whether two fixed-length buffers are equal, in time that does not depend on

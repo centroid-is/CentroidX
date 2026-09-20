@@ -381,6 +381,93 @@ void main() {
               'close every idle station once per poll tick');
     });
 
+    test('a NARROWED anonymous row retires the session with 4001', () async {
+      // The arm above is the control: an UNCHANGED row never closes anything,
+      // so a sign-in screen is never reaped for being a sign-in screen. This
+      // is the other half, and it is what the unconditional `return true`
+      // withheld.
+      //
+      // The comment that defended the freeze claimed it was "the same posture
+      // a station session has". It was the opposite: a station demoted in the
+      // database is retired within one poll (the arm below), and so is a
+      // signed-in person. Only anonymous was frozen, so a site that pulled
+      // `operate` from the anonymous row to stop a walk-up panel being misused
+      // kept every connected socket writing until the link happened to drop —
+      // while direct mode narrowed the panel in place.
+      var grants = const {AccessGroup.operate};
+      final fixture = relayFixture(
+          validator: SessionLoginValidator(anonymous: () => grants));
+      await fixture.ready;
+      await fixture.hello();
+
+      grants = const <AccessGroup>{};
+      expect(await fixture.server.reloadTokensIfChanged(), isFalse,
+          reason: 'no token file is involved; the edit is the database\'s');
+
+      final close =
+          await fixture.awaitClose('the narrowed anonymous session\'s close');
+      expect(close.closeCode, CloseCodes.authExpired);
+      expect(close.closeReason, contains('anonymous'),
+          reason: 'the station sentence was wrong twice for this session: it '
+              'has no credential to revoke and no station to name. A log '
+              'reader needs to know an anonymous grant changed');
+    });
+
+    test('a WIDENED anonymous row retires it too, and the decision is stated',
+        () async {
+      // `sameGroups` decides this either way, so it is pinned rather than left
+      // to be discovered. A walk-up display granted `operate` mid-shift is
+      // retired and picks the grant up on its next hello — one blink, and the
+      // alternative is a panel that stays refused until somebody notices.
+      var grants = const <AccessGroup>{};
+      final fixture = relayFixture(
+          validator: SessionLoginValidator(anonymous: () => grants));
+      await fixture.ready;
+      await fixture.hello();
+
+      grants = const {AccessGroup.operate};
+      await fixture.server.reloadTokensIfChanged();
+
+      final close =
+          await fixture.awaitClose('the widened anonymous session\'s close');
+      expect(close.closeCode, CloseCodes.authExpired);
+    });
+
+    test('a blinking database does not retire anybody', () async {
+      // The asymmetry `stillValid` refuses everywhere else: a source that
+      // cannot answer must not read as "revoked".
+      //
+      // This is modelled the way it actually happens rather than by an
+      // invented null. The seam is `Set<AccessGroup> Function()` — it cannot
+      // answer "I do not know" — because the backend's account cache keeps
+      // its PREVIOUS snapshot when a refresh fails
+      // (`backend_composition.dart`'s `_AccountCache.refresh`, and the same
+      // rule in `_TagBindingCache`). So a blink presents as the seam
+      // answering what it answered before, and the sets compare equal.
+      //
+      // The arm therefore sweeps repeatedly against an unchanged answer,
+      // which is exactly what a gateway does while its database is down.
+      var answers = 0;
+      final fixture = relayFixture(
+          validator: SessionLoginValidator(anonymous: () {
+        answers++;
+        return const {AccessGroup.operate};
+      }));
+      await fixture.ready;
+      await fixture.hello();
+      await fixture.server.reloadTokens();
+      await fixture.server.reloadTokens();
+      await fixture.request(Methods.ping,
+          what: 'a ping after two sweeps against an unchanged snapshot');
+
+      expect(answers, greaterThan(0),
+          reason: 'the sweep must actually be asking; an arm that passed '
+              'because nothing consulted the seam would prove nothing');
+      expect(fixture.observedClose.closeCode, isNull,
+          reason: 'a database blink must not close every walk-up panel on '
+              'the plant');
+    });
+
     test('a station demoted in the database is still retired with 4001 — the '
         'change must not cost the revocation property', () async {
       final users = _seedUsers();

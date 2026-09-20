@@ -47,11 +47,14 @@
 /// refused with a message naming sign-in as the replacement. That is D-06's
 /// own migration manner: refuse and name the replacement, never translate.
 ///
-/// **What the sweep does with nobody.** [stillValid] answers true for an
-/// anonymous identity, always: there is no credential and no account row
-/// behind it, so there is nothing to revoke, and the sweep visits every live
-/// session on every poll tick. Everything else stays fail-closed — an identity
-/// this validator cannot account for is not honoured.
+/// **What the sweep does with nobody.** [stillValid] re-reads what the plant
+/// grants an anonymous session and retires the session when that has changed —
+/// the same comparison a station and a signed-in person already get, rather
+/// than the unconditional `true` this carried until the parallel it claimed
+/// was checked and found false. An unchanged row keeps the session, so a
+/// sign-in screen is never closed for being a sign-in screen. Everything else
+/// stays fail-closed — an identity this validator cannot account for is not
+/// honoured.
 ///
 /// Like `file_token_validator.dart`, every string literal in this file is
 /// written around the seven `AccessGroup` names and the two seed role names:
@@ -183,19 +186,48 @@ final class SessionLoginValidator implements RevocableTokenValidator {
   @override
   bool stillValid(StationIdentity identity, Uint8List? credentialDigest) {
     if (identity.isAnonymous) {
-      // Nobody signed in; there is no credential and no account row behind
-      // this session, so there is nothing a sweep could revoke. Closing the
-      // sign-in screen once per poll tick would make the gateway unusable
-      // before anyone could sign in.
+      // **Retired when the row CHANGES, never merely for being anonymous.**
       //
-      // **What this does NOT do is re-resolve the group set.** An operator
-      // who unticks a group on the `Operator` row changes what the NEXT
-      // anonymous hello holds, not what a live one does — `key_policy.dart`
-      // records policy as static per session, and the only thing that moves
-      // a live session is a close. That is the same posture a station
-      // session has, and it is stated here rather than discovered: a site
-      // narrowing anonymous mid-shift has to bounce the panels.
-      return true;
+      // This used to `return true` unconditionally, and the comment defending
+      // it said that was "the same posture a station session has". It is the
+      // opposite of what the two arms below and `file_token_validator.dart`
+      // do: both re-resolve on every tick, compare the whole row and the
+      // group set, and answer false on any change so the sweep closes the
+      // session with 4001. Only anonymous was frozen, and the parallel that
+      // justified it did not exist.
+      //
+      // Freezing also put the wire at odds with the panel. Direct mode
+      // re-grades a sitting anonymous session in place
+      // (`lib/providers/access.dart`'s `refreshGroupsFromRoles`, the
+      // `!session.isElevated` arm), so a site that pulled `operate` from the
+      // anonymous row to stop a walk-up panel being misused saw the panels
+      // narrow and every socket keep writing. The 2026-09-16 rule is that
+      // both transports answer the same question the same way.
+      //
+      // **A close and not a re-grade**, which is `key_policy.dart`'s own
+      // mechanism: authorization is static per session precisely because
+      // nothing re-consults the policy mid-stream — `TickEngine` fans out
+      // from listeners attached at subscribe time, and the read floor is
+      // asked at subscribe. Swapping the group set under a live session
+      // would leave subscriptions admitted under `operate` still streaming
+      // past a withdrawn floor, with no signal the client could act on. A
+      // close is the one move the machinery already has.
+      //
+      // What the operator sees: one blink within a poll. The tick refreshes
+      // the account cache *before* the sweep, so the re-hello mints the
+      // narrowed identity, its resync subscribe is refused with the
+      // `awaiting_sign_in` marker, and the client holds the socket on its
+      // sign-in screen — the same experience a demoted signed-in person
+      // already gets.
+      //
+      // The original concern stands and is answered: closing a sign-in
+      // screen once per tick would make the gateway unusable, and an
+      // unchanged row never closes anything. A database blink cannot trigger
+      // it either — the account cache keeps its previous snapshot on a failed
+      // refresh, so the sets compare equal.
+      final now = anonymous?.call();
+      if (now == null) return true;
+      return sameGroups(now, identity.session.groups);
     }
     if (credentialDigest == null) {
       // The third provenance: a **signed-in person**, minted by the
