@@ -1052,7 +1052,7 @@ not cover reflection, code generated at build time, native plugin channels,
 platform channels into Swift/Kotlin/C++, or anything a future package brings in.
 It searches `lib`, `centroid-hmi/lib`, `demo` and `packages/*/lib`, and nothing
 else — not `test`, not `build`, not `tool`, not the Go manager, not the PLC
-sources in `~/Projects/sildarvinnsla`.
+sources in `~/Projects/<site>`.
 
 Three deliberate limits inside the search itself:
 

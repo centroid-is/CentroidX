@@ -184,14 +184,16 @@ void main() {
         theme: buildTheme(),
         home: Scaffold(
           body: AddressBar(
-            probe: () async => ['10.104.29.5'],
-            codeProbe: () async => 'k4m2p9qd',
+            // Invented, not a panel's real address or its real code: this
+            // file is in the repository and a support credential is not.
+            probe: () async => ['192.0.2.5'],
+            codeProbe: () async => 'a1b2c3d4',
             interval: const Duration(days: 1),
           ),
         ),
       ));
       await tester.pumpAndSettle();
-      expect(find.text('https://10.104.29.5   root / k4m2p9qd'), findsOneWidget);
+      expect(find.text('https://192.0.2.5   root / a1b2c3d4'), findsOneWidget);
     });
 
     test('the header line says only what is true', () {

@@ -762,7 +762,7 @@ Recorded so they are not silently forgotten:
 - Read permissions on trends and history.
 - Four-eyes approval, building on the MCP proposal flow.
 - Real enforcement: per-user OPC UA sessions, or PLC-side validation in
-  `~/Projects/sildarvinnsla`.
+  `~/Projects/<site>`.
 - Password policy, and admin-initiated password recovery. Self-service *change*
   shipped — see the account menu in `lib/widgets/access_change_password_dialog.dart`
   — but nothing enforces, expires or can recover a password.

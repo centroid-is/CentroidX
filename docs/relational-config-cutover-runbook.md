@@ -7,7 +7,7 @@ it into ordinary rows in `config_item`, with a change log in `config_change`.
 This document is how that change reaches the plant.
 
 **Who runs it.** Whoever is at the plant, with ssh access to
-`centroid@10.104.29.111`. It is written to be executed at night, alone,
+`centroid@<db-host>`. It is written to be executed at night, alone,
 against a working fish plant, with nothing open but this file.
 
 **Read it once through before starting anything.** The order of section 4 is
@@ -41,7 +41,7 @@ reason.
 Confirm all four before you begin. Any one of them missing turns this window
 into an outage.
 
-1. **ssh to `centroid@10.104.29.111` works**, and `psql` (or `docker exec`
+1. **ssh to `centroid@<db-host>` works**, and `psql` (or `docker exec`
    into the Postgres container — see the container rule in section 1) reaches
    the `hmi` database as user `centroid`.
 2. **You have a maintenance window** in which every station and the backend
@@ -73,7 +73,7 @@ configuration, and it cannot run without these files.
 python3 tools/svn_apply_config.py --backup-only
 ```
 
-Defaults, from the script's own source: host `centroid@10.104.29.111`,
+Defaults, from the script's own source: host `centroid@<db-host>`,
 database `hmi`, user `centroid`. It writes `svn-prefs-backup-<UTC stamp>.csv`
 with three columns — `key,value,type` — and a header line.
 
@@ -110,11 +110,11 @@ header, no row count, no alignment. That is what `-A` (unaligned), `-t`
 # Locate psql first -- see the container rule below.
 PSQL="docker exec -i <pg-container> psql -v ON_ERROR_STOP=1 -U centroid -d hmi"
 
-ssh centroid@10.104.29.111 "$PSQL -Atc \
+ssh centroid@<db-host> "$PSQL -Atc \
   \"SELECT value FROM flutter_preferences WHERE key='page_editor_data'\"" \
   > /tmp/page_editor_data.json
 
-ssh centroid@10.104.29.111 "$PSQL -Atc \
+ssh centroid@<db-host> "$PSQL -Atc \
   \"SELECT value FROM flutter_preferences WHERE key='key_mappings'\"" \
   > /tmp/key_mappings.json
 ```
@@ -443,7 +443,7 @@ It is served by `tfc_mcp_server`, and **the server must be told to serve it**:
 ```bash
 # From `packages/tfc_mcp_server`, or the compiled binary of the same name.
 dart run bin/tfc_mcp_server.dart \
-  --db-host 10.104.29.111 --db-name hmi --db-user centroid \
+  --db-host <db-host> --db-name hmi --db-user centroid \
   --toggles '{"config":true}'
 ```
 
@@ -512,7 +512,7 @@ Three things about that `--toggles` value:
 > **A trap, and it will catch you if nobody warns you.** The MCP binary logs
 >
 > ```
-> Connected to PostgreSQL at 10.104.29.111:5432/hmi
+> Connected to PostgreSQL at <db-host>:5432/hmi
 > ```
 >
 > **when it has not connected.** The connection pool is lazy and never throws
@@ -656,13 +656,13 @@ In `packages/tfc_dart`:
 
 ```bash
 # Rehearsal: every check runs, nothing is written.
-CENTROID_PGHOST=10.104.29.111 CENTROID_PGDATABASE=hmi CENTROID_PGUSER=centroid \
+CENTROID_PGHOST=<db-host> CENTROID_PGDATABASE=hmi CENTROID_PGUSER=centroid \
   dart run bin/drop_flutter_preferences.dart
 ```
 
 ```bash
 # The real thing.
-CENTROID_PGHOST=10.104.29.111 CENTROID_PGDATABASE=hmi CENTROID_PGUSER=centroid \
+CENTROID_PGHOST=<db-host> CENTROID_PGDATABASE=hmi CENTROID_PGUSER=centroid \
 CENTROIDX_CONFIRM_DROP=flutter_preferences \
   dart run bin/drop_flutter_preferences.dart
 ```
