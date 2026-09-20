@@ -224,7 +224,8 @@ dependency_overrides:
 #   stack_trace: ^1.12.1
 #   meta: ^1.16.0
 #   collection: ^1.19.0
-#   async: ^2.12.0  # The asset-level end-to-end lane, `test/e2e_assets/`: the real mimic widgets
+#   async: ^2.12.0
+  # The asset-level end-to-end lane, `test/e2e_assets/`: the real mimic widgets
   # over the real relay client, over a real gateway, over real PLC servers, in
   # one process. These four are what stand the far end up. Dev-only, and they
   # must stay dev-only: tfc_relay_local and tfc_relay_server bind ports and

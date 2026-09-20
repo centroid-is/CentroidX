@@ -1397,3 +1397,96 @@ jobs:
           echo "::error::tools ran only $ran tests, expected >=105 — check the discover pattern"
           exit 1
         fi
+
+  # The asset-level end-to-end lane: the mimic widgets an operator touches
+  # (`NumberWidget`, `Led`, `Conveyor`, `StartStopPillButton`) over the REAL
+  # relay client, over a real gateway, over real open62541 servers and a real
+  # M2400 weigher stub, all in one process — `test/e2e_assets/`. It is the
+  # one lane that asserts what the GLASS shows for a value that came from a
+  # plant, and the one that counts actuations AT the plant for a tap on a
+  # widget, which is the only evidence "one tap, one command" can have.
+  #
+  # Its own job, alone, because the lane cannot share a runner's cores: the
+  # plant iterates its servers with a BLOCKING FFI `runIterate` on a 10 ms
+  # timer, and the client's freshness verdict is a wall-clock deadline that a
+  # starved isolate misses. `flutter-test` runs `flutter test test/` with the
+  # default concurrency, so the lane is opt-in — `CENTROIDX_E2E_ASSETS=1` —
+  # and that job never sees it. This job sets the switch, runs the directory
+  # with `--concurrency=1`, and then COUNTS what ran: a switch that stopped
+  # being read would otherwise turn the lane into "skipped, green", which is
+  # the class of silent defect check-goldens-ran.sh exists for one job up.
+  #
+  # ubuntu only. The in-process open62541 `Server` is `!windows` everywhere in
+  # this repository, and one platform is enough to say the chain still
+  # renders; the assets' own widget tests already run on all three.
+  e2e-assets-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v4
+      id: checkout
+      continue-on-error: true
+
+    - name: Checkout (retry)
+      if: steps.checkout.outcome == 'failure'
+      uses: actions/checkout@v4
+
+    - name: Set up Flutter
+      uses: ./.github/actions/setup-flutter
+
+    - name: Install native dependencies (Linux)
+      run: sudo apt-get update && sudo apt-get install -y libglib2.0-dev
+
+    - name: Get dependencies
+      uses: ./.github/actions/pub-get
+
+    - name: Run the asset e2e lane
+      env:
+        CENTROIDX_E2E_ASSETS: '1'
+      run: flutter test test/e2e_assets/ --concurrency=1 --file-reporter "json:e2e-assets-report.json"
+
+    # The lane is gated on an environment variable, so a green step is not
+    # evidence the cases ran. Read the report and require that every case in
+    # the directory started, none carried the gate's skip reason, and the
+    # count is at least the number of cases the file holds today. One skip
+    # is tolerated, by its exact reason: the enum-in-struct case is parked on
+    # a documented gap in tfc_relay_local (`kTypeDictionaryGap` in the test
+    # file says which), and a second skip, or that one under another reason,
+    # is a lane that stopped running something.
+    - name: Verify the lane actually ran
+      if: always()
+      shell: bash
+      run: |
+        [ -f e2e-assets-report.json ] || { echo "::error::the test step produced no report"; exit 1; }
+        python3 - <<'PY'
+        import json, sys
+        ran, skipped, parked, failed = 0, 0, 0, 0
+        with open('e2e-assets-report.json', encoding='utf-8') as fh:
+            for line in fh:
+                line = line.strip()
+                if not line.startswith('{'):
+                    continue
+                try:
+                    ev = json.loads(line)
+                except ValueError:
+                    continue
+                if ev.get('type') == 'testStart':
+                    t = ev.get('test', {})
+                    if t.get('name', '').startswith('loading '):
+                        continue
+                    ran += 1
+                    meta = t.get('metadata') or {}
+                    if meta.get('skip'):
+                        reason = meta.get('skipReason') or ''
+                        if 'TypeDescriptions' in reason:
+                            parked += 1
+                        else:
+                            skipped += 1
+                elif ev.get('type') == 'testDone' and ev.get('result') != 'success' and not ev.get('hidden'):
+                    failed += 1
+        print(f"e2e_assets: {ran} case(s) started, {parked} parked on the type-dictionary gap, {skipped} skipped otherwise, {failed} failed")
+        # Six cases in asset_relay_e2e_test.dart as of this commit, one parked.
+        if skipped or parked > 1 or ran < 6:
+            print(f"::error::the e2e_assets lane ran {ran - skipped - parked} case(s) with {skipped} unexplained skip(s), expected >=5 and 0 — the CENTROIDX_E2E_ASSETS switch is not reaching the tests, or a case was skipped for a reason this job does not know")
+            sys.exit(1)
+        PY
