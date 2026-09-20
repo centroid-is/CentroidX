@@ -19,6 +19,7 @@
 library;
 
 import 'sanitize.dart';
+import 'wire_value.dart' show isRepresentableEpochMs;
 
 /// A value observed at an instant.
 final class TimeseriesData<T> {
@@ -50,12 +51,29 @@ final class TimeseriesData<T> {
   /// serialized as `7` still lands in a `TimeseriesData<double>`. Pass
   /// [decode] for values JSON cannot represent as a primitive (structures,
   /// enums, byte strings).
+  ///
+  /// **A `t` that is not an instant is refused as a [FormatException]**, by
+  /// name. This used to read `(json['t'] as num?)?.toInt()` with no guard at
+  /// all: `1e999` decodes to Infinity and `Infinity.toInt()` throws an
+  /// `UnsupportedError`, a finite `1e17` reaches
+  /// `DateTime.fromMillisecondsSinceEpoch` and throws a `RangeError`, and a
+  /// string throws a `TypeError` — three different exception types for one
+  /// fact, none of them the type a decode failure is answered under. The
+  /// sample is refused rather than dated to 1970 because the instant is what
+  /// puts a point on a chart's axis, and a wrong one moves a stop. An absent
+  /// `t` keeps its existing reading of zero; that tolerance predates this
+  /// guard and nothing here widens it.
   factory TimeseriesData.fromJson(Map<String, Object?> json,
       {T Function(Object? raw)? decode}) {
     final raw = json['v'];
+    final t = json['t'];
+    if (t != null && !isRepresentableEpochMs(t)) {
+      throw FormatException('a timeseries sample carries a timestamp that is '
+          'not an instant DateTime can represent (${t.runtimeType})');
+    }
     return TimeseriesData(
       decode == null ? _coerce<T>(raw) : decode(raw),
-      DateTime.fromMillisecondsSinceEpoch((json['t'] as num?)?.toInt() ?? 0,
+      DateTime.fromMillisecondsSinceEpoch((t as num?)?.toInt() ?? 0,
           isUtc: true),
     );
   }

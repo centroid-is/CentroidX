@@ -22,6 +22,8 @@
 /// render, not crash the chart.
 library;
 
+import 'wire_value.dart' show isRepresentableEpochMs;
+
 /// One saved view: a name plus the keys and graphs recorded against it.
 final class HistoryViewRecord {
   final int id;
@@ -237,9 +239,19 @@ Map<int, HistoryViewGraphRecord> historyViewGraphsFromJson(Object? raw) =>
 
 final DateTime _epoch = DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
 
-DateTime? _time(Object? raw) => raw == null
-    ? null
-    : DateTime.fromMillisecondsSinceEpoch((raw as num).toInt(), isUtc: true);
+/// An instant off the wire, or null when what arrived is not one.
+///
+/// This used to cast — `(raw as num).toInt()` with no guard of either kind —
+/// so a string threw a `TypeError`, `1e999` an `UnsupportedError` and a
+/// finite `1e17` a `RangeError`, each out of the whole record. These are
+/// configuration records, decoded tolerantly like every other shape here
+/// ("an absent map decodes to empty"), and the callers already supply the
+/// default an absent instant takes; a value that cannot be an instant is
+/// treated as absent through the same range rule every timestamp in this
+/// package uses.
+DateTime? _time(Object? raw) => isRepresentableEpochMs(raw)
+    ? DateTime.fromMillisecondsSinceEpoch((raw as num).toInt(), isUtc: true)
+    : null;
 
 // JSON objects key by String; graph indexes are ints. Convert at the boundary.
 Map<int, V> _intKeyed<V>(Object? raw, V Function(Object?) decode) {

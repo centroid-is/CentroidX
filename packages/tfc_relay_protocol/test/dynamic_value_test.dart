@@ -530,6 +530,48 @@ void main() {
     });
   });
 
+  group('a finite-but-huge timestamp is absent, not a throw', () {
+    // `isFinite` is not a range check. `1e17` is finite, so the guard that was
+    // written against `1e999` admitted it, and `DateTime` refused it one line
+    // later with a `RangeError` out of the whole value. `WireValue` has used
+    // the range rule since WSH-08; this is the decode that did not.
+    test('DynamicValue.fromJson drops a t past DateTime\'s range', () {
+      final decoded = DynamicValue.fromJson(
+          jsonDecode('{"type":"double","value":41.5,"t":1e17}')
+              as Map<String, Object?>);
+      expect(decoded.value, 41.5, reason: 'the reading is kept');
+      expect(decoded.sourceTime, isNull,
+          reason: 'absent, never clamped: a clamped timestamp is a lie about '
+              'freshness');
+    });
+
+    test('and still keeps a t inside the range', () {
+      final decoded = DynamicValue.fromJson(
+          jsonDecode('{"type":"double","value":1,"t":1786000000123}')
+              as Map<String, Object?>);
+      expect(decoded.sourceTime,
+          DateTime.fromMillisecondsSinceEpoch(1786000000123, isUtc: true));
+    });
+
+    test('an enum field whose displayName is not an object costs the name, '
+        'not the table', () {
+      // `EnumField.fromJson` cast `displayName as Map`; a string there threw
+      // a `TypeError` through `TypeDescriptor`'s per-entry catch as a lost
+      // name, and through `DynamicValue._fromJson`'s `enumFields` with no
+      // catch at all as a lost value.
+      final field = EnumField.fromJson(
+          jsonDecode('{"value":2,"name":"Running","displayName":"Í gangi"}')
+              as Map<String, Object?>);
+      expect(field.value, 2);
+      expect(field.name, 'Running');
+      expect(field.displayName, isNull);
+      // And a `1e999` code decodes to Infinity, whose toInt() throws.
+      final poisoned = EnumField.fromJson(
+          jsonDecode('{"value":1e999,"name":"x"}') as Map<String, Object?>);
+      expect(poisoned.value, 0);
+    });
+  });
+
   group('hostile nesting is refused, not survived by luck', () {
     Map<String, Object?> nest(int depth) {
       Map<String, Object?> node = {'type': 'integer', 'value': 1};

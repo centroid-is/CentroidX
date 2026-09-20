@@ -99,6 +99,29 @@ void main() {
       expect(jsonEncode(decoded.toJson()), isNotEmpty);
     });
 
+    test('a timestamp that is not an instant is refused by name, not by '
+        'whichever error toInt or DateTime happened to throw', () {
+      // Three inputs, three different exception types before this guard:
+      // `1e999` → Infinity → `UnsupportedError` from `toInt()`; `1e17`
+      // (finite, past DateTime's ±8.64e15) → `RangeError`; a string →
+      // `TypeError`. None is the type a decode failure is answered under.
+      for (final t in ['1e999', '1e17', '"soon"']) {
+        expect(
+            () => TimeseriesData<double>.fromJson(
+                jsonDecode('{"v": 1.5, "t": $t}') as Map<String, Object?>),
+            throwsFormatException,
+            reason: 't = $t');
+      }
+      // Absent keeps its long-standing reading of zero; nothing here widens
+      // the guard past what the finding named.
+      expect(
+          TimeseriesData<double>.fromJson(
+                  jsonDecode('{"v": 1.5}') as Map<String, Object?>)
+              .time
+              .millisecondsSinceEpoch,
+          0);
+    });
+
     test('an int on the wire coerces to double when T is double', () {
       final decoded =
           TimeseriesData<double>.fromJson(const {'v': 7, 't': 1000});
@@ -131,6 +154,20 @@ void main() {
       expect(decoded, record);
       expect(decoded.name, 'Frystir – hitastig');
       expect(decoded.updatedAt, DateTime.utc(2026, 2, 3, 4, 5, 6, 789));
+    });
+
+    test('an instant DateTime cannot represent reads as absent, like every '
+        'other unreadable field here', () {
+      // `_time` cast `(raw as num).toInt()` with no guard, so `1e17` threw a
+      // `RangeError` out of the whole record and a string a `TypeError`.
+      final decoded = HistoryViewRecord.fromJson(jsonDecode(
+              '{"id":7,"name":"v","createdAt":1e17,"updatedAt":"yesterday"}')
+          as Map<String, Object?>);
+      expect(decoded.id, 7);
+      expect(decoded.name, 'v');
+      expect(decoded.createdAt.millisecondsSinceEpoch, 0,
+          reason: 'the default an absent createdAt already takes');
+      expect(decoded.updatedAt, isNull);
     });
 
     test('a never-updated view omits updatedAt from JSON', () {

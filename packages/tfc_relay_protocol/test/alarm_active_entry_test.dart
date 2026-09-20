@@ -9,6 +9,8 @@
 /// the `static const` on the class is what the rest of the workspace spells.
 library;
 
+import 'dart:convert';
+
 import 'package:test/test.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 
@@ -112,6 +114,63 @@ void main() {
       expect(entry.activeAt.isUtc, isTrue);
       expect(entry.activeAt, at);
       expect(AlarmActiveEntry.fromJson(entry.toJson()).activeAt, at);
+    });
+
+    test('an instant DateTime cannot represent is refused at decode, never '
+        'left for the getter to throw on', () {
+      // `1e17` is finite, so `(… as num?)?.toInt()` admitted it, and the
+      // `RangeError` came out of `activeAt` — a getter, called while a banner
+      // paints, outside whatever try the ALARM.active decode ran under.
+      // `1e999` threw `UnsupportedError` from `toInt()` inside the decode.
+      final good = AlarmActiveEntry(
+        uid: 'a',
+        ruleIndex: 0,
+        level: 'info',
+        title: 't',
+        description: 'd',
+        activeAtMs: 1786000000123,
+        tsSource: AlarmActiveEntry.tsSourcePlant,
+      ).toJson();
+      for (final poison in ['1e17', '1e999', '"soon"']) {
+        final wire = jsonDecode(
+                jsonEncode(good).replaceFirst('1786000000123', poison))
+            as Map<String, Object?>;
+        expect(() => AlarmActiveEntry.fromJson(wire), throwsFormatException,
+            reason: 'activeAtMs = $poison');
+        // Through the list decoder too: the throw now lands inside whatever
+        // try the caller runs `decodeList` under, as the tsSource refusal
+        // already does.
+        expect(() => AlarmActiveEntry.decodeList([wire]),
+            throwsFormatException,
+            reason: 'activeAtMs = $poison via decodeList');
+      }
+      // And the same rule for the hold instant.
+      final stale = jsonDecode(jsonEncode({
+        ...good,
+        AlarmActiveEntry.kStaleInputs: ['ST101.TAG'],
+        AlarmActiveEntry.kStaleSinceMs: 1e17,
+      })) as Map<String, Object?>;
+      expect(() => AlarmActiveEntry.fromJson(stale), throwsFormatException);
+      // Anti-vacuity: the good frame still decodes and its getter answers.
+      expect(AlarmActiveEntry.fromJson(good).activeAt.millisecondsSinceEpoch,
+          1786000000123);
+    });
+
+    test('toString survives stale inputs named without an instant', () {
+      // `staleSince!` in `toString` threw on exactly the shape a backend that
+      // names the inputs and not the instant produces — a log line that
+      // takes the logger down.
+      final entry = AlarmActiveEntry(
+        uid: 'a',
+        ruleIndex: 0,
+        level: 'info',
+        title: 't',
+        description: 'd',
+        activeAtMs: 1786000000123,
+        tsSource: AlarmActiveEntry.tsSourcePlant,
+        staleInputs: const ['ST101.TAG'],
+      );
+      expect(entry.toString(), contains('HELD on stale ST101.TAG'));
     });
 
     // ------------------------------------------------------------------ 4

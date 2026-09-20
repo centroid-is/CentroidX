@@ -74,6 +74,7 @@ library;
 
 import 'alarm_active_entry.dart';
 import 'methods.dart';
+import 'wire_value.dart' show isRepresentableEpochMs;
 
 /// The window and the ceiling a panel asks history under.
 ///
@@ -412,12 +413,17 @@ final class AlarmHistoryEntry {
     if (uid is! String || uid.isEmpty) {
       throw FormatException('a history row names no alarm: $json');
     }
+    // `isRepresentableEpochMs`, not `isFinite`: the guard here used to admit
+    // a finite `1e17`, which `DateTime.fromMillisecondsSinceEpoch` refuses a
+    // few lines down as a `RangeError` — the wrong exception type for a
+    // decode refusal, and one the refusal sentence below never got to say.
     final createdAtMs = json[kCreatedAtMs];
-    if (createdAtMs is! num || (createdAtMs is double && !createdAtMs.isFinite)) {
+    if (!isRepresentableEpochMs(createdAtMs)) {
       throw FormatException(
           'history row "$uid" states no readable "$kCreatedAtMs" '
-          '($createdAtMs). Refused rather than dated to 1970: the instant is '
-          'what puts the row inside a window, and a wrong one moves a stop');
+          '(${createdAtMs.runtimeType}). Refused rather than dated to 1970: '
+          'the instant is what puts the row inside a window, and a wrong one '
+          'moves a stop');
     }
     final ruleIndex = json[kRuleIndex];
     if (ruleIndex != null &&
@@ -441,12 +447,11 @@ final class AlarmHistoryEntry {
           'a row that recorded none. Refused rather than defaulted.');
     }
     final deactivatedAtMs = json[kDeactivatedAtMs];
-    if (deactivatedAtMs != null &&
-        (deactivatedAtMs is! num ||
-            (deactivatedAtMs is double && !deactivatedAtMs.isFinite))) {
+    if (deactivatedAtMs != null && !isRepresentableEpochMs(deactivatedAtMs)) {
       throw FormatException(
           'history row "$uid" carries an unusable "$kDeactivatedAtMs" '
-          '($deactivatedAtMs). Absence is how a row says it is still standing');
+          '(${deactivatedAtMs.runtimeType}). Absence is how a row says it is '
+          'still standing');
     }
     return AlarmHistoryEntry(
       uid: uid,
@@ -461,8 +466,9 @@ final class AlarmHistoryEntry {
       acknowledgeRequired: json[kAcknowledgeRequired] as bool? ?? false,
       active: json[kActive] as bool? ?? false,
       pendingAck: json[kPendingAck] as bool? ?? false,
-      createdAt:
-          DateTime.fromMillisecondsSinceEpoch(createdAtMs.toInt(), isUtc: true),
+      createdAt: DateTime.fromMillisecondsSinceEpoch(
+          (createdAtMs as num).toInt(),
+          isUtc: true),
       deactivatedAt: deactivatedAtMs == null
           ? null
           : DateTime.fromMillisecondsSinceEpoch(

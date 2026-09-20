@@ -55,6 +55,7 @@
 library;
 
 import 'alarm_keys.dart';
+import 'wire_value.dart' show isRepresentableEpochMs;
 
 /// The result of decoding an `ALARM.active` payload.
 typedef AlarmActiveList = ({
@@ -275,7 +276,20 @@ final class AlarmActiveEntry {
         kStaleSinceMs: staleSinceMs,
       };
 
-  /// Decodes one entry, refusing an uninterpretable [kTsSource] by name.
+  /// Decodes one entry, refusing an uninterpretable [kTsSource] by name — and
+  /// an instant that is not one, for the same reason and in the same place.
+  ///
+  /// **Both instants are range-checked here, at decode, and not left to the
+  /// getters.** [activeAtMs] used to be read through `(… as num?)?.toInt()`
+  /// and handed to `DateTime.fromMillisecondsSinceEpoch` only when [activeAt]
+  /// was called — so a `1e17` (finite, past `DateTime`'s ±8.64e15 range)
+  /// decoded without complaint and threw a `RangeError` later, from a getter,
+  /// on the `ALARM.active` path *outside* whatever `try` the decode ran
+  /// under: a banner that throws while painting rather than a frame that was
+  /// refused. `1e999` was worse, an `UnsupportedError` from `toInt()` inside
+  /// the decode. Refused by name, like [kTsSource], because an alarm's
+  /// instant is the field a stop analysis is audited on and a defaulted one
+  /// would be a fabricated time under the plant's name.
   factory AlarmActiveEntry.fromJson(Map<String, Object?> json) {
     final tsSource = json[kTsSource];
     if (tsSource is! String || !tsSources.contains(tsSource)) {
@@ -284,6 +298,22 @@ final class AlarmActiveEntry {
           'alarm timestamp provenance: expected "$tsSourcePlant" or '
           '"$tsSourceBackendReceipt". Refused rather than defaulted — '
           'defaulting would relabel a backend guess as the plant\'s word.');
+    }
+    final activeAtMs = json[kActiveAtMs];
+    if (activeAtMs != null && !isRepresentableEpochMs(activeAtMs)) {
+      throw FormatException(
+          'AlarmActiveEntry.$kActiveAtMs is not an instant DateTime can '
+          'represent (${activeAtMs.runtimeType}). Refused rather than '
+          'defaulted: the instant an alarm fired is what a stop analysis is '
+          'audited on.');
+    }
+    final staleSinceMs = json[kStaleSinceMs];
+    if (staleSinceMs != null && !isRepresentableEpochMs(staleSinceMs)) {
+      throw FormatException(
+          'AlarmActiveEntry.$kStaleSinceMs is not an instant DateTime can '
+          'represent (${staleSinceMs.runtimeType}). Refused for the same '
+          'reason as $kActiveAtMs: "input stale since" is a time the operator '
+          'acts on.');
     }
     return AlarmActiveEntry(
       uid: json[kUid] as String? ?? '',
@@ -398,6 +428,9 @@ final class AlarmActiveEntry {
   String toString() => 'AlarmActiveEntry($uid#$ruleIndex, $level, '
       '${activeAt.toIso8601String()} $tsSource'
       '${pendingAck ? ', pendingAck' : ''}'
+      // `staleSince` may be null beside a non-empty `staleInputs` — a backend
+      // that named the inputs and not the instant — and a `toString` that
+      // throws is a log line that takes the logger down with it.
       '${staleInputs.isEmpty ? '' : ', HELD on stale ${staleInputs.join('+')}'
-          ' since ${staleSince!.toIso8601String()}'})';
+          ' since ${staleSince?.toIso8601String() ?? 'an unstated instant'}'})';
 }

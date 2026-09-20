@@ -321,6 +321,23 @@ void main() {
           throwsFormatException);
     });
 
+    test('an instant DateTime cannot represent is refused as a decode '
+        'failure, not as whatever DateTime throws', () {
+      // The guard was `isFinite`, which admits a finite `1e17`;
+      // `DateTime.fromMillisecondsSinceEpoch` then refused it as a
+      // `RangeError`, and the refusal sentence below it never got to say why.
+      final row = _entry().toJson();
+      for (final key in ['createdAtMs', 'deactivatedAtMs']) {
+        for (final poison in [1e17, -1e17]) {
+          final json = viaJson({...row, key: poison});
+          expect(() => AlarmHistoryEntry.fromJson(json), throwsFormatException,
+              reason: '$key = $poison');
+        }
+      }
+      // Anti-vacuity: the row still decodes with both instants in range.
+      expect(AlarmHistoryEntry.fromJson(viaJson(row)).uid, _entry().uid);
+    });
+
     test('a row with no createdAtMs is refused, never dated to 1970', () {
       final json = viaJson(_entry().toJson())..remove('createdAtMs');
       expect(() => AlarmHistoryEntry.fromJson(json), throwsFormatException);

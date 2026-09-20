@@ -25,6 +25,7 @@ library;
 
 import 'quality.dart';
 import 'sanitize.dart';
+import 'wire_value.dart' show isRepresentableEpochMs;
 
 /// Protocol-native value type tag.
 ///
@@ -93,18 +94,21 @@ final class EnumField {
     this.description,
   });
 
-  factory EnumField.fromJson(Map<String, Object?> json) => EnumField(
-        value: (json['value'] as num?)?.toInt() ?? 0,
-        name: json['name'] as String? ?? '',
-        displayName: json['displayName'] == null
-            ? null
-            : LocalizedText.fromJson(
-                (json['displayName'] as Map).cast<String, Object?>()),
-        description: json['description'] == null
-            ? null
-            : LocalizedText.fromJson(
-                (json['description'] as Map).cast<String, Object?>()),
-      );
+  /// Tolerant of shape, like every decoder here: a `displayName` that is not
+  /// an object used to be cast to one and threw a `TypeError` out of the
+  /// enum table, and a `value` of `1e999` decodes to Infinity, whose
+  /// `toInt()` throws. Both now read as absent — through the same
+  /// [DynamicValue._localizedOrNull] the value's own texts go through, so the
+  /// two cannot disagree about what an unreadable text is.
+  factory EnumField.fromJson(Map<String, Object?> json) {
+    final value = json['value'];
+    return EnumField(
+      value: value is num && value.isFinite ? value.toInt() : 0,
+      name: json['name'] is String ? json['name'] as String : '',
+      displayName: DynamicValue._localizedOrNull(json['displayName']),
+      description: DynamicValue._localizedOrNull(json['description']),
+    );
+  }
 
   Map<String, Object?> toJson() => {
         'value': value,
@@ -340,11 +344,17 @@ final class DynamicValue {
       _ => raw,
     };
 
-    // `isFinite` before `toInt()`: a `1e999` timestamp decodes to Infinity,
-    // on which toInt() throws.
+    // `isRepresentableEpochMs`, not `isFinite`: a `1e999` timestamp decodes to
+    // Infinity, on which `toInt()` throws — which is what the guard here used
+    // to say — and `1e17` is perfectly finite, sails past that guard, and
+    // makes `DateTime.fromMillisecondsSinceEpoch` throw a `RangeError` one
+    // line later. `WireValue` has carried the range half since WSH-08; this
+    // decode kept the half that was written first. Absent rather than
+    // clamped, for `WireValue.of`'s reason: a clamped timestamp is a lie about
+    // freshness.
     final t = json['t'];
-    final sourceTime = t is num && t.isFinite
-        ? DateTime.fromMillisecondsSinceEpoch(t.toInt(), isUtc: true)
+    final sourceTime = isRepresentableEpochMs(t)
+        ? DateTime.fromMillisecondsSinceEpoch((t as num).toInt(), isUtc: true)
         : null;
 
     // Construction re-sanitizes: `1e999` in incoming JSON silently parses to
