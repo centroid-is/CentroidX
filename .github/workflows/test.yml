@@ -422,6 +422,45 @@ jobs:
 
   # The relay pipe's pure-Dart packages. tfc_relay_protocol had no CI job at
   # all until now — its tests existed but never ran here.
+  # packages/tfc_plant_sim stands fake PLCs up: real open62541 servers built
+  # from a written spec, so the HMI, the backend and the relay can be run and
+  # tested against something that behaves like a plant without a plant being
+  # there.
+  #
+  # Its own tests connect a real client over a real socket, which is why it
+  # gets a job rather than riding along on another package's: a simulator
+  # nothing runs is a simulator that has quietly stopped serving the shapes the
+  # bench depends on. ubuntu only for now — the native build is the same
+  # open62541 the other packages build, and one platform is enough to say the
+  # servers still come up.
+  #
+  # NOTE: this job is #588's, copied verbatim. If #588 lands on main first,
+  # this is the same text and the conflict resolves to itself; if this lands
+  # first, #588's copy is redundant. Either way nobody has to reconstruct it.
+  plant-sim-test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      id: checkout
+      continue-on-error: true
+
+    - name: Checkout (retry)
+      if: steps.checkout.outcome == 'failure'
+      uses: actions/checkout@v4
+    - uses: dart-lang/setup-dart@v1
+
+    - name: Get dependencies (tfc_plant_sim)
+      uses: ./.github/actions/pub-get
+      with:
+        command: dart pub get
+        working-directory: packages/tfc_plant_sim
+
+    - name: Test tfc_plant_sim
+      working-directory: packages/tfc_plant_sim
+      run: |
+        dart analyze
+        dart test
+
   relay-packages-test:
     strategy:
       fail-fast: false

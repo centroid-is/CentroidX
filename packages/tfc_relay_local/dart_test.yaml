@@ -43,6 +43,20 @@ tags:
     # tag warns instead of selecting, and tfc_relay_client's own `gate`
     # declaration does not reach this package — each dart_test.yaml declares
     # for its own suite only.
+  e2e:
+    # The adversarial bench: a real plant (tfc_plant_sim's open62541 servers)
+    # behind a real gateway, with a FaultProxy on the PANEL's socket rather
+    # than on the PLC's. The existing legs each hold one half still —
+    # end_to_end_test.dart breaks the link upstream of the gateway, and
+    # tfc_relay_server's ws_harness breaks the panel's link with a
+    # FakeStateMan behind it — so neither can test what a panel shows while a
+    # machine it can no longer hear keeps moving. Declared here for the same
+    # reason as every tag above: an undeclared tag does not select, it warns.
+    #
+    # Runs in the ordinary lane, not behind a flag: it is ~2 minutes and it is
+    # the only lane that counts ACTUATIONS at the plant, which is the only
+    # evidence "a write is never retried" can have.
+
   meta:
     # Cases that test the surface itself: freeze tests, structural sweeps, and
     # the arms that prove a check bites a deliberately broken implementation.
