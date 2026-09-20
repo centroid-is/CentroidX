@@ -1447,12 +1447,16 @@ jobs:
 
     # The lane is gated on an environment variable, so a green step is not
     # evidence the cases ran. Read the report and require that every case in
-    # the directory started, none carried the gate's skip reason, and the
-    # count is at least the number of cases the file holds today. One skip
-    # is tolerated, by its exact reason: the enum-in-struct case is parked on
-    # a documented gap in tfc_relay_local (`kTypeDictionaryGap` in the test
-    # file says which), and a second skip, or that one under another reason,
-    # is a lane that stopped running something.
+    # the directory started and none was skipped.
+    #
+    # **No skip is tolerated, including the enum one.** It used to be parked
+    # on a documented gap in tfc_relay_local behind a hand-set constant, and
+    # that constant was a step somebody had to remember on the day the gap
+    # closed — with a green lane, and nothing about enums actually checked, if
+    # they did not. The case now always runs and asks the composed gateway
+    # whether it can describe a type, asserting the named states when it can
+    # and pinning the gap as a gap when it cannot. So a skip here means a case
+    # stopped running, full stop.
     - name: Verify the lane actually ran
       if: always()
       shell: bash
@@ -1484,9 +1488,9 @@ jobs:
                             skipped += 1
                 elif ev.get('type') == 'testDone' and ev.get('result') != 'success' and not ev.get('hidden'):
                     failed += 1
-        print(f"e2e_assets: {ran} case(s) started, {parked} parked on the type-dictionary gap, {skipped} skipped otherwise, {failed} failed")
-        # Six cases in asset_relay_e2e_test.dart as of this commit, one parked.
-        if skipped or parked > 1 or ran < 6:
-            print(f"::error::the e2e_assets lane ran {ran - skipped - parked} case(s) with {skipped} unexplained skip(s), expected >=5 and 0 — the CENTROIDX_E2E_ASSETS switch is not reaching the tests, or a case was skipped for a reason this job does not know")
+        print(f"e2e_assets: {ran} case(s) started, {skipped + parked} skipped, {failed} failed")
+        # Six cases in asset_relay_e2e_test.dart as of this commit, none skipped.
+        if skipped or parked or ran < 6:
+            print(f"::error::the e2e_assets lane ran {ran} case(s) with {skipped + parked} skip(s), expected 6 and 0 — the CENTROIDX_E2E_ASSETS switch is not reaching the tests, or a case stopped running")
             sys.exit(1)
         PY

@@ -64,6 +64,10 @@ import 'package:tfc/page_creator/assets/start_stop_button.dart';
 import 'package:tfc/providers/value_freshness.dart';
 import 'package:tfc/theme.dart' show HmiStateColors;
 import 'package:tfc_dart/core/state_man.dart';
+// For the one question this lane asks about the gateway's capability:
+// whether it can describe a type, which is what decides the enum case.
+import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay
+    show TypeDescriptions;
 import 'package:tfc_relay_local/tfc_relay_local.dart'
     show UpstreamLinkConfig, UpstreamProtocol;
 
@@ -85,16 +89,28 @@ import 'support/panel_bench.dart';
 /// member NAMES survive (`contains('run_mode')`), never enum names, so the
 /// gap had no pin.
 ///
-/// The case stays, whole, so that it is a one-word change to arm it the day
-/// `LocalStateMan` describes its types — and `false` here without that
-/// change is a red lane, not a green one. The CI verifier tolerates exactly
-/// this one skip, by this reason, and no other.
-const bool kTypeDictionaryGap = true;
-
-/// The skip reason the CI verifier matches on. Change one and the other.
-const String kTypeDictionaryGapReason =
-    'tfc_relay_local\'s LocalStateMan implements no TypeDescriptions, so no '
-    'enum name crosses a plant-only gateway; see kTypeDictionaryGap';
+/// **The case always runs, and asserts whichever fact is currently true.**
+///
+/// This was a hand-set `const bool` feeding `skip:`, on the reasoning that
+/// flipping one word the day `LocalStateMan` describes its types is cheap. It
+/// is cheap, and it is exactly the step that gets forgotten — the lane would
+/// go green after the fix while still skipping the one case the fix was for,
+/// and a green lane would say nothing about enums. A `skip:` cannot arm
+/// itself either: it is evaluated when the test is DECLARED, before any
+/// gateway exists.
+///
+/// So there is no gate. The case stands the panel up, asks the composed
+/// gateway the same question `RelaySession` asks before it puts `types` on
+/// the wire — `api is TypeDescriptions` — and asserts accordingly:
+///
+///  * describes types: the belt must be painted in the enum's NAMED states.
+///    That is the real assertion, and the one the 2026-09-17 defect is about.
+///  * describes none: the gap is pinned as a gap — `typeOf` answers null and
+///    the belt reads `unknown` — so the case is never silently green about
+///    something it did not check.
+///
+/// Either way it asserts something true today, and the day the gap closes it
+/// switches to the strong arm on its own.
 
 /// The switch. See the library doc.
 const String kEnableVariable = 'CENTROIDX_E2E_ASSETS';
@@ -269,6 +285,12 @@ void main() {
       // that and `readDriveState` finds no name, answers `unknown`, and the
       // belt is violet — which is what every browser showed on 2026-09-17.
       await standUpFor(tester);
+
+      // The same question `RelaySession` asks before it puts `types` on the
+      // wire. Asked of the gateway this lane actually composed, so the case
+      // cannot be wrong about which composition root is in play.
+      final describesTypes = bench.gateway.plant is relay.TypeDescriptions;
+
       await bench.mount(tester, Conveyor(ConveyorConfig(key: kDriveKey)),
           width: 320, height: 100);
       final states = HmiStateColors.of(tester.element(find.byType(Conveyor)));
@@ -305,14 +327,32 @@ void main() {
             'colour a conveyor draws when the enum crossed the relay as a '
             'bare integer with no name',
       );
-      expect(seen.map((c) => named[c]).whereType<String>().toSet(),
-          containsAll(<String>['fault', 'stopped', 'auto', 'manual', 'clean']),
-          reason: 'every named state must have crossed and been drawn; '
-              'a belt stuck on one colour is not reading the plant. Seen: '
-              '${seen.map((c) => named[c] ?? c).join(', ')}');
+      if (describesTypes) {
+        expect(seen.map((c) => named[c]).whereType<String>().toSet(),
+            containsAll(<String>['fault', 'stopped', 'auto', 'manual', 'clean']),
+            reason: 'every named state must have crossed and been drawn; '
+                'a belt stuck on one colour is not reading the plant. Seen: '
+                '${seen.map((c) => named[c] ?? c).join(', ')}');
+      } else {
+        // The gap, pinned AS a gap so this case is never silently green about
+        // something it did not check. `LocalStateMan` implements no
+        // `TypeDescriptions`, so the server carries no `types`, `toUaValue`
+        // reattaches no enum names, `readDriveState` answers `unknown` and
+        // the belt is violet — which is what every browser showed on
+        // 2026-09-17.
+        //
+        // When `LocalStateMan` gains the interface this arm stops running and
+        // the one above takes over, with no constant to remember.
+        expect(seen.map((c) => named[c]).whereType<String>(), isEmpty,
+            reason: 'with no type dictionary the belt cannot be painted in '
+                'any NAMED state. If this fails the gap has closed and the '
+                'arm above should be the one running — which it now will be, '
+                'because the branch is decided from the gateway rather than '
+                'from a constant');
+      }
       await tearDownFor(tester);
     });
-    }, skip: kTypeDictionaryGap ? kTypeDictionaryGapReason : null);
+    });
 
     testWidgets(
         'a start/stop tap actuates the plant exactly once per half of the pulse',
