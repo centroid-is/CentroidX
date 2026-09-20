@@ -177,47 +177,75 @@ void main() {
     });
 
     test(
-        'CHARACTERISATION: a live, correct, unchanging value is withheld '
-        'while the link is healthy', () async {
-      // Not an approval. This records what the stack does today, because the
-      // behaviour is load-bearing for an operator and is currently asserted
-      // nowhere.
+        'a live, correct, unchanging value stays believable — the link\'s '
+        'keep-alive vouches for it', () async {
+      // This arm replaces a CHARACTERISATION one that asserted the opposite,
+      // and it is replaced rather than re-baselined because that is what its
+      // own comment said to do if the behaviour was ever fixed.
       //
-      // `CN01.rate` is published by a running PLC over a live subscription and
-      // its value is correct. It is withheld anyway, because an OPC UA
-      // monitored item reports ON CHANGE and there is no per-value keep-alive
-      // on the upstream path — `requestedMaxKeepAliveCount` is the
-      // subscription's keep-alive (opcua_upstream_link.dart:856,997) and a
-      // keep-alive message carries no data values, so nothing restamps what it
-      // covers.
+      // What it used to record, measured on this bench: `CN01.rate` — a rate
+      // sitting at zero, published by a running PLC over a live subscription,
+      // value correct, `linkState` ready throughout — went quality 192 to 516
+      // at `staleAfter`. An OPC UA monitored item reports ON CHANGE, so a
+      // constant tag emitted no notification and `FreshnessSweep` aged it on
+      // `_lastArrival` alone.
       //
-      // Most tags on a real plant are constant most of the time: a setpoint, a
-      // recipe number, a mode that has been in auto all shift, a counter on a
-      // stopped line. If this is the intended behaviour then every one of them
-      // renders `---` `staleAfter` after its last change, and an operator
-      // learns that the badge means nothing — which is how a genuinely stale
-      // value gets believed later.
+      // That mattered because most tags on a plant are constant most of the
+      // time: a setpoint, a recipe number, a mode that has been in auto all
+      // shift, a counter on a stopped line. Every one of them rendered `---`
+      // `staleAfter` after its last change — the inverse of the failure this
+      // branch exists to prevent, and the more corrosive one, because a
+      // screen that withholds correct values teaches an operator that the
+      // badge means nothing.
       //
-      // If it is fixed, this case goes red and should be REPLACED by the
-      // assertion that a live constant stays good, not re-baselined.
+      // The project had already measured this on the plant (1103 of 1437
+      // values wrongly badged) and fixed it in `tfc_dart` as a per-link
+      // keep-alive anchor; `tfc_relay_local` never got the port, so the two
+      // sweeps disagreed on the one question they exist to answer. It is
+      // ported now, and this is the arm that holds it: a link whose
+      // keep-alives keep arriving vouches for the values on it.
       final bench = await standUpPlant();
       expect(bench.panel.read(rateKey)!.quality.isGood, isTrue);
-      expect(bench.panel.linkState, LinkState.ready);
+
+      // Well past `staleAfter` (2 s on this bench) and past the sweep cadence
+      // that used to badge it.
+      await Future<void>.delayed(const Duration(seconds: 6));
+
+      expect(bench.panel.read(rateKey)!.quality.isGood, isTrue,
+          reason: 'the PLC is up, the subscription is live and the value is '
+              'correct. A stopped drive reading 0.0 Hz for an hour is a good '
+              'value an hour old, not an unknown one');
+      expect(bench.panel.read(rateKey)!.value, 0,
+          reason: 'and it is still the right number');
+      expect(bench.panel.read(speedKey)!.quality.isGood, isTrue,
+          reason: 'while a neighbour that does change is believed too — the '
+              'fix must not have turned the sweep off');
+    });
+
+    test('but a link that goes silent still stales every key on it', () async {
+      // The other half, and the one the keep-alive port must not have cost.
+      // A frozen session, a PLC that stopped scanning and a weigher that
+      // answered its last frame an hour ago all go quiet on every tag at
+      // once; the link anchor ages with them and every key on it must still
+      // go stale at the deadline. Without this arm the fix above is
+      // indistinguishable from deleting the sweep.
+      final bench = await standUpPlant(breakableUpstream: true);
+      expect(bench.panel.read(rateKey)!.quality.isGood, isTrue);
+
+      // Cut the GATEWAY's link to the PLC — not the panel's link to the
+      // gateway. The panel stays connected and keeps being told things; what
+      // stops is the plant.
+      bench.upstream.blackhole();
 
       await until(() => !bench.panel.read(rateKey)!.quality.isGood,
-          within: const Duration(seconds: 15),
-          describe: 'the unchanging rate to be withheld');
-
+          within: const Duration(seconds: 45),
+          describe: 'a key on a dead link to go stale even though nothing '
+              'about it was ever going to change');
       expect(bench.panel.linkState, LinkState.ready,
-          reason: 'the link never broke: nothing is wrong except that the '
-              'value did not change');
-      expect(bench.panel.read(rateKey)!.value, 0,
-          reason: 'and the withheld number is still the right one — this is '
-              'the stack hiding a correct value, not losing it');
-      expect(bench.panel.read(speedKey)!.quality.isGood, isTrue,
-          reason: 'while a neighbour that does change is still believed, '
-              'which is what makes this about change and not about the link');
+          reason: 'and the panel\'s own link is fine throughout — this is the '
+              'plant going quiet, not the socket');
     });
+
   });
 
   group('a write is never applied twice, counted at the machine', () {
