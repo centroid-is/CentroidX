@@ -39,6 +39,18 @@
 /// the subscription stream stays the truth, and the badge comes off so no
 /// permanent amber box is left behind. Never a synthetic value, never null
 /// under good.
+///
+/// ## And the read has to BE a read
+///
+/// On a polled link `read` answers the poll cache, which after a write holds
+/// either the sample from before the write or the wrapper's optimistic echo
+/// of the value that was typed (`modbus_client_wrapper.dart:653-657`).
+/// Adopting that as the confirmation put a number the device may never have
+/// taken on the screen labelled confirmed, until the next poll repainted it —
+/// the lie §6 says this system does not tell, told by the readback itself. A
+/// link that cannot reach the device says so (`PollCacheReads`), the composer
+/// makes no read through it, and the store keeps the last thing actually
+/// measured. The third case below is that ruling.
 library;
 
 import 'package:tfc_dart/core/state_man.dart' show KeyMappingEntry, KeyMappings;
@@ -129,14 +141,67 @@ void main() {
 
       final ended = built.man.read(key)!;
       expect(ended.value, 10,
-          reason: 'the readback is what the DEVICE holds, read back through '
-              'the link — never the number that was typed. A PLC clamping a '
+          reason: 'the last thing anybody actually MEASURED stays on the '
+              'screen — never the number that was typed. A PLC clamping a '
               'setpoint is ordinary; a mimic showing the typed value labelled '
-              '"confirmed" is the confirmation lying');
+              '"confirmed" is the confirmation lying. (It is 10 and not 5 '
+              'because the poll cache is not read back either — see the '
+              'third case — so the store waits for the poll that follows the '
+              'write to deliver the genuine post-write reading)');
       expect(ended.quality, Quality.good);
       expect(built.man.writePendingKeys, isEmpty,
           reason: 'the window has to CLOSE for the badge to mean anything '
               'while it is open');
+    });
+
+    test('the poll cache is NOT read back as a confirmation: no read goes '
+        'through a cache-answered link, and the pre-write sample keeps its '
+        'own instant', () async {
+      final built = build();
+      addTearDown(built.man.dispose);
+      await built.man.start();
+
+      // A sample the poll took BEFORE the write, with the instant it was
+      // taken. The link's cache and the store both hold it.
+      final measured = DateTime.utc(2026, 9, 20, 8, 15);
+      built.link.setValue(key, 10, sourceTime: measured);
+      built.man.applyUpstreamBatch(<String, DynamicValue>{
+        key: DynamicValue(value: 10, sourceTime: measured),
+      });
+      // Watched BEFORE the count is taken: the first listener on a key
+      // establishes the upstream subscription, which is a round trip of its
+      // own and not the one this case is counting.
+      final watched = built.man.listen(key);
+      void nothing() {}
+      watched.addListener(nothing);
+      addTearDown(() => watched.removeListener(nothing));
+      final tripsBefore = built.link.upstreamRoundTrips;
+
+      final seen = await record(built.man, () async {
+        await built.man.write(key, 5);
+      });
+
+      expect(built.link.upstreamRoundTrips - tripsBefore, 1,
+          reason: 'the write, and nothing else. The composer used to make a '
+              'second call — link.read — and adopt what came back; on this '
+              'link that is the poll cache, which holds the pre-write sample '
+              'or the wrapper\'s echo of the typed value, and neither is a '
+              'reading the device took after the write');
+      for (final value in seen) {
+        if (value.quality == Quality.goodWritePending) continue;
+        expect(value.sourceTime, measured,
+            reason: 'the cache being adopted as a confirmation looked exactly '
+                'like this: the pre-write number republished under good '
+                'with NO instant, because `_adoptReadback` mints a value '
+                'with none. The only good-band value the store may carry '
+                'after the write is the measured sample, instant and all');
+      }
+      final ended = built.man.read(key)!;
+      expect(ended.value, 10);
+      expect(ended.sourceTime, measured);
+      expect(ended.quality, Quality.good);
+      expect(built.man.writePendingKeys, isEmpty,
+          reason: 'absent is not pending: the badge still comes off');
     });
 
     test('when the readback read produces no reading either, the STORE is left '

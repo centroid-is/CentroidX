@@ -104,7 +104,7 @@ abstract interface class EffectiveStatusSource {
 /// those same entry points, which is the only way a control surface can prove
 /// anything — a driver that reached past the link into its cache would be
 /// asserting against its own writes.
-abstract class DeviceClientUpstreamLink implements UpstreamLink {
+abstract class DeviceClientUpstreamLink implements UpstreamLink, PollCacheReads {
   DeviceClientUpstreamLink({
     required this.alias,
     required this.client,
@@ -344,8 +344,29 @@ abstract class DeviceClientUpstreamLink implements UpstreamLink {
   /// cycle is the round trip on this protocol**, so a `read` that dialled the
   /// register directly would be a second, unsynchronised reader racing the
   /// group timer that already owns that register. A UMAS-by-name link that
-  /// wants a real `readVariable` overrides this.
+  /// wants a real `readVariable` overrides this — and overrides
+  /// [readIsPollCache] with it.
   Future<DynamicValue?> roundTrip(String key) async => _cache[key];
+
+  /// True, because [roundTrip] is the cache — and this is the honest half of
+  /// that decision.
+  ///
+  /// The composer used to call [read] after every acknowledged write to
+  /// "read back" what the device holds. On this link that read answered the
+  /// poll cache, which after a write holds either the sample from BEFORE the
+  /// write or the wrapper's optimistic echo of the value it was handed
+  /// (`modbus_client_wrapper.dart:653-657`) — so the store "confirmed" a
+  /// value the device may never have taken, until the next poll repainted
+  /// it. **Chosen: the readback is honestly absent, not a second reader.**
+  /// A genuine post-write register read needs a direct read the adapter's
+  /// `DeviceClient` does not expose, and "wait for the next poll sample"
+  /// cannot tell the wrapper's echo from a poll (both arrive on the same feed
+  /// with no instant of their own). Absent, the composer takes the badge off
+  /// and leaves the store at the last thing that was actually measured; the
+  /// poll cycle then delivers the genuine post-write reading by the ordinary
+  /// path within one interval, which is what it always did anyway.
+  @override
+  bool get readIsPollCache => true;
 
   /// The protocol that answered a write through [ref].
   ///

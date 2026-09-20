@@ -144,6 +144,30 @@ final class UpstreamRef {
 /// `ClientWrapper` alone encodes the two-phase resubscribe that fixed a
 /// measured monitored-item storm and a heartbeat-derived effective status, and
 /// none of that is worth rewriting.
+/// A link whose [UpstreamLink.read] answers from a poll cache and not from
+/// the device.
+///
+/// The composer's post-write readback (`local_state_man.dart`, `_readBack`)
+/// exists to find out what the device *now* holds. On a polled protocol the
+/// link's `read` is documented as the last known value — the poll cycle is
+/// the round trip, and a second reader dialling the register would race the
+/// group timer that owns it — so after a write that cache holds either the
+/// pre-write sample or the wrapper's optimistic echo of the value it was
+/// handed (`modbus_client_wrapper.dart:653-657`). Neither is a reading the
+/// device took after the write, and adopting one as a confirmation is a lie
+/// in the one place the design says not to lie (`docs/relay-wire-api.md` §6:
+/// readback is the only confirmation this system accepts).
+///
+/// Implemented by a link so the composer can tell without knowing the
+/// protocol. An ordinary `read` is unaffected: a cached reading is the right
+/// answer to "what is the value" and the wrong answer to "did the write
+/// land".
+abstract interface class PollCacheReads {
+  /// True when [UpstreamLink.read] cannot reach the device for a reading
+  /// taken after the call.
+  bool get readIsPollCache;
+}
+
 abstract interface class UpstreamLink {
   /// The configured server alias, as it appears in `StatusParams.alias` and in
   /// the `PIPE.upstream.<alias>.*` keys.

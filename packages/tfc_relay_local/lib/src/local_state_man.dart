@@ -1274,6 +1274,19 @@ final class LocalStateMan implements StateManApi {
   /// — a bug in an adapter must not turn a successful write into an exception
   /// out of the write path.
   Future<Object?> _readBack(UpstreamLink link, UpstreamRef ref) async {
+    if (link case final PollCacheReads polled when polled.readIsPollCache) {
+      // **Not a readback, so not read.** On a polled link `read` answers the
+      // poll cache, which after a write holds the pre-write sample or the
+      // wrapper's optimistic echo of the value that was typed — adopting
+      // either here labelled a number the device may never have taken
+      // "confirmed", in the one place §6 says readback is the only
+      // confirmation. Absent is the honest answer: the badge comes off, the
+      // store keeps the last thing actually measured, and the next poll
+      // delivers the genuine post-write reading by the ordinary path. The
+      // link's own doc on `readIsPollCache` says why a second reader is not
+      // the fix.
+      return null;
+    }
     final DynamicValue seen;
     try {
       seen = await link.read(ref, deadline: readDeadline);
