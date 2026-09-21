@@ -207,10 +207,17 @@ Still open in this tier: the **knowledge base** and **config-store sync**,
 both of which are Tier 2 gaps rather than wrong answers about a host, and
 neither of which a banner fixes.
 
-### The keystone — the gateway cannot write a `config_item` row
+### The keystone — CLOSED for preferences, 2026-09-21; open for pages and key mappings
 
-**Found 2026-09-20 by driving the real socket, and it is the single highest-value
-item left in this document.**
+**Found 2026-09-20 by driving the real socket. `BackendConfigWriter` closed
+the preference half on 2026-09-21** — the report editor, the preferences JSON
+editor and the alarm editor all write the plant's shared rows over the relay
+now, proven by four promoted e2e cases. What remains is the **second wire
+door**: `configItems.write` for `{page, asset}` and `{key_mapping}`, which the
+page editor and the key repository need, and which is also gated on the
+relayed station-build panel's frozen mirror. The rest of this section is the
+finding as it was written, because the argument it makes is what the second
+door has to satisfy too.
 
 `BackendSharedPreferences` refuses **every** shared-preference write by name —
 `setString`, `setBool`, `setInt`, `setDouble`, `setStringList`, `remove`,

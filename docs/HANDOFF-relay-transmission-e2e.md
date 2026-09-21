@@ -46,28 +46,65 @@ merge", built an adversarial e2e bench, and fixed what the review found.
 
 ---
 
-## Where this is — 2026-09-21
+## Where this is — 2026-09-21 (second pass)
 
-44 commits. Tree clean, nothing pushed, no PR opened.
+48 commits. Tree clean, nothing pushed, no PR opened.
 
-**Not feature complete.** The inventory this branch started from was 78
-features: 51 served, 9 partial, 18 unserved. This branch has moved roughly two
-into "served" and made three panel-vs-station surfaces honest, so call it
-**~53 of 78** — about two thirds, with one missing capability gating six more.
+**Not feature complete, but the keystone is half closed.** The inventory this
+branch started from was 78 features: 51 served, 9 partial, 18 unserved. This
+branch has moved roughly four into "served" and made three panel-vs-station
+surfaces honest, so call it **~55 of 78**.
+
+**The gateway can write the plant's shared configuration again.**
+`BackendConfigWriter` landed (`packages/tfc_dart/lib/core/relay/`), wired as
+the fourth slot of `IdentityAccessFamilies`, and four known-reds went green
+with it: the report editor's two, the preferences JSON editor and the alarm
+editor. What remains of item 1 is the **second wire door** —
+`configItems.write` for `{page, asset}` and `{key_mapping}` — which the two
+page-editor and two key-repository cases need.
 
 Green, and verified on a real socket:
 
 | Lane | State |
 |---|---|
-| `test/e2e_pages` | **38 pass, 13 known-red**, in UTC *and* `TZ=Europe/Copenhagen` |
+| `test/e2e_pages` | **42 pass, 9 known-red**, in UTC *and* `TZ=Europe/Copenhagen` |
 | `test/e2e_assets` | 6 pass |
 | `tfc_stateman_contract` | 991 pass |
 | `tfc_relay_protocol` | 541 pass |
+| `tfc_relay_server` | 1235 pass |
 | surface | frozen at 86 callable names, 94 members over eleven types |
 
 **Every remaining gap is pinned by a `knownRed` case that fails today**, and
 the CI job fails the day one of them starts passing without being promoted.
 That is what makes the table below a map rather than an impression.
+
+### Two traps this lane sets, and both read as a backend refusal
+
+Either one costs an afternoon, because a save that silently never happens is
+indistinguishable from a save the gateway threw away.
+
+1. **A poll must not hold the frame pipeline still.**
+   `live(tester, () => untilTrue(...))` suspends the binding's clock for its
+   whole body. A save pressed in the tree is issued in the fake-async zone,
+   and anything on its path that arms a `Timer` arms a *fake* timer, which
+   only fires when the tester pumps. Measured: 175 polls over ten seconds all
+   read the old row, and the write reached the gateway the instant the poll
+   gave up. Use **`untilTrueWhilePumping`** for any claim about a write a
+   *widget* issued; `untilTrue` is still right for a wire probe.
+2. **Zero-duration pumps never finish an animation.** `settleFrames` advances
+   real time, not the binding's clock, so an `ExpansionTile` stays mid-expand,
+   its children overlap, and `tap` on a button inside it hit-tests the row
+   header, warns, and does nothing. Pump *with a duration* after opening one.
+
+### A machine-level cause of mass red
+
+A green lane run failed 40 of 51 cases with "the gateway closed the socket"
+and one-second sign-in timeouts, then passed all 42 fifteen minutes later with
+nothing changed. The cause was **6542 orphaned `umas_stub_server.py`
+processes**, some nineteen days old, all reparented to PID 1, left behind by
+UMAS test runs across several worktrees. Load was 7.5; the lane took 7:10
+instead of 1:03. Before believing a mass failure in this lane, check
+`pgrep -f umas_stub_server.py | wc -l` and `uptime`.
 
 ---
 
@@ -76,20 +113,40 @@ That is what makes the table below a map rather than an impression.
 Each row names the acceptance test that is already written and already red.
 Nothing below needs a new test first; they exist.
 
-### 1. The keystone — the gateway cannot write a `config_item` row
+### 1. The keystone — half closed. The second door is what is left
 
-**Six of the thirteen known-reds, and the whole of the next commit.** Design
-settled and ready; see the section below for it and for the three
-preconditions, one of which is a production crash.
+**Four of the six are green.** `BackendConfigWriter` is the writer the gap
+needed; `preferences.*` now writes the plant's shared rows, attributed to the
+verified identity and joined to the audit row by one minted action id.
 
-| Known-red case | File |
-|---|---|
-| a report definition edited in the widget lands in the backend's rows | `report_editor.dart` |
-| the gateway takes a `report_config` write over `preferences.setString` | `report_editor.dart` |
-| a value saved in the JSON editor lands in the backend's shared row | `preferences.dart` |
-| an alarm title edited in the form lands in `alarm_man_config` | `alarm_editor.dart` |
-| a save made in the editor lands in the backend's page rows | `page_editor.dart` |
-| a key added in the widget and saved lands in `key_mapping` rows | `key_repository.dart` |
+| Known-red case | File | State |
+|---|---|---|
+| a report definition edited in the widget lands in the backend's rows | `report_editor.dart` | **green** |
+| the gateway takes a `report_config` write over `preferences.setString` | `report_editor.dart` | **green** |
+| a value saved in the JSON editor lands in the backend's shared row | `preferences.dart` | **green** |
+| an alarm title edited in the form lands in `alarm_man_config` | `alarm_editor.dart` | **green** |
+| a save made in the editor lands in the backend's page rows | `page_editor.dart` | red — needs `configItems.write` |
+| a key added in the widget and saved lands in `key_mapping` rows | `key_repository.dart` | red — needs `configItems.write` |
+
+**What the second door needs**, unchanged from the settled design below: a
+`configItems.write` member for `{page, asset}` and `{key_mapping}`, with the
+check key derived **server-side from the kinds** and `preference` refused by
+name — because a generic kind-graded member would have to grade a preference
+replace-set at the strictest key in the plant (`server_config_envelope`,
+`administer`) and lock a `configure` user out of saving `alarm_man_config`.
+Pin the two derived strings against `kConfigWriteKeys` with a test in
+`tfc_dart`, which can import both packages where `tfc_relay_server` cannot.
+
+The writer already has everything else it needs: `ConfigStore.readRemoteShared`
+takes a kind set, `writeItems` takes the `station` override, and the action id
+reaches it through `ActionScopedWrites`. What is missing is the wire member,
+its handler, its policy gate and the app-side caller.
+
+Both remaining cases are also gated on **item 2** — a relayed *station-build*
+panel reads pages and key mappings from its frozen local mirror, so even a
+working write would not make the editor list what the backend holds. Scope
+`configItems.write` to the mirror-less (browser) build first, as the design
+says.
 
 Undo rides on the same store: `configHistory.undo(originalActionId)`, planned
 and executed server-side so the plan never crosses the wire.
@@ -127,11 +184,16 @@ graded call instead of passing the method name.
 | an alarm acknowledge leaves an audit row | same |
 | the `station` column is the gateway's knowledge of the socket | stop trusting the label the client typed into `session.login` (D-11) |
 
-Worth knowing before starting: `actionId: method` is what reaches
-`audit_entry.action_id` for **every** relayed decision row today
-(`policy_state_man.dart:258, :291`), pinned by `policy_audit_test.dart:170`.
-So every relayed `preferences.setString` ever recorded is currently ONE action
-in the trail, whose tile names whoever wrote last.
+Worth knowing before starting: `actionId: method` still reaches
+`audit_entry.action_id` for every relayed decision row **except the
+preferences door**, which now mints one per graded call. So every relayed
+`history.createView` is still ONE action in the trail whose tile names
+whoever wrote last, and the pattern to copy is `_PolicyPreferences._graded` —
+`_requireGroup` and `_recordAllowed` already take an optional `actionId`, so
+generalising it is a per-family edit and each family's pinned expectations
+move with it. That was left deliberately narrow: a sweeping rename of a
+column's contents made in passing is invisible in the diff of a feature
+commit.
 
 ### 4. Knowledge base — no wire family at all
 
@@ -177,22 +239,41 @@ considered and rejected.
 
 ---
 
-## The keystone, and the next commit
+## The keystone — what landed, and what the design still says
 
-**The gateway cannot write a `config_item` row.** `BackendSharedPreferences`
-refuses all seven mutators by name (`backend_shared_preferences.dart:174-218`).
-It is a regression from #465, merged here at `22f18cdbb` on 2026-09-13: before
-it the backend served `Preferences.create(db: db)`, which wrote
-`flutter_preferences`, and #465 moved the plant's configuration onto
-`config_item` rows. **There is no old code to restore** — which is what the
-file's own header means by "a design, not a merge fix".
+**It was:** the gateway could not write a `config_item` row.
+`BackendSharedPreferences` refuses all seven mutators by name, a regression
+from #465 (merged here at `22f18cdbb`, 2026-09-13), with no old code to
+restore.
 
-One writer closes three families: shared preferences (report editor, alarm
-editor, preferences JSON editor), **page-editor save** and **config-store
-sync/undo** — pages and assets are `config_item` rows too, and `configItems`
-is deliberately reads-only.
+**It is now:** `BackendConfigWriter` in
+`packages/tfc_dart/lib/core/relay/backend_config_writer.dart`, minted per
+verified identity in `composeBackendRelay`'s `scopeFactory` and reaching the
+wire as the fourth slot of `IdentityAccessFamilies`. `BackendSharedPreferences`
+still refuses — it is the *composition-wide* source and the fallback when no
+writer could be built, which is exactly the fail-closed default that slot
+wants.
 
-### The design, settled by adversarial review and ready to implement
+Three properties worth re-reading before extending it, each of which is a way
+this writer could quietly destroy a plant's configuration:
+
+- **The mirror is empty and must never delete.** `writeItems` replaces within
+  kinds and this store's snapshot is permanently empty, so a save derived from
+  it would remove every shared row of those kinds. Every write reads the
+  plant's rows from Postgres first (`ConfigStore.readRemoteShared`) and hands
+  them over as both the base of the replace set and as `derivedFrom`, which is
+  what the diff, the sort keys and the compare-and-swap all run against.
+  Mutation-verified: dropping `derivedFrom` reddens six cases.
+- **One call is one action.** The id is minted in the policy decorator, before
+  the check, and reaches the writer through `ActionScopedWrites` — a
+  capability asked for by type, carried in a `Zone`. Not a parameter (that
+  puts a client-supplied action id on the wire) and not a field (json_rpc_2
+  dispatches without awaiting between frames, and this writer awaits a read of
+  the plant before it writes).
+- **Attribution is per call.** One gateway writes for every panel, so `who`,
+  `roleName` and `station` are arguments rather than state.
+
+### The design, settled by adversarial review — the parts still unimplemented
 
 **One backend mechanism, two wire doors.** Every write of every kind already
 funnels to `ConfigStore.writeItems` — preferences via `SharedRowPreferences`
@@ -244,7 +325,22 @@ funnels to `ConfigStore.writeItems` — preferences via `SharedRowPreferences`
   from a constant; and the app's rule that a ready plan writing an empty diff
   is a contradiction must be mirrored.
 
-### Before it lands — three things that are not optional
+### Preconditions — two of three are done
+
+1. **`libsqlite3-0` is in the backend image** (`docker/backend/Dockerfile`),
+   and `BackendConfigWriter.create` degrades to null on any failure, with a
+   test that injects a throwing mirror factory. Done.
+2. **The reserved-key refusal is in** — `key_mappings` is refused by name for
+   every session and every group, at the layer where the write lands, and
+   bookkeeping ids survive every `clear`. Done.
+3. **`ConfigStoreUnsafePoolException` is still open.** It fires when the
+   backend's pool is > 1 (`config_store.dart`). Default is 1 and unset in
+   compose, so it works today — but a deployment that raises
+   `CENTROID_DB_MAX_POOL_CONNECTIONS` refuses every relayed configuration
+   write, with a message about a pool that names nothing an operator set.
+   Attach a dedicated pool-of-one `Database` or document it at the env knob.
+
+### The original three, as written when none were done
 
 1. **`libsqlite3` is not in the backend image.** `docker/backend/Dockerfile:78-80`
    installs `ca-certificates` and nothing else; `sqlite3` 2.9.4 `dlopen`s
@@ -378,8 +474,14 @@ CENTROIDX_E2E_PAGES=1 CENTROIDX_E2E_PAGES_KNOWN_RED=1 \
   flutter test test/e2e_pages --concurrency=1
 ```
 
-The CI job `e2e-pages-test` runs all four and reconciles the counts, so a
-switch that stops reaching the tests is an error rather than a green run.
+The CI job `e2e-pages-test` runs all four and reconciles the counts (42 green,
+9 known-red), so a switch that stops reaching the tests is an error rather
+than a green run.
+
+**Before believing a mass failure in this lane, check the machine.** See
+"A machine-level cause of mass red" above: 40 of 51 cases failed with socket
+errors under load 7.5 and all 42 passed fifteen minutes later with nothing
+changed.
 
 ## Where the rest is written down
 
