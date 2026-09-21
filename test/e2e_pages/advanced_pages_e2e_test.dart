@@ -115,8 +115,11 @@ library;
 /// A `knownRed` that has quietly gone green is a case protecting nothing, so
 /// the CI job runs the gated set too — see `e2e-pages-test`.
 ///
-/// Everything else in here has run: 35 cases pass and 13 are `knownRed`
-/// against defects listed in their own descriptions.
+/// Everything else in here has run: 42 cases pass and 9 are `knownRed`
+/// against defects listed in their own descriptions. It was 38 and 13 until
+/// the gateway learned to write a `config_item` row — the report editor's two
+/// cases, the preferences JSON editor and the alarm editor were one gap, and
+/// they went green together.
 ///
 /// ## Running it
 ///

@@ -297,6 +297,46 @@ Future<void> untilTrue(FutureOr<bool> Function() predicate,
   }
 }
 
+/// Waits for [predicate] — a claim about the backend — **while the tree keeps
+/// being pumped**.
+///
+/// [untilTrue] is the right tool for a claim about work that is already
+/// entirely in the real zone: a dial, a sign-in, a read-back after a wire
+/// probe. It is the wrong one for a claim about a write a WIDGET issued,
+/// and that distinction cost an afternoon.
+///
+/// A save pressed in the tree is issued in the binding's fake-async zone.
+/// Its awaits are microtasks and run anywhere, but anything on the path that
+/// arms a `Timer` — a send-buffer flush, a debounce, the relay client's own
+/// scheduling — arms a FAKE timer, and a fake timer only fires when the
+/// tester pumps. `runAsync` suspends the fake clock for its whole body, so a
+/// poll written as `live(tester, () => untilTrue(...))` holds the frame
+/// pipeline still for the entire window and the write it is waiting for
+/// cannot make progress. Measured on the alarm editor: 175 polls over ten
+/// seconds all read the old row, and the write reached the gateway the
+/// instant the poll gave up.
+///
+/// So this alternates: pump a frame in the fake zone, then check the backend
+/// in the real one. Both clocks advance, and a widget's write is allowed to
+/// finish while the claim about it is being tested.
+Future<void> untilTrueWhilePumping(
+  WidgetTester tester,
+  Future<bool> Function() predicate, {
+  Duration within = const Duration(seconds: 30),
+  String? describe,
+}) async {
+  final stopwatch = Stopwatch()..start();
+  while (true) {
+    if (await live(tester, predicate)) return;
+    if (stopwatch.elapsed > within) {
+      fail('timed out after ${stopwatch.elapsed.inMilliseconds}ms waiting for '
+          '${describe ?? 'a condition'}');
+    }
+    await tester.pump(const Duration(milliseconds: 50));
+    await breathe(tester);
+  }
+}
+
 /// Lets sockets deliver and the plant tick: one real sleep under the binding.
 Future<void> breathe(WidgetTester tester,
     [Duration gap = const Duration(milliseconds: 50)]) =>

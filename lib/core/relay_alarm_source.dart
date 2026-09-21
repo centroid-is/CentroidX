@@ -483,9 +483,33 @@ class RelayAlarmSource implements AlarmSource {
     alarms.add(Alarm(config: alarm));
   }
 
+  /// The last rule save that failed, or null when the last one worked.
+  ///
+  /// Same shape and same reason as [historyError]: a fault that only reaches
+  /// `stderr` is a fault nobody on a plant floor ever sees, and an editor that
+  /// says "Alarm updated!" over a write the plant refused is the worst of the
+  /// two failures this class has.
+  String? get configError => _configError;
+  String? _configError;
+
   void _saveConfig() async {
-    await preferences.setString(
-        'alarm_man_config', jsonEncode(config.toJson()));
+    try {
+      await preferences.setString(
+          'alarm_man_config', jsonEncode(config.toJson()));
+      _configError = null;
+    } on Object catch (error, stack) {
+      // Caught rather than left to the zone. An un-awaited `async` body that
+      // throws becomes an unhandled asynchronous error in whichever zone the
+      // edit happened in — which on a panel is nowhere, and in a test is a
+      // failure attributed to whatever ran next. Recorded and logged, so the
+      // thing that went wrong is named where somebody can read it.
+      _configError = '$error';
+      _log.e('the alarm rules could not be saved to the backend; this panel '
+          "holds an edit the plant does not. The editor's own confirmation "
+          'was premature — the mutators are fire-and-forget, which is the '
+          "gap this class's header names.",
+          error: error, stackTrace: stack);
+    }
   }
 
   /// See the top-level [filterAlarms] — the behaviour lives there so a

@@ -52,9 +52,13 @@ void alarmEditorCases(BackendBench Function() bench) {
       await dismount(tester);
     });
 
-    knownRed(
-        'KNOWN RED (live gap): a title edited in the form lands in the '
-        'backend\'s alarm_man_config row', (tester) async {
+    testWidgets(
+        'a title edited in the form lands in the backend\'s '
+        'alarm_man_config row', (tester) async {
+      // Green since `BackendConfigWriter`. The write still goes out
+      // fire-and-forget — `RelayAlarmSource`'s header names that gap and it
+      // is unchanged — so what this case proves is that the row changes,
+      // not that the editor would have been told if it had not.
       await useDesktopSurface(tester, size: const Size(1400, 1800));
       final panel = await live(tester, () async {
         final p = await Panel.dial(bench().port);
@@ -94,14 +98,14 @@ void alarmEditorCases(BackendBench Function() bench) {
           within: const Duration(seconds: 10),
           describe: 'the editor\'s own "Alarm updated!" snackbar');
 
-      await live(tester, () => untilTrue(() async {
-            final row = await bench().sharedPreference(_alarmKey);
-            final decoded = jsonDecode('$row') as Map<String, dynamic>;
-            return (decoded['alarms'] as List)
-                .any((a) => a['title'] == _editedTitle);
-          },
-          within: const Duration(seconds: 10),
-          describe: 'the backend\'s alarm_man_config to hold the new title'));
+      await untilTrueWhilePumping(tester, () async {
+        final row = await bench().sharedPreference(_alarmKey);
+        final decoded = jsonDecode('$row') as Map<String, dynamic>;
+        return (decoded['alarms'] as List)
+            .any((a) => a['title'] == _editedTitle);
+      },
+          within: const Duration(seconds: 15),
+          describe: 'the backend\'s alarm_man_config to hold the new title');
       await dismount(tester);
     });
 

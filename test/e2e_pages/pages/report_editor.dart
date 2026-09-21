@@ -78,22 +78,17 @@ void reportEditorCases(BackendBench Function() bench) {
       await dismount(tester);
     });
 
-    knownRed(
-        'KNOWN RED (found here): an edit made in the widget lands in the '
-        'BACKEND\'s shared rows', (tester) async {
-      // Red for ONE reason, and it is not this page's:
-      // `BackendSharedPreferences.setString` refuses every shared preference
-      // write by name. Its own library header calls that "a live gap, not a
-      // resolved one — gateway panels could write shared preferences through
-      // this route before the merge, and cannot now", and names what closing
-      // it needs: a backend-side writer that shares the relay's `action_id`
-      // with its audit row.
-      //
-      // So the read half of this page works over the relay (the case above)
-      // and the save does not — and the same gap is what reddens the
-      // preferences JSON editor and the alarm editor. One fix turns all
-      // three green, which is why this is pinned here rather than worked
-      // around.
+    testWidgets(
+        'an edit made in the widget lands in the BACKEND\'s shared rows',
+        (tester) async {
+      // Red for ONE reason, and it was not this page's:
+      // `BackendSharedPreferences.setString` refused every shared preference
+      // write by name — "a live gap, not a resolved one", in its own header's
+      // words, with the fix it needed named there: a backend-side writer
+      // sharing the relay's `action_id` with its audit row. That writer is
+      // `BackendConfigWriter`, and landing it turned this case, the
+      // preferences JSON editor and the alarm editor green together, which is
+      // why all three were pinned rather than worked around.
       // The strongest claim this page can make, and the one a read-only fix
       // would fail: the bytes at the far end change. The save goes through
       // `GuardedReportStore` and out over `preferences.setString`, so what is
@@ -145,9 +140,9 @@ void reportEditorCases(BackendBench Function() bench) {
       await dismount(tester);
     });
 
-    knownRed(
-        'KNOWN RED (found here): the gateway takes a report_config write '
-        'from an engineer over preferences.setString', (tester) async {
+    testWidgets(
+        'the gateway takes a report_config write from an engineer over '
+        'preferences.setString', (tester) async {
       // The door the editor's save goes through, tested on its own — and the
       // case that says exactly where the gap is, so a failure of the one
       // above cannot be mistaken for a widget that never issued the write.

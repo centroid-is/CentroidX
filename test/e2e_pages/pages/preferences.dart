@@ -65,15 +65,19 @@ void preferencesCases(BackendBench Function() bench) {
       await dismount(tester);
     });
 
-    knownRed(
-        'KNOWN RED (live gap): a value saved in the JSON editor lands in the '
-        'backend\'s shared row', (tester) async {
-      // `BackendSharedPreferences.setString` throws `UnsupportedError`; the
-      // relay carries it as handlerFailed; the page shows "Not saved". The
-      // correct behaviour — the one the page's Save button promises — is the
-      // row changing. Closing the gap "means a backend-side writer that
-      // shares the relay's action_id with its audit row — a design, not a
-      // merge fix" (backend_shared_preferences.dart's header).
+    testWidgets(
+        'a value saved in the JSON editor lands in the backend\'s shared row',
+        (tester) async {
+      // Red until the gateway's `config_item` writer landed:
+      // `BackendSharedPreferences.setString` threw `UnsupportedError`, the
+      // relay carried it as handlerFailed, and the page showed "Not saved".
+      // `BackendConfigWriter` is the writer its own header asked for — one
+      // that shares the relay's action id with the audit row.
+      //
+      // Two fixture faults were hiding behind that gap and had to go first:
+      // the Save tap missed (see below), and the poll for the backend row
+      // held the frame pipeline still while it waited (see
+      // `untilTrueWhilePumping`).
       await useDesktopSurface(tester, size: const Size(1200, 2600));
       final panel = await live(tester, () async {
         final p = await Panel.dial(bench().port);
@@ -96,6 +100,13 @@ void preferencesCases(BackendBench Function() bench) {
       await tester.tap(find.textContaining(_alarmKey).first);
       await untilFound(tester, find.text('Format JSON'),
           describe: 'the JSON editor for $_alarmKey');
+      // The expansion animation has to actually finish. Every pump in this
+      // lane is zero-duration (`settleFrames` advances real time, not the
+      // binding's clock), so an implicit animation never progresses: the tile
+      // sits mid-expand, its children overlap, and the Save button's centre
+      // hit-tests the row below it. The tap then warns and does nothing,
+      // which reads exactly like a backend that refused the write.
+      await tester.pump(const Duration(milliseconds: 500));
       final editor = find.byWidgetPredicate((w) =>
           w is TextField &&
           (w.controller?.text.contains('"alarms"') ?? false));
@@ -105,15 +116,29 @@ void preferencesCases(BackendBench Function() bench) {
       (decoded['alarms'] as List).first['description'] = _editedDescription;
       await tester.enterText(editor, jsonEncode(decoded));
       await settleFrames(tester);
-      await tester.tap(find.widgetWithText(ElevatedButton, 'Save').first);
+      // Scrolled into view before it is tapped. The expanded row puts Save
+      // below the fold on this surface, and a `tap` on an off-screen widget
+      // derives an offset that hit-tests something else entirely — it warns
+      // and carries on, so the save never happens and the case fails as
+      // though the backend had refused it.
+      final save = find.widgetWithText(ElevatedButton, 'Save').first;
+      await tester.ensureVisible(save);
+      // One pump, and no real-time gap, between scrolling it into view and
+      // tapping it. `settleFrames` here let the list rebuild underneath the
+      // gesture — the tap then derived an offset that hit-tested the row
+      // header instead of the button, warned, and carried on, so the save
+      // never happened and the case failed as though the backend had
+      // refused it.
+      await tester.pump();
+      await tester.tap(save);
       await settleFrames(tester, frames: 10);
 
-      await live(tester, () => untilTrue(() async {
-            final row = await bench().sharedPreference(_alarmKey);
-            return '$row'.contains(_editedDescription);
-          },
-          within: const Duration(seconds: 10),
-          describe: 'the backend\'s $_alarmKey row to hold the edit'));
+      await untilTrueWhilePumping(tester, () async {
+        final row = await bench().sharedPreference(_alarmKey);
+        return '$row'.contains(_editedDescription);
+      },
+          within: const Duration(seconds: 15),
+          describe: 'the backend\'s $_alarmKey row to hold the edit');
       await dismount(tester);
     });
 
