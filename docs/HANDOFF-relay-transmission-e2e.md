@@ -1,8 +1,10 @@
 # Handoff — `relay-transmission-e2e`
 
 Worktree `../tfc-hmi-worktrees/relay-transmission-e2e`,
-branched off `origin/feat/relay-pipe` (PR #463). 56 commits, tree clean.
-Nothing pushed; no PR opened.
+branched off `origin/feat/relay-pipe` (PR #463). **Pushed** — this work IS
+PR #463 now, and the worktree is in sync with it (0/0). Development continues
+on that branch; `git push origin relay-transmission-e2e:feat/relay-pipe` is a
+fast-forward from here.
 
 **The plan lives in `docs/websocket-feature-completeness.md`.** Read that
 first — this file is only the state of the work.
@@ -48,7 +50,7 @@ merge", built an adversarial e2e bench, and fixed what the review found.
 
 ## Where this is — 2026-09-21 (third pass)
 
-56 commits.
+58 commits, pushed to `feat/relay-pipe` (PR #463).
 
 **The keystone is closed, end to end.** A relayed panel now reads *and*
 writes the plant's shared configuration: preferences through
@@ -102,6 +104,49 @@ indistinguishable from a save the gateway threw away.
    real time, not the binding's clock, so an `ExpansionTile` stays mid-expand,
    its children overlap, and `tap` on a button inside it hit-tests the row
    header, warns, and does nothing. Pump *with a duration* after opening one.
+
+### Open decisions somebody has to make
+
+**PR #588 (`bench/fake-plant`) and this branch both add `packages/tfc_plant_sim`.**
+An architecture review found this branch's copy is a strict content superset
+(it adds `Actuation` recording, nested structs, two test files, and
+independently contains 588's motion-timer fix); the commits are different, so
+git sees add/add. **#588 should own the package.** Both also define a
+`plant-sim-test` job in `.github/workflows/test.yml`, with different text —
+whoever lands second must resolve to ONE job, or the workflow is invalid or a
+job is silently dropped.
+
+**Do not merge #588 into this branch to resolve it.** Tried, aborted: it
+throws **29 conflicts** and #588 touches roughly **380 golden PNGs** plus
+widget and page code. Goldens are Linux-rendered through `scripts/goldens.sh`
+(see [[golden-raster-is-portable-except-text]]); resolving them on a Mac
+produces wrong bytes. **If the repo squash-merges, #588 must land first.**
+
+**This handoff is in the tree, and arguably should not be.** The same review
+noted no `HANDOFF-*.md` exists under `docs/` on `origin/main` — it is session
+state, not documentation of the product. Kept because it is what resumes this
+work; move it to the PR description if #463 is about to merge.
+
+### Unverified at the point this was written
+
+The compare-and-swap fix (`0bc62bca6`) landed after the last full lane run.
+Re-run before trusting the branch:
+
+```
+CENTROIDX_E2E_PAGES=1 flutter test test/e2e_pages --concurrency=1
+flutter test test/
+```
+
+`tfc_dart`'s config and relay suites (450 + 28) and `dart analyze` are green
+on it. The change is additive and only bites when `baseRevisions` is passed,
+which only the relayed `configItems.replace` path does — so the blast radius
+is confined, but it has not been proven.
+
+Also unread: the tail of that review's answer on the `preferences.*` door. It
+said the door "has the same read-outside-lock shape but carries no
+base-revision contract; its only exposure is the same unchanged-but-deleted
+gap, which loses nothing the caller intended" — and was cut off there. Worth
+finishing before calling the write path done.
 
 ### Pre-existing red, proven not this branch's
 
