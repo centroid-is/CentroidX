@@ -46,58 +46,134 @@ merge", built an adversarial e2e bench, and fixed what the review found.
 
 ---
 
-## Outstanding, in order
+## Where this is — 2026-09-21
 
-1. **PLC owns the momentary latch** (ruled 2026-09-20, Jón). Not this
-   branch's work. What this branch owes when it lands: one e2e per asset —
-   press, kill the link, assert the bit falls at the node. **The
-   `ConveyorGate` pusher and Festo VTUG coil FBs were never read**; only
-   `FB_MButton` (safe, self-clearing) and `FB_ATV320` (latches) were. Read the
-   plan's Tier 1 for the catch about comms watchdogs under the relay.
-2. ~~Five untriaged page cases~~ — **done 2026-09-20.** All five run down:
-   one product defect (`page_editor.dart` `setState` after dispose, fixed),
-   three fixture faults (a green case seeded by a `knownRed` one; a finder on
-   a title that is never rendered; a page bounded by a clock `testWidgets`
-   freezes), and one that was never a failure — it only fails under the wrong
-   Flutter SDK. Each case's story is in the file's own doc.
+44 commits. Tree clean, nothing pushed, no PR opened.
 
-   The `knownRed` set had never been run either, and running it found **two of
-   fifteen already green** — the history-view read floor this branch fixed,
-   and `browse.fetchDetail` against a forged node kind, whose case demanded
-   the wrong remedy (a refusal, where the shipped fix answers as for a node
-   that does not exist — a refusal would confirm the node is there). Both are
-   ordinary cases now.
+**Not feature complete.** The inventory this branch started from was 78
+features: 51 served, 9 partial, 18 unserved. This branch has moved roughly two
+into "served" and made three panel-vs-station surfaces honest, so call it
+**~53 of 78** — about two thirds, with one missing capability gating six more.
 
-   The lane is green at **35 pass / 13 known-red** and has a CI job,
-   `e2e-pages-test`, which runs the gated set too and **fails if a known-red
-   case passes** — that is how the two above would have been caught the day
-   their fixes landed rather than months later.
+Green, and verified on a real socket:
 
-   **It surfaced one new finding, below.**
-3. ~~Panel-vs-station confusions~~ (plan Tier 1b) — **done 2026-09-20** for
-   the three surfaces that act on the host. `lib/widgets/this_panel_notice.dart`
-   names both machines and renders nothing on a direct station; it is wired
-   into **IP settings** and **About Linux**. The **database stats pane** got
-   its own sentence instead of a banner.
+| Lane | State |
+|---|---|
+| `test/e2e_pages` | **38 pass, 13 known-red**, in UTC *and* `TZ=Europe/Copenhagen` |
+| `test/e2e_assets` | 6 pass |
+| `tfc_stateman_contract` | 991 pass |
+| `tfc_relay_protocol` | 541 pass |
+| surface | frozen at 86 callable names, 94 members over eleven types |
 
-   Two corrections to the plan came out of it. **`lib/widgets/tfc_operations.dart`
-   is dead code** — `OperationModeAppBarLeftWidgetProvider` is never
-   constructed and `globalAppBarLeftWidgetProvider` answers `null` with no
-   override anywhere in the repository, so the Start/Stop/Cleaning control
-   never renders on any transport. And **About Linux is the worse hazard of
-   the two live ones**, not IP settings: its power buttons restart whichever
-   machine the page is describing.
+**Every remaining gap is pinned by a `knownRed` case that fails today**, and
+the CI job fails the day one of them starts passing without being promoted.
+That is what makes the table below a map rather than an impression.
 
-   The fix **names**, it does not refuse. A relayed panel is a real computer
-   whose network may genuinely need configuring, and locking the page would
-   break a legitimate job to prevent a misreading.
-4. **Six dark families** — reports, knowledge base, config history,
-   page-editor save, config-store sync, chat/MCP. One null darkens them all:
-   `lib/providers/database.dart:50-52`.
-5. **Audit rows for tag writes** — needs the one-action-id decision first, or
-   one operator action becomes two row sets under two ids.
-6. **Tag bindings refresh** runs only on the token-file poll; should load
-   before `server.start()` and fail closed on a failed first load.
+---
+
+## The remaining work, in order
+
+Each row names the acceptance test that is already written and already red.
+Nothing below needs a new test first; they exist.
+
+### 1. The keystone — the gateway cannot write a `config_item` row
+
+**Six of the thirteen known-reds, and the whole of the next commit.** Design
+settled and ready; see the section below for it and for the three
+preconditions, one of which is a production crash.
+
+| Known-red case | File |
+|---|---|
+| a report definition edited in the widget lands in the backend's rows | `report_editor.dart` |
+| the gateway takes a `report_config` write over `preferences.setString` | `report_editor.dart` |
+| a value saved in the JSON editor lands in the backend's shared row | `preferences.dart` |
+| an alarm title edited in the form lands in `alarm_man_config` | `alarm_editor.dart` |
+| a save made in the editor lands in the backend's page rows | `page_editor.dart` |
+| a key added in the widget and saved lands in `key_mapping` rows | `key_repository.dart` |
+
+Undo rides on the same store: `configHistory.undo(originalActionId)`, planned
+and executed server-side so the plan never crosses the wire.
+
+### 2. The relayed panel's configuration mirror — two sources of truth
+
+**Two known-reds, and Fable's advice is to defer it by name rather than fold
+it into the writer.** `lib/providers/config_store.dart:146-150` detaches the
+remote when `databaseProvider` is null, so a **station-build** panel connected
+to a gateway holds a mirror frozen at boot and nothing refreshes it. The
+relayed bootstrap copy of `key_mappings` lands in the local *preference*
+cache, not in the mirror's `key_mapping` rows.
+
+| Known-red case | File |
+|---|---|
+| the key repository lists the plant's key mappings | `key_repository.dart` |
+| the editor lists a page that exists at the backend | `page_editor.dart` |
+
+Closing it means deciding **which of two stores a relayed station panel
+trusts**, and re-pointing `PageManager` (`page_manager.dart:104`),
+`key_repository.dart:1245` and the undo controller at the relayed snapshot.
+Client architecture, unrelated to the backend writer. The browser build has no
+mirror and none of this problem, which is why `configItems.write` should be
+scoped to it first.
+
+### 3. Audit rows for what the panel actually does
+
+**Three known-reds.** The one-action-id decision they were blocked on is now
+answered (see the design below): the decorator mints `newActionId()` per
+graded call instead of passing the method name.
+
+| Known-red case | What it needs |
+|---|---|
+| a tag write from the panel leaves an audit row | record on the write path |
+| an alarm acknowledge leaves an audit row | same |
+| the `station` column is the gateway's knowledge of the socket | stop trusting the label the client typed into `session.login` (D-11) |
+
+Worth knowing before starting: `actionId: method` is what reaches
+`audit_entry.action_id` for **every** relayed decision row today
+(`policy_state_man.dart:258, :291`), pinned by `policy_audit_test.dart:170`.
+So every relayed `preferences.setString` ever recorded is currently ONE action
+in the trail, whose tile names whoever wrote last.
+
+### 4. Knowledge base — no wire family at all
+
+**One known-red**, and the largest single piece left. `guarded_knowledge_stores.dart`
+has no `relayed_` twin. `TechDocIndex` carries `storeDocument`,
+`updateSections`, `renameDocument`, `deleteDocument`, `updatePdfBytes` and
+`search`, plus `PlcCodeIndex`'s own members — and `Uint8List` PDF payloads
+against a 1 MiB frame ceiling, so it needs chunking or an out-of-band route.
+Budget it as its own milestone, not an afternoon.
+
+### 5. The smaller ones
+
+- **Server config attribution line** (one known-red): it says "a station
+  account, not a person" over a save that IS recorded against a person.
+- **Chat / MCP** — `StateError('Database not connected')`, behind
+  `kChatEnabled` (default true).
+- **First-account creation** — impossible from a relayed panel.
+- **UMAS browse** — dials its own `UmasClient` over TCP **from the panel**, so
+  on a relayed deployment it reaches the wrong network entirely
+  (`umas_browse.dart:375-420`).
+- **Tag bindings refresh** runs only on the token-file poll; should load
+  before `server.start()` and fail closed on a failed first load.
+- **PLC owns the momentary latch** (ruled 2026-09-20). Not this branch's work.
+  What this branch owes when it lands: one e2e per asset — press, kill the
+  link, assert the bit falls at the node. **The `ConveyorGate` pusher and
+  Festo VTUG coil FBs were never read**; only `FB_MButton` (safe,
+  self-clearing) and `FB_ATV320` (latches) were.
+
+### What is deliberately NOT in scope
+
+**Cameras and media.** Deferred by the owner.
+
+### Relayed browse — a trap, not a gap
+
+The gateway's `browse.*` serves the **key namespace** (`HALL1.CN01.speed_hz`),
+deliberately: answered from the key mappings so a dead PLC cannot make the key
+picker spin (`backend_browse.dart`'s own header). The app's only browse caller
+is the key-mapping editor, which needs **raw OPC UA node ids** to author a
+mapping for a node nobody has mapped yet. Wiring the relayed source into
+`browseOpcUaNode` would hand that editor the wrong address space. Authoring a
+new key mapping over the relay needs an upstream browse, which 13-CONTEXT
+considered and rejected.
 
 ---
 
@@ -190,13 +266,10 @@ funnels to `ConfigStore.writeItems` — preferences via `SharedRowPreferences`
 
 ### Deferred by name, not forgotten
 
-**The relayed *station-build* panel's mirror.** `config_store.dart:146-150`
-detaches the remote when the database is null, so such a panel holds a mirror
-frozen at boot while `PageManager` never consults the relayed rows on that
-build (`page_manager.dart:104`). Every save would carry hours-old revs and
-conflict. That is a client-side two-sources-of-truth design, untouched by any
-backend writer: scope `configItems.write` to the mirror-less (browser) build
-and leave the station-build refusal in place with a message.
+**The relayed station-build panel's mirror** — item 2 of the map above. Scope
+`configItems.write` to the mirror-less (browser) build in this PR and leave
+the station-build refusal in place with a message; the rest is a client
+design, untouched by any backend writer.
 
 ### Known, pre-existing, now visible
 
@@ -205,32 +278,6 @@ initiated, not after it completes** (`policy_state_man.dart:1530-1532`). Every
 family does this. It is harmless while the backend cannot refuse; the moment
 it can — CAS conflict, offline, pool — that row claims a save that never
 landed.
-
-### The earlier notes
-
-Fable's design answer, which I have not yet implemented:
-
-- The decorator mints `newActionId()` in `_PolicyPreferences._graded`, records
-  it on the deny/allow row, puts the method name in `member`, and hands
-  attribution to the writer through an **optional interface**
-  (`_source is AttributedPreferenceWrites`). Not a `PreferencesApi`
-  parameter — that would put a client-supplied action id on the wire, the
-  forgery surface `AuditApi` refuses a write member for. Not a per-call field
-  — json_rpc_2 dispatches concurrently and the source is composition-wide.
-- **`actionId: method` is what reaches `audit_entry.action_id` today** for
-  every relayed decision row, pinned by `policy_audit_test.dart:170`. So every
-  relayed `preferences.setString` ever recorded is ONE action in the trail,
-  whose tile names whoever wrote last. Fixing that is part of this work.
-- **Before the writer lands**, add a reserved-key refusal on `remove` and
-  `clear(allowList:)`: they are only group-graded, so today the blanket
-  refusal is the only thing stopping a `configure` session deleting the
-  gateway's own `key_mappings` row over the wire.
-- The bench already builds a `ConfigStore` over the backend database with an
-  in-memory mirror (`backend_bench.dart:287-296`); whether the compare-and-swap
-  is sound over an unsynced mirror is the open question, and a Postgres-direct
-  `writeItems` reading the live rev is the honest alternative.
-
----
 
 ## New finding — the relayed audit trail hides the newest rows under clock skew
 
@@ -305,8 +352,40 @@ cleanup.
   from the worktree, but verify rather than trust a mid-edit tree.
 
 ## How to run the lanes
+
+**Put the pinned SDK on PATH inline, every time.** `which flutter` is
+homebrew's 3.41.9 and `.flutter-version` pins 3.44.9; shell state does not
+survive between commands, so an `export` in one is gone in the next.
+
 ```
+export PATH="$HOME/flutter-sdks/$(cat .flutter-version)/bin:$PATH"
+
 cd packages/tfc_relay_local && dart test --exclude-tags "db || soak"
 CENTROIDX_E2E_ASSETS=1 flutter test test/e2e_assets/ --concurrency=1
-CENTROIDX_E2E_PAGES=1  flutter test test/e2e_pages   --concurrency=1   # needs docker
+
+# The pages lane. Needs docker.
+CENTROIDX_E2E_PAGES=1 flutter test test/e2e_pages --concurrency=1
+
+# The same lane under a clock that is not UTC. NOT optional — it is the only
+# thing that catches the text-comparison defect class, and it caught a real
+# one that every UTC run passed.
+TZ=Europe/Copenhagen CENTROIDX_E2E_PAGES=1 \
+  flutter test test/e2e_pages --concurrency=1
+
+# The gated set. Every KNOWN RED case must still FAIL; one that passes is a
+# case protecting nothing and the CI job fails on it.
+CENTROIDX_E2E_PAGES=1 CENTROIDX_E2E_PAGES_KNOWN_RED=1 \
+  flutter test test/e2e_pages --concurrency=1
 ```
+
+The CI job `e2e-pages-test` runs all four and reconciles the counts, so a
+switch that stops reaching the tests is an error rather than a green run.
+
+## Where the rest is written down
+
+- **`docs/websocket-feature-completeness.md`** — the plan, derived from 78
+  features with `file:line` evidence, and the keystone section.
+- **The `knownRed` case descriptions themselves.** Each names the defect it
+  pins, in its own words, at the place a reader meets it. They are the
+  specification for the work above; the table in this file is only an index
+  into them.
