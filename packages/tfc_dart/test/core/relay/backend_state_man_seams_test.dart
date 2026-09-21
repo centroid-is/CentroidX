@@ -125,6 +125,15 @@ final Map<String, Refusal> refusals = <String, Refusal>{
     collaborator: 'ConfigItemsApi',
     invoke: (s) async => s.configItems,
   ),
+  // The sixth family, and this branch's own: `config_change`, the log of who
+  // changed which piece of configuration. Same argument again — an adapter
+  // composed without it that answered an empty page would be telling a panel
+  // the plant's configuration has never been touched, which is the shape of
+  // an audit surface that has been quietly switched off.
+  'configHistory': (
+    collaborator: 'ConfigHistoryApi',
+    invoke: (s) async => s.configHistory,
+  ),
 };
 
 /// The one member that must NOT refuse.
@@ -235,13 +244,14 @@ void main() {
       expect(covered.difference(declared), isEmpty,
           reason: 'the roster names something StateManApi no longer declares; '
               'a stale entry makes the count above meaningless');
-      expect(declared, hasLength(19),
-          reason: 'eighteen members refuse and dispose does not; if this '
+      expect(declared, hasLength(20),
+          reason: 'nineteen members refuse and dispose does not; if this '
               'number moved, the interface grew and somebody owes the new '
               'member a decision. It moved from 14 to 18 when plan 17-03 added '
-              'the four access families, and to 19 when main\'s relational '
-              'config brought `configItems`; each decision is recorded in the '
-              'roster above');
+              'the four access families, to 19 when main\'s relational '
+              'config brought `configItems`, and to 20 when this branch put '
+              'the configuration history on the wire as `configHistory`; each '
+              'decision is recorded in the roster above');
     });
   });
 }

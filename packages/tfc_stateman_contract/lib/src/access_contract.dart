@@ -693,7 +693,7 @@ Future<void> checkSetUserPasswordDoesNotEchoTheSecret(StateManApi api) async {
 // Audit (read-only, graded `users`)
 // -----------------------------------------------------------------------------
 
-/// The three audit reads take `users` — the trail of the who-may-do-what
+/// The four audit reads take `users` — the trail of the who-may-do-what
 /// concern answers to the group that owns it, and an ungated trail would be
 /// every write anyone ever made readable by whoever reached the port. Refused
 /// to a session holding nothing (and to `operate` alone), answered to `users`.
@@ -707,6 +707,11 @@ Future<void> checkAuditReadsRefuseNothingAnswerUsers(StateManApi api) async {
       ('memberCountsByAction()',
           () => api.audit.memberCountsByAction(const [])),
       ('distinctWho()', () => api.audit.distinctWho()),
+      // The fourth read, added when the trail learned to list the rows
+      // beneath one action. Same gating as the other three and named here
+      // rather than assumed: a read that reached the wire ungated would hand
+      // whoever reached the port the detail of every decision ever made.
+      ('entriesByAction()', () => api.audit.entriesByAction(const [])),
     ]) {
       final refusal =
           await within(_thrown(read), '$name for ${denied.roleName}');
@@ -724,6 +729,8 @@ Future<void> checkAuditReadsRefuseNothingAnswerUsers(StateManApi api) async {
       'memberCountsByAction() for users');
   await within(_expectNoThrow(() => api.audit.distinctWho()),
       'distinctWho() for users');
+  await within(_expectNoThrow(() => api.audit.entriesByAction(const [])),
+      'entriesByAction() for users');
 }
 
 /// Every decision the access families make lands a row in the trail — the

@@ -382,6 +382,32 @@ const Map<String, Map<String, Object?>> _validParams = {
   // argument, which is why their absence from this table read as "the
   // handshake gate refuses them" — the gate was fine and the request was
   // malformed, two failures that look identical from the client end.
+  // The three reads that took the configuration history off
+  // `databaseProvider`, plus the audit family's fourth. Each one was on the
+  // wire with no row here, so its post-hello half was never exercised and the
+  // handshake-gate sweep answered `invalid parameters` instead of reaching
+  // the handler.
+  AccessMethods.auditEntriesByAction: {
+    'actionIds': ['act-wire-probe']
+  },
+  // The query envelope, spelled through the DTO rather than as a literal
+  // map: a hand-written shape here would pass while disagreeing with what
+  // `ConfigHistoryQueryParams.fromJson` accepts, which is precisely the
+  // divergence this table exists to catch.
+  AccessMethods.configHistoryChangesPage: {
+    'query': {
+      'entityPrefix': '',
+      'kindWireNames': <String>[],
+      'scopeWireNames': <String>[],
+      'limit': 1,
+    }
+  },
+  AccessMethods.configHistoryChangesByAction: {
+    'actionIds': ['act-wire-probe']
+  },
+  AccessMethods.configHistoryCountsByAction: {
+    'actionIds': ['act-wire-probe']
+  },
   AccessMethods.configItemsItems: {'kind': 'page'},
   AccessMethods.configItemsFingerprint: {
     'kinds': ['page', 'asset']
@@ -465,7 +491,7 @@ void main() {
             'with no params row cannot have its post-hello half exercised, '
             'and a row naming nothing on the wire is a claim about surface '
             'that does not exist');
-    expect(AccessMethods.all, hasLength(36),
+    expect(AccessMethods.all, hasLength(40),
         reason: 'twenty-eight was the count the audit cut settled on '
             '(accessTemplates.template removed, no caller anywhere); thirty '
             'since the page-visibility whitelist added setRolePages and '
@@ -475,7 +501,9 @@ void main() {
             'mappings on the wire as configItems.items and '
             'configItems.fingerprint. Thirty-six since the account home '
             'page and alarm auto-navigation got their writes as '
-            'setUserHomePage and setUserAlarmAutoNavigate. A thirty-seventh '
+            'setUserHomePage and setUserAlarmAutoNavigate. Forty since the '
+            "relay's own configuration history landed: audit.entriesByAction "
+            'and the three configHistory reads. A forty-first '
             'is an access-control decision, not a convenience — grow this '
             'literal deliberately');
   });
