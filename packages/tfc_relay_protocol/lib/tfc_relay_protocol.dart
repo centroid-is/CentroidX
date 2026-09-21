@@ -17,6 +17,7 @@ export 'src/redact.dart';
 export 'src/json_equality.dart';
 export 'src/wire_value.dart';
 export 'src/dynamic_value.dart';
+export 'src/action_scoped_writes.dart';
 export 'src/type_descriptor.dart';
 export 'src/messages.dart';
 export 'src/pipe_keys.dart';

@@ -537,8 +537,10 @@ void main() {
             accessTemplates: _ScopedTemplates('scoped-for-${identity.station}'),
             accessAdmin: _ScopedAdmin(),
             // Null is the explicit decision: this arm is about templates and
-            // admin; config falls through to the shared source (fail closed).
+            // admin; config and preferences fall through to the shared source
+            // (fail closed).
             backendConfig: null,
+            preferences: null,
           );
         },
         onError: (_, __, ___) {},
@@ -593,6 +595,7 @@ void main() {
           accessTemplates: _ScopedTemplates('scoped-for-${identity.station}'),
           accessAdmin: _ScopedAdmin(),
           backendConfig: scoped,
+          preferences: null,
         ),
         onError: (_, __, ___) {},
       );

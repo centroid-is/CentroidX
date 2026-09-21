@@ -138,10 +138,20 @@ final class _LastSeen {
 /// factory that hands no config family leaves the shared source answering,
 /// which on the shipped backend is 17-03b's refuse-by-name — fail closed,
 /// never a stub.
+/// `preferences` is the fourth slot and the one that is not an access family
+/// at all — it is a data service, and it is here for the same reason the
+/// other three are. The gateway's writer stamps `config_change.who`,
+/// `role_name` and `station` from the verified identity, so a composition-wide
+/// preferences family would either attribute every panel's save to the
+/// gateway or hold a mutable "current session" that two concurrent frames
+/// would swap under each other. Null leaves the shared source answering,
+/// which on the shipped backend is a refusal by name — fail closed, never a
+/// stub, exactly as `backendConfig` is.
 typedef IdentityAccessFamilies = ({
   AccessTemplateApi accessTemplates,
   AccessAdminApi accessAdmin,
   BackendConfigApi? backendConfig,
+  PreferencesApi? preferences,
 });
 
 /// Builds the per-identity halves of the access surface, invoked exactly once
@@ -2300,6 +2310,14 @@ final class _IdentityScopedSource implements StateManApi, TypeDescriptions {
   BackendConfigApi get backendConfig =>
       _scopedOf()?.backendConfig ?? _inner.backendConfig;
 
+  /// Scoped for attribution, not for permission: the gate is the policy
+  /// decorator's, which wraps this view rather than the other way round.
+  /// Falls back to the shared source, which on the shipped backend refuses
+  /// every mutator by name.
+  @override
+  PreferencesApi get preferences =>
+      _scopedOf()?.preferences ?? _inner.preferences;
+
   // Composition-wide like `audit`: the family reads and attributes nothing,
   // so it has no per-identity slot; the session gate is the policy layer's.
   @override
@@ -2347,9 +2365,6 @@ final class _IdentityScopedSource implements StateManApi, TypeDescriptions {
 
   @override
   HistoryViewApi get historyViews => _inner.historyViews;
-
-  @override
-  PreferencesApi get preferences => _inner.preferences;
 
   @override
   Future<void> dispose() => _inner.dispose();

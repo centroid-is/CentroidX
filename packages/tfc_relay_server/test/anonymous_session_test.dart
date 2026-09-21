@@ -565,6 +565,10 @@ void main() {
             accessTemplates: _Templates(),
             accessAdmin: _Admin(),
             backendConfig: null,
+            // Null, like `backendConfig`: this arm is about the families
+            // being built for an anonymous identity at all, and a null slot
+            // leaves the shared source answering, which fails closed.
+            preferences: null,
           );
         },
       );

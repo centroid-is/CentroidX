@@ -244,11 +244,21 @@ class ConfigWriteResult {
 
 /// The shared-configuration repository. See the library doc for ownership.
 class ConfigStore {
+  /// [startRemoteSync] false attaches [remote] without the sync engine's
+  /// timer, notification channel or reconcile.
+  ///
+  /// For the relay gateway, whose local half is an in-memory mirror nothing
+  /// reads: reconciling Postgres into it is pure cost, and the five-minute
+  /// sweep would hold a second long-lived transaction against the plant's
+  /// database for the sake of a copy that is discarded when the process ends.
+  /// A station leaves this alone — its mirror is what it serves from, and an
+  /// unsynced mirror is a station serving yesterday's configuration.
   ConfigStore({
     required AppDatabase local,
     required ConfigScope stationScope,
     required String station,
     Database? remote,
+    bool startRemoteSync = true,
     Duration sweepInterval = kConfigSweepInterval,
   })  : _local = local,
         _stationScope = stationScope,
@@ -257,7 +267,7 @@ class ConfigStore {
     // A remote given here is attached exactly as one given later is, timer and
     // notification channel included. Two ways to hand over a remote is
     // tolerable; two meanings of "attached" is not.
-    if (remote != null) _attach(remote.db);
+    if (remote != null) _attach(remote.db, startSync: startRemoteSync);
   }
 
   /// `config.sqlite` — the mirror of the shared rows and the owner of this
@@ -1417,6 +1427,45 @@ class ConfigStore {
     _logger.w('key_mappings watermark is unreadable (${row.payload}); '
         'consuming the change log from the beginning');
     return 0;
+  }
+
+  /// The plant's shared rows of [kinds], read from the attached remote.
+  ///
+  /// **Not the snapshot.** Every other reader here serves the mirror, which
+  /// is the right answer for a station: the mirror is filled at boot and kept
+  /// level by the sync engine, so reading it is reading the plant without
+  /// touching the network.
+  ///
+  /// The relay gateway has no such mirror. It writes on behalf of connected
+  /// panels through an ephemeral in-memory local database that nothing ever
+  /// fills, so its snapshot is empty — and a replace set built from an empty
+  /// snapshot is a save that deletes every shared row of those kinds. This is
+  /// how that caller reads what it must not delete.
+  ///
+  /// Shared scope only, to match what [writeItems] will accept. Rows of a
+  /// kind or scope this build does not know are skipped with a log line, the
+  /// same forward-compatibility rule [_itemOf] states.
+  ///
+  /// Throws [ConfigStoreOfflineException] when no remote is attached, rather
+  /// than answering an empty list: "the plant has no pages" and "this process
+  /// never reached Postgres" must not look the same to a caller about to
+  /// derive a write from the answer.
+  Future<List<ConfigItem>> readRemoteShared(Set<ConfigKind> kinds) async {
+    final remote = _remote;
+    if (remote == null) {
+      throw ConfigStoreOfflineException(
+          attempted: kinds.map((k) => k.wireName).join(', '));
+    }
+    final wireNames = [for (final kind in kinds) kind.wireName];
+    final rows = await (remote.select(remote.configItemTable)
+          ..where((t) =>
+              t.kind.isIn(wireNames) &
+              t.scope.equals(ConfigScope.shared.wireName)))
+        .get();
+    return [
+      for (final row in rows)
+        if (_itemOf(row) case final item?) item,
+    ];
   }
 
   /// The item a stored row describes, or null when this build does not know

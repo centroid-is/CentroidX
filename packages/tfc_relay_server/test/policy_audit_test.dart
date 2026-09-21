@@ -167,9 +167,28 @@ void main() {
       expect(row.origin, 'relay',
           reason: 'the column that says this row came over the wire rather '
               'than from a keyboard');
-      expect(row.actionId, 'preferences.setString',
-          reason: 'the wire method, so the trail says which door the write '
-              'came through');
+      expect(row.actionId, isNot('preferences.setString'),
+          reason: 'the method name was what this column held until the '
+              'gateway could write configuration. Every relayed setString '
+              'ever recorded was then ONE action in the trail, whose tile '
+              'named whoever wrote last — and nothing could be listed '
+              'beneath it, because the rows a save moved join on this '
+              'column. A minted id is also what a DIRECT station writes '
+              "here (`GuardedConfigStore._row`), so the two transports now "
+              'agree rather than diverging');
+      expect(row.actionId, isNotEmpty);
+    });
+
+    test('two writes are two actions, not one repeated name', () async {
+      final sink = _RecordingSink(() => 0);
+      final seat = _seenBy(_panel, sink: sink);
+
+      await seat.served.preferences.setString('theme_mode', 'dark');
+      await seat.served.preferences.setString('theme_mode', 'light');
+
+      expect(sink.rows.map((r) => r.actionId).toSet(), hasLength(2),
+          reason: 'the trail counts actions by this column; two saves that '
+              'shared an id would render as one');
     });
 
     test('a refused write records one row with allowed: false — before the '

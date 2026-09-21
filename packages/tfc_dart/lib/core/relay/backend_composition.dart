@@ -60,6 +60,11 @@ import 'package:tfc_access/tfc_access.dart'
         TagBindingResolver;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart'
     show AccessAdminApi, AccessTemplateApi, BackendConfigApi;
+// `PreferencesApi` is spelled by two libraries — the app's own store
+// interface and the wire's — so the wire one is named through a prefix
+// rather than hidden from `../preferences.dart`, which this file needs.
+import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay
+    show PreferencesApi;
 import 'package:tfc_relay_server/tfc_relay_server.dart';
 
 import '../access/access_repository.dart';
@@ -75,6 +80,7 @@ import 'backend_alarm_ack.dart';
 import 'backend_alarm_history_source.dart';
 import 'backend_config_history.dart';
 import 'backend_config_items.dart';
+import 'backend_config_writer.dart';
 import 'backend_config_store.dart';
 import 'backend_alarms.dart' show GatewayAlarmEngine;
 import 'backend_browse.dart';
@@ -781,10 +787,33 @@ BackendRelayComposition composeBackendRelay({
   // (CENTROID_STATEMAN_FILE_PATH). A composition handed no path still mints
   // the store, and the store refuses every member by name (its own
   // `_require`): fail closed, and the refusal says what to wire.
+  // ------------------------------------------------- the configuration writer
+  //
+  // One per composition, and the gateway's only author of the plant's shared
+  // configuration. Null is a supported deployment: `create` answers null when
+  // it cannot build its in-memory mirror — a runtime image without libsqlite3
+  // is the one cause seen — and the identity family then refuses every
+  // mutator by name, which is exactly what the backend did before this
+  // existed. Degrading to "configuration writes refused" is the design;
+  // degrading to a gateway that will not start is what the try/catch inside
+  // `create` exists to prevent, because it would crash-loop under
+  // `restart: unless-stopped` with the plant's acquisition down.
+  final configWriter = BackendConfigWriter.create(
+    remote: database,
+    // The same literal `tagBindingCache` uses above, and for the same reason:
+    // this composition never learns the machine's hostname, and this value
+    // reaches nothing an operator reads. Every change row the writer lands
+    // carries the **panel's** station, passed per call from the verified
+    // identity; this one is the store's own bookkeeping scope.
+    station: 'gateway',
+    logger: logger,
+  );
+
   ({
     AccessTemplateApi accessTemplates,
     AccessAdminApi accessAdmin,
     BackendConfigApi? backendConfig,
+    relay.PreferencesApi? preferences,
   }) scopeFactory(StationIdentity identity) => (
         accessTemplates: BackendAccessTemplates(
           database: database.db,
@@ -806,6 +835,18 @@ BackendRelayComposition composeBackendRelay({
           station: identity.station,
           audit: auditSink,
           logger: logger,
+        ),
+        // The fourth slot, and the one that is not an access family. Reads
+        // are the composition's — they hold no identity, so one instance is
+        // right for every session — and only the writes are scoped: the
+        // change rows this identity lands carry the account the server
+        // verified and the station it resolved, never the label a client
+        // typed (D-11).
+        preferences: RelayIdentityPreferences(
+          reads: preferences,
+          writer: configWriter,
+          session: () => identity.session,
+          station: identity.station,
         ),
       );
 

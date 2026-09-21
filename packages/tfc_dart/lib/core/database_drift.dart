@@ -596,6 +596,32 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
         sqliteInMemory(logStatements: false),
       );
 
+  /// An in-memory [AppDatabase] that outlives nothing — the relay gateway's
+  /// configuration mirror.
+  ///
+  /// [ConfigStore] requires a local database because a station's mirror is
+  /// how it serves the plant's configuration without a network round trip.
+  /// The gateway has no such need and must not acquire one: it holds the
+  /// authoritative Postgres connection already, and a second durable copy of
+  /// the plant's configuration on the gateway is a second thing that can be
+  /// stale. What it needs is somewhere for the store's post-commit mirror
+  /// write to land, and this is it.
+  ///
+  /// Distinct from [AppDatabase.inMemoryForTest] on purpose, though the two
+  /// are built the same way: that one is `@visibleForTesting` and means "no
+  /// Postgres in this test", and a production caller reaching for it would
+  /// be read as a test seam left switched on.
+  ///
+  /// **Constructing this dlopens libsqlite3**, which is why
+  /// `docker/backend/Dockerfile` installs `libsqlite3-0` and why every caller
+  /// here builds it inside a try/catch: on an image without the library the
+  /// gateway must degrade to refusing configuration writes, never to failing
+  /// to start.
+  factory AppDatabase.ephemeral() => AppDatabase._(
+        DatabaseConfig(),
+        sqliteInMemory(logStatements: false),
+      );
+
   /// A generative constructor so a test can *subclass* [AppDatabase] and
   /// override [tableExists] / [tableInsertBatch].
   ///

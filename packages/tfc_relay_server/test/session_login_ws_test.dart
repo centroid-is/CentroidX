@@ -764,6 +764,7 @@ void main() {
             accessTemplates: recordingTemplates(),
             accessAdmin: recordingAdmin(),
             backendConfig: null,
+            preferences: null,
           );
         },
       );

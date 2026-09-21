@@ -233,12 +233,25 @@ mixin _GroupGate {
   /// unreachable from the wire — the handshake gate refuses every method
   /// before `hello` — but that is a property of today's gate rather than of
   /// this mixin.
+  /// [actionId] is what the row's `action_id` column carries; the method name
+  /// when a family does not mint one.
+  ///
+  /// **That default is a known defect and is deliberately left in place
+  /// here.** Every relayed `preferences.setString` ever recorded is one
+  /// action in the trail, whose tile names whoever wrote last, and the same
+  /// is true of every other family. The preferences door is the first to mint
+  /// a real id, because it is the first family whose writes also land
+  /// `config_change` rows that must join to the audit row. Generalising it to
+  /// the rest is its own change with its own pinned expectations, and a
+  /// sweeping rename of the column's contents made in passing here would be
+  /// invisible in the diff of a feature commit.
   void _requireGroup(
     AccessGroup? group,
     String method,
     String what, {
     required String itemKey,
     String? member,
+    String? actionId,
     bool Function(StationIdentity identity)? may,
   }) {
     if (group == null) return;
@@ -255,7 +268,7 @@ mixin _GroupGate {
         member: member,
         group: group,
         allowed: false,
-        actionId: method);
+        actionId: actionId ?? method);
     throw refusedForGroup(
         identity: identity, group: group, method: method, what: what);
   }
@@ -279,6 +292,7 @@ mixin _GroupGate {
     String method, {
     required String itemKey,
     String? member,
+    String? actionId,
   }) {
     if (group == null) return;
     ledger.record(
@@ -288,7 +302,7 @@ mixin _GroupGate {
         member: member,
         group: group,
         allowed: true,
-        actionId: method);
+        actionId: actionId ?? method);
   }
 }
 
@@ -1522,14 +1536,54 @@ final class _PolicyPreferences with _GroupGate implements PreferencesApi {
   /// The gate every mutator takes, spelled once: the group for the row, the
   /// adapter for the verdict, the deny row before the throw, and the allow
   /// row after the delegation.
+  ///
+  /// ## One call, one action id
+  ///
+  /// The id is minted **here**, before the check, because this is the one
+  /// place on the path that sees every graded call exactly once and sees it
+  /// before anything is written — the same position, and the same reasoning,
+  /// as `GuardedConfigStore.write` on a direct station.
+  ///
+  /// It then reaches the source through [ActionScopedWrites], which is not on
+  /// the wire and is asked for by type. A source that implements it — the
+  /// gateway's writer — lands its `config_change` rows under this id, so the
+  /// audit row recorded here and the rows that save actually moved can be
+  /// joined, and the configuration history this branch put on the socket
+  /// shows a verdict with the changes underneath it. A source that does not
+  /// is called exactly as before.
+  ///
+  /// The id is **not** a parameter of [PreferencesApi]: that would put a
+  /// client-supplied action id on the wire, which is the forgery surface
+  /// `AuditApi` has no write member for. It is not a field on the source
+  /// either — `json_rpc_2` dispatches without awaiting between frames and the
+  /// writer awaits a read of the plant before it writes, so a field would
+  /// have request B's id land on request A's rows.
   Future<T> _graded<T>(
       String method, String key, String what, Future<T> Function() delegate) {
     final group = _groupForKey(key);
+    final actionId = newActionId();
     _requireGroup(group, method, what,
-        itemKey: key, may: (identity) => _mayWrite(key, identity));
-    final applied = delegate();
-    _recordAllowed(group, method, itemKey: key);
+        itemKey: key,
+        actionId: actionId,
+        may: (identity) => _mayWrite(key, identity));
+    final applied = _underAction(actionId, delegate);
+    _recordAllowed(group, method, itemKey: key, actionId: actionId);
     return applied;
+  }
+
+  /// [delegate], scoped to [actionId] when the source can be attributed.
+  ///
+  /// Optional by type, exactly like `TypeDescriptions`: a source with no
+  /// configuration rows to attribute implements nothing and is invoked
+  /// untouched.
+  /// The explicit cast is the idiom this file already uses for the optional
+  /// type dictionary (`_IdentityScopedSource._types`): an `is` against an
+  /// interface the declared type does not name does not promote here.
+  Future<T> _underAction<T>(String actionId, Future<T> Function() delegate) {
+    final source = _source;
+    return source is ActionScopedWrites
+        ? (source as ActionScopedWrites).underAction(actionId, delegate)
+        : delegate();
   }
 
 
@@ -1662,14 +1716,22 @@ final class _PolicyPreferences with _GroupGate implements PreferencesApi {
       // Graded per named key: clearing a row is writing it, and a list that
       // mixes gradings is refused at its most demanding member — the first
       // key the session's groups do not cover, named in the refusal.
+      // One id for the whole call, not one per key: a clear is one gesture,
+      // and the rows it removes belong under one action in the trail exactly
+      // as the keys it refuses do.
+      final actionId = newActionId();
       for (final key in allowList) {
         _requireGroup(_groupForKey(key), 'preferences.clear',
             '"$key" is still stored — nothing was removed',
-            itemKey: key, may: (identity) => _mayWrite(key, identity));
+            itemKey: key,
+            actionId: actionId,
+            may: (identity) => _mayWrite(key, identity));
       }
-      final applied = _source.clear(allowList: allowList);
+      final applied =
+          _underAction(actionId, () => _source.clear(allowList: allowList));
       for (final key in allowList) {
-        _recordAllowed(_groupForKey(key), 'preferences.clear', itemKey: key);
+        _recordAllowed(_groupForKey(key), 'preferences.clear',
+            itemKey: key, actionId: actionId);
       }
       return applied;
     }
