@@ -46,49 +46,44 @@ merge", built an adversarial e2e bench, and fixed what the review found.
 
 ---
 
-## Where this is — 2026-09-21 (second pass)
+## Where this is — 2026-09-21 (third pass)
 
-48 commits. Tree clean, nothing pushed, no PR opened.
+57 commits. Tree clean, nothing pushed, no PR opened.
 
-**Not feature complete, but the keystone is half closed.** The inventory this
-branch started from was 78 features: 51 served, 9 partial, 18 unserved. This
-branch has moved roughly four into "served" and made three panel-vs-station
-surfaces honest, so call it **~55 of 78**.
+**The keystone is closed, end to end.** A relayed panel now reads *and*
+writes the plant's shared configuration: preferences through
+`preferences.*`, and pages, assets and key mappings through
+`configItems.replace`. Eight of the thirteen known-reds this branch started
+with are green and promoted; **five remain**, and none of them is the
+keystone.
 
-**The gateway can write the plant's shared configuration again, through both
-doors.** `BackendConfigWriter` landed
-(`packages/tfc_dart/lib/core/relay/backend_config_writer.dart`) with
-`preferences.*` over it, and four known-reds went green: the report editor's
-two, the preferences JSON editor and the alarm editor. `configItems.replace`
-— the second door, for `{page, asset}` and `{key_mapping}` — is on the wire
-behind it, graded by the kind set, guarded by the caller's revisions, and
-judged by a contract check on all three legs.
-
-**What is left of item 1 is app-side, and it is item 2.** The backend serves
-the write; nothing in `lib/` calls it yet, because a relayed *station-build*
-panel reads its pages and key mappings from a local mirror frozen at boot. So
-the page editor and the key repository would save correctly and still list
-the wrong thing. Closing them means deciding which store a relayed panel
-trusts — and the answer that falls out of this work is **the wire**: a
-relayed panel has no plant at all without the network, so an offline mirror
-of the plant's pages buys nothing except a stale one.
-
-Green, and verified on a real socket:
+The inventory this branch started from was 78 features: 51 served, 9 partial,
+18 unserved. Call it **~59 of 78** now.
 
 | Lane | State |
 |---|---|
-| `test/e2e_pages` | **42 pass, 9 known-red**, in UTC *and* `TZ=Europe/Copenhagen` |
+| `test/e2e_pages` | **46 pass, 5 known-red**, in UTC *and* `TZ=Europe/Copenhagen` |
 | `test/e2e_assets` | 6 pass |
+| app suite (`flutter test test/`) | 7888 pass, **2 pre-existing failures** (`gateway_link_test`) |
 | `tfc_stateman_contract` | 997 pass |
 | `tfc_relay_protocol` | 541 pass |
 | `tfc_relay_server` | 1238 pass |
 | `tfc_relay_client` | 771 pass |
 | `tfc_relay_local` | **20 red, pre-existing** — see below |
-| surface | frozen at 86 callable names, 94 members over eleven types |
+| surface | 87 callable names, 95 members over eleven types, 41 access wire names, 37 access checks |
+
+**The five that remain**, none of them a write path:
+
+| Known-red | Item |
+|---|---|
+| a tag write from the panel leaves an audit row | 3 |
+| an alarm acknowledge leaves an audit row | 3 |
+| the `station` column is the gateway's knowledge of the socket | 3 |
+| the knowledge base says it cannot be reached, not that it is empty | 4 |
+| the server-config attribution line names the person | 5 |
 
 **Every remaining gap is pinned by a `knownRed` case that fails today**, and
 the CI job fails the day one of them starts passing without being promoted.
-That is what makes the table below a map rather than an impression.
 
 ### Two traps this lane sets, and both read as a backend refusal
 
@@ -147,69 +142,24 @@ instead of 1:03. Before believing a mass failure in this lane, check
 Each row names the acceptance test that is already written and already red.
 Nothing below needs a new test first; they exist.
 
-### 1. The keystone — half closed. The second door is what is left
+### 1. The keystone — CLOSED
 
-**Four of the six are green.** `BackendConfigWriter` is the writer the gap
-needed; `preferences.*` now writes the plant's shared rows, attributed to the
-verified identity and joined to the audit row by one minted action id.
+All six of its known-reds are green. `BackendConfigWriter` writes the plant's
+`config_item` rows on behalf of a verified identity; `preferences.*` and
+`configItems.replace` are its two doors, and the app calls both. What is left
+of the design below is one precondition — see "Preconditions".
 
-| Known-red case | File | State |
-|---|---|---|
-| a report definition edited in the widget lands in the backend's rows | `report_editor.dart` | **green** |
-| the gateway takes a `report_config` write over `preferences.setString` | `report_editor.dart` | **green** |
-| a value saved in the JSON editor lands in the backend's shared row | `preferences.dart` | **green** |
-| an alarm title edited in the form lands in `alarm_man_config` | `alarm_editor.dart` | **green** |
-| a save made in the editor lands in the backend's page rows | `page_editor.dart` | red — the wire serves it; nothing calls it |
-| a key added in the widget and saved lands in `key_mapping` rows | `key_repository.dart` | red — the same |
+### 2. The relayed panel's configuration mirror — CLOSED
 
-**The second door, as built.** `configItems.replace` takes a kind set, the
-complete set of rows it should hold afterwards, and one integer per row the
-caller read. Three properties are the whole of it:
+Answered the way the work pointed: **a relayed panel trusts the wire.**
+`configRowsComeOverTheWire` is the one place "can a mirror exist on this
+platform" and "are this panel's rows in it" are told apart, and a relayed
+station now reads pages, assets and key mappings the way a browser does. Its
+mirror is still built, because it still owns this station's own scope.
 
-  * **The grading key comes from the kind set, server-side.**
-    `configWriteKeyFor` maps `{page, asset}` to `page_editor_data` and
-    `{key_mapping}` to `key_mappings` — the two keys the direct path already
-    checks a save under, pinned against `kConfigWriteKeys` in
-    `packages/tfc_dart/test/core/relay/config_write_keys_test.dart`, the only
-    place that can import both. A set the gateway does not recognise is
-    refused as an argument, and `preference` is refused by that rule rather
-    than by a special case.
-  * **The compare-and-swap crosses as revisions.** Echoing the caller's read
-    back would put a key-mapping save (518 KiB) near the 1 MiB frame ceiling,
-    so the gateway re-reads and refuses unless every revision matches — same
-    ids, same revisions, no more and no fewer. A row the caller never saw is
-    as dangerous as one that moved: it is absent from `wanted` and the diff
-    would delete it.
-  * **`replace`, not `write`.** `BackendConfigApi.write` exists and the
-    contract kit's fake serves every family from one object, so the collision
-    would have been unimplementable rather than merely counted.
-
-**What is left is the app side**, and it is item 2's decision. Nothing under
-`lib/` calls `configItems.replace` yet.
-
-Undo rides on the same store: `configHistory.undo(originalActionId)`, planned
-and executed server-side so the plan never crosses the wire.
-
-### 2. The relayed panel's configuration mirror — two sources of truth
-
-**Two known-reds, and Fable's advice is to defer it by name rather than fold
-it into the writer.** `lib/providers/config_store.dart:146-150` detaches the
-remote when `databaseProvider` is null, so a **station-build** panel connected
-to a gateway holds a mirror frozen at boot and nothing refreshes it. The
-relayed bootstrap copy of `key_mappings` lands in the local *preference*
-cache, not in the mirror's `key_mapping` rows.
-
-| Known-red case | File |
-|---|---|
-| the key repository lists the plant's key mappings | `key_repository.dart` |
-| the editor lists a page that exists at the backend | `page_editor.dart` |
-
-Closing it means deciding **which of two stores a relayed station panel
-trusts**, and re-pointing `PageManager` (`page_manager.dart:104`),
-`key_repository.dart:1245` and the undo controller at the relayed snapshot.
-Client architecture, unrelated to the backend writer. The browser build has no
-mirror and none of this problem, which is why `configItems.write` should be
-scoped to it first.
+Two screens had to learn that the rows can arrive after they opened — the
+page editor re-snapshots, the key repository re-reads, and both only when
+there is nothing unsaved to lose.
 
 ### 3. Audit rows for what the panel actually does
 
@@ -364,7 +314,7 @@ funnels to `ConfigStore.writeItems` — preferences via `SharedRowPreferences`
   from a constant; and the app's rule that a ready plan writing an empty diff
   is a contradiction must be mirrored.
 
-### Preconditions — two of three are done
+### Preconditions — two of three are done, and the third is still open
 
 1. **`libsqlite3-0` is in the backend image** (`docker/backend/Dockerfile`),
    and `BackendConfigWriter.create` degrades to null on any failure, with a
@@ -379,7 +329,11 @@ funnels to `ConfigStore.writeItems` — preferences via `SharedRowPreferences`
    write, with a message about a pool that names nothing an operator set.
    Attach a dedicated pool-of-one `Database` or document it at the env knob.
 
-### The original three, as written when none were done
+### The design, as written before any of it was built
+
+Kept because the arguments still hold — they are what any further write door
+has to satisfy.
+
 
 1. **`libsqlite3` is not in the backend image.** `docker/backend/Dockerfile:78-80`
    installs `ca-certificates` and nothing else; `sqlite3` 2.9.4 `dlopen`s
