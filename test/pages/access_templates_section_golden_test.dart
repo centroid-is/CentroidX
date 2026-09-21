@@ -40,7 +40,7 @@
 ///
 /// **Fonts are loaded here, twice, deliberately.** `test/pages/` uses
 /// `test/flutter_test_config.dart`, which registers **no font at all**, and
-/// `lib/theme.dart:349` names `'roboto-mono'` as the theme's family. Without
+/// `lib/theme.dart:349` names `'dejavu-sans'` as the theme's family. Without
 /// both registrations every `Text` on this card captures as Ahem rectangles
 /// and the question this image exists to answer — are the rules legible? —
 /// cannot be asked.
@@ -168,8 +168,8 @@ Future<void> _loadRealFonts() async {
         .load();
   }
 
-  await loadFont('Roboto', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
-  await loadFont('roboto-mono', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+  await loadFont('Roboto', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
+  await loadFont('dejavu-sans', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
 
   final flutterRoot = Platform.environment['FLUTTER_ROOT'];
   for (final candidate in <String>[

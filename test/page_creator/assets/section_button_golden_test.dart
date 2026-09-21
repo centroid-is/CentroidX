@@ -32,7 +32,7 @@ Future<void> loadRealFont() async {
         .load();
   }
 
-  await loadFont('Roboto', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+  await loadFont('Roboto', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
 
   final flutterRoot = Platform.environment['FLUTTER_ROOT'];
   for (final candidate in <String>[

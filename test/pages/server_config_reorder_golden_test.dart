@@ -83,11 +83,8 @@ Future<void> _loadFonts() async {
         .load();
   }
 
-  // Material's default family, so ordinary labels render — and the same
-  // face under the name the station themes ask for, so the themed dark
-  // golden is text rather than Ahem boxes.
-  await load('Roboto', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
-  await load('roboto-mono', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+  // Material's default family, so ordinary labels render.
+  await load('Roboto', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
 
   // The drag handle itself is a Material icon.
   final flutterRoot = Platform.environment['FLUTTER_ROOT'];

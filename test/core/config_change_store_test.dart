@@ -276,6 +276,54 @@ void main() {
   });
 
   // -------------------------------------------------------------------------
+  // changeKindCountsByAction — what the full trail titles an action with
+  // -------------------------------------------------------------------------
+
+  group('changeKindCountsByAction', () {
+    test('counts each action by kind, over the whole table', () async {
+      await _seed(db, actionId: 'A', kind: 'asset', entityId: 'a1');
+      await _seed(db, actionId: 'A', kind: 'asset', entityId: 'a2');
+      await _seed(db, actionId: 'A', kind: 'page', entityId: '/roe');
+      await _seed(db, actionId: 'B', kind: 'key_mapping', entityId: 'k1');
+
+      final counts = await store.changeKindCountsByAction(['A', 'B']);
+
+      expect(counts['A']!.byKind,
+          {ConfigKind.asset: 2, ConfigKind.page: 1});
+      expect(counts['A']!.total, 3);
+      expect(counts['B']!.byKind, {ConfigKind.keyMapping: 1});
+      expect(counts['B']!.total, 1);
+    });
+
+    test('a kind this build does not know is in the total, not the kinds',
+        () async {
+      await _seed(db, actionId: 'A', kind: 'asset');
+      await _seed(db, actionId: 'A', kind: 'recipe_from_the_future');
+
+      final counts = (await store.changeKindCountsByAction(['A']))['A']!;
+
+      expect(counts.byKind, {ConfigKind.asset: 1});
+      expect(counts.total, 2,
+          reason: 'a station on a newer build writes kinds this one cannot '
+              'name. Dropping them from the total would title the action '
+              '"changed 1 asset" over two rows.');
+    });
+
+    test('an empty id list returns an empty map', () async {
+      expect(await store.changeKindCountsByAction(const []), isEmpty);
+    });
+
+    test('an action with no change rows is absent rather than zero', () async {
+      expect(
+          (await store.changeKindCountsByAction(['X'])).containsKey('X'),
+          isFalse,
+          reason: 'absent is how the trail tells an audit-only action from a '
+              'configuration one; a zero entry would draw a config tile with '
+              'nothing in it.');
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // The windowed read
   // -------------------------------------------------------------------------
 

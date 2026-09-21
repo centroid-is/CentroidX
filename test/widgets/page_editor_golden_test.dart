@@ -181,7 +181,7 @@ void main() {
   final (light, dark) = solarized();
 
   // Same font wiring as `panes_golden_test.dart`: the themes ask for
-  // 'roboto-mono' by name, and MaterialIcons is not registered in the test
+  // 'dejavu-sans' by name, and MaterialIcons is not registered in the test
   // environment — without both, the goldens render as Ahem blocks.
   setUpAll(() async {
     Future<void> loadFont(String family, String path) async {
@@ -192,7 +192,7 @@ void main() {
     }
 
     await loadFont(
-        'roboto-mono', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+        'dejavu-sans', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
 
     final flutterRoot = Platform.environment['FLUTTER_ROOT'] ??
         (Platform.resolvedExecutable.contains('flutter')

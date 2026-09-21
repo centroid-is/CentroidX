@@ -18,11 +18,11 @@ const _key = Key('ethercat_link_derived');
 
 /// The pane is all words and figures; under Ahem every glyph is a solid box.
 Future<void> loadRealFont() async {
-  final data = File('lib/fonts/roboto-mono/RobotoMono-Regular.ttf')
+  final data = File('lib/fonts/dejavu-sans/DejaVuSans.ttf')
       .readAsBytesSync()
       .buffer
       .asByteData();
-  for (final family in ['Roboto', 'roboto-mono']) {
+  for (final family in ['Roboto', 'dejavu-sans']) {
     await (FontLoader(family)..addFont(Future.value(data))).load();
   }
 }

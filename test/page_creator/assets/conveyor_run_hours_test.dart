@@ -99,9 +99,9 @@ Future<void> _loadRealFont() async {
         .load();
   }
 
-  await loadFont('Roboto', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+  await loadFont('Roboto', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
   await loadFont(
-      'roboto-mono', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+      'dejavu-sans', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
 
   final flutterRoot = Platform.environment['FLUTTER_ROOT'];
   for (final candidate in <String>[

@@ -709,17 +709,17 @@ void main() {
         // The literal, not `drifts[createdSubject]!.schemaVersion`: this arm
         // is about the upgrade arriving at a NAMED version, and reading the
         // number off the thing under test would pass for any number at all.
-        // 13, not 8: main took 7 (page-visibility whitelist), then 8
+        // 14, not 8: main took 7 (page-visibility whitelist), then 8
         // (per-account inactivity timeout) and 9 (additional roles); the merge
-        // brought 10-12, and 13 widened the config_item arm so a database a
-        // pre-merge relay build stamped 10 for ITS v10 still gets those
-        // tables. The alarm change moved up each time. The file keeps its v8
+        // brought 10-12, main's 13 widened the config_item arm, and the alarm
+        // arm is 14 because a station main stamped 13 would otherwise skip
+        // it. The alarm change moved up each time. The file keeps its v8
         // name — it is the arm's history, and renaming it on every renumber
         // would lose the thread rather than record it.
-        expect(await readDriftMarker(c), 13,
-            reason: 'the upgraded database did not end at schema version 13. '
+        expect(await readDriftMarker(c), 14,
+            reason: 'the upgraded database did not end at schema version 14. '
                 'It was stamped 6 and opened with the real AppDatabase, so '
-                'either schemaVersion is not yet 13 or onUpgrade threw.');
+                'either schemaVersion is not yet 14 or onUpgrade threw.');
 
         final fks = await foreignKeysToAlarm(c);
         expect(fks, isEmpty,

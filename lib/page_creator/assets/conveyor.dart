@@ -23,7 +23,9 @@ import '../../widgets/panes/setpoint_field.dart';
 import '../../widgets/tag_access_guard.dart';
 import 'auger_conveyor_painter.dart';
 import 'helper/atv320_diagnostics.dart';
-import 'sensor.dart' show SensorConfig, SensorFbPane, SensorFbState;
+import 'sensor.dart'
+    show Sensor, SensorConfig, SensorFbPane, SensorFbState, SensorKind,
+        SensorKindMounting;
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/collector.dart';
 import '../../theme.dart';
@@ -64,6 +66,53 @@ List<ChildGateEntry> _gatesFromJson(List<dynamic>? json) {
 
 List<Map<String, dynamic>> _gatesToJson(List<ChildGateEntry> gates) =>
     gates.map((e) => e.toJson()).toList();
+
+/// A sensor bolted beside a conveyor's belt: a whole [SensorConfig] — key,
+/// kind, colours, its own pane — placed the way a gate is, by a fraction
+/// along the belt and which side of it.
+///
+/// A photo eye is not lying on the belt; it is on a bracket at the band's
+/// edge looking across it. So the glyph stands off the edge and is turned to
+/// face the belt, exactly as a gate's body hangs outside the band with its
+/// flap over it.
+///
+/// Placement is read off the belt itself rather than the box, so on a
+/// transfer wagon the sensors ride the wagon — which is what a sensor
+/// dropped on the page as its own asset cannot do: it stays where it was
+/// dropped while the wagon drives away from it.
+@JsonSerializable(explicitToJson: true)
+class ChildSensorEntry {
+  /// Fraction along the belt, in screen order: 0 is the left end of a belt
+  /// that runs across the screen, the top end of a wagon belt standing
+  /// across its rails. This is where the bracket is bolted, not a running
+  /// direction — reversing the belt does not move it.
+  double position;
+
+  /// Which edge of the band the bracket is on. [GateSide.left] is the top
+  /// edge of a belt running across the screen — the left edge of a wagon
+  /// belt standing across its rails — and [GateSide.right] the other one.
+  /// The same side vocabulary the gates use, for the same reason: it names
+  /// an edge of the band, not anything about the device.
+  @JsonKey(unknownEnumValue: GateSide.left)
+  GateSide side;
+
+  @JsonKey(fromJson: _sensorFromJson, toJson: _sensorToJson)
+  SensorConfig sensor;
+
+  ChildSensorEntry({
+    this.position = 0.5,
+    this.side = GateSide.left,
+    required this.sensor,
+  });
+
+  factory ChildSensorEntry.fromJson(Map<String, dynamic> json) =>
+      _$ChildSensorEntryFromJson(json);
+  Map<String, dynamic> toJson() => _$ChildSensorEntryToJson(this);
+}
+
+SensorConfig _sensorFromJson(Map<String, dynamic> json) =>
+    SensorConfig.fromJson(json);
+Map<String, dynamic> _sensorToJson(SensorConfig sensor) => sensor.toJson();
 
 /// A bend in the conveyor belt.
 ///
@@ -1206,6 +1255,16 @@ class ConveyorConfig extends BaseAsset {
   /// wagon down the track. Only read while [railsActive].
   String? wagonMotorKey;
 
+  /// Swaps which way the traverse drive's jog buttons point: off (null or
+  /// false), `Forward` jogs the wagon right; on, it jogs the wagon left.
+  ///
+  /// Which way the drive's forward actually moves the wagon is a fact about
+  /// the wiring and the page layout, not something the PLC publishes. With
+  /// the wrong answer the pane's `Forward ->` sends the wagon the other way
+  /// down the mimic. The words still name the drive's own commands, so the
+  /// arrows are what change: the left button always points left.
+  bool? reverseWagonDirection;
+
   /// Lay the wagon's belt along the rails instead of across them. Default
   /// (null/false) is across — the classic transfer wagon handing off
   /// sideways; along suits a shuttle that conveys in its own travel
@@ -1294,6 +1353,28 @@ class ConveyorConfig extends BaseAsset {
   @JsonKey(fromJson: _gatesFromJson, toJson: _gatesToJson)
   List<ChildGateEntry> gates;
 
+  /// Sensors bolted along the belt, each at a fraction of it and on one of
+  /// its edges — typically the photo eyes that see a pallet arrive at an end.
+  /// Placed like [gates]; on a wagon they ride the wagon.
+  List<ChildSensorEntry> sensors;
+
+  /// The sensors are drawn inside this conveyor's box, so a pane opened from
+  /// one is marked on that sensor alone (see [SubdeviceSubject]) rather than
+  /// on the whole belt.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<Asset> get childAssets => [for (final e in sensors) e.sensor];
+
+  /// The belt's own keys and its sensors': a sensor's key lives in its
+  /// nested config, where the top-level key scan cannot see it, and a key
+  /// nobody reports using is a key the unused-key cleanup offers to delete.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<String> get allKeys => {
+        ...super.allKeys,
+        for (final e in sensors) ...e.sensor.allKeys,
+      }.toList();
+
   /// Bends along the belt; empty means a straight conveyor.
   List<ConveyorTurnEntry> turns;
 
@@ -1367,6 +1448,7 @@ class ConveyorConfig extends BaseAsset {
       this.onRails,
       this.positionKey,
       this.wagonMotorKey,
+      this.reverseWagonDirection,
       this.beltAlongRails,
       this.safetyLeftKey,
       this.safetyRightKey,
@@ -1377,15 +1459,19 @@ class ConveyorConfig extends BaseAsset {
       this.wagonLength,
       this.beltThickness,
       List<ChildGateEntry>? gates,
-      List<ConveyorTurnEntry>? turns})
+      List<ConveyorTurnEntry>? turns,
+      List<ChildSensorEntry>? sensors})
       : gates = gates != null ? List<ChildGateEntry>.of(gates) : [],
-        turns = turns != null ? List<ConveyorTurnEntry>.of(turns) : [];
+        turns = turns != null ? List<ConveyorTurnEntry>.of(turns) : [],
+        sensors =
+            sensors != null ? List<ChildSensorEntry>.of(sensors) : [];
 
   static const previewStr = 'Conveyor Preview';
 
   ConveyorConfig.preview()
       : gates = [],
         turns = [],
+        sensors = [],
         invertSafetyPolarity = false,
         key = previewStr;
 
@@ -1472,6 +1558,7 @@ class RollerConveyorConfig extends ConveyorConfig {
       super.onRails,
       super.positionKey,
       super.wagonMotorKey,
+      super.reverseWagonDirection,
       super.beltAlongRails,
       super.safetyLeftKey,
       super.safetyRightKey,
@@ -1482,7 +1569,8 @@ class RollerConveyorConfig extends ConveyorConfig {
       super.wagonLength,
       super.beltThickness,
       super.gates,
-      super.turns});
+      super.turns,
+      super.sensors});
 
   RollerConveyorConfig.preview() : super.preview();
 
@@ -1501,6 +1589,124 @@ class _ConveyorConfigContent extends StatefulWidget {
 }
 
 class _ConveyorConfigContentState extends State<_ConveyorConfigContent> {
+  /// The belt's sensors: each a fraction along the belt and on one of its
+  /// edges, placed the way the gates are.
+  Widget _sensorsEditor(BuildContext context) {
+    final theme = Theme.of(context);
+    final config = widget.config;
+    final sensors = config.sensors;
+    // A wagon belt standing across its rails runs down the screen, so its
+    // two edges are the left and right ones, not the top and bottom.
+    final acrossTheScreen =
+        !(config.railsActive && !(config.beltAlongRails ?? false));
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Sensors', style: theme.textTheme.titleSmall),
+        const SizedBox(height: 4),
+        Text(
+          'A through-beam pair straddles the band, sending from the edge you '
+          'pick. A single housing stands beside that edge instead — a belt '
+          'narrower than its box leaves it room to stand in.',
+          style: theme.textTheme.bodySmall,
+        ),
+        const SizedBox(height: 8),
+        FilledButton.icon(
+          key: const Key('conveyor_add_sensor'),
+          onPressed: () => setState(
+              () => sensors.add(ChildSensorEntry(sensor: SensorConfig()))),
+          icon: const Icon(Icons.add),
+          label: const Text('Add Sensor'),
+        ),
+        const SizedBox(height: 8),
+        if (sensors.isEmpty)
+          Text('No sensors configured', style: theme.textTheme.bodyMedium)
+        else
+          for (final entry in [...sensors])
+            Card(
+              margin: const EdgeInsets.symmetric(vertical: 4),
+              child: Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            (entry.sensor.tag?.isNotEmpty ?? false)
+                                ? entry.sensor.tag!
+                                : entry.sensor.detectionKey.isNotEmpty
+                                    ? entry.sensor.detectionKey
+                                    : 'Sensor',
+                            style: theme.textTheme.bodyMedium,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        // The kind, because it decides where the glyph goes:
+                        // a pair spans the band, a housing stands beside it.
+                        Text(entry.sensor.kind.name,
+                            style: theme.textTheme.bodySmall),
+                        IconButton(
+                          icon: const Icon(Icons.edit, size: 20),
+                          tooltip: 'Edit sensor',
+                          onPressed: () => showStandardDialog<void>(
+                            context: context,
+                            title: 'Edit sensor',
+                            icon: Icons.sensors,
+                            width: 420,
+                            builder: (context) => SizedBox(
+                              width: 360,
+                              child: entry.sensor.configure(context),
+                            ),
+                          ).then((_) => setState(() {})),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.delete, size: 20),
+                          tooltip: 'Remove sensor',
+                          onPressed: () =>
+                              setState(() => sensors.remove(entry)),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Text('Conveyor Side', style: theme.textTheme.bodySmall),
+                    const SizedBox(height: 4),
+                    SegmentedButton<GateSide>(
+                      segments: [
+                        ButtonSegment(
+                            value: GateSide.left,
+                            label: Text(acrossTheScreen ? 'Top' : 'Left')),
+                        ButtonSegment(
+                            value: GateSide.right,
+                            label:
+                                Text(acrossTheScreen ? 'Bottom' : 'Right')),
+                      ],
+                      selected: {entry.side},
+                      showSelectedIcon: false,
+                      onSelectionChanged: (selection) =>
+                          setState(() => entry.side = selection.first),
+                    ),
+                    const SizedBox(height: 8),
+                    NumberSlider(
+                      labelAbove: true,
+                      label: 'Belt Position',
+                      min: 0.0,
+                      max: 1.0,
+                      divisions: 100,
+                      displayScale: 100,
+                      suffix: '%',
+                      value: entry.position,
+                      onChanged: (v) => setState(() => entry.position = v),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+      ],
+    );
+  }
+
   @override
   void initState() {
     super.initState();
@@ -1715,6 +1921,19 @@ class _ConveyorConfigContentState extends State<_ConveyorConfigContent> {
             onChanged: (val) =>
                 setState(() => widget.config.wagonMotorKey = val),
             label: 'Wagon motor key (traverse drive)',
+          ),
+          SwitchListTile(
+            key: const Key('conveyor_reverse_wagon_direction'),
+            title: const Text('Reverse wagon direction'),
+            subtitle: Text(
+              (widget.config.reverseWagonDirection ?? false)
+                  ? 'Forward jogs the wagon left.'
+                  : 'Forward jogs the wagon right.',
+            ),
+            value: widget.config.reverseWagonDirection ?? false,
+            onChanged: (val) =>
+                setState(() => widget.config.reverseWagonDirection = val),
+            contentPadding: EdgeInsets.zero,
           ),
           const SizedBox(height: 8),
           KeyField(
@@ -1939,6 +2158,9 @@ class _ConveyorConfigContentState extends State<_ConveyorConfigContent> {
               ),
             );
           }),
+        const SizedBox(height: 16),
+        const Divider(),
+        _sensorsEditor(context),
         const SizedBox(height: 16),
         const Divider(),
         Text('Turns', style: Theme.of(context).textTheme.titleSmall),
@@ -2615,7 +2837,10 @@ class _ConveyorState extends ConsumerState<Conveyor>
               : null,
           onMotorTap: hasMotorKey
               ? () => _showDrivePane(context, widget.config.wagonMotorKey!,
-                  subtitle: 'Wagon drive', icon: Icons.swap_horiz)
+                  subtitle: 'Wagon drive',
+                  icon: Icons.swap_horiz,
+                  forwardPointsLeft:
+                      widget.config.reverseWagonDirection ?? false)
               : null,
           onLeftEdgeTap: leftEdgeKey != null
               ? () => _showSafetyEdgePane(context, leftEdgeKey, side: 'left')
@@ -3199,9 +3424,10 @@ class _ConveyorState extends ConsumerState<Conveyor>
         : conveyorPaint;
 
     final gateEntries = widget.config.gates;
+    final sensorEntries = widget.config.sensors;
 
     final Widget content;
-    if (gateEntries.isEmpty) {
+    if (gateEntries.isEmpty && sensorEntries.isEmpty) {
       content = belt;
     } else {
       content = SizedBox(
@@ -3214,6 +3440,8 @@ class _ConveyorState extends ConsumerState<Conveyor>
             for (final entry in gateEntries)
               _positionedChildGate(entry, paintSize, geometry,
                   straightBeltWidth: beltWidth),
+            for (final entry in sensorEntries)
+              _positionedChildSensor(entry, painter, paintSize),
           ],
         ),
       );
@@ -3225,6 +3453,38 @@ class _ConveyorState extends ConsumerState<Conveyor>
         onLeftEdgeTap: onLeftEdgeTap,
         onRightEdgeTap: onRightEdgeTap,
         onStationTap: onStationTap);
+  }
+
+  /// One sensor, bolted beside the belt at its fraction of it.
+  ///
+  /// The glyph is the real [Sensor] widget — same picture, same pane — inside
+  /// its own [SubdeviceSubject], so a tap opens that sensor's pane and the
+  /// plant view rings the sensor rather than the whole conveyor. It is turned
+  /// so the beam (or the field's cone) looks across the belt from the edge it
+  /// is bolted to, and it stands off that edge: a sensor is beside the belt,
+  /// not lying on it.
+  Widget _positionedChildSensor(
+      ChildSensorEntry entry, ConveyorPainter painter, Size size) {
+    final mount = painter.sensorMount(size,
+        position: entry.position,
+        side: entry.side,
+        kind: entry.sensor.kind);
+    return Positioned.fromRect(
+      rect: mount.rect,
+      // The turn is outside the subject, not inside it: what
+      // [SubdeviceSubject] publishes for the open-pane ring is its box, and
+      // the page maps that through the transforms above it (see
+      // `AssetHitShape` in `lib/pages/page_view.dart`). Inside, a pair's
+      // ring would be its box unturned — at right angles to the glyph it
+      // is supposed to be drawn around.
+      child: Transform.rotate(
+        angle: mount.facing,
+        child: SubdeviceSubject(
+          subdevice: entry.sensor,
+          child: Sensor(config: entry.sensor),
+        ),
+      ),
+    );
   }
 
   Widget _positionedChildGate(
@@ -3505,8 +3765,13 @@ class _ConveyorState extends ConsumerState<Conveyor>
   /// The subscription lives in a `StreamBuilder` inside the pane body, so it
   /// is released when the pane closes — same lifetime contract as the dialog
   /// it replaces.
+  ///
+  /// [forwardPointsLeft] puts `Forward` on the left button with a left
+  /// arrow — see [ConveyorConfig.reverseWagonDirection].
   void _showDrivePane(BuildContext context, String driveKey,
-      {required String subtitle, required IconData icon}) {
+      {required String subtitle,
+      required IconData icon,
+      bool forwardPointsLeft = false}) {
     showSidePane(
       context: context,
       id: _paneIdFor(driveKey),
@@ -3738,22 +4003,34 @@ class _ConveyorState extends ConsumerState<Conveyor>
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       mainAxisSize: MainAxisSize.min,
                       children: [
+                        //
+                        // The left button always points left. Which command
+                        // it sends depends on which way the drive's forward
+                        // moves the thing on screen.
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                           children: [
                             _JogButton(
                               icon: Icons.arrow_back,
-                              label: 'Reverse',
-                              active: jogBwd,
+                              label: forwardPointsLeft ? 'Forward' : 'Reverse',
+                              active: forwardPointsLeft ? jogFwd : jogBwd,
                               stopOnRelease: stopOnRelease,
-                              onCommand: (v) => write('p_cmd_JogBwd', v),
+                              onCommand: (v) => write(
+                                  forwardPointsLeft
+                                      ? 'p_cmd_JogFwd'
+                                      : 'p_cmd_JogBwd',
+                                  v),
                             ),
                             _JogButton(
                               icon: Icons.arrow_forward,
-                              label: 'Forward',
-                              active: jogFwd,
+                              label: forwardPointsLeft ? 'Reverse' : 'Forward',
+                              active: forwardPointsLeft ? jogBwd : jogFwd,
                               stopOnRelease: stopOnRelease,
-                              onCommand: (v) => write('p_cmd_JogFwd', v),
+                              onCommand: (v) => write(
+                                  forwardPointsLeft
+                                      ? 'p_cmd_JogBwd'
+                                      : 'p_cmd_JogFwd',
+                                  v),
                             ),
                           ],
                         ),
@@ -4475,6 +4752,160 @@ class ConveyorPainter extends CustomPainter {
     final band = straightBeltWidth ?? rail.height;
     return Rect.fromLTWH(span.x0,
         railBand.top + (rail.height - band) / 2, span.width, band);
+  }
+
+  /// How much of a single-housing sensor's box stands outside the band edge
+  /// it is bolted to, as a fraction of the box. The housing is at the
+  /// glyph's outer end, so at 0.6 the housing is clear of the belt and only
+  /// the field's cone reaches over it. The gates hang off the same edge by
+  /// the same order of magnitude, for the same reason.
+  static const double _sensorStandoff = 0.6;
+
+  /// The smallest a single-housing sensor's box gets against the belt's
+  /// cross dimension, for a belt that fills its box and leaves no air beside
+  /// the band.
+  static const double _sensorExtentOfBelt = 0.45;
+
+  /// Empty margin a through-beam pair's box keeps outside each band edge, as
+  /// a fraction of the band.
+  ///
+  /// [RedLightBeamPainter] puts its two housings at 0.15 and 0.85 of the box,
+  /// so a box this much wider than the band lands them on the band's two
+  /// edges — where the sender and the receiver are actually bolted — with the
+  /// beam spanning the belt between them. The margin carries no ink, which is
+  /// why it may hang outside the asset's box when the belt fills it.
+  static const double _throughBeamMargin = 0.2;
+
+  /// A sensor's box, and how far to turn its glyph so it reads across the
+  /// belt.
+  ///
+  /// [position] is a fraction along the belt in screen order — left to right,
+  /// or top to bottom for a wagon belt standing across its rails. [side]
+  /// names one of the band's two edges ([GateSide.left] the top or left one),
+  /// the same way a gate's does: for a single-housing [kind] it is the edge
+  /// the housing is bolted to, and for a through-beam pair the edge that
+  /// sends. Everything is measured off [beltRect], so on a wagon the sensors
+  /// ride the wagon.
+  ///
+  /// The rect is the glyph's own unrotated box, centred where the glyph
+  /// belongs; `facing` then turns it about that centre, so what lands on
+  /// screen is the rect rotated — the two are the same box only for the
+  /// square one a single housing gets.
+  ///
+  /// A through-beam pair straddles the band: a housing on each edge, the beam
+  /// across. A single housing stands off its edge instead, and the box the
+  /// user drew bounds it — a glyph pushed out of the box would be both
+  /// clipped and untappable, since the conveyor's own [Stack] answers no tap
+  /// outside itself — so on a belt that fills its box it hugs the belt's edge
+  /// rather than standing clear of it.
+  ({Rect rect, double facing}) sensorMount(Size size,
+      {required double position,
+      required GateSide side,
+      required SensorKind kind}) {
+    final p = position.clamp(0.0, 1.0);
+    final atLeftEdge = side == GateSide.left;
+    final g = geometry;
+    if (g != null) {
+      // A turned belt: step off the centreline along its normal, and look
+      // back in along the same line.
+      final tangent = g.tangentAt(p);
+      final v = tangent.vector;
+      final leftNormal = Offset(v.dy, -v.dx); // the band's "top" side
+      final outward = atLeftEdge ? leftNormal : -leftNormal;
+      final facing = atan2(-outward.dy, -outward.dx);
+      if (kind.isThroughBeam) {
+        return (
+          rect: Rect.fromCenter(
+              center: tangent.position,
+              width: g.beltWidth * (1 + 2 * _throughBeamMargin),
+              height: _throughBeamThickness(g.beltWidth, g.beltWidth)),
+          facing: facing,
+        );
+      }
+      final extent = g.beltWidth;
+      // Out from the centreline by half the band, then the standoff.
+      final centre = tangent.position + outward * extent * _sensorStandoff;
+      return (
+        rect: _insideBox(
+            Rect.fromCenter(center: centre, width: extent, height: extent),
+            size),
+        facing: facing,
+      );
+    }
+    final belt = beltRect(size);
+    // A wagon belt across its rails runs down the screen; every other belt
+    // runs across it.
+    final down = onRails && wagonBeltAcross;
+    final cross = down ? belt.width : belt.height;
+    final travel = down ? belt.height : belt.width;
+    final along =
+        down ? belt.top + p * belt.height : belt.left + p * belt.width;
+    // The glyph reads along its own +x, from the sending edge across the
+    // belt: from the top edge that is down the screen, from the left edge it
+    // is to the right.
+    final facing =
+        down ? (atLeftEdge ? 0.0 : pi) : (atLeftEdge ? pi / 2 : -pi / 2);
+    if (kind.isThroughBeam) {
+      // Centred on the band: the pair straddles it, a housing on each edge.
+      final acrossCentre = down ? belt.center.dx : belt.center.dy;
+      final centre =
+          down ? Offset(acrossCentre, along) : Offset(along, acrossCentre);
+      return (
+        rect: Rect.fromCenter(
+            center: centre,
+            width: cross * (1 + 2 * _throughBeamMargin),
+            height: _throughBeamThickness(cross, travel)),
+        facing: facing,
+      );
+    }
+    final edge = atLeftEdge
+        ? (down ? belt.left : belt.top)
+        : (down ? belt.right : belt.bottom);
+    // The air the box leaves beside the band on this side — the room a
+    // single housing has to stand in.
+    final air = atLeftEdge ? edge : (down ? size.width : size.height) - edge;
+    // Square, so the turned glyph reaches as far over the belt as it is
+    // long: the band's own width, as a gate's flap is, but never more than a
+    // slice of the run — a housing is a point on the belt, not a stretch of
+    // it, and a wagon's belt is barely longer than it is wide. Where the box
+    // leaves air beside the band the glyph grows to fill it; where it leaves
+    // none, it shrinks rather than cover the belt.
+    final extent = min(min(cross, travel * 0.3),
+        max(air / _sensorStandoff, cross * _sensorExtentOfBelt));
+    final offset = extent * (_sensorStandoff - 0.5);
+    final across = atLeftEdge ? edge - offset : edge + offset;
+    final centre = down ? Offset(across, along) : Offset(along, across);
+    return (
+      rect: _insideBox(
+          Rect.fromCenter(center: centre, width: extent, height: extent),
+          size),
+      facing: facing,
+    );
+  }
+
+  /// How thick a through-beam pair's box is along the belt's travel.
+  ///
+  /// The housings' diameter is a quarter of it ([kHousingFraction]), so this
+  /// is what decides whether they read at all; a slice of the run keeps a
+  /// short belt — a wagon's — from carrying a housing the size of a pallet.
+  double _throughBeamThickness(double cross, double travel) =>
+      min(cross * 0.8, travel * 0.3);
+
+  /// [rect] slid — never resized — until the box holds it, so what is drawn
+  /// is what can be tapped. A rect too big for the box is left alone.
+  /// [rect] slid — never resized — until the box holds it, so what is drawn
+  /// is what can be tapped. A rect too big for the box is left alone.
+  Rect _insideBox(Rect rect, Size size) {
+    double slide(double low, double high, double limit) {
+      if (high - low > limit) return 0;
+      if (low < 0) return -low;
+      if (high > limit) return limit - high;
+      return 0;
+    }
+    return rect.shift(Offset(
+      slide(rect.left, rect.right, size.width),
+      slide(rect.top, rect.bottom, size.height),
+    ));
   }
 
   /// The whole wagon — belt plus chassis bumpers. This is the tap target

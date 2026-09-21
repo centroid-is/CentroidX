@@ -21,6 +21,8 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/pages/config_history.dart';
+import 'package:tfc/pages/audit_trail.dart'
+    show AuditTrailPage, AuditTrailScope;
 import 'package:tfc/providers/access.dart';
 import 'package:tfc/widgets/access_gate.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart'
@@ -61,7 +63,7 @@ void configHistoryCases(BackendBench Function() bench) {
         return p;
       });
       await tester.pumpWidget(hostRoute(
-          panel, _route, kConfigHistoryTitle, const ConfigHistoryPage()));
+          panel, _route, kConfigHistoryTitle, const AuditTrailPage(scope: AuditTrailScope.configuration)));
 
       await untilFound(tester, find.byKey(kConfigHistoryListKey),
           within: const Duration(seconds: 15),
@@ -300,7 +302,7 @@ void configHistoryCases(BackendBench Function() bench) {
         return p;
       });
       await tester.pumpWidget(hostRoute(
-          panel, _route, kConfigHistoryTitle, const ConfigHistoryPage()));
+          panel, _route, kConfigHistoryTitle, const AuditTrailPage(scope: AuditTrailScope.configuration)));
       await untilFound(tester, find.byKey(kAccessLockedBodyKey));
       expect(find.byKey(kConfigHistoryListKey), findsNothing);
       expect(find.byKey(kConfigHistoryUnavailableKey), findsNothing);

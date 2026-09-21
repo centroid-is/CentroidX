@@ -122,8 +122,8 @@ class BaseScaffold extends ConsumerStatefulWidget {
 
 /// Width reserved for the app-bar clock.
 ///
-/// roboto-mono advances 0.6em, so the widest line -- the 14pt `dd-MM-yyyy`, 10
-/// chars at 8.4px -- is 84px, and the 20pt time is 8 * 12 = 96px. 100 of text
+/// In DejaVu Sans the widest line is the 20pt w600 time, drawn in the Bold
+/// face: `88:88:88` is 99.5px. The 14pt `dd-MM-yyyy` is 81.4px. 100 of text
 /// plus an 8px gutter on each side makes 116, which is also the centred alarm
 /// banner's left inset: one fixed number rather than two that can drift apart.
 /// The gutter matters on a top-level page, where there is no back arrow and the
@@ -298,7 +298,7 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
         // DateTime.now().
         final currentTime = clock.now();
         // scaleDown, and both lines unwrappable: the sizes below are picked
-        // for roboto-mono in a 56px toolbar, but a wider fallback font or an
+        // for DejaVu Sans in a 56px toolbar, but a wider fallback font or an
         // operator's text scaling would otherwise wrap `dd.MM.yy` onto two
         // lines and overflow the bar. Shrinking to fit is the graceful
         // failure; a yellow-and-black overflow stripe is not.
@@ -447,7 +447,7 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
                         // bodyLarge, not a bare TextStyle: RichText does not
                         // read the ambient DefaultTextStyle, so a hand-rolled
                         // style left the banner in the Material default font
-                        // while the rest of the HMI is roboto-mono. Taking the
+                        // while the rest of the HMI is DejaVu Sans. Taking the
                         // theme style also takes its 16pt -- the old 12pt
                         // bodySmall was too small to read at a glance.
                         style: Theme.of(context)
@@ -525,13 +525,23 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
   /// still owes it — see [BootHomePageDebt].
   Future<void> _maybeBootHome(AccessSession session) async {
     final debt = ref.read(bootHomePageDebtProvider);
-    if (!debt.owed || debt.inFlight) return;
-    debt.inFlight = true;
+    // Somebody else's attempt is out: wait for it, then look again. At boot
+    // that somebody is usually the access gate's waiting scaffold, which the
+    // gate replaces with this one while its lookup is still out.
+    while (debt.inFlight != null) {
+      await debt.inFlight;
+      if (!mounted) return;
+    }
+    if (!debt.owed) return;
+    final attempt = Completer<void>();
+    debt.inFlight = attempt.future;
     try {
       final answer = await goToHomePage(
         context: context,
         ref: ref,
-        session: session,
+        // The session now, not the one that queued this call: it may have
+        // spent a lookup waiting on another scaffold's attempt.
+        session: ref.read(accessSessionProvider).valueOrNull ?? session,
         // An account with no page of its own opens where the router already
         // put the panel. Beaming "to /" there would only replay the redirect
         // a station without a Home page sends `/` through.
@@ -540,9 +550,13 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
         // while it was out.
         proceed: (_) => debt.owed,
       );
-      if (answer.known) debt.settle();
+      // An unmounted scaffold beamed nothing — `goToHomePage` returns before
+      // beaming — so its answer settles nothing either. Settling there is what
+      // left every panel on a database standing on `/`.
+      if (answer.known && mounted) debt.settle();
     } finally {
-      debt.inFlight = false;
+      debt.inFlight = null;
+      attempt.complete();
     }
   }
 

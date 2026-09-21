@@ -25,7 +25,7 @@ Future<void> loadRealFont() async {
         .load();
   }
 
-  await loadFont('Roboto', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+  await loadFont('Roboto', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
 
   // The header and chip carry icons; pull MaterialIcons out of the Flutter
   // SDK cache, falling back to boxes rather than failing the suite.

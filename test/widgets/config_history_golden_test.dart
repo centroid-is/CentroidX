@@ -33,16 +33,14 @@
 /// into images whose subject includes one muted green and one muted orange.
 ///
 /// **2. Fonts are loaded twice.** `flutter_test_config.dart` registers the TTF
-/// under `'Roboto'` alone; `lib/theme.dart` names `'roboto-mono'` as the
+/// under `'Roboto'` alone; `lib/theme.dart` names `'dejavu-sans'` as the
 /// theme's family, and an unregistered family falls back to Ahem, which would
 /// capture every `Text` as a solid rectangle.
 ///
-/// **The transition arrow is missing from these baselines, and it is a font gap
-/// rather than a widget one** — `RobotoMono-Regular.ttf` carries no glyph for
-/// U+2192. A field row therefore reads `0.31   0.42` with a blank where the
-/// arrow belongs. The arrow's presence is pinned textually in
-/// `config_history_test.dart`, which is where a character's presence belongs;
-/// at runtime the theme's family is unresolved and the platform font draws it.
+/// **The transition arrow is in these baselines.** DejaVu Sans carries U+2192,
+/// so a field row reads `0.31 → 0.42` as it does on a station. (Under the
+/// RobotoMono these tests once loaded it was a blank.) Its presence is also
+/// pinned textually in `config_history_test.dart`.
 ///
 /// **3. The `RepaintBoundary` is deliberately not the direct child of
 /// `Scaffold.body`.** Scaffold paints its background outside that subtree, and
@@ -239,9 +237,9 @@ void main() {
     }
 
     // Both families, deliberately. See the library doc.
-    await loadFont('Roboto', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+    await loadFont('Roboto', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
     await loadFont(
-        'roboto-mono', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+        'dejavu-sans', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
 
     final flutterRoot = Platform.environment['FLUTTER_ROOT'];
     for (final candidate in <String>[

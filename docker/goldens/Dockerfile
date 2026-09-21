@@ -4,7 +4,7 @@
 # Why Linux is the reference platform, and not macOS where the goldens used to
 # be authored:
 #
-#   Our golden tests load RobotoMono from repo bytes (test/helpers/golden_fonts.dart),
+#   Our golden tests load DejaVu Sans from repo bytes (test/helpers/golden_fonts.dart),
 #   so the font data is already pinned and the host's installed fonts are never
 #   consulted. The only remaining variable is the glyph rasteriser -- and that
 #   is where the two platforms differ in kind. On macOS, Skia rasterises glyphs

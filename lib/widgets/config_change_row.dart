@@ -182,11 +182,24 @@ String configActionCounts(HistoryAction action) {
   for (final record in action.changes) {
     byKind.update(record.change.kind, (n) => n + 1, ifAbsent: () => 1);
   }
-  if (byKind.isEmpty) return 'no configuration entities';
+  return configKindCounts(byKind);
+}
+
+/// [byKind] as a phrase: `3 assets`, `2 assets, 1 page`.
+///
+/// [total], when given, is every row the action has — including kinds this
+/// build cannot name, which a station on a newer build writes. Those are said
+/// as `N other` rather than dropped, so the phrase never counts fewer rows
+/// than there are.
+String configKindCounts(Map<ConfigKind, int> byKind, {int? total}) {
+  final named = byKind.values.fold<int>(0, (sum, n) => sum + n);
+  final other = total == null ? 0 : total - named;
   final parts = <String>[
     for (final entry in byKind.entries)
       '${entry.value} ${configKindLabel(entry.key, plural: entry.value != 1)}',
+    if (other > 0) '$other other',
   ];
+  if (parts.isEmpty) return 'no configuration entities';
   return parts.join(', ');
 }
 
@@ -561,23 +574,147 @@ class ConfigActionTile extends StatelessWidget {
           ],
         ),
       ),
-      children: [
-        for (final child in action.children)
-          switch (child) {
-            // The header row, drawn by the audit trail's own widget rather than
-            // re-implemented: a `page.save` line has to read the same on both
-            // pages or the two will drift.
-            AuditMemberChild(:final row) =>
-              Padding(
-                padding: const EdgeInsets.only(left: kConfigNestIndent),
-                child: AuditEntryLine(row: row, showDetail: true),
+      children: configActionChildren(action),
+    );
+  }
+}
+
+/// What an opened action shows: its header row and its entities, in the order
+/// the grouping produced.
+///
+/// Shared by [ConfigActionTile] and by [DeferredConfigActionTile]'s opened
+/// body, so an action reads the same in the configuration view and in the
+/// full trail.
+List<Widget> configActionChildren(HistoryAction action) => [
+      for (final child in action.children)
+        switch (child) {
+          // The header row, drawn by the audit trail's own widget rather than
+          // re-implemented: a `page.save` line has to read the same on both
+          // pages or the two will drift.
+          AuditMemberChild(:final row) => Padding(
+              padding: const EdgeInsets.only(left: kConfigNestIndent),
+              child: AuditEntryLine(row: row, showDetail: true),
+            ),
+          ConfigChangeChild(:final record) => ConfigChangeTile(
+              key: ValueKey(record.id),
+              record: record,
+            ),
+        },
+    ];
+
+// ---------------------------------------------------------------------------
+// DeferredConfigActionTile
+// ---------------------------------------------------------------------------
+
+/// A configuration action as the **full** trail lists it: titled from counts,
+/// its rows read only when it is opened.
+///
+/// ## Why the full trail cannot hand [ConfigActionTile] a whole action
+///
+/// The configuration view pages over `config_change` itself, so the rows it
+/// draws are the rows its `LIMIT` bounded. The full trail pages over
+/// `audit_entry`, where a configuration action is one header row — and behind
+/// that one row may sit a key-mapping import's several hundred entities, each
+/// carrying a whole entity on both sides. Loading them for every action on a
+/// page would put the cap on the wrong table. So a page of the trail costs one
+/// grouped count (`ConfigChangeStore.changeKindCountsByAction`), which is what
+/// the title is drawn from, and [opened] reads one action's rows when the
+/// operator asks for them.
+///
+/// ## What [opened] is
+///
+/// The widget the tile shows once open. `maintainState: false` means it is
+/// mounted on expansion and not before, so whatever read it performs happens
+/// then. It is passed in rather than built here because the read is a provider
+/// and this file draws rows without one.
+///
+/// Opened, the action is drawn by [configActionChildren] — the same rows, in
+/// the same order, as the configuration view draws it.
+class DeferredConfigActionTile extends StatelessWidget {
+  const DeferredConfigActionTile({
+    super.key,
+    required this.action,
+    required this.counts,
+    required this.opened,
+  });
+
+  /// The action's `audit_entry` rows, as the trail's filters let them through.
+  final AuditAction action;
+
+  /// Its change rows, counted by kind over the whole table.
+  final ActionChangeCounts counts;
+
+  /// What the tile shows when open. See the class doc.
+  final Widget opened;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final secondary = theme.textTheme.bodySmall
+        ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
+    final lead = action.lead;
+    final group = action.requiredGroupLabel;
+
+    return ExpansionTile(
+      // Shut on arrival, always: opening is the read, and a list that opened
+      // its own tiles would issue one per configuration action on the page.
+      initiallyExpanded: false,
+      maintainState: false,
+      tilePadding: const EdgeInsets.symmetric(horizontal: kConfigColumnGap),
+      childrenPadding: EdgeInsets.zero,
+      expandedCrossAxisAlignment: CrossAxisAlignment.start,
+      shape: const Border(),
+      collapsedShape: const Border(),
+      title: Row(
+        key: kConfigActionHeaderKey,
+        children: [
+          // An empty mark slot: this action has its header, by construction —
+          // the full trail found it through that header.
+          const SizedBox(width: kConfigMarkWidth, height: kConfigMarkHeight),
+          const SizedBox(width: kConfigColumnGap),
+          Expanded(
+            child: Text(
+              '${lead.who} changed '
+              '${configKindCounts(counts.byKind, total: counts.total)}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall,
+            ),
+          ),
+          const SizedBox(width: kConfigColumnGap),
+          Text(formatTimestamp(lead.at), maxLines: 1, style: secondary),
+        ],
+      ),
+      subtitle: Padding(
+        padding: const EdgeInsets.only(
+          left: kConfigMarkWidth + kConfigColumnGap,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (group.isNotEmpty)
+              Text(group,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: secondary),
+            // Only the audit side can be filtered here: the change rows are
+            // read whole, by action id, when the tile opens.
+            if (action.isPartial)
+              Text(
+                kAuditHiddenMembersNote(
+                  action.hiddenCount,
+                  action.totalRowCount,
+                ),
+                key: kAuditHiddenMembersKey,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: secondary,
               ),
-            ConfigChangeChild(:final record) => ConfigChangeTile(
-                key: ValueKey(record.id),
-                record: record,
-              ),
-          },
-      ],
+          ],
+        ),
+      ),
+      children: [opened],
     );
   }
 }

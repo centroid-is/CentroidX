@@ -1,5 +1,9 @@
+import 'dart:io';
+
 import 'package:drift/drift.dart';
+import 'package:drift/native.dart';
 import 'package:test/test.dart';
+import 'package:tfc_dart/core/database.dart' show DatabaseConfig;
 import 'package:tfc_dart/core/database_drift.dart' show AppDatabase;
 
 /// Returns the set of user table names in the given [db].
@@ -117,12 +121,14 @@ void main() {
       }
     });
 
-    test('schema version is 13', () async {
+    test('schema version is 14', () async {
       final db = AppDatabase.inMemoryForTest();
       addTearDown(() => db.close());
-      // 13 is 14-01's alarm_history arm, renumbered three times as main took
-      // 7-9 and then 10-12 — see the arm's own comment in database_drift.dart.
-      expect(db.schemaVersion, 13);
+      // 13 is the config-store arm widened from `from < 10` (main, #580); 14
+      // is the alarm_history arm, moved above it because a station that ran
+      // main's build is stamped 13 and a `from < 13` arm would never reach
+      // it. See both arms' comments in `database_drift.dart`.
+      expect(db.schemaVersion, 14);
     });
 
     test('fresh install creates the config tables and their indexes',
@@ -351,6 +357,156 @@ void main() {
           await db.customSelect('SELECT * FROM tech_doc_section').get();
       expect(sections, hasLength(1));
       expect(sections.first.read<String>('title'), 'Introduction');
+    });
+  });
+
+  // The config-store arm's bound, exercised through a real open rather than
+  // by calling `onUpgrade` by hand: what is being pinned is which arms a
+  // stamped `user_version` reaches, and only drift deciding that for itself
+  // is evidence of it.
+  //
+  // In-memory will not do here. `inMemoryForTest` creates at the current
+  // version and the database dies with the connection, so there is no way to
+  // stamp a number and come back to it; a file is the only fixture that
+  // survives a close.
+  group('the config-store arm reaches a database stamped by another line',
+      () {
+    late Directory tempDir;
+    late File dbFile;
+
+    setUp(() {
+      tempDir = Directory.systemTemp.createTempSync('tfc_config_arm_test');
+      dbFile = File('${tempDir.path}/app.sqlite');
+    });
+
+    tearDown(() {
+      if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+    });
+
+    Future<AppDatabase> open() async {
+      final db = AppDatabase.forTest(
+        DatabaseConfig(),
+        NativeDatabase(dbFile, logStatements: false),
+      );
+      // Forces the migration; drift does nothing until the first query.
+      await db.customSelect('SELECT 1').getSingle();
+      return db;
+    }
+
+    Future<int> userVersion(GeneratedDatabase db) async =>
+        (await db.customSelect('PRAGMA user_version').getSingle())
+            .read<int>('user_version');
+
+    test('a database stamped 10 with no config tables heals on the next open',
+        () async {
+      // The station at 10.104.60.84, in a temp directory. A pre-merge build
+      // of the relay branch stamped `user_version` 10 for an arm of its own,
+      // so the database claims to have passed v10 and has never run the arm
+      // that creates these tables. With the bound at `from < 10` it never
+      // will: the arm is skipped, the v12 index arm then runs
+      // `CREATE INDEX ... ON config_item` against a table that is not there,
+      // and the open fails outright.
+      //
+      // This is the test that fails against a `from < 10` arm. If it is ever
+      // narrowed back, this is what says so.
+      final db = await open();
+      await _dropConfigSchema(db);
+      expect(await _tableNames(db), isNot(contains('config_item')),
+          reason: 'the fixture must actually reach a shape without the '
+              'config tables, or the assertions below are vacuous');
+      await db.customStatement('PRAGMA user_version = 10');
+      await db.close();
+
+      final upgraded = await open();
+      addTearDown(() => upgraded.close());
+
+      final tables = await _tableNames(upgraded);
+      for (final table in _configTables) {
+        expect(tables, contains(table),
+            reason: 'a database stamped 10 by another line has never run the '
+                'config arm, so the widened bound has to reach it');
+      }
+      final indexes = await _indexNames(upgraded);
+      for (final index in _configIndexes) {
+        expect(indexes, contains(index));
+      }
+      expect(await userVersion(upgraded), upgraded.schemaVersion);
+    });
+
+    test('a station already at 12 upgrades to 13 as a no-op, rows intact',
+        () async {
+      // The other half, and the one that says bumping the number is safe for
+      // every station on main: they are all at 12 with both tables full. The
+      // widened arm runs over them and must create nothing and touch no row —
+      // `createTable` is `CREATE TABLE IF NOT EXISTS` and every index
+      // statement is `CREATE INDEX IF NOT EXISTS`.
+      final db = await open();
+      await db.customStatement(
+        "INSERT INTO config_item "
+        "(kind, id, scope, payload, rev, updated_at, updated_by) "
+        "VALUES ('page', 'overview', 'shared', '{\"a\":1}', 3, "
+        "'2026-09-01T00:00:00Z', 'jon')",
+      );
+      await db.customStatement('PRAGMA user_version = 12');
+      await db.close();
+
+      final upgraded = await open();
+      addTearDown(() => upgraded.close());
+
+      expect(await userVersion(upgraded), upgraded.schemaVersion,
+          reason: 'the stamp has to move off 12, or the arm did not run');
+      final rows =
+          await upgraded.customSelect('SELECT * FROM config_item').get();
+      expect(rows, hasLength(1),
+          reason: 'the arm must not drop or re-create a populated table');
+      expect(rows.first.read<String>('payload'), '{"a":1}');
+      expect(rows.first.read<int>('rev'), 3);
+      expect(await _tableNames(upgraded), containsAll(_configTables));
+      expect(await _indexNames(upgraded), containsAll(_configIndexes));
+    });
+
+    test('a station that ran main\'s build — stamped 13, alarm_history '
+        'without the v14 columns — gets them on the next open', () async {
+      // The collision this pin exists for. Main (#580) stamps 13 for its
+      // widened config arm; the alarm_history arm used to be `from < 13` on
+      // this line too, so a database main had stamped 13 opened here, skipped
+      // the arm, and never gained `rule_index` — every alarm write would then
+      // fail on a column that no later upgrade creates. The arm is v14 now,
+      // and existence-guarded, so it runs here and is a no-op anywhere it
+      // already ran.
+      final db = await open();
+      for (final stmt in const [
+        'DROP INDEX IF EXISTS idx_alarm_history_open',
+        'ALTER TABLE alarm_history DROP COLUMN rule_index',
+        'ALTER TABLE alarm_history DROP COLUMN ts_source',
+        'ALTER TABLE alarm_history DROP COLUMN deactivated_reason',
+      ]) {
+        await db.customStatement(stmt);
+      }
+      await db.customStatement('PRAGMA user_version = 13');
+      await db.close();
+
+      final upgraded = await open();
+      addTearDown(() => upgraded.close());
+
+      expect(await userVersion(upgraded), 14);
+      final columns = {
+        for (final row in await upgraded
+            .customSelect("PRAGMA table_info('alarm_history')")
+            .get())
+          row.read<String>('name'),
+      };
+      expect(columns,
+          containsAll(['rule_index', 'ts_source', 'deactivated_reason']));
+      expect(await _indexNames(upgraded), contains('idx_alarm_history_open'));
+    });
+
+    test('and a station already at 14 reopens as a no-op', () async {
+      final db = await open();
+      await db.close();
+      final again = await open();
+      addTearDown(() => again.close());
+      expect(await userVersion(again), 14);
     });
   });
 }

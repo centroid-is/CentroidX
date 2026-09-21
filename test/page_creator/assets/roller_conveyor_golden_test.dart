@@ -10,14 +10,14 @@ import '../../helpers/golden_platform.dart';
 const _key = Key('roller_conveyor_golden');
 
 /// Real glyphs instead of Ahem boxes, so the row labels in the golden are
-/// readable. Registered as 'roboto-mono' because that is the family the app
+/// readable. Registered as 'dejavu-sans' because that is the family the app
 /// theme asks for — see `conveyor_drive_status_golden_test.dart`.
 Future<void> loadRealFont() async {
-  final data = File('lib/fonts/roboto-mono/RobotoMono-Regular.ttf')
+  final data = File('lib/fonts/dejavu-sans/DejaVuSans.ttf')
       .readAsBytesSync()
       .buffer
       .asByteData();
-  final loader = FontLoader('roboto-mono')..addFont(Future.value(data));
+  final loader = FontLoader('dejavu-sans')..addFont(Future.value(data));
   await loader.load();
 }
 

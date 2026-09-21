@@ -48,7 +48,8 @@ Future<Set<String>> _indexNames(GeneratedDatabase db) async {
 /// The three tables added by the v5→v6 migration.
 const _accessTables = ['app_role', 'app_user', 'audit_entry'];
 
-/// Undoes what schema **v13** added to `alarm_history`.
+/// Undoes what schema **v14** added to `alarm_history` (it was v13 until main
+/// took 13 — see the arm in `database_drift.dart`).
 ///
 /// The old-version fixtures in this repository are built by creating the
 /// CURRENT schema and removing what came later, so every future version has to
@@ -1289,15 +1290,16 @@ void main() {
     });
 
     test('the seed needs no schema version of its own', () async {
-      // Main shipped the seed at 9, the config branch carried it to 12, and
-      // the alarm arm makes it 13 here. The seed added an arm to none of
-      // them. Pinned to a literal rather than to `db.schemaVersion`, because
-      // a seed that quietly took an arm would move that too — which is why
-      // this number has to be edited by hand on every merge, and is the whole
-      // value of the arm.
+      // Main shipped the seed at 9, the relational config store carried it
+      // to 12, widening that store's arm made it 13, and the alarm_history
+      // arm moving above main's 13 makes it 14. The seed added an arm to none
+      // of them. Pinned to a literal rather than to
+      // `db.schemaVersion`, because a seed that quietly took an arm would
+      // move that too — which is why this number has to be edited by hand on
+      // every bump, and is the whole value of the test.
       final db = await open();
       addTearDown(() => db.close());
-      expect(db.schemaVersion, 13);
+      expect(db.schemaVersion, 14);
     });
   });
 

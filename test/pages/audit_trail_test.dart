@@ -41,7 +41,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/core/audit_trail_store.dart';
 import 'package:tfc/pages/audit_trail.dart';
+import 'package:tfc/pages/config_history.dart'
+    show ConfigHistoryBody, kConfigHistoryTitle;
 import 'package:tfc/providers/audit_trail.dart';
+import 'package:tfc/providers/config_history.dart' show configChangeStoreProvider;
 import 'package:tfc/theme.dart' show muted;
 import 'package:tfc/widgets/audit_trail_filters.dart';
 import 'package:tfc/widgets/audit_trail_row.dart';
@@ -243,6 +246,9 @@ Future<void> _pumpBody(
     ProviderScope(
       overrides: [
         auditTrailStoreProvider.overrideWith((ref) async => store),
+        // No configuration actions in these fixtures, and no database behind
+        // the change store: every action draws as the audit line it is.
+        configChangeStoreProvider.overrideWith((ref) async => null),
       ],
       child: MaterialApp(
         theme: light,
@@ -292,6 +298,62 @@ void main() {
       final source = _pageSourceWithoutComments();
       expect(source, contains('BaseScaffold('));
       expect(source, contains('AuditTrailBody()'));
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // One page, two scopes — fixed by the route
+  // -------------------------------------------------------------------------
+
+  group('AuditTrailPage — scope', () {
+    testWidgets(
+        'the configuration scope is the configuration view and nothing wider',
+        (tester) async {
+      await _pumpBody(tester,
+          store: _FakeStore(),
+          child: const AuditTrailView(scope: AuditTrailScope.configuration));
+
+      expect(find.byType(ConfigHistoryBody), findsOneWidget);
+      expect(find.byType(AuditTrailBody), findsNothing);
+      expect(find.byKey(kAuditTrailLensKey), findsNothing,
+          reason: 'the route at `configure` fixes this scope. A control here '
+              'that reached the whole trail would hand every write and every '
+              'denial to anyone who can edit a page (T-04-06a).');
+    });
+
+    testWidgets('the full scope opens on everything, with the lens',
+        (tester) async {
+      await _pumpBody(tester,
+          store: _FakeStore(),
+          child: const AuditTrailView(scope: AuditTrailScope.everything));
+
+      expect(find.byKey(kAuditTrailLensKey), findsOneWidget);
+      expect(find.byType(AuditTrailBody), findsOneWidget);
+      expect(find.byType(ConfigHistoryBody), findsNothing);
+    });
+
+    testWidgets('the lens narrows the full scope to configuration and back',
+        (tester) async {
+      await _pumpBody(tester,
+          store: _FakeStore(),
+          child: const AuditTrailView(scope: AuditTrailScope.everything));
+
+      await tester.tap(find.text(kAuditTrailLensConfiguration));
+      await tester.pump();
+      expect(find.byType(ConfigHistoryBody), findsOneWidget);
+      expect(find.byType(AuditTrailBody), findsNothing);
+
+      await tester.tap(find.text(kAuditTrailLensEverything));
+      await tester.pump();
+      expect(find.byType(AuditTrailBody), findsOneWidget);
+      expect(find.byType(ConfigHistoryBody), findsNothing);
+    });
+
+    test('each scope has its own title', () {
+      expect(const AuditTrailPage().title, kAuditTrailTitle);
+      expect(
+          const AuditTrailPage(scope: AuditTrailScope.configuration).title,
+          kConfigHistoryTitle);
     });
   });
 

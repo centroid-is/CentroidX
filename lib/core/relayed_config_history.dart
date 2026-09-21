@@ -156,6 +156,41 @@ final class RelayedConfigChangeStore implements ConfigChangeStore {
   Future<Map<String, int>> changeCountsByAction(Iterable<String> actionIds) =>
       relayedAccessErrors(() => _api.changeCountsByAction(actionIds.toList()));
 
+  /// Each action's change rows counted by kind — what the full audit trail
+  /// titles a configuration action with ("jon changed 2 assets, 1 page").
+  ///
+  /// **Derived from two wire calls the relay already carries**, not a third
+  /// one. [ActionChangeCounts.total] comes from `changeCountsByAction`, which
+  /// counts every row including kinds this build cannot name — so the title
+  /// never claims fewer rows than the action has — and `byKind` from the
+  /// per-action join, counting only the rows this build can decode. That
+  /// split is exactly the direct store's contract. The cost is that the join
+  /// carries the rows themselves; a trail page asks about at most one page of
+  /// action ids, and an action with no change rows is absent from both answers
+  /// and so absent here, never zero — which is how the trail tells a
+  /// configuration action from an audit-only one.
+  @override
+  Future<Map<String, ActionChangeCounts>> changeKindCountsByAction(
+      Iterable<String> actionIds) async {
+    final ids = actionIds.toSet().toList();
+    if (ids.isEmpty) return const {};
+    final totals = await changeCountsByAction(ids);
+    if (totals.isEmpty) return const {};
+    final rows = await changesByAction(totals.keys);
+    return {
+      for (final entry in totals.entries)
+        entry.key: ActionChangeCounts(
+          byKind: Map.unmodifiable(<ConfigKind, int>{
+            for (final record in rows[entry.key] ?? const <ConfigChangeRecord>[])
+              record.change.kind: 0,
+          }..updateAll((kind, _) => (rows[entry.key] ?? const [])
+              .where((r) => r.change.kind == kind)
+              .length)),
+          total: entry.value,
+        ),
+    };
+  }
+
   /// One entity's history — **not on the wire, and the refusal says so.**
   ///
   /// [EntityHistory] carries `historyKept`, the difference between "nothing

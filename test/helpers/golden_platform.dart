@@ -10,7 +10,7 @@
 /// that Linux is the only platform where the text rasteriser is pinned by
 /// something we control.
 ///
-/// Our goldens load RobotoMono from repo bytes (see [golden_fonts.dart]), so
+/// Our goldens load DejaVu Sans from repo bytes (see [golden_fonts.dart]), so
 /// the font data is already pinned and the host's installed fonts are never
 /// consulted. What remains is the glyph rasteriser. On macOS, Skia rasterises
 /// glyphs through CoreText -- part of the operating system, which changes when

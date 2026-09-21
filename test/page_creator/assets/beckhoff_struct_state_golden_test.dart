@@ -58,8 +58,8 @@ Future<void> loadRealFont() async {
         .load();
   }
 
-  await loadFont('Roboto', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
-  await loadFont('roboto-mono', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+  await loadFont('Roboto', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
+  await loadFont('dejavu-sans', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
 }
 
 const _rawKey = 'ST101.ECT.ST101_A1_03';

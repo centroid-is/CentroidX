@@ -16,14 +16,14 @@ import '../helpers/golden_platform.dart';
 final now = DateTime(2026, 8, 29, 14, 22);
 DateTime ago(int minutes) => now.subtract(Duration(minutes: minutes));
 
-/// The muted theme sets `fontFamily: 'roboto-mono'`, so the font has to be
+/// The muted theme sets `fontFamily: 'dejavu-sans'`, so the font has to be
 /// registered under that family too or every glyph renders as an Ahem box.
 Future<void> loadFonts() async {
   final data = ByteData.view(
-      File('lib/fonts/roboto-mono/RobotoMono-Regular.ttf')
+      File('lib/fonts/dejavu-sans/DejaVuSans.ttf')
           .readAsBytesSync()
           .buffer);
-  for (final family in ['Roboto', 'roboto-mono']) {
+  for (final family in ['Roboto', 'dejavu-sans']) {
     await (FontLoader(family)..addFont(Future.value(data))).load();
   }
   final flutterRoot = Platform.environment['FLUTTER_ROOT'];

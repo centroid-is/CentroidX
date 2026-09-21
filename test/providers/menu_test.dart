@@ -429,6 +429,94 @@ void main() {
       expect(visible.single.children.map((i) => i.path), [kAccessAdminRoute]);
     });
 
+    group('one audit trail entry, whichever the session may open', () {
+      const advanced = MenuItem(
+        label: 'Advanced',
+        path: '/advanced',
+        icon: Icons.settings,
+        isSection: true,
+        children: [
+          MenuItem(
+              label: 'Audit Trail',
+              path: kAuditTrailRoute,
+              icon: Icons.receipt_long),
+          MenuItem(
+              label: 'Config History',
+              path: kConfigHistoryRoute,
+              icon: Icons.history_edu),
+        ],
+      );
+
+      Future<List<String?>> visibleAdvanced(Set<AccessGroup> groups) async {
+        final container = _container(
+          registry: [home, advanced],
+          session: _sessionWith(groups: groups),
+        );
+        await container.read(accessRepositoryProvider.future);
+        await _settle(container);
+        final visible = container.read(visibleMenuProvider).topLevel;
+        return [
+          for (final item in visible)
+            if (item.path == '/advanced')
+              for (final child in item.children) child.path,
+        ];
+      }
+
+      test('holding both, only the full trail is offered', () async {
+        expect(
+            await visibleAdvanced(
+                {AccessGroup.operate, AccessGroup.configure, AccessGroup.users}),
+            [kAuditTrailRoute],
+            reason: 'the full trail carries the configuration view as a lens, '
+                'so a second entry would be the same page twice');
+      });
+
+      test('holding configure only, the configuration trail is offered',
+          () async {
+        expect(
+            await visibleAdvanced({AccessGroup.operate, AccessGroup.configure}),
+            [kConfigHistoryRoute]);
+      });
+
+      test('holding users only, the full trail is offered', () async {
+        expect(await visibleAdvanced({AccessGroup.operate, AccessGroup.users}),
+            [kAuditTrailRoute]);
+      });
+
+      test('holding neither, neither is offered', () async {
+        expect(await visibleAdvanced({AccessGroup.operate}), isEmpty);
+      });
+
+      test('an entry with no path supersedes nothing', () async {
+        // A path-less, child-less entry survives the filter by design; it must
+        // not make every unsuperseded sibling look superseded by "no path".
+        const label = MenuItem(label: 'Heading', icon: Icons.label);
+        final container = _container(
+          registry: [home, label, fillet],
+          session: _sessionWith(groups: {AccessGroup.operate}),
+        );
+        await container.read(accessRepositoryProvider.future);
+        await _settle(container);
+        expect(container.read(visibleMenuProvider).topLevel.map((i) => i.label),
+            ['Home', 'Heading', 'Filleting']);
+      });
+
+      test('the full tree keeps both, for the editors that list every page',
+          () async {
+        final container = _container(
+          registry: [home, advanced],
+          session: _sessionWith(
+              groups: {AccessGroup.configure, AccessGroup.users}),
+        );
+        final tree = container.read(menuTreeProvider);
+        expect(tree.last.children.map((i) => i.path),
+            [kAuditTrailRoute, kConfigHistoryRoute],
+            reason: 'superseding is a menu decision for this session; the '
+                'page whitelist editor must still be able to name either '
+                'route');
+      });
+    });
+
     test('a section with no children at all is kept', () async {
       // An empty section is a real state — the page editor creates one before
       // anything is put in it — and nothing was hidden, so nothing should

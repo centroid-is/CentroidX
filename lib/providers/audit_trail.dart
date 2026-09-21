@@ -28,6 +28,8 @@ import '../core/audit_trail_grouping.dart';
 import '../core/audit_trail_store.dart';
 import '../core/gateway_state_man.dart';
 import '../core/relayed_access_stores.dart';
+import '../core/config_change_store.dart';
+import 'config_history.dart' show configChangeStoreProvider;
 import 'database.dart';
 import 'gateway.dart';
 import 'state_man.dart';
@@ -99,10 +101,23 @@ class AuditTrailResult {
     required this.rowCount,
     required this.reachedLimit,
     required this.oldestAt,
+    this.configChanges = const {},
   });
 
   /// The grouped actions, newest action first.
   final List<AuditAction> actions;
+
+  /// The configuration actions among [actions], by action id: how many
+  /// `config_change` rows each wrote, by kind.
+  ///
+  /// **Absent means audit-only**, which is what a sign-in, a denial or a tag
+  /// write is. A present entry is what makes the page draw the action as the
+  /// configuration view does — field diffs when opened, Undo beside it —
+  /// rather than as a bare `page.save` line with a summary capped at a
+  /// kilobyte. Keyed by action id and not by `surface`: a configuration save
+  /// records its header on `pref`, as a preference write does, and only the
+  /// change rows tell the two apart.
+  final Map<String, ActionChangeCounts> configChanges;
 
   /// How many **rows** came back, before grouping.
   ///
@@ -165,8 +180,27 @@ Future<AuditTrailResult?> auditTrailEntries(Ref ref, AuditQuery query) async {
   // cannot be derived from what came back — this is where the 9 comes from.
   final totals = await store.memberCountsByAction(rows.map((row) => row.actionId));
 
+  // Which of these actions changed configuration, counted by kind. One grouped
+  // statement over the page's action ids, and not the rows themselves — see
+  // `DeferredConfigActionTile` for why those wait until an action is opened.
+  // The change store reads the same handle as this one, so it is null only
+  // when this is; an empty map is the honest degradation if it ever is not:
+  // every action draws as the audit line it is.
+  //
+  // A failed count is left to throw, as a failed trail read is. Swallowing it
+  // would draw every configuration action as audit-only, which is a claim about
+  // the history this page could not check.
+  final changeStore = rows.isEmpty
+      ? null
+      : await ref.watch(configChangeStoreProvider.future);
+  final configChanges = changeStore == null
+      ? const <String, ActionChangeCounts>{}
+      : await changeStore
+          .changeKindCountsByAction(rows.map((row) => row.actionId));
+
   return AuditTrailResult(
     actions: groupAuditRows(rows, totalsByActionId: totals),
+    configChanges: configChanges,
     rowCount: rows.length,
     reachedLimit: rows.length == query.limit,
     // The store orders newest first, so the last row is the oldest one and the

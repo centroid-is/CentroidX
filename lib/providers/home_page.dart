@@ -84,12 +84,20 @@ class BootHomePageDebt {
   /// Whether the boot navigation may still be taken.
   bool get owed => _owed;
 
-  /// True while some scaffold is taking it: at boot more than one scaffold
-  /// can be mounted, and the panel moves once.
-  bool inFlight = false;
+  /// The attempt some scaffold is making right now, or null.
+  ///
+  /// At boot more than one scaffold can be mounted and the panel moves once,
+  /// so a second scaffold waits on this rather than starting its own lookup —
+  /// and, when it completes, tries itself if the debt is still [owed]. Waiting
+  /// rather than skipping is the point: the scaffold that started the attempt
+  /// can be gone by the time the answer arrives (`PageAccessGate` swaps its
+  /// waiting scaffold for the page's the frame after the session resolves),
+  /// and a skipped turn was then nobody's turn.
+  Future<void>? inFlight;
 
   /// The navigation was taken, or the home page turned out to be where the
-  /// panel already is.
+  /// panel already is. Only a scaffold still mounted when the answer arrives
+  /// may say so: one that was unmounted during the lookup moved nothing.
   void settle() => _owed = false;
 
   /// Somebody touched the screen, or the panel opened somewhere on purpose.

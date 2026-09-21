@@ -78,8 +78,8 @@ String kAccessSignInCommitMessage(String username) =>
     'The panel stays signed in across restarts. People can sign in over it '
     'for their own work; when their session ends or times out, the panel '
     'returns to $username. $username cannot be signed out from the app bar; '
-    // `>`, not an arrow: RobotoMono has no glyph for U+2192 and the golden
-    // showed a blank where it belongs.
+    // `>`, not an arrow: picked while the app font was RobotoMono, which has
+    // no U+2192. DejaVu Sans has one, so an arrow would now draw.
     'an administrator releases the panel under Advanced > Access.';
 
 /// The confirm labels, named so the tests tap the same words the operator

@@ -101,13 +101,13 @@ Widget buildBody({
 /// Without this every glyph renders as a filled black box — the Flutter test
 /// font draws no actual letterforms — which turns the readouts into bars and
 /// makes the golden useless for judging whether a weight beside a belt is
-/// legible. RobotoMono is already in the repo under `lib/fonts/`.
+/// legible. DejaVu Sans, the app's font, is in the repo under `lib/fonts/`.
 ///
 /// MaterialIcons is loaded too, from the Flutter SDK: the pane goldens carry
 /// icons (the header glyph, the status chip's dot) and without the icon font
 /// they render as tofu boxes, which is not what an operator sees.
 Future<void> loadRealFont() async {
-  final data = File('lib/fonts/roboto-mono/RobotoMono-Regular.ttf')
+  final data = File('lib/fonts/dejavu-sans/DejaVuSans.ttf')
       .readAsBytesSync()
       .buffer
       .asByteData();
@@ -115,10 +115,10 @@ Future<void> loadRealFont() async {
   await loader.load();
 
   // The SAME bytes under the family the chart theme names. `lightChartTheme`
-  // and `darkChartTheme` set `fontFamily: 'roboto-mono'` on their axis styles,
+  // and `darkChartTheme` set `fontFamily: 'dejavu-sans'` on their axis styles,
   // and an unregistered family falls back to Ahem in a test — every tick label
   // on the trend golden rendered as a solid black box.
-  final chartLoader = FontLoader('roboto-mono')..addFont(Future.value(data));
+  final chartLoader = FontLoader('dejavu-sans')..addFont(Future.value(data));
   await chartLoader.load();
 
   final flutterRoot = Platform.environment['FLUTTER_ROOT'];

@@ -115,7 +115,7 @@ void main() {
       }
 
       await loadFont(
-          'Roboto', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+          'Roboto', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
 
       final flutterRoot = Platform.environment['FLUTTER_ROOT'] ??
           (Platform.resolvedExecutable.contains('flutter')

@@ -1,10 +1,22 @@
-/// The audit trail: one page, one query, and three ways to have nothing to
-/// show.
+/// The audit trail: one page for every change anybody made, configuration
+/// included, and three ways to have nothing to show.
 ///
-/// The first and only reader's screen. It watches one resolved [AuditQuery] per
-/// loaded page, renders 05-05's filter bar above a virtualised list of 05-04's
-/// grouped actions, and distinguishes the states that would otherwise all look
-/// like a blank screen.
+/// ## One trail, not two
+///
+/// The configuration history used to be a page of its own beside this one, so
+/// a page save appeared here as a bare `page_editor_data` line and its field
+/// diffs and Undo lived one menu entry away. They are one page now,
+/// [AuditTrailPage], whose scope the route fixes: the full trail at
+/// `/advanced/audit-trail` (`users`), and the configuration view alone at
+/// `/advanced/config-history` (`configure`). In the full trail a configuration
+/// action is drawn as the configuration view draws it, and a lens switches to
+/// that view whole. See [AuditTrailView] for why it is a lens rather than one
+/// merged list, and `kSupersededRoutes` for how the menu offers one entry.
+///
+/// The Everything view, [AuditTrailBody], watches one resolved [AuditQuery]
+/// per loaded page, renders 05-05's filter bar above a virtualised list of
+/// 05-04's grouped actions, and distinguishes the states that would otherwise
+/// all look like a blank screen.
 ///
 /// ## The three terminal states, and why they are three
 ///
@@ -52,10 +64,15 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/audit_trail_grouping.dart';
 import '../core/audit_trail_store.dart';
+import '../core/config_change_store.dart';
 import '../providers/audit_trail.dart';
+import '../providers/config_history.dart' show configActionChangesProvider;
 import '../widgets/audit_trail_filters.dart';
 import '../widgets/audit_trail_row.dart';
 import '../widgets/base_scaffold.dart';
+import '../widgets/config_change_row.dart';
+import 'config_history.dart'
+    show ConfigHistoryBody, ConfigUndoHost, kConfigHistoryTitle;
 
 // ---------------------------------------------------------------------------
 // The copy
@@ -110,6 +127,15 @@ const String kAuditTrailLimitNote =
 /// The explicit paging action. A button, never a scroll position.
 const String kAuditTrailLoadMoreLabel = 'Load more';
 
+/// What an opened configuration action says when its rows cannot be read.
+const String kAuditConfigUnreadable = 'The changes could not be read:';
+
+/// Rows a configuration action has that this build cannot decode — written by
+/// a station on a newer build. Counted, so they cannot vanish.
+String kAuditConfigUnreadRowsNote(int unread, int total) =>
+    '$unread of $total changes were written by a newer build and cannot be '
+    'shown here.';
+
 // ---------------------------------------------------------------------------
 // The keys
 // ---------------------------------------------------------------------------
@@ -150,28 +176,161 @@ const Key kAuditTrailLimitNoteKey = ValueKey<String>('audit-trail-limit-note');
 /// The `Load more` button. Present only while the newest page came back full.
 const Key kAuditTrailLoadMoreKey = ValueKey<String>('audit-trail-load-more');
 
+/// An opened configuration action while its rows are being read.
+const Key kAuditConfigLoadingKey = ValueKey<String>('audit-config-loading');
+
+/// An opened configuration action whose rows could not be read.
+const Key kAuditConfigErrorKey = ValueKey<String>('audit-config-error');
+
+/// The line under an opened action naming rows this build could not decode.
+const Key kAuditConfigUnreadRowsKey =
+    ValueKey<String>('audit-config-unread-rows');
+
 // ---------------------------------------------------------------------------
 // The page
 // ---------------------------------------------------------------------------
 
-/// Route target for `/advanced/audit-trail`.
+/// How much of the trail a page shows. Fixed by the route, never by the page.
+enum AuditTrailScope {
+  /// Every write, denial, sign-in and administration change, with the
+  /// configuration lens beside it. `kAuditTrailRoute`, at `users`.
+  everything,
+
+  /// Configuration changes only. `kConfigHistoryRoute`, at `configure`.
+  configuration,
+}
+
+/// Route target for `/advanced/audit-trail` and `/advanced/config-history`:
+/// one page, whose [scope] the route fixes.
 ///
-/// Field-less on purpose so `createLocationBuilder` can register it as
-/// `const AuditTrailPage()`. All of the logic lives in [AuditTrailBody].
+/// ## Why the scope is a constructor argument and nothing else
+///
+/// The route map in `lib/access_routes.dart` is the whole of the enforcement
+/// for reading the trail — neither store takes a session, on purpose. So the
+/// configuration route's `configure` gate is only worth anything if nothing
+/// behind it can reach the full trail. The scope is therefore decided once,
+/// where the route builds this page, and [AuditTrailView] builds no control
+/// that widens it: at [AuditTrailScope.configuration] there is no lens and no
+/// [AuditTrailBody] in the tree at all. `navigation_test.dart` pins which scope
+/// each route builds.
+///
+/// Const-constructible, so the route map can register it as a constant.
 class AuditTrailPage extends StatelessWidget {
-  const AuditTrailPage({super.key});
+  const AuditTrailPage({super.key, this.scope = AuditTrailScope.everything});
+
+  /// What this page may show. See the class doc.
+  final AuditTrailScope scope;
+
+  /// The title over the page: the full trail's, or the configuration route's.
+  String get title => switch (scope) {
+        AuditTrailScope.everything => kAuditTrailTitle,
+        AuditTrailScope.configuration => kConfigHistoryTitle,
+      };
 
   @override
   Widget build(BuildContext context) {
-    return const BaseScaffold(
-      title: kAuditTrailTitle,
-      body: AuditTrailBody(),
+    return BaseScaffold(
+      title: title,
+      body: AuditTrailView(scope: scope),
     );
   }
 }
 
-/// The page content, split from [AuditTrailPage] so tests and goldens can pump
-/// it without [BaseScaffold]'s routing context.
+/// What the lens offers, in the full scope.
+const String kAuditTrailLensEverything = 'Everything';
+
+/// See [kAuditTrailLensEverything].
+const String kAuditTrailLensConfiguration = 'Configuration';
+
+/// The lens control. Present only in [AuditTrailScope.everything].
+const Key kAuditTrailLensKey = ValueKey<String>('audit-trail-lens');
+
+/// Which view of the full trail is showing.
+enum _AuditTrailLens { everything, configuration }
+
+/// The trail, as [scope] allows it.
+///
+/// At [AuditTrailScope.configuration] this is [ConfigHistoryBody] and nothing
+/// else. At [AuditTrailScope.everything] it is a lens over two views of the one
+/// trail: **Everything**, which pages over `audit_entry` and draws each
+/// configuration action with its field diffs and Undo; and **Configuration**,
+/// which pages over `config_change` itself.
+///
+/// ## Why the lens exists rather than Everything alone
+///
+/// The two views are driven by different tables, and each surfaces something
+/// the other cannot. Everything is driven by the audit headers, so an action
+/// whose change rows committed but whose header was never written — the
+/// orphan window `HistoryAction.isParentless` describes — has no row to be
+/// found by. Configuration is driven by the change rows, so it finds those,
+/// and it has the filters that only mean something there: kind, entity, and
+/// the scope and silent-kinds notes. Merging the two into one paged stream
+/// would mean a cursor over two tables with two id spaces; the lens keeps each
+/// view's paging exactly as it was proven.
+///
+/// The lens is local state and starts on Everything. Switching it starts the
+/// other view afresh, as arriving at it would.
+class AuditTrailView extends StatefulWidget {
+  const AuditTrailView({super.key, required this.scope});
+
+  final AuditTrailScope scope;
+
+  @override
+  State<AuditTrailView> createState() => _AuditTrailViewState();
+}
+
+class _AuditTrailViewState extends State<AuditTrailView> {
+  _AuditTrailLens _lens = _AuditTrailLens.everything;
+
+  @override
+  Widget build(BuildContext context) {
+    // The configuration route's whole page. No lens, and no AuditTrailBody
+    // anywhere below: this scope cannot be widened from inside it.
+    if (widget.scope == AuditTrailScope.configuration) {
+      return const ConfigHistoryBody();
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: SegmentedButton<_AuditTrailLens>(
+              key: kAuditTrailLensKey,
+              showSelectedIcon: false,
+              style: const ButtonStyle(visualDensity: VisualDensity.compact),
+              segments: const [
+                ButtonSegment(
+                  value: _AuditTrailLens.everything,
+                  label: Text(kAuditTrailLensEverything),
+                  icon: Icon(Icons.receipt_long, size: 16),
+                ),
+                ButtonSegment(
+                  value: _AuditTrailLens.configuration,
+                  label: Text(kAuditTrailLensConfiguration),
+                  icon: Icon(Icons.history_edu, size: 16),
+                ),
+              ],
+              selected: {_lens},
+              onSelectionChanged: (next) => setState(() => _lens = next.single),
+            ),
+          ),
+        ),
+        Expanded(
+          child: switch (_lens) {
+            _AuditTrailLens.everything => const AuditTrailBody(),
+            _AuditTrailLens.configuration => const ConfigHistoryBody(),
+          },
+        ),
+      ],
+    );
+  }
+}
+
+/// The full trail's Everything view, split from [AuditTrailPage] so tests and
+/// goldens can pump it without [BaseScaffold]'s routing context.
 ///
 /// [BaseScaffold] calls `context.currentBeamLocation`, so it cannot be pumped
 /// without a Beamer ancestor. `FirstUserBody` and `KeyRepositoryContent` are
@@ -184,7 +343,8 @@ class AuditTrailBody extends ConsumerStatefulWidget {
 }
 
 /// Public so a widget test can reach [buildCount].
-class AuditTrailBodyState extends ConsumerState<AuditTrailBody> {
+class AuditTrailBodyState extends ConsumerState<AuditTrailBody>
+    with ConfigUndoHost<AuditTrailBody> {
   /// The filter controls' state, as one value. The bar holds none of it and
   /// emits a whole new value through `onChanged`.
   AuditTrailFilters _filters = const AuditTrailFilters();
@@ -258,6 +418,11 @@ class AuditTrailBodyState extends ConsumerState<AuditTrailBody> {
   /// database round trip on rows nobody will ever see, and leaves the last
   /// statement the page issued being one for a page it had already thrown
   /// away.
+  /// An undo is a new action at the top of the trail, so the answer to "what
+  /// is on screen now" is the newest page again.
+  @override
+  void onConfigUndone() => _refresh();
+
   void _refresh() {
     final fresh = _firstPageOnly(_filters);
     setState(() {
@@ -367,6 +532,9 @@ class AuditTrailBodyState extends ConsumerState<AuditTrailBody> {
     final actions = <AuditAction>[
       for (final result in resolved) ...result.actions,
     ];
+    final configChanges = <String, ActionChangeCounts>{
+      for (final result in resolved) ...result.configChanges,
+    };
     // The number the `LIMIT` applied to, not `actions.length`: eight rows of
     // one struct write are one action, and it is the eight that the cap
     // counted.
@@ -403,7 +571,7 @@ class AuditTrailBodyState extends ConsumerState<AuditTrailBody> {
           Expanded(child: _empty(context))
         else ...[
           _header(context),
-          Expanded(child: _list(actions)),
+          Expanded(child: _list(actions, configChanges)),
         ],
         if (actions.isNotEmpty && tail.reachedLimit) ...[
           _limitNote(context),
@@ -547,11 +715,47 @@ class AuditTrailBodyState extends ConsumerState<AuditTrailBody> {
 
   /// `ListView.builder` is what keeps a 500-action result from building 500
   /// tiles in one frame (T-05-64).
-  Widget _list(List<AuditAction> actions) => ListView.builder(
+  ///
+  /// A configuration action — one [configChanges] names — is drawn as the
+  /// configuration view draws it: titled by what it changed, its field diffs
+  /// when opened, and Undo beside it. That is the whole of what makes this page
+  /// and the configuration history one trail rather than two: a page save is
+  /// not a `pref` line here and a diff over there.
+  ///
+  /// Undo is offered on every configuration action, where the configuration
+  /// view also checks that each row is shared. That check reads the rows,
+  /// which this list does not load, and it cannot fail here: this page reads
+  /// the Postgres trail, and Postgres holds shared rows only (C-13). The plan
+  /// refuses a station row regardless.
+  Widget _list(
+    List<AuditAction> actions,
+    Map<String, ActionChangeCounts> configChanges,
+  ) =>
+      ListView.builder(
         key: kAuditTrailListKey,
         itemCount: actions.length,
-        itemBuilder: (context, index) =>
-            AuditActionTile(action: actions[index]),
+        itemBuilder: (context, index) {
+          final action = actions[index];
+          final counts = configChanges[action.actionId];
+          if (counts == null) return AuditActionTile(action: action);
+          // Keyed by the action: an undo prepends a new action and shifts
+          // every other one down, and an unkeyed row would hand the shifted
+          // action the expansion state of the one above it.
+          return Row(
+            key: ValueKey(action.actionId),
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: DeferredConfigActionTile(
+                  action: action,
+                  counts: counts,
+                  opened: _OpenedConfigAction(action: action, counts: counts),
+                ),
+              ),
+              configUndoButton(action.actionId),
+            ],
+          );
+        },
       );
 
   /// Under the list, not over it: the cap is a fact about the bottom of the
@@ -582,4 +786,65 @@ class AuditTrailBodyState extends ConsumerState<AuditTrailBody> {
           ),
         ),
       );
+}
+
+/// An opened configuration action: its change rows, read now, drawn with its
+/// header as the configuration view draws them.
+///
+/// Mounted only while its tile is open, so this is the one read an action
+/// costs. `configActionChangesProvider` reads by action id and **unfiltered**:
+/// the trail's filters chose the action, not which of its entities to show.
+class _OpenedConfigAction extends ConsumerWidget {
+  const _OpenedConfigAction({required this.action, required this.counts});
+
+  final AuditAction action;
+  final ActionChangeCounts counts;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final secondary = theme.textTheme.bodySmall
+        ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
+
+    return ref.watch(configActionChangesProvider(action.actionId)).when(
+          loading: () => const Padding(
+            key: kAuditConfigLoadingKey,
+            padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: LinearProgressIndicator(),
+          ),
+          // Said, not swallowed: an opened action with nothing under it would
+          // read as an action that changed nothing.
+          error: (error, _) => Padding(
+            key: kAuditConfigErrorKey,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Text('$kAuditConfigUnreadable $error', style: secondary),
+          ),
+          data: (records) {
+            final history = groupHistoryRows(
+              auditRows: action.rows,
+              changes: records,
+              auditTotalsByActionId: {action.actionId: action.totalRowCount},
+              changeTotalsByActionId: {action.actionId: counts.total},
+            ).single;
+            // Rows the count saw and this build could not decode. They are
+            // real rows; the line says so rather than letting the entity list
+            // look complete.
+            final unread = counts.total - records.length;
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                ...configActionChildren(history),
+                if (unread > 0)
+                  Padding(
+                    key: kAuditConfigUnreadRowsKey,
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                    child: Text(kAuditConfigUnreadRowsNote(unread, counts.total),
+                        style: secondary),
+                  ),
+              ],
+            );
+          },
+        );
+  }
 }

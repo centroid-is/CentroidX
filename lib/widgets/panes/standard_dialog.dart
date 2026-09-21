@@ -350,6 +350,17 @@ Future<T?> showFloatingDialog<T>({
   /// `Expanded` inside cannot lay out against a scroll view's unbounded
   /// height, and a chart wants the whole window anyway.
   bool scrollable = true,
+
+  /// Asked before the header's close button or Escape closes the window;
+  /// returning false keeps it open.
+  ///
+  /// For content holding work that would be lost — the recipes editor's
+  /// unsaved values. The content must then say, in itself, why the window
+  /// stayed: a modal cannot ask for it, because a route opened from inside
+  /// a floating window lands underneath it. Other ways out — navigation,
+  /// [closeFloatingDialog] — do not ask. Omitted, closing is unconditional,
+  /// as it always was.
+  bool Function()? onCloseRequested,
 }) {
   return FloatingDialogs._show(
     context: context,
@@ -365,6 +376,7 @@ Future<T?> showFloatingDialog<T>({
     position: position,
     onClosed: onClosed,
     scrollable: scrollable,
+    onCloseRequested: onCloseRequested,
     // Untyped inside the registry — one map serves every dialog, whatever
     // each one returns. A [result] of the wrong type surfaces as a failed
     // cast at the awaiting site, not at the closing one.
@@ -418,6 +430,7 @@ abstract final class FloatingDialogs {
     Offset? position,
     VoidCallback? onClosed,
     bool scrollable = true,
+    bool Function()? onCloseRequested,
   }) {
     // Already showing: the window on screen keeps its original requester, so
     // this caller gets null rather than a future that would resolve with
@@ -441,6 +454,7 @@ abstract final class FloatingDialogs {
         cascade: cascade,
         scrollable: scrollable,
         builder: builder,
+        onCloseRequested: onCloseRequested,
       ),
     );
     final completer = Completer<Object?>();
@@ -541,6 +555,9 @@ class _FloatingDialogShell extends StatefulWidget {
   final bool scrollable;
   final WidgetBuilder builder;
 
+  /// See [showFloatingDialog]'s `onCloseRequested`.
+  final bool Function()? onCloseRequested;
+
   const _FloatingDialogShell({
     required this.id,
     required this.title,
@@ -554,6 +571,7 @@ class _FloatingDialogShell extends StatefulWidget {
     this.status,
     this.initialPosition,
     this.actionsListenable,
+    this.onCloseRequested,
   });
 
   @override
@@ -603,8 +621,15 @@ class _FloatingDialogShellState extends State<_FloatingDialogShell> {
         FloatingDialogs._stack.last != widget.id) {
       return false;
     }
-    FloatingDialogs.close(widget.id);
+    _requestClose();
     return true;
+  }
+
+  /// The header's close button and Escape, asking the content first when it
+  /// asked to be asked.
+  void _requestClose() {
+    if (widget.onCloseRequested?.call() == false) return;
+    FloatingDialogs.close(widget.id);
   }
 
   /// Shrinks the window to fit a screen smaller than it is.
@@ -726,7 +751,7 @@ class _FloatingDialogShellState extends State<_FloatingDialogShell> {
         // Positioned sibling drawn OVER this surface and would otherwise
         // swallow taps meant for the last button in the bar.
         actionBarEndInset: _ResizeGrip._size,
-        onClose: () => FloatingDialogs.close(widget.id),
+        onClose: _requestClose,
         // The header doubles as the window's title bar.
         headerWrap: (context, header) => GestureDetector(
           behavior: HitTestBehavior.translucent,

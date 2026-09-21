@@ -6,6 +6,27 @@ part of 'conveyor.dart';
 // JsonSerializableGenerator
 // **************************************************************************
 
+ChildSensorEntry _$ChildSensorEntryFromJson(Map<String, dynamic> json) =>
+    ChildSensorEntry(
+      position: (json['position'] as num?)?.toDouble() ?? 0.5,
+      side: $enumDecodeNullable(_$GateSideEnumMap, json['side'],
+              unknownValue: GateSide.left) ??
+          GateSide.left,
+      sensor: _sensorFromJson(json['sensor'] as Map<String, dynamic>),
+    );
+
+Map<String, dynamic> _$ChildSensorEntryToJson(ChildSensorEntry instance) =>
+    <String, dynamic>{
+      'position': instance.position,
+      'side': _$GateSideEnumMap[instance.side]!,
+      'sensor': _sensorToJson(instance.sensor),
+    };
+
+const _$GateSideEnumMap = {
+  GateSide.left: 'left',
+  GateSide.right: 'right',
+};
+
 ConveyorTurnEntry _$ConveyorTurnEntryFromJson(Map<String, dynamic> json) =>
     ConveyorTurnEntry(
       position: (json['position'] as num?)?.toDouble() ?? 0.5,
@@ -79,6 +100,7 @@ ConveyorConfig _$ConveyorConfigFromJson(Map<String, dynamic> json) =>
       onRails: json['onRails'] as bool?,
       positionKey: json['positionKey'] as String?,
       wagonMotorKey: json['wagonMotorKey'] as String?,
+      reverseWagonDirection: json['reverseWagonDirection'] as bool?,
       beltAlongRails: json['beltAlongRails'] as bool?,
       safetyLeftKey: json['safetyLeftKey'] as String?,
       safetyRightKey: json['safetyRightKey'] as String?,
@@ -91,6 +113,9 @@ ConveyorConfig _$ConveyorConfigFromJson(Map<String, dynamic> json) =>
       gates: _gatesFromJson(json['gates'] as List?),
       turns: (json['turns'] as List<dynamic>?)
           ?.map((e) => ConveyorTurnEntry.fromJson(e as Map<String, dynamic>))
+          .toList(),
+      sensors: (json['sensors'] as List<dynamic>?)
+          ?.map((e) => ChildSensorEntry.fromJson(e as Map<String, dynamic>))
           .toList(),
     )
       ..variant = json['asset_name'] as String
@@ -134,6 +159,7 @@ Map<String, dynamic> _$ConveyorConfigToJson(ConveyorConfig instance) =>
       'onRails': instance.onRails,
       'positionKey': instance.positionKey,
       'wagonMotorKey': instance.wagonMotorKey,
+      'reverseWagonDirection': instance.reverseWagonDirection,
       'beltAlongRails': instance.beltAlongRails,
       'safetyLeftKey': instance.safetyLeftKey,
       'safetyRightKey': instance.safetyRightKey,
@@ -143,6 +169,7 @@ Map<String, dynamic> _$ConveyorConfigToJson(ConveyorConfig instance) =>
       'invertSafetyPolarity': instance.invertSafetyPolarity,
       'wagonLength': instance.wagonLength,
       'gates': _gatesToJson(instance.gates),
+      'sensors': instance.sensors.map((e) => e.toJson()).toList(),
       'turns': instance.turns.map((e) => e.toJson()).toList(),
       'beltThickness': instance.beltThickness,
       'beltWidthRelative': instance.beltWidthRelative,
@@ -187,6 +214,7 @@ RollerConveyorConfig _$RollerConveyorConfigFromJson(
       onRails: json['onRails'] as bool?,
       positionKey: json['positionKey'] as String?,
       wagonMotorKey: json['wagonMotorKey'] as String?,
+      reverseWagonDirection: json['reverseWagonDirection'] as bool?,
       beltAlongRails: json['beltAlongRails'] as bool?,
       safetyLeftKey: json['safetyLeftKey'] as String?,
       safetyRightKey: json['safetyRightKey'] as String?,
@@ -199,6 +227,9 @@ RollerConveyorConfig _$RollerConveyorConfigFromJson(
       gates: _gatesFromJson(json['gates'] as List?),
       turns: (json['turns'] as List<dynamic>?)
           ?.map((e) => ConveyorTurnEntry.fromJson(e as Map<String, dynamic>))
+          .toList(),
+      sensors: (json['sensors'] as List<dynamic>?)
+          ?.map((e) => ChildSensorEntry.fromJson(e as Map<String, dynamic>))
           .toList(),
     )
       ..variant = json['asset_name'] as String
@@ -243,6 +274,7 @@ Map<String, dynamic> _$RollerConveyorConfigToJson(
       'onRails': instance.onRails,
       'positionKey': instance.positionKey,
       'wagonMotorKey': instance.wagonMotorKey,
+      'reverseWagonDirection': instance.reverseWagonDirection,
       'beltAlongRails': instance.beltAlongRails,
       'safetyLeftKey': instance.safetyLeftKey,
       'safetyRightKey': instance.safetyRightKey,
@@ -252,6 +284,7 @@ Map<String, dynamic> _$RollerConveyorConfigToJson(
       'invertSafetyPolarity': instance.invertSafetyPolarity,
       'wagonLength': instance.wagonLength,
       'gates': _gatesToJson(instance.gates),
+      'sensors': instance.sensors.map((e) => e.toJson()).toList(),
       'turns': instance.turns.map((e) => e.toJson()).toList(),
       'beltThickness': instance.beltThickness,
       'beltWidthRelative': instance.beltWidthRelative,
