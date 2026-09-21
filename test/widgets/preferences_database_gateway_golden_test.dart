@@ -36,10 +36,14 @@ import 'package:tfc_dart/core/secure_storage/secure_storage.dart';
 
 import '../helpers/test_helpers.dart';
 import '../helpers/themed_golden_host.dart';
+import '../helpers/golden_fonts.dart' show loadGoldenFonts;
 
 const Size _surface = Size(720, 260);
 
 void main() {
+  // The app's themes ask for `dejavu-sans` by name (#587); without it every
+  // themed string in these frames rendered as Ahem boxes.
+  setUpAll(loadGoldenFonts);
   setUpAll(loadThemedGoldenFonts);
 
   setUp(() {

@@ -39,6 +39,7 @@ import 'package:tfc_relay_client/tfc_relay_client.dart' show LinkState;
 
 import '../helpers/themed_golden_host.dart';
 import '../helpers/golden_platform.dart';
+import '../helpers/golden_fonts.dart' show loadGoldenFonts;
 
 /// Wide enough that the detail wraps the way it wraps on a station, tall enough
 /// that the certificate frame — headline, four lines of detail, the SAN hint
@@ -139,6 +140,9 @@ List<_Frame> _frames() => <_Frame>[
     ];
 
 void main() {
+  // The app's themes ask for `dejavu-sans` by name (#587); without it every
+  // themed string in these frames rendered as Ahem boxes.
+  setUpAll(loadGoldenFonts);
   setUpAll(loadThemedGoldenFonts);
 
   group('gateway link status goldens',

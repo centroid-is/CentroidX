@@ -294,6 +294,18 @@ class ModbusUint32Register extends ModbusNumRegister {
       Uint8List(byteCount)..buffer.asByteData().setUint32(0, value);
 }
 
+
+/// The 64-bit bounds, **computed rather than written as literals**.
+///
+/// dart2js refuses an integer literal it cannot represent exactly, and
+/// ±2^63 are two of them — written out, they stopped the web bundle
+/// compiling at all (this package is in the web app's import closure through
+/// the asset library even though a browser never dials Modbus TCP). On the
+/// VM these are exactly the int64 bounds; on the web they are the nearest
+/// doubles, which is moot because no web build ever writes a register.
+final int _int64Max = int.parse('9223372036854775807');
+final int _int64Min = int.parse('-9223372036854775808');
+
 /// A signed 64 bit register
 class ModbusInt64Register extends ModbusNumRegister {
   ModbusInt64Register(
@@ -310,10 +322,10 @@ class ModbusInt64Register extends ModbusNumRegister {
       : super(byteCount: 8);
 
   @override
-  int? get rawMinimum => -9223372036854775808;
+  int? get rawMinimum => _int64Min;
 
   @override
-  int? get rawMaximum => 9223372036854775807;
+  int? get rawMaximum => _int64Max;
 
   @override
   int _fromBytes(Uint8List bytes) => bytes.buffer.asByteData().getInt64(0);
@@ -342,7 +354,7 @@ class ModbusUint64Register extends ModbusNumRegister {
   int? get rawMinimum => 0;
 
   @override
-  int? get rawMaximum => 9223372036854775807;
+  int? get rawMaximum => _int64Max;
 
   @override
   int _fromBytes(Uint8List bytes) => bytes.buffer.asByteData().getUint64(0);

@@ -62,7 +62,12 @@ class GatewayIdentityDialog extends StatelessWidget {
     final where = gateway.replace(userInfo: '').toString();
     return AlertDialog(
       title: const Text('Gateway identity'),
-      content: ConstrainedBox(
+      // Scrollable: on a short panel, or in the station font (DejaVu Sans,
+      // wider than the face this was first laid out in), the fingerprint and
+      // the warning under it overflowed the dialog by 92 px — and the part
+      // cut off was the sentence telling the operator what approving does.
+      content: SingleChildScrollView(
+        child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 420),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -85,6 +90,7 @@ class GatewayIdentityDialog extends StatelessWidget {
             ),
           ],
         ),
+      ),
       ),
       actions: [
         TextButton(

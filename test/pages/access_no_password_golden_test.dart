@@ -54,6 +54,7 @@ import 'package:tfc_dart/core/access/access_repository.dart';
 
 import '../helpers/golden_tolerance.dart';
 import '../helpers/golden_platform.dart';
+import '../helpers/golden_fonts.dart' show loadGoldenFonts;
 
 // ---------------------------------------------------------------------------
 // Fixtures — this file's own
@@ -272,6 +273,9 @@ Future<void> _loadRealFonts() async {
 }
 
 void main() {
+  // The app's themes ask for `dejavu-sans` by name (#587); without it every
+  // themed string in these frames rendered as Ahem boxes.
+  setUpAll(loadGoldenFonts);
   final (light, _) = muted();
 
   // Frames of prose on a real theme, not a small painter surface: the 0.01%

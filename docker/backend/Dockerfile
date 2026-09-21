@@ -76,9 +76,10 @@ RUN dart build cli -t bin/m2400_proxy.dart -o build/m2400_proxy
 # Stage 3: Runtime image
 FROM debian:bookworm-slim
 
-# libsqlite3-0: the relay gateway mirrors config_item rows through an in-memory
-# AppDatabase, and package:sqlite3 dlopens libsqlite3 when that database is
-# constructed. Without it the gateway serves no configuration writes at all.
+# libsqlite3-0: centroidx-backend's WebSocket side mirrors config_item rows
+# through an in-memory AppDatabase, and package:sqlite3 dlopens libsqlite3 when
+# that database is constructed. Without it no panel's configuration write is
+# served at all.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libsqlite3-0 \

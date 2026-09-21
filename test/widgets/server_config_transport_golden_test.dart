@@ -74,6 +74,7 @@ import '../helpers/test_helpers.dart';
 import '../helpers/themed_golden_host.dart';
 import '../helpers/golden_tolerance.dart';
 import '../helpers/golden_platform.dart';
+import '../helpers/golden_fonts.dart' show loadGoldenFonts;
 
 /// Tall enough that the whole page is laid out and painted at once — the
 /// sections live in a SingleChildScrollView, and anything below the fold
@@ -136,6 +137,9 @@ Future<PreferencesApi> _savedGatewayStation() async {
 }
 
 void main() {
+  // The app's themes ask for `dejavu-sans` by name (#587); without it every
+  // themed string in these frames rendered as Ahem boxes.
+  setUpAll(loadGoldenFonts);
   // Same reason as the app-bar strip: a whole transport card of antialiased
   // text drifts at the 0.01% default between this machine and CI's macOS
   // runner, while reproducing exactly here. A real change to the card is far

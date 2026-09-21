@@ -41,7 +41,7 @@
 library;
 
 import 'package:flutter/material.dart';
-import 'package:tfc/theme.dart' show solarized;
+import 'package:tfc/theme.dart' show kAppFontFamily, solarized;
 
 import 'golden_fonts.dart';
 
@@ -51,7 +51,14 @@ import 'golden_fonts.dart';
 /// which families are registered.
 Future<void> loadThemedGoldenFonts() => loadGoldenFonts();
 
-/// The real station themes, with `roboto-mono` applied to the text theme.
+/// The real station themes, with the app's own font family applied to the
+/// text theme.
+///
+/// [kAppFontFamily], not a spelled-out name: this said `'roboto-mono'` until
+/// main (#587) moved the station face to DejaVu Sans under `'dejavu-sans'`,
+/// after which nothing registered `roboto-mono` and every frame from this
+/// host rendered Ahem boxes while still passing. Reading the constant is what
+/// keeps the next font change from doing that again.
 ///
 /// `solarized()` returns **(light, dark)** in that order — both pre-existing
 /// callers destructure it that way
@@ -60,7 +67,7 @@ ThemeData themedGoldenTheme({bool dark = false}) {
   final (light, darkTheme) = solarized();
   final base = dark ? darkTheme : light;
   return base.copyWith(
-    textTheme: base.textTheme.apply(fontFamily: 'roboto-mono'),
+    textTheme: base.textTheme.apply(fontFamily: kAppFontFamily),
   );
 }
 

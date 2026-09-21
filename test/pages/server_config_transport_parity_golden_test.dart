@@ -41,6 +41,7 @@ import 'package:tfc_relay_protocol/tfc_relay_protocol.dart'
 
 import '../helpers/test_helpers.dart';
 import '../helpers/themed_golden_host.dart';
+import '../helpers/golden_fonts.dart' show loadGoldenFonts;
 
 /// Tall enough for the whole page in either mode; wide enough that the card
 /// headers stay on one row (they collapse below 500px).
@@ -169,6 +170,9 @@ Future<void> _expectGolden(WidgetTester tester, String name) =>
     expectLater(find.byType(MaterialApp), matchesGoldenFile('goldens/$name'));
 
 void main() {
+  // The app's themes ask for `dejavu-sans` by name (#587); without it every
+  // themed string in these frames rendered as Ahem boxes.
+  setUpAll(loadGoldenFonts);
   setUpAll(loadThemedGoldenFonts);
 
   setUp(() {

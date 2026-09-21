@@ -36,6 +36,7 @@ import 'package:tfc_relay_client/tfc_relay_client.dart' show LinkState;
 import 'alarm_fixture.dart';
 import '../helpers/golden_tolerance.dart';
 import '../helpers/golden_platform.dart';
+import '../helpers/golden_fonts.dart' show loadGoldenFonts;
 
 /// Frozen so the ticking header does not churn the PNGs — same instant family
 /// as base_scaffold_appbar_golden_test.
@@ -161,6 +162,9 @@ Future<void> _loadFonts() async {
 }
 
 void main() {
+  // The app's themes ask for `dejavu-sans` by name (#587); without it every
+  // themed string in these frames rendered as Ahem boxes.
+  setUpAll(loadGoldenFonts);
   // A 1600 px app-bar strip with antialiased text has more room to drift
   // than the 0.01% default allows, even on the pinned SDK. CI's macOS runner
   // measured **26 px, 0.01%** against goldens this machine reproduces exactly

@@ -56,6 +56,7 @@ import 'package:tfc_relay_protocol/tfc_relay_protocol.dart'
 
 import '../helpers/themed_golden_host.dart';
 import '../helpers/golden_platform.dart';
+import '../helpers/golden_fonts.dart' show loadGoldenFonts;
 
 /// The station name in every frame. A constant, because the production value
 /// is `Platform.localHostname` and a golden with a hostname in it disagrees
@@ -247,6 +248,9 @@ Future<void> _shoot(WidgetTester tester, String name) => expectLater(
     );
 
 void main() {
+  // The app's themes ask for `dejavu-sans` by name (#587); without it every
+  // themed string in these frames rendered as Ahem boxes.
+  setUpAll(loadGoldenFonts);
   setUpAll(loadThemedGoldenFonts);
 
   group('config target goldens',

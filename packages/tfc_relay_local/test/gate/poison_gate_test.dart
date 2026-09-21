@@ -28,7 +28,6 @@ import 'dart:io';
 import 'package:test/test.dart';
 import 'package:tfc_relay_local/tfc_relay_local.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
-import 'package:tfc_relay_server/src/error_codes.dart';
 
 import '../support/gate_b_fixture.dart';
 
@@ -293,7 +292,13 @@ void main() {
         (answerFor('poison-1')!['error'] as Map).cast<String, Object?>();
     print('F28c first error: code=${first['code']} '
         'message="${first['message']}"');
-    expect(first['code'], ServerErrorCodes.typeMismatch);
+    // INVALID_PARAMS, not typeMismatch: a request carrying a non-finite
+    // number is now refused whole at ingress, by name and with its id
+    // (`relay_session.dart`'s `_defuse` marker), rather than repaired into a
+    // hello the typed decode then mis-types. Repairing is what let
+    // `"expect": 1e999` reach the write path as "no guard". The property this
+    // gate exists for is unchanged: the answer arrives and is encodable.
+    expect(first['code'], -32602);
     expect((first['data'] as Map)['request'], contains('omitted'),
         reason: 'the pre-substituted data.request (02-05\'s pattern) is what '
             'keeps this answer sendable — the raw request holds Infinity and '
@@ -313,7 +318,7 @@ void main() {
     final second =
         (answerFor('poison-2')!['error'] as Map).cast<String, Object?>();
     print('F28c second error: code=${second['code']}');
-    expect(second['code'], ServerErrorCodes.typeMismatch);
+    expect(second['code'], -32602, reason: 'the same refusal as the first');
 
     // The plant session two doors down never noticed: its keys keep
     // flowing while the raw peer errs.

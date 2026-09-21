@@ -56,6 +56,7 @@ import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/pipe_main_endpoint.dart';
 import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc_dart/core/relay/backend_composition.dart';
+import 'package:tfc_dart/core/relay/backend_shared_preferences.dart';
 import 'package:tfc_dart/core/relay/backend_config_store.dart'
     show kSecretPreservedSentinel;
 import 'package:tfc_dart/core/relay/relay_config.dart';
@@ -318,7 +319,12 @@ void main() {
     await startDockerCompose();
     await waitForDatabaseReady();
     database = await connectToDatabase();
-    prefs = await Preferences.create(db: database);
+    // What `bin/main.dart` passes, not a plain `Preferences`: the backend's
+    // reads come from the shared config_item rows, and since the gateway can
+    // write those rows (`BackendConfigWriter`) a set over the wire lands in
+    // Postgres. A plain in-memory `Preferences` here read back null for a
+    // write that had landed — a fixture that no longer matched production.
+    prefs = await BackendSharedPreferences.create(database: database);
     repo = AccessRepository(database.db);
 
     // Seed three roles and three station accounts in the real Postgres.

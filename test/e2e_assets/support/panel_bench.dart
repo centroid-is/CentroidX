@@ -81,6 +81,11 @@
 library;
 
 
+import 'dart:convert' show jsonEncode;
+import 'package:tfc/core/device_local_preferences.dart'
+    show kConfigItemsCachePrefsKey;
+import 'package:tfc_dart/core/config/key_mapping_codec.dart'
+    show keyMappingItems;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -109,7 +114,7 @@ import 'package:tfc_plant_sim/tfc_plant_sim.dart';
 import 'package:tfc_relay_client/tfc_relay_client.dart';
 import 'package:tfc_relay_local/tfc_relay_local.dart' as relay;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart'
-    show ResolvedSeries, SeriesAddress, SeriesResolver;
+    show ConfigItemsFingerprint, ResolvedSeries, SeriesAddress, SeriesResolver;
 import 'package:tfc_relay_server/tfc_relay_server.dart' show ServerConfig;
 
 import '../../helpers/test_helpers.dart'
@@ -335,6 +340,32 @@ Future<PanelBench> standUp({
       local,
       GatewayConfig(
           mode: TransportMode.gateway, url: 'ws://127.0.0.1:${link.port}'));
+  // **And the relayed row cache, which is where a gateway panel's key
+  // mappings actually come from now.** Since the relay could write the
+  // plant's configuration, a gateway panel reads its rows over the wire and
+  // boots from their device-local cache (`stateManProvider`,
+  // `configRowsComeOverTheWire`) — it no longer asks `configStoreProvider`
+  // at all. This harness's gateway (`LocalStateMan`) serves no
+  // `configItems`, so without this seed the panel booted on empty mappings,
+  // subscribed to the alarm set alone, and every case timed out waiting for
+  // the first value: the exact trap the `configStoreProvider` comment below
+  // describes, one layer over. Written in the shape
+  // `RelayedConfigItems._persist` writes, as `state_man_transport_test` does.
+  await local.setString(
+      kConfigItemsCachePrefsKey,
+      jsonEncode({
+        'fingerprint':
+            const ConfigItemsFingerprint(count: 0, revSum: 0).toJson(),
+        'items': [
+          for (final item in keyMappingItems(mappings))
+            {
+              'kind': item.kind.wireName,
+              'id': item.id,
+              'payload': item.payload,
+              'rev': 1,
+            },
+        ],
+      }));
 
   final container = ProviderContainer(overrides: [
     preferencesProvider.overrideWith((ref) => createTestPreferences(

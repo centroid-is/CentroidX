@@ -26,6 +26,7 @@ import 'package:tfc_relay_client/tfc_relay_client.dart' show LinkState;
 
 import 'alarm_fixture.dart';
 import '../helpers/golden_platform.dart';
+import '../helpers/golden_fonts.dart' show loadGoldenFonts;
 
 final Uri _url = Uri.parse('wss://10.50.10.11:9444');
 final DateTime _raisedAt = DateTime(2026, 9, 8, 7, 5, 0);
@@ -119,6 +120,9 @@ Future<void> _loadFonts() async {
 }
 
 void main() {
+  // The app's themes ask for `dejavu-sans` by name (#587); without it every
+  // themed string in these frames rendered as Ahem boxes.
+  setUpAll(loadGoldenFonts);
   setUpAll(_loadFonts);
 
   testWidgets('direct mode: the list is exactly the plant\'s', (tester) async {

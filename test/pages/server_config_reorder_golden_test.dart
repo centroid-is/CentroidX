@@ -22,6 +22,7 @@ import 'package:tfc_dart/core/state_man.dart';
 
 import '../helpers/test_helpers.dart';
 import '../helpers/themed_golden_host.dart';
+import '../helpers/golden_fonts.dart' show loadGoldenFonts;
 
 /// Wide enough for the section header to stay on one row (the header collapses
 /// below 500px), tall enough for three cards and the save button.
@@ -122,6 +123,9 @@ String? _packageRoot(String package) {
 }
 
 void main() {
+  // The app's themes ask for `dejavu-sans` by name (#587); without it every
+  // themed string in these frames rendered as Ahem boxes.
+  setUpAll(loadGoldenFonts);
   setUpAll(_loadFonts);
 
   setUp(() {

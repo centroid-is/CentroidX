@@ -27,10 +27,14 @@ import 'package:tfc/providers/gateway.dart';
 import 'package:tfc/widgets/this_panel_notice.dart';
 
 import '../helpers/themed_golden_host.dart';
+import '../helpers/golden_fonts.dart' show loadGoldenFonts;
 
 const Size _surface = Size(720, 160);
 
 void main() {
+  // The app's themes ask for `dejavu-sans` by name (#587); without it every
+  // themed string in these frames rendered as Ahem boxes.
+  setUpAll(loadGoldenFonts);
   setUpAll(loadThemedGoldenFonts);
 
   Future<void> pump(WidgetTester tester, {required bool dark}) async {
