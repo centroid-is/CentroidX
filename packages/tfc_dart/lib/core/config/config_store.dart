@@ -680,6 +680,7 @@ class ConfigStore {
     String? station,
     String? reason,
     List<ConfigItem>? derivedFrom,
+    Map<String, int>? baseRevisions,
   }) =>
       serialiseWrite(() => _writeItems(
             kinds: kinds,
@@ -690,6 +691,7 @@ class ConfigStore {
             station: station,
             reason: reason,
             derivedFrom: derivedFrom,
+            baseRevisions: baseRevisions,
           ));
 
   Future<ConfigWriteResult> _writeItems({
@@ -701,6 +703,7 @@ class ConfigStore {
     String? station,
     String? reason,
     List<ConfigItem>? derivedFrom,
+    Map<String, int>? baseRevisions,
   }) async {
     // Resolved once, here, rather than at each of the three change-row sites:
     // three `station ?? _station` spellings is three places for one of them
@@ -790,7 +793,15 @@ class ConfigStore {
     // SC-1's other half. Save pressed twice is not a change, so it is not a
     // row, not a change entry, not an audit entry and not an event — the same
     // rule the local row writer applies at `sqlite_preferences.dart:399`.
-    if (diff.isEmpty) {
+    //
+    // **Except when a caller brought revisions to swap on.** An empty diff
+    // means "what I want is what I derived from", and a caller whose base is
+    // stale can produce one while the plant has moved under it — that is the
+    // same nothing-to-write path, but answering it `success` tells the caller
+    // its view is current when it is not. So a caller with [baseRevisions]
+    // goes through the transaction, has its base verified, and only then is
+    // told nothing changed. It still writes nothing.
+    if (diff.isEmpty && baseRevisions == null) {
       return ConfigWriteResult(diff: ConfigDiff.none, actionId: actionId);
     }
 
@@ -798,6 +809,53 @@ class ConfigStore {
     final written = <String, ConfigItem>{};
     try {
       await remote.transaction(() async {
+        // **The whole kind set, compared inside the transaction.**
+        //
+        // The per-row guards below only cover rows this save *moves*: an
+        // `UPDATE … WHERE rev = ?` for a change, a `DELETE … WHERE rev = ?`
+        // for a removal. A row the caller holds **unchanged** produces no
+        // statement at all, and therefore no guard — so a caller whose base
+        // was read before somebody else's commit can be told its save
+        // succeeded while a row it listed as present has been deleted
+        // underneath it.
+        //
+        // That is not hypothetical: a caller's base is read outside this
+        // transaction and outside `serialiseWrite`, so another write can
+        // commit in between. Two panels, pages P and Q, both at rev 3: A
+        // deletes P; B adds a page and leaves P and Q alone. B's base check
+        // passes against the pre-commit read, B's diff lists P as unchanged,
+        // no statement is issued for it, and B is answered "+1" over a plant
+        // that no longer has P.
+        //
+        // [baseRevisions] closes it by making the kind set the unit of the
+        // compare-and-swap, which is what the wire's own contract
+        // (`ConfigItemsReplaceRequest.baseRevisions`) already claims. One
+        // query, in the transaction, before anything is applied: same ids,
+        // same revisions, no more and no fewer.
+        if (baseRevisions != null) {
+          final rows = await (remote.select(remote.configItemTable)
+                ..where((t) =>
+                    t.kind.isIn([for (final kind in kinds) kind.wireName]) &
+                    t.scope.equals(ConfigScope.shared.wireName)))
+              .get();
+          final live = {
+            for (final row in rows) '${row.kind}/${row.id}': row.rev,
+          };
+          for (final entry in live.entries) {
+            final base = baseRevisions[entry.key];
+            if (base == null) {
+              throw ConfigConflict(entry.key, expectedRev: entry.value);
+            }
+            if (base != entry.value) {
+              throw ConfigConflict(entry.key, expectedRev: base);
+            }
+          }
+          for (final id in baseRevisions.keys) {
+            if (!live.containsKey(id)) {
+              throw ConfigConflict(id, expectedRev: baseRevisions[id]!);
+            }
+          }
+        }
         for (final item in diff.added) {
           // C-12. An insert has no `rev` to compare against, so its collision
           // is the (kind, id, scope) primary key — and left to the driver that
@@ -917,6 +975,14 @@ class ConfigStore {
         throw ConfigStoreOfflineException(attempted: attempted, cause: e);
       }
       rethrow;
+    }
+
+    // A verified base with nothing to write: the transaction proved the
+    // caller's view is current, and there is no row, change row or event to
+    // produce. Returned here rather than skipped above, because the proof is
+    // the whole reason this call went through the transaction at all.
+    if (diff.isEmpty) {
+      return ConfigWriteResult(diff: ConfigDiff.none, actionId: actionId);
     }
 
     // Past here the remote has committed and the save has happened. The mirror

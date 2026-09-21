@@ -493,6 +493,48 @@ void main() {
       );
     });
 
+    /// The interleaving the per-row guards cannot see, and the reason the
+    /// base is compared inside the transaction rather than before it.
+    ///
+    /// `writeItems` guards only the rows a save MOVES: an `UPDATE … WHERE
+    /// rev = ?` for a change, a `DELETE … WHERE rev = ?` for a removal. A row
+    /// the caller holds **unchanged** produces no statement at all and so no
+    /// guard. Two panels, pages P and Q at rev 1: A deletes P; B keeps both
+    /// and adds R. B's diff lists P as unchanged, no statement is issued for
+    /// it, and without a whole-set check B is told "+1" over a plant that no
+    /// longer has the page it listed as its base.
+    test('a row the caller holds unchanged, deleted behind it, is a conflict',
+        () async {
+      final (_, base) = await seedPage();
+      // The other panel's delete, committed between the caller's read and
+      // its write. The caller's base still names it.
+      await (plant.delete(plant.configItemTable)
+            ..where((t) => t.id.equals('/roe-a1')))
+          .go();
+
+      await expectLater(
+        writer.writeConfigItems(
+          kinds: kPageKinds,
+          // Every row the caller read, untouched, plus one new one — so the
+          // diff is NOT empty and the save would otherwise commit.
+          wanted: [
+            _page('/roe'),
+            _asset('/roe-a0', page: '/roe'),
+            _asset('/roe-a1', page: '/roe'),
+            _asset('/roe-a2', page: '/roe'),
+          ],
+          baseRevisions: base,
+          who: 'jon',
+          roleName: 'Engineer',
+          station: kPanel,
+        ),
+        throwsA(isA<ConfigConflict>()),
+      );
+      expect(await kindIds('asset'), unorderedEquals(['/roe-a0']),
+          reason: 'the whole save is refused — the new row is not inserted '
+              'and the deleted one is not resurrected');
+    });
+
     test('the change rows carry the panel and the scoped action', () async {
       final (_, base) = await seedPage();
 

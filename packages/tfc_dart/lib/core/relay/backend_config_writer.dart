@@ -236,11 +236,9 @@ final class BackendConfigWriter {
   /// ## The compare-and-swap is the client's, carried as revisions
   ///
   /// [baseRevisions] is `"<kind>/<id>" -> rev` for every row of [kinds] the
-  /// client read before it built [wanted]. This reads the plant's rows again
-  /// and **refuses unless every one of them matches** — same ids, same
-  /// revisions, no more and no fewer. Only then are the two reads the same
-  /// list, and only then is it safe to hand this read to `writeItems` as the
-  /// `derivedFrom` the diff is computed against.
+  /// client read before it built [wanted]. It is handed to `writeItems` and
+  /// compared **inside its transaction**, which refuses unless every row
+  /// matches — same ids, same revisions, no more and no fewer.
   ///
   /// Without that check the gateway's fresh read would be the diff's base,
   /// and a row another panel added between the client's read and this write
@@ -259,25 +257,6 @@ final class BackendConfigWriter {
     String? reason,
   }) async {
     final stored = await _store.readRemoteShared(kinds);
-    final live = {
-      for (final row in stored) _revisionKey(row.kind.wireName, row.id): row.rev,
-    };
-    // Both directions. A row the client never saw is as dangerous as one that
-    // moved: it is absent from `wanted`, so the diff would remove it.
-    for (final entry in live.entries) {
-      final base = baseRevisions[entry.key];
-      if (base == null) {
-        throw ConfigConflict(entry.key, expectedRev: entry.value);
-      }
-      if (base != entry.value) {
-        throw ConfigConflict(entry.key, expectedRev: base);
-      }
-    }
-    for (final id in baseRevisions.keys) {
-      if (!live.containsKey(id)) {
-        throw ConfigConflict(id, expectedRev: baseRevisions[id]!);
-      }
-    }
     return _store.writeItems(
       kinds: kinds,
       wanted: wanted,
@@ -287,10 +266,18 @@ final class BackendConfigWriter {
       station: station,
       reason: reason,
       derivedFrom: stored,
+      // **Checked inside the transaction, not here.** This read is outside
+      // `serialiseWrite` and outside any transaction, so another panel can
+      // commit between it and the write — and the per-row guards `writeItems`
+      // applies only cover rows this save moves. A row the caller holds
+      // unchanged produces no statement, so a base checked here would pass
+      // over a row somebody else had already deleted, and the caller would be
+      // told it succeeded. Handing the revisions down makes the whole kind
+      // set the compare-and-swap unit, which is what the wire's own contract
+      // claims.
+      baseRevisions: baseRevisions,
     );
   }
-
-  static String _revisionKey(String kind, String id) => '$kind/$id';
 
   /// Deletes one shared preference row.
   ///
