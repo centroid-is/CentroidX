@@ -11,6 +11,7 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/models/menu_item.dart';
 import 'package:tfc/page_creator/page.dart' show AssetPage;
@@ -72,9 +73,8 @@ void pageEditorCases(BackendBench Function() bench) {
       await dismount(tester);
     });
 
-    knownRed(
-        'KNOWN RED (found here): the editor lists a page that exists at the '
-        'backend', (tester) async {
+    testWidgets('the editor lists a page that exists at the backend',
+        (tester) async {
       await useDesktopSurface(tester, size: const Size(1600, 1200));
       final rows = await live(tester, bench().pageRows);
       expect(rows.map((r) => r.id), contains(_seededPageId),
@@ -95,12 +95,17 @@ void pageEditorCases(BackendBench Function() bench) {
       await dismount(tester);
     });
 
-    knownRed(
-        'KNOWN RED (found here): a save made in the editor lands in the '
-        'backend\'s page rows', (tester) async {
-      // The editor holds the built-in layout the mirror seeded itself with;
-      // the backend holds one seeded row. A save that reached the backend
-      // would put the editor's pages beside it.
+    testWidgets(
+        'a page added in the editor and saved lands in the backend\'s rows',
+        (tester) async {
+      // **The premise changed when the editor started reading the plant.**
+      // It used to hold the built-in layout its own mirror had seeded, so
+      // pressing Save at all would have grown the backend's rows. Now the
+      // editor opens on the plant's own pages, and a save of what it already
+      // holds is correctly a no-op — so the case has to make a real change,
+      // which is also the more honest test: an operator adds a page and
+      // presses Save.
+      const added = 'E2E Added Over The Relay';
       await useDesktopSurface(tester, size: const Size(1600, 1200));
       final before = await live(tester, bench().pageRows);
       final panel = await live(tester, () async {
@@ -113,15 +118,40 @@ void pageEditorCases(BackendBench Function() bench) {
       await tester.pumpWidget(
           hostRoute(panel, _route, _title, PageEditor(proposalData: null)));
       await untilFound(tester, _saveFab());
+      // The plant's page first: adding one before the rows arrive would build
+      // the save on the built-in default and assert nothing about the relay.
+      await untilFound(tester, find.textContaining(_seededPageLabel),
+          within: const Duration(seconds: 15),
+          describe: 'the backend\'s pages to reach the editor');
+
+      // The page selector opens the page manager; the manager's "Page"
+      // button opens the create form.
+      await tester.tap(find.textContaining(_seededPageLabel).first);
+      await untilFound(tester, find.widgetWithText(TextButton, 'Page'),
+          describe: 'the page manager\'s Add Page button');
+      await tester.tap(find.widgetWithText(TextButton, 'Page').first);
+      final nameField = find.widgetWithText(TextField, 'Page Name');
+      await untilFound(tester, nameField, describe: 'the page-name field');
+      await tester.enterText(nameField, added);
+      await settleFrames(tester);
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Create'));
+      await settleFrames(tester, frames: 10);
+      // Out of the page manager, back to the canvas, and save. The manager
+      // has no Close button — it is a `showDialog`, dismissed the way every
+      // dialog is.
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await settleFrames(tester, frames: 10);
+      await untilFound(tester, _saveFab());
       await tester.tap(_saveFab());
       await settleFrames(tester, frames: 10);
-      await live(tester, () => untilTrue(() async {
-            final rows = await bench().pageRows();
-            return rows.length > before.length;
-          },
-          within: const Duration(seconds: 10),
+
+      await untilTrueWhilePumping(tester, () async {
+        final rows = await bench().pageRows();
+        return rows.length > before.length;
+      },
+          within: const Duration(seconds: 20),
           describe: 'the backend\'s page rows to grow by the editor\'s save '
-              '(${before.length} before)'));
+              '(${before.length} before)');
       await dismount(tester);
     });
 

@@ -4,6 +4,8 @@ import 'package:riverpod/riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:tfc_dart/core/access/guarded_config_store.dart'
     show GuardedConfigStore;
+import 'package:logger/logger.dart';
+import 'package:tfc_dart/core/config/config_diff.dart' show diffConfigItems;
 import 'package:tfc_dart/core/config/config_item.dart';
 import 'package:tfc_dart/core/config/config_store.dart'
     show ConfigWriteResult;
@@ -48,6 +50,8 @@ PreferencesApi? _localPreferencesOrNull(Ref ref) {
     return null;
   }
 }
+
+final Logger _log = Logger();
 
 @Riverpod(keepAlive: true)
 Future<PageManager> pageManager(Ref ref) async {
@@ -115,6 +119,46 @@ Future<PageManager> pageManager(Ref ref) async {
     preflight = () => guarded.refuseUnlessCan(ConfigKind.page);
   }
 
+  // The rows, and the save, for a client whose configuration is the relay's.
+  // Read before the manager is built because `writeItems` is final on it.
+  final RelayedConfigItems? relayed = store == null
+      ? await ref.watch(relayedConfigItemsProvider.future)
+      : null;
+  if (relayed != null) {
+    // The gateway grades this at `page_editor_data` — the same key the direct
+    // path checks — and compares and swaps against the revisions this manager
+    // read, so a save built on rows another panel has since moved is refused
+    // rather than obeyed.
+    //
+    // `derivedFrom` is the caller's when it has one; the rows held here
+    // otherwise, which is what `save()` passes on a manager with no store.
+    // Never a fresh fetch: re-basing a save onto rows the operator never saw
+    // is the lost write the revisions exist to prevent.
+    writeItems = (wanted, {reason, derivedFrom}) async {
+      final base = derivedFrom ?? relayed.itemsOf(_pageKinds);
+      final applied = await relayed.replace(
+        kinds: _pageKinds,
+        wanted: wanted,
+        derivedFrom: base,
+        reason: reason,
+      );
+      // The wire answers counts; this seam's type wants a diff. It is
+      // computed here from exactly what was sent — which the gateway accepted
+      // only after agreeing that `base` is what it holds — and cross-checked
+      // against what the gateway says it did. A disagreement means the two
+      // ends are diffing differently, which is worth a line even though the
+      // one caller discards this result.
+      final diff = diffConfigItems(stored: base, wanted: wanted);
+      if (diff.added.length != applied.added ||
+          diff.changed.length != applied.changed ||
+          diff.removed.length != applied.removed) {
+        _log.w('the gateway applied $applied where this panel expected '
+            '$diff — the two ends are computing the save differently');
+      }
+      return ConfigWriteResult(diff: diff, actionId: applied.actionId);
+    };
+  }
+
   final pageManager = PageManager(
     pages: {},
     // The shared store — except where there is no mirror. `load()` reads the
@@ -129,12 +173,12 @@ Future<PageManager> pageManager(Ref ref) async {
     prefs: store == null ? (local ?? prefs) : prefs,
     store: store,
     writeItems: writeItems,
+    storedItemsOf: relayed?.itemsOf,
     blobPrefs: local,
     preflight: preflight,
   );
 
-  if (store == null) {
-    final relayed = await ref.watch(relayedConfigItemsProvider.future);
+  if (relayed != null) {
     // Rows first, when there are any; the ordinary load otherwise — the
     // blob this client has never held and then the built-in default, which
     // is what a fresh browser shows until it signs in and fetches.
@@ -180,13 +224,14 @@ Future<PageManager> pageManager(Ref ref) async {
   // The re-load cannot clobber an open editing session: the editor works on
   // `PageManager.copyPages` output, not on this object's map. That session's
   // own save is covered by 03-06's identity adoption — the other half.
-  // No `store != null` here: the wire-served arm above returns, so a manager
-  // that reaches this line has a mirror by construction. It used to be
-  // spelled out because the branch above was a compile-time constant and the
-  // analyzer could not see through it.
+  // `store!` here: the wire-served arm above returns, so a manager that
+  // reaches this line has a mirror by construction. It used to need no
+  // assertion at all, because the branch above was a compile-time constant
+  // and the analyzer could see through it.
+  final mirror = store!;
   if (pageManager.servingFallback) {
     late final StreamSubscription<void> subscription;
-    subscription = store.keyMappingChanges.listen((diff) {
+    subscription = mirror.keyMappingChanges.listen((diff) {
       final touchesPages = [
         ...diff.added,
         ...diff.changed,

@@ -16,6 +16,7 @@ import 'package:tfc_dart/core/modbus_client_wrapper.dart' show ModbusDataType;
 import 'package:tfc_dart/core/collect_config.dart';
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/config/config_item.dart' show ConfigItem, ConfigKind;
+import 'package:tfc_dart/core/config/key_mapping_codec.dart' as codec;
 import 'package:tfc_dart/core/config/config_store_errors.dart';
 import 'package:jbtm/src/m2400.dart' show M2400RecordType;
 import '../widgets/fuzzy_search_bar.dart';
@@ -1264,18 +1265,55 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
     // pending, so they came back on the next load.
     final messenger = _messenger;
     final errorColour = _errorColour;
-    if (!kHasDeviceLocalMirror) {
-      // The page manager's refusal, for the page manager's reason: the relay
-      // serves `config_item` rows for reading only, and a browser holds no
-      // mirror to merge a save against. Said on the screen rather than thrown
-      // into a spinner, and reported as not saved so a proposal stays pending.
-      messenger?.showSnackBar(SnackBar(
-        backgroundColor: errorColour,
-        content: const Text('This browser reads the key mappings over the '
-            'relay and cannot write them back. Nothing was saved. Edit the '
-            'key mappings on a station.'),
-      ));
-      return false;
+    if (await _fromWire()) {
+      // Over the relay, through `configItems.replace`. It used to be refused
+      // by name — the row route was reads only — and it is not any more: the
+      // gateway grades this at `key_mappings`, the same key the direct path
+      // checks, and compares and swaps against the revisions this screen
+      // read, so a save built on rows another panel has since moved is
+      // refused rather than obeyed.
+      //
+      // `_baselineItems` is what the screen loaded, never a fresh fetch:
+      // re-basing onto rows the operator never saw is the lost write those
+      // revisions exist to prevent.
+      try {
+        _invalidateDerived();
+        final json = _currentJson();
+        final relayed = await _relayedRows();
+        await relayed.replace(
+          kinds: const {ConfigKind.keyMapping},
+          wanted: codec.keyMappingItems(_keyMappings!),
+          derivedFrom: _baselineItems ??
+              relayed.itemsOf(const {ConfigKind.keyMapping}),
+        );
+        _savedJson = json;
+        _baselineItems = relayed.itemsOf(const {ConfigKind.keyMapping});
+        if (mounted) {
+          setState(() {});
+          // `mounted`, and not only a messenger resolved early. The relayed
+          // save's round trip is long enough that the operator can leave
+          // before it answers, and `showSnackBar` asserts when the tree it
+          // would present into is gone. The save landed either way; telling
+          // nobody about it is the right outcome, and asserting is not.
+          messenger?.showSnackBar(const SnackBar(
+              content: Text('Key mappings saved successfully!'),
+              backgroundColor: Colors.green));
+        }
+        return true;
+      } catch (e) {
+        // One arm, deliberately. The direct path below separates offline from
+        // conflict from denial because it can: those are typed exceptions
+        // from a store in this process. Over the wire they arrive as
+        // `RpcException`s whose shape this screen would have to parse, and a
+        // wrong guess would tell an operator to reload over a permission
+        // problem. The gateway's own sentence is the honest thing to show.
+        if (mounted) {
+          messenger?.showSnackBar(SnackBar(
+              backgroundColor: errorColour,
+              content: Text('Not saved: $e')));
+        }
+        return false;
+      }
     }
     try {
       // The container when the banner drove us here, because `ref` is gone by

@@ -37,11 +37,15 @@
 /// that lands while a refresh is running marks it dirty and it runs once more
 /// afterwards; nothing is queued and nothing is replayed.
 ///
-/// ## What it does not do
+/// ## It writes, now
 ///
-/// It writes nothing to the plant. A page-editor save on a client with no
-/// mirror is refused by name in `lib/providers/page_manager.dart`; the row
-/// route is reads only, and the doc there says why that is a boundary.
+/// It did not, and the boundary was real while the gateway could not author a
+/// `config_item` row at all: a page-editor save on a client with no mirror
+/// was refused by name. `configItems.replace` is the gateway's second write
+/// door, and [RelayedConfigItems.replace] is this side of it — the caller's
+/// own read carries the revisions the gateway compares and swaps against, so
+/// a panel that saves against rows somebody else has moved is told, not
+/// silently obeyed.
 library;
 
 import 'dart:async';
@@ -191,6 +195,67 @@ final class RelayedConfigItems {
       _items = const [];
       _fingerprint = rp.ConfigItemsFingerprint.none;
     }
+  }
+
+  /// Replaces the plant's rows of [kinds] over the relay.
+  ///
+  /// The write half of this route, and the reason the library header's "it
+  /// writes nothing to the plant" no longer holds: `configItems.replace` is
+  /// the gateway's second write door, and a client with no mirror is exactly
+  /// who it was built for.
+  ///
+  /// [derivedFrom] is the caller's own read — the rows [wanted] was built
+  /// against — and its revisions become the compare-and-swap the gateway
+  /// checks. It is **required and not defaulted to [_items]**: this object
+  /// refreshes itself behind the caller, so a default would quietly re-base a
+  /// save onto rows the operator never saw, which is the lost write the
+  /// revisions exist to refuse. A screen that has no baseline has no business
+  /// saving.
+  ///
+  /// Throws whatever the wire throws — a refusal, or the conflict another
+  /// panel's edit produces. A refreshed copy is fetched afterwards so the
+  /// screen that saved sees what actually landed, including the revisions its
+  /// next save will need.
+  Future<rp.ConfigItemsReplaceResult> replace({
+    required Set<ConfigKind> kinds,
+    required List<ConfigItem> wanted,
+    required List<ConfigItem> derivedFrom,
+    String? reason,
+  }) async {
+    final api = _slot.api;
+    if (api == null) {
+      throw StateError(
+          "The plant's configuration cannot be written: this client has no "
+          'link to the gateway yet. Nothing was saved.');
+    }
+    final result = await api.replace(rp.ConfigItemsReplaceRequest(
+      kinds: {for (final kind in kinds) kind.wireName},
+      wanted: [
+        for (final item in wanted)
+          rp.ConfigItemRecord(
+            kind: item.kind.wireName,
+            id: item.id,
+            parentId: item.parentId,
+            sortIndex: item.sortIndex,
+            payload: item.payload,
+            rev: item.rev,
+          ),
+      ],
+      baseRevisions: {
+        for (final item in derivedFrom)
+          if (kinds.contains(item.kind))
+            rp.ConfigItemsReplaceRequest.revisionKey(
+                item.kind.wireName, item.id): item.rev,
+      },
+      reason: reason,
+    ));
+    // Not `_fire()`: that conflates, and a save has to be followed by a read
+    // that definitely ran — the screen's next save needs the revisions this
+    // one produced, and a conflated refresh could be the one already in
+    // flight against the rows from before.
+    _fingerprint = rp.ConfigItemsFingerprint.none;
+    await refresh();
+    return result;
   }
 
   /// Fetches the rows if the backend's fingerprint says they moved.

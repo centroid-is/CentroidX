@@ -2250,7 +2250,19 @@ class _PageEditorState extends ConsumerState<PageEditor> {
     await _garbageCollectImages(pageManager);
     if (container != null) {
       container.invalidate(pageManagerProvider);
-    } else {
+    } else if (mounted) {
+      // `mounted` on the `ref` arm only. `container` is the captured handle
+      // and outlives this element deliberately — that is what it is for —
+      // while `ref` throws "cannot use ref after the widget was disposed"
+      // the moment the element is gone. There are awaits above this line, so
+      // the editor can be gone by the time it runs: an operator who saves and
+      // immediately leaves, and, reliably, a relayed save, whose round trip
+      // to the gateway is long enough that the window is no longer thin.
+      //
+      // Dropping the invalidate when this element is gone costs nothing: the
+      // provider is `keepAlive`, so it is re-read by whoever mounts next, and
+      // the rows are already written either way. Throwing here cost the whole
+      // rest of this method, including the proposal accounting below.
       ref.invalidate(pageManagerProvider);
     }
 

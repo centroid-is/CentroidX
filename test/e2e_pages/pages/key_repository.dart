@@ -37,9 +37,9 @@ const String _newKey = 'HALL1.CN02.speed_hz';
 
 void keyRepositoryCases(BackendBench Function() bench) {
   group('the key repository', () {
-    knownRed(
-        'KNOWN RED (found here): opens for an engineer and lists the plant\'s '
-        'key mappings — the rows the backend routes by', (tester) async {
+    testWidgets(
+        'opens for an engineer and lists the plant\'s key mappings — the '
+        'rows the backend routes by', (tester) async {
       // On a station build the page reads the device-local mirror, and in
       // gateway mode nothing fills that mirror from the backend: the relayed
       // bootstrap copy of `key_mappings` lands in the local PREFERENCE cache
@@ -67,9 +67,9 @@ void keyRepositoryCases(BackendBench Function() bench) {
       await dismount(tester);
     });
 
-    knownRed(
-        'KNOWN RED (found here): a key added in the widget and saved lands in '
-        'the backend\'s key_mapping rows', (tester) async {
+    testWidgets(
+        'a key added in the widget and saved lands in the backend\'s '
+        'key_mapping rows', (tester) async {
       // The save goes to the mirror (`store.saveKeyMappings`), and the mirror
       // has no remote in gateway mode. The page reports "saved"; the plant's
       // routing is unchanged. There is no relay method a station could use
@@ -100,12 +100,12 @@ void keyRepositoryCases(BackendBench Function() bench) {
       await tester.tap(find.text('Save Key Mappings'));
       await settleFrames(tester, frames: 10);
 
-      await live(tester, () => untilTrue(() async {
-            final rows = await bench().keyMappingRows();
-            return rows.any((r) => r.id == _newKey);
-          },
-          within: const Duration(seconds: 10),
-          describe: 'the backend\'s key_mapping rows to hold "$_newKey"'));
+      await untilTrueWhilePumping(tester, () async {
+        final rows = await bench().keyMappingRows();
+        return rows.any((r) => r.id == _newKey);
+      },
+          within: const Duration(seconds: 20),
+          describe: 'the backend\'s key_mapping rows to hold "$_newKey"');
       await dismount(tester);
     });
 
