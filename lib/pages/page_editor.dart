@@ -3404,6 +3404,40 @@ class _PageEditorState extends ConsumerState<PageEditor> {
     // Keeps the properties pane on the live selection; a no-op when it is
     // closed, which is the usual case.
     _refreshBulkPane();
+    // **The plant's pages can arrive after this editor opened.**
+    //
+    // `initState` reads the manager once, which is right on a direct station:
+    // its mirror is filled before anything renders. On a relayed panel the
+    // rows come over the socket, and a read is refused until somebody signs
+    // in — so the ordinary sequence is an editor that opens on the built-in
+    // default page and a fetch that lands a moment later. Without this the
+    // operator sits in front of an editor showing a plant that is not theirs,
+    // and the Save button would write that plant over the real one.
+    //
+    // **Only when there is nothing to lose.** Re-snapshotting over an open
+    // editing session would discard the operator's work without a word, which
+    // is worse than staleness — so a dirty editor keeps what it has and the
+    // fresh rows wait for the next open. `_hasUnsavedChanges` is the same
+    // question the leave-guard asks.
+    ref.listen(pageManagerProvider, (previous, next) {
+      final manager = next.valueOrNull;
+      if (manager == null || _hasUnsavedChanges) return;
+      setState(() {
+        _temporaryPages = manager.copyWith().pages;
+        _baselineItems = manager.baselineItems;
+        _topLevelOrder = List.of(manager.topLevelOrder);
+        // The page that was open may not exist in what the plant actually
+        // holds — the usual case, because what it was is the built-in
+        // default. Keeping it would leave the editor on a page nobody has,
+        // showing an empty canvas over a plant full of them.
+        if (_currentPage == null ||
+            !_temporaryPages.containsKey(_currentPage)) {
+          _currentPage = _temporaryPages.keys.firstOrNull;
+        }
+        _currentJsonStale = true;
+        _savedJson = _currentJson;
+      });
+    });
     // Reactively watch for new page/asset proposals arriving via MCP.
     ref.listen<ProposalState>(proposalStateProvider, (prev, next) {
       // Not while a single row is being saved: see [_savingOne].

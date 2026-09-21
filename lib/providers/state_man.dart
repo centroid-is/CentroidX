@@ -140,27 +140,42 @@ Future<StateMan> stateMan(Ref ref) async {
   // identity never changes for the life of the process, and the Postgres half
   // is attached underneath it. See `config_store.dart`.
   //
-  // **On a platform that has one.** A browser has no SQLite, so it has no
-  // mirror of the plant's `config_item` rows and `configStoreProvider`
-  // cannot be built there. Its key mappings come from the rows fetched over
-  // the relay and cached device-locally — `relayed`, below — which on a
-  // first visit is nothing: the client subscribes to the alarm set alone
-  // until a signed-in session fetches the rows, and then takes the real set
-  // in place. The check is a compile-time constant, so the station build
-  // keeps exactly one read of the store and no branch — and a browser never
-  // reaches the throw a missing mirror would be, which was the first of the
-  // two places its boot used to stop before dialling.
-  final store = kHasDeviceLocalMirror
-      ? (await ref.read(configStoreProvider.future)).inner
-      : null;
-  // What stands in for the mirror where there is none: the rows fetched
-  // over the relay and cached device-locally (`relayed_config_items.dart`).
-  // Read here so the client below is built from the cached key mappings —
-  // it cannot be built from the live ones, because the live ones arrive
-  // over the client — and handed the client once it exists, below.
-  final relayed = kHasDeviceLocalMirror
+  // Which pipe this station runs on. Device-local, read once here, and
+  // deliberately `ref.read` rather than `ref.watch` for the same reason the
+  // preferences above are: this provider is `keepAlive` and holds every
+  // connection on the panel, so a live re-read would tear OPC UA sessions and
+  // the Postgres pool down under widgets holding subscriptions. Switching
+  // transport is restart-to-apply, which matches the rest of the config-watch
+  // behaviour on this codebase.
+  final gateway = await ref.read(gatewayConfigProvider.future);
+
+  // **Where this panel's key mappings come from**, which decides what it
+  // subscribes to and is therefore the most consequential read in this file.
+  //
+  // A browser has no SQLite and so no mirror. A **relayed station** has one
+  // that nothing fills — `configStoreProvider` attaches no remote when
+  // `databaseProvider` answers null, which it does by design on a gateway
+  // panel — so its mirror holds whatever it held when the panel was last
+  // direct, and on a panel that has never been direct it holds nothing.
+  // Dialling from that is dialling from a plant that does not exist.
+  //
+  // Both therefore read the rows over the relay and cached device-locally
+  // (`relayed_config_items.dart`), which on a first visit is nothing: the
+  // client subscribes to the alarm set alone until a signed-in session
+  // fetches the rows, and then takes the real set in place.
+  //
+  // The check was a compile-time constant and could not stay one — see
+  // [configRowsComeOverTheWire], which is the one place "can a mirror exist
+  // here" and "are this panel's rows in it" are told apart.
+  final fromWire = configRowsComeOverTheWire(isGateway: gateway.isGateway);
+  final store = fromWire
       ? null
-      : await ref.read(relayedConfigItemsProvider.future);
+      : (await ref.read(configStoreProvider.future)).inner;
+  // Read here so the client below is built from the cached key mappings — it
+  // cannot be built from the live ones, because the live ones arrive over
+  // the client — and handed the client once it exists, below.
+  final relayed =
+      fromWire ? await ref.read(relayedConfigItemsProvider.future) : null;
   // The app's own default `state_man_config`, written on a station that has
   // never been configured, with nobody signed in, against a key the policy
   // classes as `administer` — so on the guarded object it would be a denial at
@@ -244,15 +259,6 @@ Future<StateMan> stateMan(Ref ref) async {
       },
     );
   }
-
-  // Which pipe this station runs on. Device-local, read once here, and
-  // deliberately `ref.read` rather than `ref.watch` for the same reason the
-  // preferences above are: this provider is `keepAlive` and holds every
-  // connection on the panel, so a live re-read would tear OPC UA sessions and
-  // the Postgres pool down under widgets holding subscriptions. Switching
-  // transport is restart-to-apply, which matches the rest of the config-watch
-  // behaviour on this codebase.
-  final gateway = await ref.read(gatewayConfigProvider.future);
 
   try {
     final StateMan stateMan;

@@ -13,6 +13,7 @@ import '../core/relayed_config_items.dart';
 import '../page_creator/page.dart';
 import 'config_store.dart';
 import 'device_local_store_open.dart';
+import 'gateway.dart';
 import 'preferences.dart';
 
 part 'page_manager.g.dart';
@@ -59,18 +60,24 @@ Future<PageManager> pageManager(Ref ref) async {
   // `save()` stays on the guarded object, because the page editor's save is a
   // person editing pages and is exactly what `configure` is for.
   //
-  // **On a platform that has one.** A browser has no SQLite, so it has no
-  // mirror of the plant's page and asset rows — `configStoreProvider` cannot
-  // be built there. Its rows come over the relay instead
-  // (`relayed_config_items.dart`): read from the device-local cache at boot,
-  // refreshed once a signed-in session can fetch them, and re-read here on
-  // every change the backend announces. A save is still refused by name —
-  // the row route is reads only, and the doc below says why that is a
-  // boundary. The check is a compile-time constant: the station build
-  // keeps exactly one read of the store and no branch.
-  final GuardedConfigStore? guarded = kHasDeviceLocalMirror
-      ? await ref.watch(configStoreProvider.future)
-      : null;
+  // **Where the rows come from.** A browser has no SQLite and so no mirror of
+  // the plant's page and asset rows; a **relayed station** has a mirror that
+  // nothing fills, because `configStoreProvider` attaches no remote when
+  // `databaseProvider` answers null — by design, so a gateway client holds no
+  // second connection to the plant's Postgres. Both therefore read the rows
+  // over the relay (`relayed_config_items.dart`): from the device-local cache
+  // at boot, refreshed once a signed-in session can fetch them, and re-read
+  // here on every change the backend announces.
+  //
+  // It was a compile-time constant and could not stay one: the build says
+  // whether a mirror *can* exist, and that is a different question from
+  // whether this panel's rows are in it. [configRowsComeOverTheWire] is the
+  // one place the two are told apart.
+  final gateway = await ref.watch(gatewayConfigProvider.future);
+  final GuardedConfigStore? guarded =
+      configRowsComeOverTheWire(isGateway: gateway.isGateway)
+          ? null
+          : await ref.watch(configStoreProvider.future);
   final store = guarded?.inner;
   // The device-local store, where the one-shot import put `page_editor_data`.
   // A process with no device-local store open — a test container that did
@@ -173,7 +180,11 @@ Future<PageManager> pageManager(Ref ref) async {
   // The re-load cannot clobber an open editing session: the editor works on
   // `PageManager.copyPages` output, not on this object's map. That session's
   // own save is covered by 03-06's identity adoption — the other half.
-  if (store != null && pageManager.servingFallback) {
+  // No `store != null` here: the wire-served arm above returns, so a manager
+  // that reaches this line has a mirror by construction. It used to be
+  // spelled out because the branch above was a compile-time constant and the
+  // analyzer could not see through it.
+  if (pageManager.servingFallback) {
     late final StreamSubscription<void> subscription;
     subscription = store.keyMappingChanges.listen((diff) {
       final touchesPages = [

@@ -34,5 +34,39 @@
 /// one.
 library;
 
+import 'device_local_store_open_io.dart'
+    if (dart.library.js_interop) 'device_local_store_open_web.dart';
+
 export 'device_local_store_open_io.dart'
     if (dart.library.js_interop) 'device_local_store_open_web.dart';
+
+/// Whether the plant's `page`, `asset` and `key_mapping` rows reach this
+/// client **over the relay** rather than out of a local mirror.
+///
+/// [kHasDeviceLocalMirror] answers a narrower question than the call sites
+/// were using it for: whether a `ConfigStore` *can exist* on this platform.
+/// That is a property of the build, and it is not the same question as where
+/// the rows actually come from — because a **station** build can be pointed
+/// at a gateway, and then it has a mirror that nothing fills.
+///
+/// `configStoreProvider` attaches no remote when `databaseProvider` answers
+/// null, which it does by design on a relayed panel: a gateway client must
+/// not hold a second connection to the plant's Postgres. So the mirror is
+/// frozen at whatever it held when the panel was last direct — which on a
+/// panel that has never been direct is nothing at all. Reading pages from it
+/// shows the operator a plant that does not exist, and the key mappings the
+/// client dials with come from the same stale place.
+///
+/// A relayed panel therefore reads the rows the way a browser does. That is
+/// not a compromise: a relayed panel has no plant at all when the link is
+/// down, so an offline mirror of the plant's pages buys nothing except a
+/// stale one. What the mirror still owns on such a panel is this station's
+/// own scope — the watermark and its device-local rows — which is why the
+/// store is still built rather than skipped.
+///
+/// A plain function over the already-resolved config, not a provider: every
+/// call site has the gateway config in hand, and a provider here would add a
+/// rebuild edge to `stateManProvider`, which is the one place a rebuild costs
+/// the plant its subscriptions.
+bool configRowsComeOverTheWire({required bool isGateway}) =>
+    !kHasDeviceLocalMirror || isGateway;

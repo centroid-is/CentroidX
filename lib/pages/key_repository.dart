@@ -15,7 +15,7 @@ import 'package:tfc_dart/core/modbus_client_wrapper.dart' show ModbusDataType;
 // `CollectEntry`/`CollectConfig` only — see the note in `assets/common.dart`.
 import 'package:tfc_dart/core/collect_config.dart';
 import 'package:tfc_dart/core/database.dart';
-import 'package:tfc_dart/core/config/config_item.dart' show ConfigItem;
+import 'package:tfc_dart/core/config/config_item.dart' show ConfigItem, ConfigKind;
 import 'package:tfc_dart/core/config/config_store_errors.dart';
 import 'package:jbtm/src/m2400.dart' show M2400RecordType;
 import '../widgets/fuzzy_search_bar.dart';
@@ -391,11 +391,13 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
     // `origin: 'mcp'`. That is named in the copy below, not only here.
     // ---------------------------------------------------------------------
     try {
-      // What the plant holds: the mirror on a station, the relayed rows in a
-      // browser — never this screen's unsaved edits.
-      final keyMappings = kHasDeviceLocalMirror
-          ? (await ref.read(configStoreProvider.future)).inner.keyMappings
-          : (await ref.read(relayedConfigItemsProvider.future)).keyMappings;
+      // What the plant holds: the mirror on a DIRECT station, the relayed
+      // rows on a browser or a gateway panel — never this screen's unsaved
+      // edits. See [configRowsComeOverTheWire] for why a relayed station
+      // reads the wire rather than the mirror it happens to have.
+      final keyMappings =
+          await _fromWire() ? (await _relayedRows()).keyMappings
+              : (await ref.read(configStoreProvider.future)).inner.keyMappings;
       final jsonString =
           const JsonEncoder.withIndent('  ').convert(keyMappings.toJson());
 
@@ -717,6 +719,7 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
   void initState() {
     super.initState();
     _loadKeyMappings();
+    _followRelayedRows();
     // Whole queue, not just the one the banner routed us with -- but fall back
     // to that one when state is empty, because the chat batch card empties
     // proposalStateProvider before it navigates here.
@@ -724,6 +727,33 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
       _stageRoutedProposal(widget.proposalData);
     }
   }
+
+  /// Re-reads when the plant's rows arrive after this screen opened.
+  ///
+  /// [_loadKeyMappings] runs once, which is right on a direct station: its
+  /// mirror is filled before anything renders. On a relayed panel the rows
+  /// come over the socket and a read is refused until somebody signs in, so
+  /// the ordinary sequence is a screen that opens on "No keys configured" and
+  /// a fetch that lands a moment later. Without this the operator sits in
+  /// front of an empty key repository on a plant with five hundred keys —
+  /// and the Save button would write that emptiness over them.
+  ///
+  /// **Only when there is nothing to lose.** Re-reading over unsaved edits
+  /// would discard the operator's work without a word, which is worse than
+  /// staleness, so a dirty screen keeps what it has.
+  void _followRelayedRows() {
+    unawaited(() async {
+      if (!await _fromWire() || !mounted) return;
+      final relayed = await _relayedRows();
+      if (!mounted) return;
+      _rowSub = relayed.changed.listen((_) {
+        if (!mounted || _hasUnsavedChanges) return;
+        unawaited(_loadKeyMappings());
+      });
+    }());
+  }
+
+  StreamSubscription<void>? _rowSub;
 
   /// Stages the proposal the route carried, when state has none.
   ///
@@ -795,6 +825,8 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
 
   @override
   void dispose() {
+    unawaited(_rowSub?.cancel());
+    _rowSub = null;
     // The banner holds these closures over this State; left set they would
     // fire into a disposed State after navigating away.
     //
@@ -1152,20 +1184,19 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
       // The plant's wiring comes from the shared configuration store, one row
       // per key. `state_man_config` is not this phase's key and still comes
       // out of preferences.
-      if (kHasDeviceLocalMirror) {
+      if (await _fromWire()) {
+        // A browser has no mirror at all, and a relayed station has one that
+        // nothing fills. The rows come over the relay instead — the same
+        // `RelayedConfigItems` the page manager and the StateMan read — and a
+        // copy is held, so an edit on this screen never reaches the object the
+        // running panel resolves keys from.
+        final relayed = await _relayedRows();
+        _keyMappings = KeyMappings.fromJson(relayed.keyMappings.toJson());
+        _baselineItems = relayed.itemsOf(const {ConfigKind.keyMapping});
+      } else {
         final store = await ref.read(configStoreProvider.future);
         _keyMappings = store.inner.keyMappings;
         _baselineItems = store.inner.keyMappingItems;
-      } else {
-        // A browser has no mirror, so `configStoreProvider` cannot be built
-        // here and this page used to stop on its error. The rows come over
-        // the relay instead — the same `RelayedConfigItems` the page manager
-        // and the StateMan read — and a copy is held, so an edit on this
-        // screen never reaches the object the running panel resolves keys
-        // from. Saving is refused by name in [_saveKeyMappings].
-        final relayed = await ref.read(relayedConfigItemsProvider.future);
-        _keyMappings = KeyMappings.fromJson(relayed.keyMappings.toJson());
-        _baselineItems = null;
       }
       _invalidateDerived();
       _savedJson = _currentJson();
@@ -1176,7 +1207,7 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
         final prefs = await ref.read(preferencesProvider.future);
         _stateManConfig = await StateManConfigStorage.fromPrefs(prefs);
       } catch (e) {
-        if (kHasDeviceLocalMirror) rethrow;
+        if (!await _fromWire()) rethrow;
         _stateManConfig = null;
       }
       _rebuildAliasLists();
@@ -1189,6 +1220,23 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
       }
     }
   }
+
+  /// Whether this panel's key-mapping rows come over the relay.
+  ///
+  /// A browser has no mirror; a relayed station has one that nothing fills.
+  /// Asked through [configRowsComeOverTheWire] rather than through
+  /// `kHasDeviceLocalMirror`, which answers the narrower question of whether
+  /// a mirror could exist on this platform at all.
+  ///
+  /// `gatewayConfigProvider` is a cached future, so asking repeatedly costs
+  /// one lookup; it is read at each site rather than held in state because
+  /// this page outlives none of it and a field would be one more thing to
+  /// keep level with a transport change.
+  Future<bool> _fromWire() async => configRowsComeOverTheWire(
+      isGateway: (await ref.read(gatewayConfigProvider.future)).isGateway);
+
+  Future<RelayedConfigItems> _relayedRows() =>
+      ref.read(relayedConfigItemsProvider.future);
 
   String _currentJson() =>
       _currentJsonCache ??= jsonEncode(_keyMappings!.toJson());
