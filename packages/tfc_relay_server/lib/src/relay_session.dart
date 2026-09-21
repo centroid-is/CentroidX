@@ -1873,6 +1873,9 @@ final class RelaySession {
     _credentialDigest = null;
     _scoped = _accessFor?.call(_anonymous!);
     subscriptions.clear();
+    // And every hold the person engaged — in the same turn as the identity,
+    // for the identity's reason. See `releaseHoldsForIdentityChange`.
+    _values?.releaseHoldsForIdentityChange();
     await _recordAuth(AuditRecord.logout(
       who: current.user.username,
       station: current.station,

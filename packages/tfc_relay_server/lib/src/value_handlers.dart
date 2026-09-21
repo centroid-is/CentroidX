@@ -729,6 +729,7 @@ final class ValueHandlers {
       // `writeStatus` could never match.
       final hold = request.hold ? _holds[request.key] : null;
       if (request.hold && request.value == 1) {
+        final identityEra = _identityEra;
         final handle = await api.holdToRun(request.key);
         // **The re-check after the await.** This file's instance of the
         // pattern; `relay_session.dart`'s `_hello` carries the other one, and
@@ -759,7 +760,10 @@ final class ValueHandlers {
         final displaced = _holds[request.key];
         final String? lost = _closed
             ? 'this session was torn down while the engage was upstream'
-            : (displaced != null && displaced.isHeld
+            : identityEra != _identityEra
+                ? 'the person who engaged it signed out while the engage '
+                    'was upstream'
+                : (displaced != null && displaced.isHeld
                 ? 'another engage on this key took the hold while this one '
                     'was upstream'
                 : null);
@@ -871,6 +875,30 @@ final class ValueHandlers {
   /// outcome is informational, and a teardown that waited for one would hang
   /// on exactly the dead link that caused it. Errors are swallowed for the
   /// same reason — the source may already be disposed underneath us.
+  /// Ends every hold this session holds because the identity that engaged
+  /// them is gone — a `session.logout` — while the session itself lives on.
+  ///
+  /// [releaseAllHolds]' twin, without its one-way [_closed]: the socket
+  /// stays, and the next person to sign in on it may engage a hold of their
+  /// own. Found by adversarial review round 2: `_sessionLogout` cleared the
+  /// subscriptions and kept the holds, and `holdTick` consults no identity,
+  /// so a jog held through a sign-out kept its deadman counter advancing for
+  /// a session nobody was signed in on. [_identityEra] is what stops an
+  /// engage that was upstream at the instant of the sign-out from storing a
+  /// hold the new identity never asked for — the same re-check-after-the-
+  /// await [write]'s hold branch already makes against [_closed].
+  void releaseHoldsForIdentityChange() {
+    _identityEra++;
+    for (final hold in List<HoldHandle>.of(_holds.values)) {
+      unawaited(hold
+          .release(reason: HoldEnded.lifecycle)
+          .then((_) {}, onError: (Object _) {}));
+    }
+    _holds.clear();
+  }
+
+  int _identityEra = 0;
+
   void releaseAllHolds() {
     // Set *before* the iteration, so a handler that resumes from
     // `api.holdToRun` at any point during or after this method sees it. The

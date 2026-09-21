@@ -317,7 +317,31 @@ final class ResyncEngine {
   final _inFlight = <String, Future<void>>{};
 
   Future<void> _establish(SubscriptionState sub) async {
-    final result = await subscribe(sub.subId, sub.keys);
+    // What this attempt asks for, and the world it asks in — both compared
+    // again when the answer lands. Adversarial review round 2 found two ways
+    // the answer could belong to a page that no longer exists:
+    //
+    //  * `setKeys` edits `sub.keys` in place while a subscribe is on the
+    //    wire, and joins the in-flight future rather than sending the new
+    //    set. The old answer was adopted, its `lastSeq` matched the ticks,
+    //    and the new page's keys were never subscribed at all — `read`
+    //    answered null for them for as long as the link stayed up.
+    //  * `setKeys({})` removes the state and unsubscribes while the answer is
+    //    in flight, and the late snapshot was adopted onto a state no longer
+    //    in the map: a released page rendering good values nothing could
+    //    move again.
+    //
+    // So the answer is adopted only by the state it was asked for, holding
+    // the keys it was asked with, in the era it was asked in. Anything else
+    // is dropped — and when the page is still wanted, asked again.
+    final asked = Set<String>.of(sub.keys);
+    final era = _era;
+    final result = await subscribe(sub.subId, asked);
+    if (era != _era) return;
+    final current = subscriptions[sub.subId];
+    if (current == null) return;
+    if (!identical(current, sub)) return _establish(current);
+    if (!_sameKeys(asked, sub.keys)) return _establish(sub);
     final store = storeFor(sub.subId);
 
     // Recovery is a snapshot, never a delta replay: the old cache goes first
@@ -348,6 +372,25 @@ final class ResyncEngine {
   /// that did to a page. An in-flight frame from the establishment being
   /// abandoned cannot match on the way past, and neither can a frame from a
   /// gateway that never minted a generation at all.
+  /// Every subscription back to "not established" at once — what a sign-out
+  /// leaves: the gateway has already dropped this session's subscriptions,
+  /// so every cached value would otherwise sit on screen under good quality
+  /// with nothing able to move it. See `ConnectionSupervisor.holdAfterSignOut`.
+  void unestablishAll() {
+    _era++;
+    _inFlight.clear();
+    for (final sub in subscriptions.values) {
+      _unestablish(sub);
+    }
+  }
+
+  /// Bumped by [unestablishAll], so an establishment already on the wire
+  /// cannot land its snapshot on the far side of it — see [_establish].
+  int _era = 0;
+
+  static bool _sameKeys(Set<String> a, Set<String> b) =>
+      a.length == b.length && a.containsAll(b);
+
   void _unestablish(SubscriptionState sub) {
     storeFor(sub.subId).clear();
     sub.handles = <int, String>{};

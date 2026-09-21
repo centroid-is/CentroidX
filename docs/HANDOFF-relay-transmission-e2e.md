@@ -50,7 +50,7 @@ merge", built an adversarial e2e bench, and fixed what the review found.
 
 ## Where this is — 2026-09-21 (fourth pass)
 
-Pushed to `feat/relay-pipe` (PR #463).
+Pushed to `feat/relay-pipe` (PR #463), **merged with `origin/main` as of #587** — the merge moved the `alarm_history` migration arm to schema 14 so a station main stamped 13 still gets its columns.
 
 **The keystone is closed, end to end, and so is every known-red.** A relayed
 panel reads *and* writes the plant's shared configuration: preferences
@@ -75,6 +75,49 @@ The fourth pass also ran an adversarial review of the core transport
   graded and recorded as the person who had just signed out. Identity first,
   row second.
 
+**A second round** went at the client and the contract between the two ends
+(`packages/tfc_relay_client/test/adversarial_*_test.dart`, five files). Five
+more real breaks, all fixed red-first:
+
+- **A hold survived the operator signing out — safety.** The client released
+  nothing and stayed `ready`; the gateway cleared subscriptions but kept holds,
+  and `holdTick` consults no identity. A jog held through a sign-out kept its
+  deadman counter advancing for a session nobody was signed in on. Now: the
+  client releases every hold *before* the logout request and drops to the
+  awaiting-sign-in hold (`ConnectionSupervisor.holdAfterSignOut` — barrier
+  shut, pages unestablished); the gateway releases holds in the same turn as
+  the identity (`ValueHandlers.releaseHoldsForIdentityChange`), with an
+  identity era so an engage that was upstream at that instant cannot store a
+  hold afterwards.
+- **After a sign-out the client still said `ready`** while the gateway
+  refused every read, and every tile stayed under good quality — a frozen
+  plant rendered as live. Same fix.
+- **A page change mid-subscribe was lost — data loss.** `setKeys` edited the
+  key set in place and joined the subscribe already on the wire, so the new
+  keys were never sent; a release during the subscribe had its late snapshot
+  adopted onto a page no longer in the map. `ResyncEngine._establish` now
+  adopts an answer only for the state, keys and era it asked with, and asks
+  again otherwise.
+- **Every graded refusal reached the app naming the wrong group.** The client
+  decodes `data['group']`/`data['itemKey']`; the gateway put the group only in
+  prose, so the typed refusal said `users` and `unknown`. `refusedForGroup`
+  now carries both in `data`.
+- **Two unreadable write answers.** A readback nested past `maxValueDepth`
+  made `write` throw instead of answering; a `writeStatus` readback of
+  `1e999` was adopted onto the tile as a good reading (null after
+  sanitizing). Both answers now go through one sanitizing decoder that
+  resolves `unknown` rather than throwing, and a null readback is declined —
+  the last confirmed reading stays.
+
+Round 2's refuted list, likewise: a reconnect during an in-flight write
+(no duplicate, no lost `unknown`), a hold surviving a socket drop, a stale
+readback after resync, an old-generation `u` after reconnect, close-code
+handling, `revisionKey` with `/` in ids, `configWriteKeyFor` on unknown kinds,
+`sanitize` breadth, and contract-kit/server divergence outside the access
+family. Left as-is on purpose: `withAccessErrors` still falls back to
+`users` when a refusal carries no group — the gateway now always sends one,
+so the fallback only matters against a gateway older than this branch.
+
 Refuted with evidence, and worth not re-chasing: Zone-scoped action-id
 cross-talk on the preferences door, login/hello ordering, fingerprint and
 idempotency-window collisions, hold-tick reach across sessions,
@@ -88,11 +131,12 @@ The inventory this branch started from was 78 features: 51 served, 9 partial,
 |---|---|
 | `test/e2e_pages` | **51 pass, 0 known-red**, in UTC *and* `TZ=Europe/Copenhagen` |
 | `test/e2e_assets` | 6 pass |
-| app suite (`flutter test test/`) | 7888 pass, **2 pre-existing failures** (`gateway_link_test`) |
+| app suite (`flutter test test/`) | **8048 pass, 0 failures** — the two long-standing `gateway_link_test` failures were the scripted gateway sending `g: 0` against a snapshot with no generation |
+| `tfc_dart` `test/core` | 2827 pass |
 | `tfc_stateman_contract` | 997 pass |
 | `tfc_relay_protocol` | 541 pass |
 | `tfc_relay_server` | 1264 pass |
-| `tfc_relay_client` | 773 pass |
+| `tfc_relay_client` | 782 pass |
 | `tfc_relay_local` | **20 red, pre-existing** — see below |
 | surface | 87 callable names, 95 members over eleven types, 41 access wire names, 37 access checks |
 

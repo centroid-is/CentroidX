@@ -271,7 +271,11 @@ mixin _GroupGate {
         allowed: false,
         actionId: actionId ?? method);
     throw refusedForGroup(
-        identity: identity, group: group, method: method, what: what);
+        identity: identity,
+        group: group,
+        method: method,
+        what: what,
+        itemKey: itemKey);
   }
 
   /// The read gate: [requireReadFloor] on this session's identity. A family
@@ -377,12 +381,29 @@ bool holdsReadFloor(StationIdentity? identity, {AccessGroup? also}) {
 /// Both name the group. The anonymous message naming it is what keeps
 /// `anonymous_session_test.dart`'s sweep honest: every refusal on this wire
 /// is the policy's, and says what it wanted.
+///
+/// **The group and the item travel in `data` too**, beside the substituted
+/// request, because that is what the relay client decodes: `withAccessErrors`
+/// builds its typed `RemoteAccessDenied` from `data['group']` and
+/// `data['itemKey']`, and with neither present it fell back to `users` and
+/// the literal `unknown` — so every graded refusal reached the app naming the
+/// wrong group, and the sign-in prompt asked for a permission the policy never
+/// wanted. Found by adversarial review round 2; the contract kit's hand-written
+/// refusals carried both fields, which is why no earlier test saw it.
+/// [itemKey] is capped: it can be a key the client supplied.
 rpc.RpcException refusedForGroup({
   required StationIdentity? identity,
   required AccessGroup group,
   required String method,
   required String what,
+  String? itemKey,
 }) {
+  final data = <String, Object?>{
+    ...substitutedRequest(method),
+    'group': group.name,
+    if (itemKey != null)
+      'itemKey': itemKey.length > 200 ? itemKey.substring(0, 200) : itemKey,
+  };
   if (identity == null || identity.isAnonymous) {
     return rpc.RpcException(
         ServerErrorCodes.forbidden,
@@ -392,7 +413,7 @@ rpc.RpcException refusedForGroup({
         'nothing was changed and nothing was read. Sign in first; the '
         'permission then comes from the account that signs in, not from the '
         'next attempt',
-        data: substitutedRequest(method));
+        data: data);
   }
   return rpc.RpcException(
       ServerErrorCodes.forbidden,
@@ -402,7 +423,7 @@ rpc.RpcException refusedForGroup({
       'missing is the "${group.name}" permission, and permissions change '
       'on this station\'s account in the access database rather than on '
       'the next attempt',
-      data: substitutedRequest(method));
+      data: data);
 }
 
 /// Refuses [method] unless [identity] clears the read floor — see

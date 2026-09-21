@@ -227,9 +227,15 @@ void main() {
       // The hold lifts the way the awaiting one does: a sign-in onto an
       // account that holds the floor drives the deferred resync.
       await fixture.client.sessionLogout();
-      expect(fixture.client.readsWithheld, isTrue,
-          reason: 'a logout returns the far end to nobody; the hold stands '
-              'until a resync succeeds');
+      // A logout returns the far end to nobody, so the hold it leaves is the
+      // sign-in screen's, not the missing permission's: the permission
+      // belonged to an account that is no longer signed in. The barrier
+      // stays shut either way (`ConnectionSupervisor.holdAfterSignOut`).
+      expect(fixture.client.awaitingSignIn, isTrue);
+      expect(fixture.client.readsWithheld, isFalse);
+      expect(fixture.client.isReady, isFalse);
+      expect(fixture.client.linkState, isNot(LinkState.down),
+          reason: 'held, not redialled');
     });
   });
 }

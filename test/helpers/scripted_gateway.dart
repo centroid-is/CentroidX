@@ -228,17 +228,25 @@ final class ScriptedLink {
   /// `g` is the generation and `c` the changes map, keyed by handle **as a
   /// string**. [sub] defaults to the name `RemoteStateMan` files its
   /// constructor keys under, so a rename of that constant fails here.
+  ///
+  /// [generation] defaults to **absent**, because this gateway's subscribe
+  /// answer mints none: the client compares an update's `g` against the
+  /// generation its subscription was established under, and a `g: 0` from a
+  /// gateway whose snapshot carried no generation is a frame from the wrong
+  /// establishment — dropped silently at the gate, which is what turned
+  /// "a pushed update reaches the client" red for weeks. Null against null
+  /// is a gateway that mints no generations, and passes.
   void update(
     int seq,
     Map<int, Object?> handles, {
     String sub = defaultPageSubscription,
-    int generation = 0,
+    int? generation,
   }) =>
       notifyLive(Methods.update, {
         'sub': sub,
         'seq': seq,
         't': DateTime.now().millisecondsSinceEpoch,
-        'g': generation,
+        if (generation != null) 'g': generation,
         'c': {
           for (final entry in handles.entries)
             '${entry.key}': WireValue.of(entry.value).toJson(),

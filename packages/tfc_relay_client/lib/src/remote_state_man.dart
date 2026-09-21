@@ -890,12 +890,27 @@ final class RemoteStateMan implements StateManApi {
   /// Idempotent on a session that is already nobody — a reconnect may have
   /// reset the far end without this client knowing.
   ///
-  /// [signedInUser] is cleared BEFORE the request goes out, the gateway's
-  /// own ordering for its identity: nothing that reads the name while the
-  /// sign-out is in flight may still attribute to the person leaving.
-  Future<void> sessionLogout() {
+  /// **Every hold is released BEFORE the request goes out**, and the name
+  /// with it — the gateway's own ordering for its identity. A hold engaged by
+  /// the person signing out must not outlive them: found by adversarial
+  /// review round 2, a jog held through a sign-out kept its deadman counter
+  /// advancing at the plant for a session nobody was signed in on, because
+  /// this method released nothing and the link stayed `ready`. After the
+  /// gateway answers, the connection holds exactly as a session admitted as
+  /// nobody does ([ConnectionSupervisor.holdAfterSignOut]): barrier shut,
+  /// pages unestablished, `awaitingSignIn` true.
+  Future<void> sessionLogout() async {
+    _releaseHolds(HoldEnded.lifecycle);
     _supervisor.signedInUser = null;
-    return _sessionRequest(Methods.sessionLogout, const <String, Object?>{});
+    try {
+      await _sessionRequest(Methods.sessionLogout, const <String, Object?>{});
+    } finally {
+      // In `finally`: a sign-out whose answer was lost still means the
+      // operator walked away, and a panel that went on showing their session
+      // as live would be the worse of the two errors. The next hello — or
+      // the next sign-in — re-derives the truth either way.
+      _supervisor.holdAfterSignOut();
+    }
   }
 
   /// A request that waits on the SESSION gate rather than the value barrier.
@@ -1084,7 +1099,7 @@ final class RemoteStateMan implements StateManApi {
       //
       // It covers the `readback` too, and by the same rule as everywhere else:
       // a non-finite reading is not a number this panel may put on a mimic.
-      result = WriteResult.fromJson(_asJson(sanitize(raw).value));
+      result = _decodeWriteAnswer(id, raw);
     } catch (error) {
       // One seam decides whether this means "we do not know" or "the server
       // said no", and it rethrows anything that is a defect in this process
@@ -1119,6 +1134,37 @@ final class RemoteStateMan implements StateManApi {
   /// [_disposed] is a fact this object owns rather than a message match, so
   /// nothing widens here the way a string predicate widens. Unknown and not
   /// never-received: what this client knows is that it stopped looking.
+  /// One write answer — from `write` or from one `writeStatus` entry —
+  /// through the sanitizer, then decoded.
+  ///
+  /// **An answer the sanitizer refuses is the gateway's payload, not this
+  /// process's defect**, so it resolves `unknown` here instead of reaching
+  /// the taxonomy, which rethrows every `Error` on the grounds that an Error
+  /// is a bug in this process. Found by adversarial review round 2: a
+  /// readback nested past `maxValueDepth` made `sanitize` throw
+  /// `ArgumentError`, `write` threw instead of answering — breaking the one
+  /// promise it makes — for a command the plant had applied. Unknown keeps the
+  /// command in [_unresolved], re-queryable, which is the one property an
+  /// unreadable answer must not cost.
+  ///
+  /// `writeStatus` goes through here too. It used to decode each entry raw,
+  /// so a `readback: 1e999` from a re-query decoded to `double.infinity` and
+  /// was adopted onto the mimic under good quality — the one answer on the
+  /// wire the non-finite sanitization had never reached.
+  WriteResult _decodeWriteAnswer(String cmd, Object? raw) {
+    final Object? clean;
+    try {
+      clean = sanitize(raw).value;
+    } on Error catch (error) {
+      return WriteUnknown(
+          cmd,
+          WriteReason('malformed_result:unreadable',
+              message: 'the gateway\'s answer could not be read ($error), so '
+                  'nothing about this command can be ruled out'));
+    }
+    return WriteResult.fromJson(_asJson(clean));
+  }
+
   WriteResult _writeOutcomeFor(String cmd, Object error) {
     if (_disposed && error is StateError) {
       return WriteUnknown(
@@ -1215,6 +1261,22 @@ final class RemoteStateMan implements StateManApi {
     // nothing to compare and inventing an ordering would be worse than the
     // race: it would silently stop confirming writes on every source that does
     // not report source times.
+    // **A null readback confirms nothing.** It is what the sanitizer leaves
+    // where the gateway spelled a non-finite reading (`1e999`), and what a
+    // gateway that reports no readback sends; in neither case did the device
+    // say what it holds. Adopting it put a blank tile on the mimic under good
+    // quality — found by adversarial review round 2 through a `writeStatus`
+    // re-query. The write stands as applied; the last confirmed reading stays
+    // on the page, and the push that follows a real change still lands.
+    if (result.readback == null) {
+      _declineReadback(
+          key,
+          'the gateway reported no readable value for it, so there is nothing '
+          'the device confirmed to put on the page — the write itself stands '
+          'as applied');
+      return;
+    }
+
     final store = _storeOf(key);
     final cached = store.peek(key)?.sourceTime;
     if (cached != null && stamp.isBefore(cached)) {
@@ -1569,7 +1631,7 @@ final class RemoteStateMan implements StateManApi {
   /// command is not an answer about this one — however well-formed it is.
   WriteResult _answerFor(String cmd, Object? entry) {
     try {
-      final decoded = WriteResult.fromJson(_asJson(entry));
+      final decoded = _decodeWriteAnswer(cmd, entry);
       if (decoded.cmd != cmd) {
         // Substituted in place, never dropped: dropping shifts every later
         // answer onto the wrong command, which is the failure 04-REVIEW

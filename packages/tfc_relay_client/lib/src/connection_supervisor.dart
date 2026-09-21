@@ -981,6 +981,34 @@ final class ConnectionSupervisor {
   /// taken down like any other, so a login accepted onto a gateway that then
   /// refuses the subscribe for some *other* reason does not leave a session
   /// wedged half-signed-in.
+  /// The state a sign-out leaves this connection in: the same one a session
+  /// admitted as nobody holds — socket up, value barrier shut, every page
+  /// unestablished, `awaitingSignIn` true.
+  ///
+  /// Found by adversarial review round 2. `sessionLogout` used to send its
+  /// request and change nothing here, so after the gateway had returned the
+  /// session to nobody and dropped its subscriptions this client still said
+  /// `ready`: a caller checking `isReady` was told to go ahead against a
+  /// session that refuses every read, and every value on screen stayed under
+  /// good quality with the heartbeat keeping the link deadline fed — a frozen
+  /// plant rendered as a live one until somebody signed in. Leaving `ready`
+  /// is also what stops a hold's pulse (`RemoteStateMan`'s `_wasReady`
+  /// transition), belt to the explicit release `sessionLogout` does first.
+  ///
+  /// [resumeAfterSignIn] is the way back, exactly as it is for a session that
+  /// was never signed in.
+  void holdAfterSignOut() {
+    if (_disposed || _stopped) return;
+    barrier.rearm();
+    _resync.unestablishAll();
+    _awaitingSignIn = true;
+    _readsWithheld = false;
+    _withheldReason = null;
+    signedInUser = null;
+    _enter(LinkState.resyncing);
+    if (!_states.isClosed) _states.add(_state);
+  }
+
   Future<void> resumeAfterSignIn() async {
     if (_disposed || !(_awaitingSignIn || _readsWithheld)) return;
     final gen = _generation;
