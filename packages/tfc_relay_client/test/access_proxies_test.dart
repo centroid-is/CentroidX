@@ -90,13 +90,15 @@ final class _Apis {
         admin = ClientAccessAdminApi(call),
         audit = ClientAuditApi(call),
         config = ClientBackendConfigApi(call),
-        configItems = ClientConfigItemsApi(call);
+        configItems = ClientConfigItemsApi(call),
+        configHistory = ClientConfigHistoryApi(call);
 
   final ClientAccessTemplateApi templates;
   final ClientAccessAdminApi admin;
   final ClientAuditApi audit;
   final ClientBackendConfigApi config;
   final ClientConfigItemsApi configItems;
+  final ClientConfigHistoryApi configHistory;
 }
 
 // -----------------------------------------------------------------------------
@@ -120,6 +122,22 @@ final UserSummary _user = UserSummary(
   // date, and every account rendered as 1970 on a gateway station.
   createdAt: DateTime.utc(2026, 4, 1, 7, 30),
   lastLoginAt: DateTime.utc(2026, 9, 8, 6, 15),
+);
+
+/// One `config_change` row, shaped the way the history serves them.
+const ConfigHistoryRow _historyRow = ConfigHistoryRow(
+  id: 7,
+  atMs: 1757300000000,
+  actionId: 'a-1',
+  who: 'ST101-panel',
+  station: 'ST101',
+  roleName: 'Panel Operator',
+  kind: 'page',
+  entityId: '/roe',
+  scope: 'shared',
+  op: 'update',
+  oldValue: '{"label":"Roe"}',
+  newValue: '{"label":"Roe line"}',
 );
 
 final AuditRecord _auditRow = AuditRecord(
@@ -279,6 +297,38 @@ final List<_Member> _members = <_Member>[
     () => ['ST101-panel'],
     check: (decoded) => expect(decoded, ['ST101-panel']),
   ),
+  _Member(
+    AccessMethods.auditEntriesByAction,
+    (a) => a.audit.entriesByAction(const ['a-1']),
+    () => [auditRecordToJson(_auditRow)],
+    check: (decoded) => expect(
+        (decoded! as List<AuditRecord>).single.actionId, _auditRow.actionId),
+  ),
+  // ---------------------------------------------------- configuration history
+  _Member(
+    AccessMethods.configHistoryChangesPage,
+    (a) => a.configHistory.changesPage(const ConfigHistoryQueryParams()),
+    () => const ConfigHistoryPageResult(
+        rows: [_historyRow], rawCount: 1, hasMore: false).toJson(),
+    check: (decoded) => expect(
+        (decoded! as ConfigHistoryPageResult).rows.single.actionId, 'a-1'),
+  ),
+  _Member(
+    AccessMethods.configHistoryChangesByAction,
+    (a) => a.configHistory.changesByAction(const ['a-1']),
+    () => {
+      'a-1': [_historyRow.toJson()]
+    },
+    check: (decoded) => expect(
+        (decoded! as Map<String, List<ConfigHistoryRow>>)['a-1']!.single.id,
+        _historyRow.id),
+  ),
+  _Member(
+    AccessMethods.configHistoryCountsByAction,
+    (a) => a.configHistory.changeCountsByAction(const ['a-1']),
+    () => {'a-1': 2},
+    check: (decoded) => expect(decoded, {'a-1': 2}),
+  ),
   // --------------------------------------------------------- backend config
   _Member(
     AccessMethods.configRead,
@@ -320,6 +370,23 @@ final List<_Member> _members = <_Member>[
     () => const ConfigItemsFingerprint(count: 3, revSum: 12).toJson(),
     check: (decoded) =>
         expect((decoded! as ConfigItemsFingerprint).revSum, 12),
+  ),
+  _Member(
+    AccessMethods.configItemsReplace,
+    (a) => a.configItems.replace(ConfigItemsReplaceRequest(
+        kinds: const {'page', 'asset'},
+        wanted: const [_configItem],
+        baseRevisions: const {'page/home': 1})),
+    () => const ConfigItemsReplaceResult(
+        added: 1, changed: 2, removed: 3, actionId: 'act-9').toJson(),
+    check: (decoded) {
+      final result = decoded! as ConfigItemsReplaceResult;
+      expect(result.removed, 3,
+          reason: 'the count a caller reads to know its save deleted '
+              'something has to survive the round trip');
+      expect(result.actionId, 'act-9',
+          reason: 'and the action it joins the history on');
+    },
   ),
 ];
 
@@ -595,6 +662,30 @@ final class _ServedAccessGateway {
       return await fake.memberCountsByAction(ids);
     });
     _on(AccessMethods.auditDistinctWho, (p) async => await fake.distinctWho());
+    _on(AccessMethods.auditEntriesByAction, (p) async {
+      final ids = [for (final id in p['actionIds'].asList) '$id'];
+      return [
+        for (final row in await fake.entriesByAction(ids))
+          auditRecordToJson(row)
+      ];
+    });
+    _on(
+        AccessMethods.configHistoryChangesPage,
+        (p) async => (await fake.changesPage(
+                ConfigHistoryQueryParams.fromJson(_obj(p['query'].asMap))))
+            .toJson());
+    _on(AccessMethods.configHistoryChangesByAction, (p) async {
+      final ids = [for (final id in p['actionIds'].asList) '$id'];
+      final byAction = await fake.changesByAction(ids);
+      return {
+        for (final entry in byAction.entries)
+          entry.key: [for (final row in entry.value) row.toJson()],
+      };
+    });
+    _on(AccessMethods.configHistoryCountsByAction, (p) async {
+      final ids = [for (final id in p['actionIds'].asList) '$id'];
+      return await fake.changeCountsByAction(ids);
+    });
 
     // backend config
     _on(AccessMethods.configRead, (p) async => (await fake.read()).toJson());
@@ -625,6 +716,11 @@ final class _ServedAccessGateway {
         (p) async =>
             (await fake.fingerprint(p['kinds'].asList.cast<String>()))
                 .toJson());
+    _on(
+        AccessMethods.configItemsReplace,
+        (p) async => (await fake.replace(ConfigItemsReplaceRequest.fromJson(
+                p['request'].asMap.cast<String, Object?>())))
+            .toJson());
   }
 }
 
@@ -1045,16 +1141,17 @@ void main() {
     // run itself did, not what it intended.
     test('LEDGER: the leg ran the whole access roster with an empty gap', () {
       // The declared count, reconciled against the in-memory leg's:
-      // access_contract_meta_test.dart pins `_declaredAccessCheckCount = 35`
+      // access_contract_meta_test.dart pins `_declaredAccessCheckCount = 37`
       // — 27 until the page-visibility whitelist added setRolePages and
       // setUserPages, 31 once multi-role accounts added setUserRoles and
       // setUserInactivityTimeout, 33 once main's relational config put the
       // plant's own pages and key mappings on the wire as `configItems`, 35
-      // once setUserHomePage and setUserAlarmAutoNavigate reached it. If
+      // once setUserHomePage and setUserAlarmAutoNavigate reached it, 36 with
+      // the configuration history and 37 with `configItems.replace`. If
       // the kit's roster moves, this literal must move with it —
       // deliberately, on the record.
-      expect(accessChecks.length, 35,
-          reason: 'the in-memory leg declares 35 access checks; this leg '
+      expect(accessChecks.length, 37,
+          reason: 'the in-memory leg declares 37 access checks; this leg '
               'must judge the same roster, not a subset that happens to be '
               'green');
       expect(_legsBuilt, accessChecks.length,

@@ -705,6 +705,95 @@ class FakeAccessServices
     return [for (final r in configItems) if (r.kind == kind) r];
   }
 
+  /// Replace-within-kinds, in memory, with the compare-and-swap the wire
+  /// promises.
+  ///
+  /// Faithful in the three ways a check can tell apart and no further: the
+  /// grading key comes from the KIND SET (never from anything the request
+  /// names), every base revision must match or the call is a conflict, and a
+  /// stored row of a named kind that is absent from `wanted` is removed. A
+  /// kind set this family does not write is an [ArgumentError], which is what
+  /// a `preference` smuggled in here gets.
+  @override
+  Future<ConfigItemsReplaceResult> replace(
+      ConfigItemsReplaceRequest request) async {
+    final key = configWriteKeyFor(request.kinds);
+    if (key == null) {
+      throw ArgumentError.value(
+          (request.kinds.toList()..sort()).join(','),
+          'kinds',
+          'not a kind set configItems.replace writes');
+    }
+    requireGroup(
+        // The two keys this family writes are `configure` on every plant that
+        // has not moved them; the fake grades by the same group the policy
+        // would derive, so a check can tell a refusal from an acceptance
+        // without carrying a policy here.
+        AccessGroup.configure,
+        key,
+        'configItems.replace');
+    final live = {
+      for (final r in configItems)
+        if (request.kinds.contains(r.kind)) '${r.kind}/${r.id}': r,
+    };
+    for (final entry in live.entries) {
+      if (request.baseRevisions[entry.key] != entry.value.rev) {
+        throw StateError('configItems.replace: ${entry.key} moved since the '
+            'caller read it (rev ${entry.value.rev})');
+      }
+    }
+    for (final id in request.baseRevisions.keys) {
+      if (!live.containsKey(id)) {
+        throw StateError('configItems.replace: $id is no longer stored');
+      }
+    }
+    var added = 0, changed = 0;
+    final keep = <ConfigItemRecord>[
+      for (final r in configItems) if (!request.kinds.contains(r.kind)) r,
+    ];
+    final next = <ConfigItemRecord>[];
+    for (final row in request.wanted) {
+      final before = live['${row.kind}/${row.id}'];
+      if (before == null) {
+        added++;
+        next.add(ConfigItemRecord(
+            kind: row.kind,
+            id: row.id,
+            parentId: row.parentId,
+            sortIndex: row.sortIndex,
+            payload: row.payload,
+            rev: 1));
+        continue;
+      }
+      if (before.payload == row.payload &&
+          before.parentId == row.parentId &&
+          before.sortIndex == row.sortIndex) {
+        next.add(before);
+        continue;
+      }
+      changed++;
+      next.add(ConfigItemRecord(
+          kind: row.kind,
+          id: row.id,
+          parentId: row.parentId,
+          sortIndex: row.sortIndex,
+          payload: row.payload,
+          rev: before.rev + 1));
+    }
+    final wantedIds = {for (final r in request.wanted) '${r.kind}/${r.id}'};
+    final removed =
+        live.keys.where((id) => !wantedIds.contains(id)).length;
+    configItems
+      ..clear()
+      ..addAll(keep)
+      ..addAll(next);
+    return ConfigItemsReplaceResult(
+        added: added,
+        changed: changed,
+        removed: removed,
+        actionId: 'fake-action-${configItems.length}');
+  }
+
   // ------------------------------------------------ the configuration history
   //
   /// Rows a case can seed, newest first — the order the wire promises.

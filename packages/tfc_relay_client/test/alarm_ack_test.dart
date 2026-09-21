@@ -203,16 +203,19 @@ const Set<String> _expectedStateManApi = {
   'timeseries',
   'historyViews',
   'preferences',
-  // The five access families: four added to the interface by plan 17-03, and
+  // The six access families: four added to the interface by plan 17-03,
   // `configItems` when main's relational config put the plant's own pages and
-  // key mappings on the wire. They are here for the same reason the four data
-  // services are: this copy exists to disagree with `api_surface_test.dart`
-  // out loud, and a copy that is merely stale disagrees for the wrong reason.
+  // key mappings on the wire, and `configHistory` when `config_change` went
+  // on the socket for a panel whose `databaseProvider` answers null. They are
+  // here for the same reason the four data services are: this copy exists to
+  // disagree with `api_surface_test.dart` out loud, and a copy that is merely
+  // stale disagrees for the wrong reason.
   'accessTemplates',
   'accessAdmin',
   'audit',
   'backendConfig',
   'configItems',
+  'configHistory',
   'dispose',
 };
 
@@ -463,13 +466,15 @@ void main() {
               'LocalStateMan meaning at all — on the backend the alarm engine '
               'is reached directly — so putting it here would oblige every '
               'implementation to answer for a capability only one of them has');
-      expect(actual, hasLength(19),
+      expect(actual, hasLength(20),
           reason: 'the count is written down so a same-size swap cannot slip '
               'through as a coincidence. It moved from 14 to 18 when plan '
-              '17-03 added the four access families, and to 19 when main'
-              '\'s relational config added `configItems` — and this '
-              'copy going stale is exactly the disagreement it exists to '
-              'produce, so it is updated deliberately rather than deleted');
+              '17-03 added the four access families, to 19 when main'
+              '\'s relational config added `configItems`, and to 20 when the '
+              'configuration history went on the wire as `configHistory` — '
+              'and this copy going stale is exactly the disagreement it '
+              'exists to produce, so it is updated deliberately rather than '
+              'deleted');
       expect(actual, isNot(contains('ackAlarm')),
           reason: 'RemoteStateMan.ackAlarm is a public member that is '
               'deliberately off the interface, the way _write\'s hold flag is. '

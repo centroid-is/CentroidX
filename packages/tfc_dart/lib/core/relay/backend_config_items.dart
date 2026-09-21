@@ -109,4 +109,29 @@ final class BackendConfigItems implements relay.ConfigItemsApi {
     final fp = await readSharedConfigFingerprint(_require('fingerprint'), wanted);
     return relay.ConfigItemsFingerprint(count: fp.count, revSum: fp.revSum);
   }
+
+  /// Refused here, and served by the per-identity family instead.
+  ///
+  /// This object is **composition-wide** — one instance for every session on
+  /// the gateway — which is right for three reads that attribute nothing and
+  /// wrong for a write. Every `config_change` row a write lands carries
+  /// `who`, `role_name` and `station` from the verified identity, and a
+  /// composition-wide writer would either stamp the gateway's own hostname on
+  /// all of them or hold a mutable "current session" that two concurrent
+  /// frames would swap under each other.
+  ///
+  /// So the write is `RelayIdentityConfigItems`', minted per station at
+  /// `hello`, and this refusal is the fail-closed fallback for a composition
+  /// that wired no writer — the same shape as
+  /// `BackendSharedPreferences`' refusals behind the preferences door.
+  @override
+  Future<relay.ConfigItemsReplaceResult> replace(
+          relay.ConfigItemsReplaceRequest request) async =>
+      throw UnsupportedError(
+          'BackendConfigItems.replace is not served: this object is shared by '
+          'every session on the gateway and holds no identity, so a write '
+          "through it could not say who made it. The plant's rows are "
+          'written by the per-identity family minted at hello. Reaching this '
+          'means the gateway was composed without a configuration writer — '
+          'the backend log carries the reason it failed, once, at startup.');
 }

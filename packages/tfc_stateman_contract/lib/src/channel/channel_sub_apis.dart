@@ -755,6 +755,12 @@ final class ChannelConfigItemsApi implements ConfigItemsApi {
   Future<ConfigItemsFingerprint> fingerprint(List<String> kinds) async =>
       ConfigItemsFingerprint.fromJson(jsonObject(await _send(
           HarnessMethods.configItemsFingerprint, {'kinds': kinds})));
+
+  @override
+  Future<ConfigItemsReplaceResult> replace(
+          ConfigItemsReplaceRequest request) async =>
+      ConfigItemsReplaceResult.fromJson(jsonObject(await _send(
+          HarnessMethods.configItemsReplace, {'request': request.toJson()})));
 }
 
 /// [ConfigHistoryApi] over the harness channel.

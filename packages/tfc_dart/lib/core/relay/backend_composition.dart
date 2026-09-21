@@ -64,7 +64,7 @@ import 'package:tfc_relay_protocol/tfc_relay_protocol.dart'
 // interface and the wire's — so the wire one is named through a prefix
 // rather than hidden from `../preferences.dart`, which this file needs.
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay
-    show PreferencesApi;
+    show ConfigItemsApi, PreferencesApi;
 import 'package:tfc_relay_server/tfc_relay_server.dart';
 
 import '../access/access_repository.dart';
@@ -798,6 +798,10 @@ BackendRelayComposition composeBackendRelay({
   // degrading to a gateway that will not start is what the try/catch inside
   // `create` exists to prevent, because it would crash-loop under
   // `restart: unless-stopped` with the plant's acquisition down.
+  // Read-only and composition-wide, exactly as it was. The write member on
+  // it refuses by name; the per-identity family below serves that.
+  final sharedConfigItems = BackendConfigItems(database: database.db);
+
   final configWriter = BackendConfigWriter.create(
     remote: database,
     // The same literal `tagBindingCache` uses above, and for the same reason:
@@ -814,6 +818,7 @@ BackendRelayComposition composeBackendRelay({
     AccessAdminApi accessAdmin,
     BackendConfigApi? backendConfig,
     relay.PreferencesApi? preferences,
+    relay.ConfigItemsApi? configItems,
   }) scopeFactory(StationIdentity identity) => (
         accessTemplates: BackendAccessTemplates(
           database: database.db,
@@ -844,6 +849,15 @@ BackendRelayComposition composeBackendRelay({
         // typed (D-11).
         preferences: RelayIdentityPreferences(
           reads: preferences,
+          writer: configWriter,
+          session: () => identity.session,
+          station: identity.station,
+        ),
+        // The fifth slot, and the second write door. Reads go to the shared
+        // instance built below — three of them, holding no identity — and
+        // only the write is this identity's.
+        configItems: RelayIdentityConfigItems(
+          reads: sharedConfigItems,
           writer: configWriter,
           session: () => identity.session,
           station: identity.station,
@@ -882,7 +896,7 @@ BackendRelayComposition composeBackendRelay({
     // Composition-wide like `audit`, not per identity like the three
     // scoped families: it reads and never attributes, and the session
     // gate is the policy layer's (`_PolicyConfigItems`).
-    configItems: BackendConfigItems(database: database.db),
+    configItems: sharedConfigItems,
     // Composition-wide for `configItems`' reason, and read-only for the
     // audit family's: the log is written by whoever changed the
     // configuration, never by a client asking to read it.

@@ -359,6 +359,11 @@ const _methodsByCheck = <String, Set<String>>{
     AccessMethods.configItemsItems,
     AccessMethods.configItemsFingerprint,
   },
+  'replacing a kind set grades by the set, guards with the caller\'s '
+      'revisions, and never writes on a refusal': {
+    AccessMethods.configItemsItems,
+    AccessMethods.configItemsReplace,
+  },
   // The sixth family: `config_change`, the log of who changed which piece of
   // configuration. One check drives all three reads — the gate, the page, and
   // the two action joins, including the absence property an empty list would
@@ -416,7 +421,7 @@ void main() {
               'unjudged under TLS as it would be with the capability off');
     });
 
-    test('the access check count is the same on all three legs — 36', () {
+    test('the access check count is the same on all three legs — 37', () {
       // In memory (17-05, access_contract_meta_test), over the channel (17-08),
       // and over wss:// here: one declared set, so the count cannot drift
       // between legs without the meta test and this arm disagreeing.
@@ -429,8 +434,11 @@ void main() {
       // is a graded question. 35 since setUserHomePage and
       // setUserAlarmAutoNavigate reached the wire, a `users` check each.
       // 36 since the configuration history came off `databaseProvider` — one
-      // check over all three `configHistory` reads, graded `configure`.
-      const declaredOnEveryLeg = 36;
+      // check over all three `configHistory` reads, graded `configure`. 37
+      // since `configItems.replace`, the gateway's second write door, which
+      // is graded by the KIND SET the caller names rather than by anything in
+      // the payload.
+      const declaredOnEveryLeg = 37;
       expect(accessChecks.length, declaredOnEveryLeg,
           reason: 'the kit declares ${accessChecks.length} access checks; the '
               'in-memory and channel legs run that many and so must this one. '
@@ -477,8 +485,8 @@ void main() {
           reason: 'the uncovered set must be exactly the named gap '
               '($namedGap); anything else is a NEW uncovered method wearing the '
               "known one's exemption");
-      expect(AccessMethods.all, hasLength(40),
-          reason: 'the access wire surface is forty names — twenty-eight '
+      expect(AccessMethods.all, hasLength(41),
+          reason: 'the access wire surface is forty-one names — twenty-eight '
               'after the audit cut accessTemplates.template, plus the '
               'whitelist\'s setRolePages and setUserPages, multi-role\'s '
               'setUserRoles and setUserInactivityTimeout, the relational '
@@ -487,7 +495,8 @@ void main() {
               'setUserAlarmAutoNavigate, and the four this branch added to '
               'take the configuration history off a database a relayed panel '
               'does not have: audit.entriesByAction and the three '
-              'configHistory reads; a '
+              'configHistory reads, and configItems.replace, which gave the '
+              'gateway a second write door; a '
               'change to that count is a change to what this leg must cover, '
               'and it should be a deliberate edit');
     });

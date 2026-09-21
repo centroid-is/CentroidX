@@ -73,6 +73,7 @@
 /// never before it and never after.
 library;
 
+import 'package:json_rpc_2/error_code.dart' as rpc_errors;
 import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
 import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
@@ -728,8 +729,12 @@ final class PolicyStateMan implements StateManApi, TypeDescriptions {
       groupFor: master.groupForBackendConfig);
 
   @override
-  ConfigItemsApi get configItems =>
-      _PolicyConfigItems(() => source.configItems, identityOf, _ledger);
+  ConfigItemsApi get configItems => _PolicyConfigItems(
+      () => source.configItems, identityOf, _ledger,
+      // The write's group, derived from the preference key the kind set maps
+      // to — the same key, and so the same rule in `kPrefAccessRules`, that
+      // the direct path checks a page save and a key-mapping save under.
+      groupForKey: master.groupForPref);
 
   @override
   ConfigHistoryApi get configHistory => _PolicyConfigHistory(
@@ -2184,9 +2189,16 @@ final class _PolicyAudit with _GroupGate implements AuditApi {
 /// are read to *run* a panel, and `configure` — the group that may change
 /// them — is not on this wire at all; `config_items_api.dart` says why.
 final class _PolicyConfigItems with _GroupGate implements ConfigItemsApi {
-  const _PolicyConfigItems(this._source, this.identityOf, this.ledger);
+  const _PolicyConfigItems(this._source, this.identityOf, this.ledger,
+      {required AccessGroup Function(String key) groupForKey})
+      : _groupForKey = groupForKey;
 
   final ConfigItemsApi Function() _source;
+
+  /// `AccessPolicy.groupForPref`, asked about the key the WRITE's kind set
+  /// maps to. Reads do not use it: they are `operate` per kind, and the
+  /// paragraph above says why they accept no second group.
+  final AccessGroup Function(String key) _groupForKey;
 
   @override
   final StationIdentity? Function() identityOf;
@@ -2209,6 +2221,61 @@ final class _PolicyConfigItems with _GroupGate implements ConfigItemsApi {
   Future<ConfigItemsFingerprint> fingerprint(List<String> kinds) {
     _requireRead(AccessMethods.configItemsFingerprint, 'no rows were counted');
     return _source().fingerprint(kinds);
+  }
+
+  /// The write, graded at the key its kind set maps to.
+  ///
+  /// **The kind set decides the key, server-side.** Nothing a client sends
+  /// names the key, and a set this gateway does not recognise is refused
+  /// before the source is touched rather than graded at some default: a
+  /// default here would be either a hole (too permissive) or a refusal
+  /// nobody could predict from the interface (too strict), and the honest
+  /// third answer is to say the set is not one this family writes.
+  ///
+  /// `preference` is refused by that rule and not by a special case — it is
+  /// simply not a key of [configWriteKeyByKindSet] — and the message says so,
+  /// because a caller who tried it is one frame away from the door that does
+  /// serve it.
+  ///
+  /// Read floor first, for the reason every write member on this wire has
+  /// one: a session that may not read the plant's rows may not replace them
+  /// either, and checking the write group alone would let a session holding
+  /// `configure` and nothing else enumerate the address space by watching
+  /// which saves conflict.
+  @override
+  Future<ConfigItemsReplaceResult> replace(ConfigItemsReplaceRequest request) {
+    final key = configWriteKeyFor(request.kinds);
+    if (key == null) {
+      throw rpc.RpcException(
+          rpc_errors.INVALID_PARAMS,
+          'configItems.replace does not write '
+          '${(request.kinds.toList()..sort()).join(', ')}. It writes exactly '
+          'two sets — ${configWriteKeyByKindSet.keys.join(' and ')} — because '
+          'each of them is graded as a whole under one preference key. A '
+          'preference is graded under its OWN key and has its own door: use '
+          'preferences.setString. Nothing was written.',
+          data: substitutedRequest(AccessMethods.configItemsReplace));
+    }
+    final group = _groupForKey(key);
+    final actionId = newActionId();
+    _requireRead(AccessMethods.configItemsReplace, 'nothing was written',
+        also: group);
+    _requireGroup(group, AccessMethods.configItemsReplace,
+        'the plant\'s $key is unchanged',
+        itemKey: key, actionId: actionId);
+    final applied = _underAction(actionId, () => _source().replace(request));
+    _recordAllowed(group, AccessMethods.configItemsReplace,
+        itemKey: key, actionId: actionId);
+    return applied;
+  }
+
+  /// [delegate], scoped to [actionId] when the source can be attributed —
+  /// the same seam and the same reasoning as the preferences door's.
+  Future<T> _underAction<T>(String actionId, Future<T> Function() delegate) {
+    final source = _source();
+    return source is ActionScopedWrites
+        ? (source as ActionScopedWrites).underAction(actionId, delegate)
+        : delegate();
   }
 }
 

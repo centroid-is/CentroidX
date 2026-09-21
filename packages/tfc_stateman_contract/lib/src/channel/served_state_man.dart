@@ -473,6 +473,7 @@ final class ServedStateMan {
 
     _on(HarnessMethods.configItemsItems, _cfgItemsItems);
     _on(HarnessMethods.configItemsFingerprint, _cfgItemsFingerprint);
+    _on(HarnessMethods.configItemsReplace, _cfgItemsReplace);
 
     _on(HarnessMethods.configHistoryChangesPage, _cfgHistoryPage);
     _on(HarnessMethods.configHistoryChangesByAction, _cfgHistoryByAction);
@@ -777,6 +778,12 @@ final class ServedStateMan {
       _access(HarnessMethods.configItemsFingerprint, () async =>
           (await api.configItems
                   .fingerprint(params['kinds'].asList.cast<String>()))
+              .toJson());
+
+  Future<Object?> _cfgItemsReplace(rpc.Parameters params) =>
+      _access(HarnessMethods.configItemsReplace, () async =>
+          (await api.configItems.replace(ConfigItemsReplaceRequest.fromJson(
+                  params['request'].asMap.cast<String, Object?>())))
               .toJson());
 
   // config history

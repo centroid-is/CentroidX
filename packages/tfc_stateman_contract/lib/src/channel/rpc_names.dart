@@ -493,6 +493,7 @@ abstract final class HarnessMethods {
   static const configItemsItems = '${prefix}access.configItems.items';
   static const configItemsFingerprint =
       '${prefix}access.configItems.fingerprint';
+  static const configItemsReplace = '${prefix}access.configItems.replace';
   static const configHistoryChangesPage =
       '${prefix}access.configHistory.changesPage';
   static const configHistoryChangesByAction =
@@ -508,6 +509,7 @@ abstract final class HarnessMethods {
   static const configItemsMethods = <String>{
     configItemsItems,
     configItemsFingerprint,
+    configItemsReplace,
   };
 
   /// Every request name belonging to the five access sub-APIs.

@@ -51,12 +51,14 @@ import 'package:tfc_stateman_contract/tfc_stateman_contract.dart';
 /// for on 2026-09-16: if anonymous holds no privilege, the configuration is
 /// gated too.
 ///
+/// 37 since `configItems.replace` — the gateway's second write door, graded
+/// by the kind set the caller names rather than by anything in the payload.
 /// 36 since the configuration history went on the wire; 35 since the
 /// account home page (#564) and per-account alarm
 /// auto-navigation (#575) got their wire writes: `setUserHomePage` and
 /// `setUserAlarmAutoNavigate` are two more admin writes graded `users`, and
 /// every write takes a check of its own.
-const _declaredAccessCheckCount = 36;
+const _declaredAccessCheckCount = 37;
 
 /// Tokens that mark a check name as asserting a refusal, and the tokens that
 /// mark its permission twin. Exactly 17-CONTEXT D-12's pairing rule, mechanised.

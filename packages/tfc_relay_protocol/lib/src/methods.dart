@@ -421,9 +421,19 @@ abstract final class AccessMethods {
   static const configItemsItems = 'configItems.items';
   static const configItemsFingerprint = 'configItems.fingerprint';
 
+  /// The write the keystone's second door needs: a page save and a
+  /// key-mapping save, from a panel with no database of its own.
+  ///
+  /// Not a preference write. `configItems.replace` grades by the KIND SET the
+  /// caller names, and a preference is graded by its own key — putting the
+  /// two through one member would grade every preference save at the
+  /// strictest key in the plant. `config_items_api.dart` says it at length.
+  static const configItemsReplace = 'configItems.replace';
+
   static const configItemsMethods = <String>{
     configItemsItems,
     configItemsFingerprint,
+    configItemsReplace,
   };
 
   /// The sixth family: `config_change`, the log of who changed which piece of

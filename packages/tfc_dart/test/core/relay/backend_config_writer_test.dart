@@ -25,6 +25,7 @@ import 'package:drift/drift.dart' hide isNotNull, isNull;
 import 'package:test/test.dart';
 import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/config/config_item.dart';
+import 'package:tfc_dart/core/config/config_store_errors.dart';
 import 'package:tfc_dart/core/config/preference_payload.dart';
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/database_drift.dart';
@@ -70,6 +71,31 @@ Future<Map<String, String>> preferenceRows() async {
         ..where((t) => t.kind.equals(ConfigKind.preference.wireName)))
       .get();
   return {for (final row in rows) row.id: row.payload};
+}
+
+const Set<ConfigKind> kPageKinds = {ConfigKind.page, ConfigKind.asset};
+
+ConfigItem _page(String path) => ConfigItem.of(
+      kind: ConfigKind.page,
+      id: path,
+      value: {
+        'menu_item': {'path': path},
+      },
+    );
+
+ConfigItem _asset(String id, {required String page, String colour = 'red'}) =>
+    ConfigItem.of(
+      kind: ConfigKind.asset,
+      id: id,
+      value: {'id': id, 'colour': colour},
+      parentId: page,
+    );
+
+Future<List<String>> kindIds(String kind) async {
+  final rows = await (plant.select(plant.configItemTable)
+        ..where((t) => t.kind.equals(kind)))
+      .get();
+  return [for (final row in rows) row.id];
 }
 
 Future<List<ConfigChangeRow>> changes() =>
@@ -328,6 +354,162 @@ void main() {
         ).setString('startup_url', '/lines'),
         throwsA(isA<UnsupportedError>()),
       );
+    });
+  });
+
+  /// The second door. Pages, assets and key mappings are edited as a whole
+  /// set, so the compare-and-swap that protects one panel's save from
+  /// another's has to cross the wire — and it crosses as revisions, not as an
+  /// echo of the rows, because the plant's key mappings are 518 KiB against a
+  /// 1 MiB frame ceiling.
+  group('replacing a kind set', () {
+    /// Seeds one page and two assets, and answers what the client would have
+    /// read: the rows, and the revisions it saw.
+    Future<(List<ConfigItem>, Map<String, int>)> seedPage() async {
+      for (final item in [
+        _page('/roe'),
+        _asset('/roe-a0', page: '/roe'),
+        _asset('/roe-a1', page: '/roe'),
+      ]) {
+        await plant
+            .into(plant.configItemTable)
+            .insert(ConfigItemTableCompanion.insert(
+              kind: item.kind.wireName,
+              id: item.id,
+              scope: ConfigScope.shared.wireName,
+              parentId: Value(item.parentId),
+              sortIndex: Value(item.sortIndex),
+              payload: item.payload,
+              rev: const Value(1),
+              updatedAt: DateTime.utc(2026, 1, 1),
+              updatedBy: 'migration',
+            ));
+      }
+      final rows = await (plant.select(plant.configItemTable)
+            ..where((t) => t.kind.isIn(['page', 'asset'])))
+          .get();
+      return (
+        const <ConfigItem>[],
+        {for (final r in rows) '${r.kind}/${r.id}': r.rev},
+      );
+    }
+
+    test('a save replaces within kinds and leaves other kinds alone',
+        () async {
+      await seedPreference('startup_url', kPrefStringType, '/lines');
+      final (_, base) = await seedPage();
+
+      await writer.writeConfigItems(
+        kinds: kPageKinds,
+        wanted: [_page('/roe'), _asset('/roe-a0', page: '/roe')],
+        baseRevisions: base,
+        who: 'jon',
+        roleName: 'Engineer',
+        station: kPanel,
+      );
+
+      expect(await kindIds('asset'), ['/roe-a0'],
+          reason: 'the asset left out of the set is removed');
+      expect((await preferenceRows()).keys, ['startup_url'],
+          reason: 'a page save is not a delete of every preference in the '
+              'plant — that is what "replace within kinds" means');
+    });
+
+    test('a row the caller never saw is a conflict, not a deletion', () async {
+      final (_, base) = await seedPage();
+      // Another panel adds an asset between the caller's read and this save.
+      await plant
+          .into(plant.configItemTable)
+          .insert(ConfigItemTableCompanion.insert(
+            kind: 'asset',
+            id: '/roe-a2',
+            scope: ConfigScope.shared.wireName,
+            parentId: const Value('/roe'),
+            payload: '{"id":"/roe-a2"}',
+            rev: const Value(1),
+            updatedAt: DateTime.utc(2026, 1, 2),
+            updatedBy: 'other-panel',
+          ));
+
+      await expectLater(
+        writer.writeConfigItems(
+          kinds: kPageKinds,
+          wanted: [_page('/roe'), _asset('/roe-a0', page: '/roe')],
+          baseRevisions: base,
+          who: 'jon',
+          roleName: 'Engineer',
+          station: kPanel,
+        ),
+        throwsA(isA<ConfigConflict>()),
+      );
+      expect(await kindIds('asset'),
+          unorderedEquals(['/roe-a0', '/roe-a1', '/roe-a2']),
+          reason: 'the whole save is refused; the row the caller never saw is '
+              'still there. Accepting it would delete /roe-a2, which is the '
+              'lost write the compare-and-swap exists to refuse');
+    });
+
+    test('a row that moved since the caller read it is a conflict', () async {
+      final (_, base) = await seedPage();
+      await (plant.update(plant.configItemTable)
+            ..where((t) => t.id.equals('/roe-a1')))
+          .write(const ConfigItemTableCompanion(rev: Value(2)));
+
+      await expectLater(
+        writer.writeConfigItems(
+          kinds: kPageKinds,
+          wanted: [
+            _page('/roe'),
+            _asset('/roe-a0', page: '/roe'),
+            _asset('/roe-a1', page: '/roe'),
+          ],
+          baseRevisions: base,
+          who: 'jon',
+          roleName: 'Engineer',
+          station: kPanel,
+        ),
+        throwsA(isA<ConfigConflict>()),
+      );
+    });
+
+    test('a row the caller listed that is gone is a conflict', () async {
+      final (_, base) = await seedPage();
+      await (plant.delete(plant.configItemTable)
+            ..where((t) => t.id.equals('/roe-a1')))
+          .go();
+
+      await expectLater(
+        writer.writeConfigItems(
+          kinds: kPageKinds,
+          wanted: [_page('/roe'), _asset('/roe-a0', page: '/roe')],
+          baseRevisions: base,
+          who: 'jon',
+          roleName: 'Engineer',
+          station: kPanel,
+        ),
+        throwsA(isA<ConfigConflict>()),
+        reason: 'the caller derived its save from a row that no longer '
+            'exists; silently agreeing would report a delete it did not make',
+      );
+    });
+
+    test('the change rows carry the panel and the scoped action', () async {
+      final (_, base) = await seedPage();
+
+      await runUnderWriteAction('page-save-1', () => writer.writeConfigItems(
+            kinds: kPageKinds,
+            wanted: [_page('/roe'), _asset('/roe-a0', page: '/roe')],
+            baseRevisions: base,
+            who: 'jon',
+            roleName: 'Engineer',
+            station: kPanel,
+          ));
+
+      final rows = await changes();
+      expect(rows, isNotEmpty);
+      expect(rows.map((r) => r.actionId).toSet(), {'page-save-1'},
+          reason: 'one gesture is one action, however many rows it moved');
+      expect(rows.map((r) => r.station).toSet(), {kPanel});
     });
   });
 

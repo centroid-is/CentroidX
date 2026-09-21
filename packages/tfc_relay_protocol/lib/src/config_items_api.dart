@@ -64,7 +64,148 @@ const Set<String> configItemKinds = <String>{
   'preference',
 };
 
-/// The plant's shared configuration rows, read-only.
+/// The **one** kind set a caller may write, and the preference key its
+/// grading is taken from.
+///
+/// Two entries and no more, and that is the whole reason this family has a
+/// write member at all instead of a kind-generic one. Preferences are graded
+/// per *key*: a generic member would have to grade a preference replace-set
+/// at the strictest key in the plant — `server_config_envelope`, which takes
+/// `administer` — and would lock a `configure` user out of saving
+/// `alarm_man_config`. So `preference` is refused here by name and keeps its
+/// own seven-mutator door, and these two sets get the keys the direct path
+/// already checks them under.
+///
+/// The strings are `kConfigWriteKeys`' (`tfc_dart`), duplicated because this
+/// package cannot import that one. `config_write_keys_test.dart` in `tfc_dart`
+/// pins the two against each other — it can import both, and neither of them
+/// can import it.
+const Map<String, String> configWriteKeyByKindSet = <String, String>{
+  'asset,page': 'page_editor_data',
+  'key_mapping': 'key_mappings',
+};
+
+/// The preference key [kinds] is graded under, or null when no set matches.
+///
+/// Sorted and joined, so the caller's order cannot change the answer — and so
+/// a set that merely *contains* `page` cannot borrow the page editor's
+/// grading for a `key_mapping` smuggled in beside it.
+String? configWriteKeyFor(Set<String> kinds) =>
+    configWriteKeyByKindSet[(kinds.toList()..sort()).join(',')];
+
+/// What a client asks the gateway to write.
+///
+/// ## Why the client sends revisions and not the rows it read
+///
+/// `ConfigStore.writeItems` diffs [wanted] against **the caller's own read**,
+/// never against the store's live snapshot — a row that arrived in between is
+/// then in neither list and is left alone, rather than being deleted by a
+/// diff that never saw it. Over a socket that read is the client's, from an
+/// earlier `configItems.items`, and the obvious shape would be to send it
+/// back whole.
+///
+/// It is not sent whole. The plant's key mappings are 518 KiB and the frame
+/// ceiling is 1 MiB, so echoing the read alongside the write would put a save
+/// over the edge for the one kind that most needs it. [baseRevisions] carries
+/// the same information in one integer per row: the gateway re-reads the rows
+/// itself and **refuses unless every revision matches what the client saw**,
+/// at which point its read and the client's are the same list and the diff is
+/// computed against the right one.
+///
+/// A row the client did not know about, or one that has moved, is a
+/// `ConfigConflict` — which is the honest answer for "another panel edited
+/// this first", and the same answer the direct path gives.
+final class ConfigItemsReplaceRequest {
+  const ConfigItemsReplaceRequest({
+    required this.kinds,
+    required this.wanted,
+    required this.baseRevisions,
+    this.reason,
+  });
+
+  /// The kinds being replaced. Must be a key of [configWriteKeyByKindSet].
+  final Set<String> kinds;
+
+  /// The complete configuration of [kinds], as it should stand afterwards.
+  final List<ConfigItemRecord> wanted;
+
+  /// `"<kind>/<id>" -> rev`, for every row of [kinds] the client read.
+  final Map<String, int> baseRevisions;
+
+  /// Free text for the change row; never a permission and never an identity.
+  final String? reason;
+
+  /// The key a row is listed under in [baseRevisions].
+  static String revisionKey(String kind, String id) => '$kind/$id';
+
+  Map<String, Object?> toJson() => {
+        'kinds': kinds.toList()..sort(),
+        'wanted': [for (final item in wanted) item.toJson()],
+        'baseRevisions': baseRevisions,
+        if (reason != null) 'reason': reason,
+      };
+
+  factory ConfigItemsReplaceRequest.fromJson(Map<String, Object?> json) =>
+      ConfigItemsReplaceRequest(
+        kinds: {for (final k in (json['kinds'] as List? ?? const [])) k as String},
+        wanted: [
+          for (final row in (json['wanted'] as List? ?? const []))
+            ConfigItemRecord.fromJson((row as Map).cast<String, Object?>()),
+        ],
+        baseRevisions: {
+          for (final entry
+              in ((json['baseRevisions'] as Map?) ?? const <String, Object?>{})
+                  .entries)
+            entry.key as String: (entry.value as num).toInt(),
+        },
+        reason: json['reason'] as String?,
+      );
+
+  @override
+  String toString() => 'ConfigItemsReplaceRequest(${(kinds.toList()..sort())
+      .join(', ')}: ${wanted.length} row(s), ${baseRevisions.length} base rev(s))';
+}
+
+/// What one accepted write moved.
+final class ConfigItemsReplaceResult {
+  const ConfigItemsReplaceResult({
+    required this.added,
+    required this.changed,
+    required this.removed,
+    required this.actionId,
+  });
+
+  final int added;
+  final int changed;
+  final int removed;
+
+  /// The action the `config_change` rows and the `audit_entry` row share, so
+  /// a client can ask the history what its own save actually moved.
+  final String actionId;
+
+  bool get isEmpty => added == 0 && changed == 0 && removed == 0;
+
+  Map<String, Object?> toJson() => {
+        'added': added,
+        'changed': changed,
+        'removed': removed,
+        'actionId': actionId,
+      };
+
+  factory ConfigItemsReplaceResult.fromJson(Map<String, Object?> json) =>
+      ConfigItemsReplaceResult(
+        added: (json['added'] as num?)?.toInt() ?? 0,
+        changed: (json['changed'] as num?)?.toInt() ?? 0,
+        removed: (json['removed'] as num?)?.toInt() ?? 0,
+        actionId: json['actionId'] as String? ?? '',
+      );
+
+  @override
+  String toString() =>
+      'ConfigItemsReplaceResult(+$added ~$changed -$removed, action: $actionId)';
+}
+
+/// The plant's shared configuration rows: three reads and one write.
 abstract interface class ConfigItemsApi {
   /// Every shared row of one [kind], ordered by id.
   ///
@@ -83,6 +224,25 @@ abstract interface class ConfigItemsApi {
   /// Cheap enough to ask on every change notification; equal fingerprints
   /// mean [items] would answer what it answered last time.
   Future<ConfigItemsFingerprint> fingerprint(List<String> kinds);
+
+  /// Replaces the plant's shared rows of `request.kinds`.
+  ///
+  /// `replace`, not `write`: the contract kit's fakes implement every access
+  /// family on one object and `BackendConfigApi.write` already owns that name
+  /// there — the same collision that named [items]. It is also the more
+  /// honest verb, because this member is a whole-set replace and never an
+  /// append.
+  ///
+  /// The counterpart of the preferences door, for the two kind sets a panel
+  /// edits as a whole: a page save (`{page, asset}`) and a key-mapping save
+  /// (`{key_mapping}`). `preference` is refused by name — see
+  /// [configWriteKeyByKindSet] for why it cannot share this member.
+  ///
+  /// Replace **within kinds**: a stored row of a kind in `request.kinds` that
+  /// is absent from `request.wanted` is a removal. A row of any other kind is
+  /// not in the comparison at all, which is what lets a page save be a whole
+  /// pages replace without also deleting every key mapping on the plant.
+  Future<ConfigItemsReplaceResult> replace(ConfigItemsReplaceRequest request);
 }
 
 /// One `config_item` row as it crosses the wire.

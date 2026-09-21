@@ -541,6 +541,7 @@ void main() {
             // (fail closed).
             backendConfig: null,
             preferences: null,
+            configItems: null,
           );
         },
         onError: (_, __, ___) {},
@@ -596,6 +597,7 @@ void main() {
           accessAdmin: _ScopedAdmin(),
           backendConfig: scoped,
           preferences: null,
+          configItems: null,
         ),
         onError: (_, __, ___) {},
       );

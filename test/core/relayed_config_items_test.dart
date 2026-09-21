@@ -240,4 +240,16 @@ final class _ScriptedRows implements rp.ConfigItemsApi {
     }
     return fingerprintNow;
   }
+
+  /// This file is about the READ path — the cache a browser holds instead of
+  /// a SQLite mirror — and nothing here writes. Refused by name rather than
+  /// stubbed to a success, so a case that started writing through this fake
+  /// would say so instead of quietly passing against a backend that did
+  /// nothing.
+  @override
+  Future<rp.ConfigItemsReplaceResult> replace(
+          rp.ConfigItemsReplaceRequest request) async =>
+      throw UnsupportedError(
+          'this fake serves reads only; the write path is tested against the '
+          "gateway's own writer");
 }

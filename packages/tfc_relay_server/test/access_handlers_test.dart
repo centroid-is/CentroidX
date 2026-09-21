@@ -409,6 +409,23 @@ const Map<String, Map<String, Object?>> _validParams = {
     'actionIds': ['act-wire-probe']
   },
   AccessMethods.configItemsItems: {'kind': 'page'},
+  // The write. The kind set is `{page, asset}` because that is one the member
+  // actually writes — a set it refuses would be answered by the argument
+  // check and would never prove the handshake gate covers the name.
+  //
+  // The base revisions are `FakeAccessServices`' seeded rows, which is not
+  // decoration: the member refuses unless every revision matches what the
+  // caller read, so an empty map here is a conflict and the sweep would
+  // report a handler that "failed" when it was working exactly as designed.
+  // An empty `wanted` against a matching base is the smallest request that
+  // gets answered — it asks to delete both rows, which is a real replace.
+  AccessMethods.configItemsReplace: {
+    'request': {
+      'kinds': ['asset', 'page'],
+      'wanted': <Object?>[],
+      'baseRevisions': <String, Object?>{'page/home': 1, 'asset/a1': 2},
+    }
+  },
   AccessMethods.configItemsFingerprint: {
     'kinds': ['page', 'asset']
   },
@@ -491,7 +508,7 @@ void main() {
             'with no params row cannot have its post-hello half exercised, '
             'and a row naming nothing on the wire is a claim about surface '
             'that does not exist');
-    expect(AccessMethods.all, hasLength(40),
+    expect(AccessMethods.all, hasLength(41),
         reason: 'twenty-eight was the count the audit cut settled on '
             '(accessTemplates.template removed, no caller anywhere); thirty '
             'since the page-visibility whitelist added setRolePages and '
@@ -503,9 +520,10 @@ void main() {
             'page and alarm auto-navigation got their writes as '
             'setUserHomePage and setUserAlarmAutoNavigate. Forty since the '
             "relay's own configuration history landed: audit.entriesByAction "
-            'and the three configHistory reads. A forty-first '
-            'is an access-control decision, not a convenience — grow this '
-            'literal deliberately');
+            'and the three configHistory reads. Forty-one since '
+            'configItems.replace gave the gateway its second write door. A '
+            'forty-second is an access-control decision, not a convenience — '
+            'grow this literal deliberately');
   });
 
   group('the handshake gate covers every access method', () {

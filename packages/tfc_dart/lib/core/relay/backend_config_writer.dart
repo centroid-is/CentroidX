@@ -76,6 +76,7 @@ import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay;
 
 import '../config/config_item.dart';
 import '../config/config_store.dart';
+import '../config/config_store_errors.dart';
 import '../config/preference_payload.dart';
 import '../database.dart';
 import '../database_drift.dart';
@@ -224,6 +225,72 @@ final class BackendConfigWriter {
       station: station,
     );
   }
+
+  /// Replaces the plant's shared rows of [kinds] on behalf of a panel.
+  ///
+  /// The second door. Preferences are graded per key and have their own
+  /// seven mutators; pages, assets and key mappings are edited as a whole
+  /// set and are graded at one key each, which is the whole reason this is a
+  /// separate member rather than a kind parameter on the first one.
+  ///
+  /// ## The compare-and-swap is the client's, carried as revisions
+  ///
+  /// [baseRevisions] is `"<kind>/<id>" -> rev` for every row of [kinds] the
+  /// client read before it built [wanted]. This reads the plant's rows again
+  /// and **refuses unless every one of them matches** — same ids, same
+  /// revisions, no more and no fewer. Only then are the two reads the same
+  /// list, and only then is it safe to hand this read to `writeItems` as the
+  /// `derivedFrom` the diff is computed against.
+  ///
+  /// Without that check the gateway's fresh read would be the diff's base,
+  /// and a row another panel added between the client's read and this write
+  /// would be absent from [wanted] and therefore **deleted** — the lost write
+  /// the compare-and-swap exists to refuse, reintroduced one layer above it.
+  ///
+  /// Throws [ConfigConflict] when they differ, which is the same answer a
+  /// direct station gets and the one the editor already knows how to show.
+  Future<ConfigWriteResult> writeConfigItems({
+    required Set<ConfigKind> kinds,
+    required List<ConfigItem> wanted,
+    required Map<String, int> baseRevisions,
+    required String who,
+    required String roleName,
+    required String station,
+    String? reason,
+  }) async {
+    final stored = await _store.readRemoteShared(kinds);
+    final live = {
+      for (final row in stored) _revisionKey(row.kind.wireName, row.id): row.rev,
+    };
+    // Both directions. A row the client never saw is as dangerous as one that
+    // moved: it is absent from `wanted`, so the diff would remove it.
+    for (final entry in live.entries) {
+      final base = baseRevisions[entry.key];
+      if (base == null) {
+        throw ConfigConflict(entry.key, expectedRev: entry.value);
+      }
+      if (base != entry.value) {
+        throw ConfigConflict(entry.key, expectedRev: base);
+      }
+    }
+    for (final id in baseRevisions.keys) {
+      if (!live.containsKey(id)) {
+        throw ConfigConflict(id, expectedRev: baseRevisions[id]!);
+      }
+    }
+    return _store.writeItems(
+      kinds: kinds,
+      wanted: wanted,
+      actionId: currentWriteActionId() ?? newActionId(),
+      who: who,
+      roleName: roleName,
+      station: station,
+      reason: reason,
+      derivedFrom: stored,
+    );
+  }
+
+  static String _revisionKey(String kind, String id) => '$kind/$id';
 
   /// Deletes one shared preference row.
   ///
@@ -520,5 +587,111 @@ final class RelayIdentityPreferences
       },
     ))
         .stream;
+  }
+}
+
+/// The relay's configuration-row family for one verified identity.
+///
+/// Reads are the composition's — three of them, holding no identity, one
+/// instance correct for every session. The write is this identity's, and its
+/// `config_change` rows carry the account the server verified and the station
+/// it resolved.
+///
+/// Sibling of [RelayIdentityPreferences] in every respect, including
+/// `ActionScopedWrites`: the policy decorator mints the action id, so the
+/// audit row it writes and the change rows this lands join.
+final class RelayIdentityConfigItems
+    implements relay.ConfigItemsApi, relay.ActionScopedWrites {
+  RelayIdentityConfigItems({
+    required relay.ConfigItemsApi reads,
+    required BackendConfigWriter? writer,
+    required AccessSession Function() session,
+    required String station,
+  })  : _reads = reads,
+        _writer = writer,
+        _session = session,
+        _station = station;
+
+  final relay.ConfigItemsApi _reads;
+  final BackendConfigWriter? _writer;
+  final AccessSession Function() _session;
+  final String _station;
+
+  @override
+  Future<T> underAction<T>(String actionId, Future<T> Function() write) =>
+      runUnderWriteAction(actionId, write);
+
+  @override
+  Future<List<relay.ConfigItemRecord>> items(String kind) =>
+      _reads.items(kind);
+
+  @override
+  Future<relay.ConfigItemsFingerprint> fingerprint(List<String> kinds) =>
+      _reads.fingerprint(kinds);
+
+  @override
+  Future<relay.ConfigItemsReplaceResult> replace(
+      relay.ConfigItemsReplaceRequest request) async {
+    final writer = _writer;
+    if (writer == null) {
+      throw UnsupportedError(
+          'configItems.replace cannot be served: this gateway has no '
+          "configuration writer, so it cannot author the plant's pages or "
+          'key mappings. Nothing was written. The writer is built at '
+          'composition and the one thing known to stop it is a runtime image '
+          'without libsqlite3 — the backend log carries the reason it '
+          'failed, once, at startup.');
+    }
+    // The kind set was already checked by the policy decorator, which derives
+    // the grading key from it. Checked again here rather than trusted,
+    // because this class is reachable from a composition that wired a
+    // different gate, and a kind this method did not expect would be replaced
+    // wholesale against a `wanted` list built for something else.
+    final key = relay.configWriteKeyFor(request.kinds);
+    if (key == null) {
+      throw ArgumentError.value(
+          (request.kinds.toList()..sort()).join(', '),
+          'kinds',
+          'is not a set this family writes. It writes exactly '
+              '${relay.configWriteKeyByKindSet.keys.join(' and ')}; a '
+              'preference is graded under its own key and has its own door.');
+    }
+    final kinds = <ConfigKind>{};
+    for (final name in request.kinds) {
+      final kind = ConfigKind.byWireName(name);
+      if (kind == null) {
+        throw ArgumentError.value(name, 'kinds',
+            'is not a configuration kind this build knows');
+      }
+      kinds.add(kind);
+    }
+    final session = _session();
+    final result = await writer.writeConfigItems(
+      kinds: kinds,
+      wanted: [
+        for (final row in request.wanted)
+          ConfigItem(
+            kind: ConfigKind.byWireName(row.kind) ??
+                (throw ArgumentError.value(row.kind, 'wanted',
+                    'holds a row of a kind this build does not know')),
+            id: row.id,
+            scope: ConfigScope.shared,
+            parentId: row.parentId,
+            sortIndex: row.sortIndex,
+            payload: row.payload,
+          ),
+      ],
+      baseRevisions: request.baseRevisions,
+      who: session.user?.username ?? 'anonymous',
+      roleName: session.roleName,
+      station: _station,
+      reason: request.reason,
+    );
+    return relay.ConfigItemsReplaceResult(
+      added: result.diff.added.length,
+      changed: result.diff.changed.length,
+      removed: result.diff.removed.length,
+      actionId: result.actionId,
+    );
   }
 }

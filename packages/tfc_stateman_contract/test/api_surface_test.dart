@@ -284,6 +284,13 @@ const Set<String> expectedConfigItemsApi = {
   // count below exists to catch. The wire name is `configItems.items`.
   'items',
   'fingerprint',
+  // `replace`, not `write`: `BackendConfigApi` already had a `write`, and the
+  // union count below is what catches a collision — but this one would not
+  // merely be counted, it would be unimplementable, because the contract
+  // kit's fake serves every access family from one object. The wire name is
+  // `configItems.replace`, and "replace" is also the honest verb: the member
+  // takes the complete set of its kinds and removes what is missing from it.
+  'replace',
 };
 const Map<String, Set<String>> wireSurface = {
   'StateManApi': expectedStateManApi,
@@ -378,7 +385,7 @@ void main() {
       });
     }
 
-    test('the whole surface is 94 members over eleven types, 92 distinct names',
+    test('the whole surface is 95 members over eleven types, 93 distinct names',
         () {
       final actual = <String>{
         for (final type in wireTypes) ...declaredMemberNames(type),
@@ -415,7 +422,7 @@ void main() {
       final total = wireTypes
           .map((type) => declaredMemberNames(type).length)
           .fold<int>(0, (sum, length) => sum + length);
-      expect(total, 94,
+      expect(total, 95,
           reason: 'the count is written down so a same-size swap — one member '
               'removed, another added — cannot slip through as a coincidence. '
               '82 = 49 before Phase 17, plus four StateManApi getters, plus '
@@ -424,7 +431,9 @@ void main() {
               'audit\'s countTimeseriesDataMultiple, plus the whitelist\'s '
               'two admin writes and multi-role\'s two; 87 with the '
               'config-item getter and its two methods; 89 with the two account '
-              'setting writes');
+              'setting writes; 95 with the configuration history and, since '
+              'the gateway learned to author the plant\'s pages, '
+              'configItems.replace');
 
       // The union is SHORTER than the sum, and the gap is named rather than
       // left as an arithmetic surprise: BackendConfigApi.read and .write share
@@ -432,11 +441,12 @@ void main() {
       // happen to share a verb, kept apart on the wire by the
       // `backendConfig.` family segment. Asserting both numbers is what stops
       // a future collision from being absorbed silently by the set.
-      expect(actual, hasLength(92),
+      expect(actual, hasLength(93),
           reason: 'exactly two names appear on two types — read and write, on '
               'StateManApi and BackendConfigApi. A third collision would drop '
-              'this to 91 while the per-type tables above still passed, so it '
-              'is counted here on purpose');
+              'this by one while the per-type tables above still passed, so '
+              'it is counted here on purpose. configItems.replace is named '
+              'the way it is precisely to avoid becoming the third');
       expect(
           expectedStateManApi
               .intersection(expectedBackendConfigApi)

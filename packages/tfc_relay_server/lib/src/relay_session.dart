@@ -152,6 +152,7 @@ typedef IdentityAccessFamilies = ({
   AccessAdminApi accessAdmin,
   BackendConfigApi? backendConfig,
   PreferencesApi? preferences,
+  ConfigItemsApi? configItems,
 });
 
 /// Builds the per-identity halves of the access surface, invoked exactly once
@@ -1420,6 +1421,7 @@ final class RelaySession {
     _on(AccessMethods.configRestorePrevious, access.configRestorePrevious);
     _on(AccessMethods.configItemsItems, access.configItemsItems);
     _on(AccessMethods.configItemsFingerprint, access.configItemsFingerprint);
+    _on(AccessMethods.configItemsReplace, access.configItemsReplace);
     _on(AccessMethods.configHistoryChangesPage,
         access.configHistoryChangesPage);
     _on(AccessMethods.configHistoryChangesByAction,
@@ -2318,10 +2320,15 @@ final class _IdentityScopedSource implements StateManApi, TypeDescriptions {
   PreferencesApi get preferences =>
       _scopedOf()?.preferences ?? _inner.preferences;
 
-  // Composition-wide like `audit`: the family reads and attributes nothing,
-  // so it has no per-identity slot; the session gate is the policy layer's.
+  /// Scoped since the family learned to write. Its three reads attribute
+  /// nothing and a composition-wide instance serves them correctly, but the
+  /// write stamps `who`, `role_name` and `station` on every `config_change`
+  /// row it lands — so it is minted per verified identity, like the
+  /// preferences family beside it, and falls back to the shared source, whose
+  /// write refuses by name.
   @override
-  ConfigItemsApi get configItems => _inner.configItems;
+  ConfigItemsApi get configItems =>
+      _scopedOf()?.configItems ?? _inner.configItems;
 
   @override
   ConfigHistoryApi get configHistory => _inner.configHistory;

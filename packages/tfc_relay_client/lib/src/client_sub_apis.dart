@@ -864,6 +864,22 @@ final class ClientConfigItemsApi implements ConfigItemsApi {
   Future<ConfigItemsFingerprint> fingerprint(List<String> kinds) async =>
       ConfigItemsFingerprint.fromJson(jsonObject(await _send(
           AccessMethods.configItemsFingerprint, {'kinds': kinds})));
+
+  /// The write, under one `request` key.
+  ///
+  /// An envelope rather than the DTO's fields spread across the params map:
+  /// the request carries a list and two maps, and a flat frame would let the
+  /// server decode a shape the client never builds. The same envelope the
+  /// access families' single-DTO members use (`value`, `role`, `query`).
+  ///
+  /// **No identity crosses.** Nothing here names a `who`, a `station` or a
+  /// role; the gateway attributes the write to the identity it verified at
+  /// `hello`, and a client that could name one could forge one.
+  @override
+  Future<ConfigItemsReplaceResult> replace(
+          ConfigItemsReplaceRequest request) async =>
+      ConfigItemsReplaceResult.fromJson(jsonObject(await _send(
+          AccessMethods.configItemsReplace, {'request': request.toJson()})));
 }
 
 /// `config_change` over the socket.

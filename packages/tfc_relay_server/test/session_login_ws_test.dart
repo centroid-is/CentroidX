@@ -765,6 +765,7 @@ void main() {
             accessAdmin: recordingAdmin(),
             backendConfig: null,
             preferences: null,
+            configItems: null,
           );
         },
       );

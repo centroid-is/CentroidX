@@ -361,6 +361,17 @@ final class AccessHandlers {
               params['kinds'].asList.cast<String>()))
           .toJson();
 
+  /// The write, decoded through the DTO and never field by field.
+  ///
+  /// `ConfigItemsReplaceRequest.fromJson` is the one place the shape is read,
+  /// so a handler cannot accept a frame the client could not have produced —
+  /// and the params table in `access_handlers_test.dart` is spelled through
+  /// the same DTO for the same reason.
+  Future<Object?> configItemsReplace(rpc.Parameters params) async =>
+      (await source.configItems.replace(ConfigItemsReplaceRequest.fromJson(
+              params['request'].asMap.cast<String, Object?>())))
+          .toJson();
+
   // ----------------------------------------------------- config history
 
   Future<Object?> configHistoryChangesPage(rpc.Parameters params) async =>

@@ -128,6 +128,17 @@ final AccessSession operateSession = _sessionOf({AccessGroup.operate});
 /// whose `anonymous` account is `NoOp`. Every graded read refuses it.
 final AccessSession nothingSession = _sessionOf(const {});
 
+/// Holds `configure` **and** `operate`: the engineer at a panel, who edits the
+/// plant's pages and also looks at them.
+///
+/// Both, because `configItems` grades its reads at `operate` and accepts no
+/// second group — so a check that writes through that family has to read
+/// through it too, and [configureSession] cannot. Named rather than assembled
+/// inline, because the pair is what an engineer's role actually grants and a
+/// check built on half of it would be testing a role nobody has.
+final AccessSession engineerSession =
+    _sessionOf({AccessGroup.configure, AccessGroup.operate});
+
 // -----------------------------------------------------------------------------
 // Fixtures the checks build and read back
 // -----------------------------------------------------------------------------
@@ -814,6 +825,111 @@ Future<void> checkConfigItemsListRefusesWithoutOperatePermitsWithIt(
       reason: 'parentId crosses the wire, or a page cannot find its assets');
 }
 
+/// The second write door: a whole kind set replaced in one call, graded at
+/// the key that set maps to, with the caller's revisions as the
+/// compare-and-swap.
+///
+/// Four properties, each of which is a way a relayed page save could quietly
+/// destroy the plant's configuration:
+///
+///  * **The grading key comes from the KIND SET, server-side.** Nothing the
+///    caller sends names it. A set this family does not write — a preference,
+///    or a preference riding along beside a page — is refused as an argument
+///    rather than graded at some default.
+///  * **Replace is within kinds.** A row of a named kind that is absent from
+///    `wanted` is removed; a row of any other kind is not in the comparison.
+///  * **A revision that does not match is a conflict**, in both directions: a
+///    row the caller never saw is as dangerous as one that moved, because it
+///    is absent from `wanted` and the diff would delete it.
+///  * **Nothing is written on a refusal.**
+Future<void> checkConfigItemsReplaceGradesByKindSetAndGuardsWithRevisions(
+    StateManApi api) async {
+  final h = accessHarnessOf(api);
+
+  h.actAs(usersSession);
+  final pages = await within(api.configItems.items('page'), 'reading pages');
+  final assets = await within(api.configItems.items('asset'), 'reading assets');
+  final base = <String, int>{
+    for (final r in [...pages, ...assets]) '${r.kind}/${r.id}': r.rev,
+  };
+
+  ConfigItemsReplaceRequest requestOf(List<ConfigItemRecord> wanted) =>
+      ConfigItemsReplaceRequest(
+          kinds: const {'page', 'asset'},
+          wanted: wanted,
+          baseRevisions: base);
+
+  // A session that may read but may not configure is refused.
+  final refusal = await within(
+      _thrown(() => api.configItems.replace(requestOf([...pages, ...assets]))),
+      'replacing the plant\'s pages');
+  expect(refusal, isA<AccessDenied>(),
+      reason: 'configItems.replace is graded at the key its kind set maps to '
+          '— page_editor_data, which takes configure — and a session holding '
+          'users alone replaced the plant\'s pages anyway ($refusal)');
+  expect(await within(api.configItems.items('asset'), 'assets after refusal'),
+      assets,
+      reason: 'a refused replace writes nothing');
+
+  // A preference cannot borrow this door. Asked as the session that DOES
+  // hold the group this member grades at, so the refusal cannot be mistaken
+  // for the permission check firing.
+  h.actAs(engineerSession);
+  final wrongKinds = await within(
+      _thrown(() => api.configItems.replace(ConfigItemsReplaceRequest(
+          kinds: const {'preference'},
+          wanted: const [],
+          baseRevisions: const {}))),
+      'replacing preferences through the wrong door');
+  expect(wrongKinds, isNot(isA<AccessDenied>()),
+      reason: 'it is not a permission — the session holds the group this '
+          'member grades at and is still refused, because a preference is '
+          'graded under its OWN key and this member grades by kind set '
+          '($wrongKinds)');
+
+  // A stale revision is a conflict, and it is not a permission either.
+  final stale = await within(
+      _thrown(() => api.configItems.replace(ConfigItemsReplaceRequest(
+          kinds: const {'page', 'asset'},
+          wanted: [...pages, ...assets],
+          baseRevisions: {
+            for (final entry in base.entries) entry.key: entry.value + 1,
+          }))),
+      'replacing against revisions nobody has');
+  expect(stale, isNot(isA<AccessDenied>()),
+      reason: 'another panel having edited first is not a permission problem, '
+          'and a caller told "forbidden" would ask for a group it already '
+          'holds ($stale)');
+  expect(await within(api.configItems.items('asset'), 'assets after conflict'),
+      assets,
+      reason: 'a conflict writes nothing');
+
+  // And the accepted call: the assets dropped, the pages kept. Deleting is
+  // the arm worth taking, because it is the one a diff gets wrong — an
+  // implementation that only ever inserted and updated would pass every
+  // other assertion here.
+  final applied = await within(
+      api.configItems.replace(requestOf(pages)), 'replacing the plant\'s pages');
+  expect(applied.removed, assets.length,
+      reason: 'a row of a named kind that is absent from `wanted` is a '
+          'removal, and the result says how many — a caller cannot tell an '
+          'accepted save that changed nothing from one that was never '
+          'applied otherwise');
+  expect(applied.actionId, isNotEmpty,
+      reason: 'the action the change rows share, so a client can ask the '
+          'history what its own save moved');
+  final after = await within(api.configItems.items('asset'), 'assets after');
+  expect(after, isEmpty);
+  expect(await within(api.configItems.items('page'), 'pages after'), pages,
+      reason: 'the rows the caller kept are untouched, revisions included: a '
+          'no-op row must not be rewritten, or every save would bump every '
+          'revision and the next caller would conflict against itself');
+  expect(await within(api.configItems.items('key_mapping'), 'key mappings'),
+      isNotEmpty,
+      reason: 'replace is WITHIN kinds: a page save that also emptied the '
+          "plant's key mappings would take the whole site off the air");
+}
+
 /// `config_change` over the wire: graded `configure`, and **an action nobody
 /// wrote stays absent**.
 ///
@@ -1108,6 +1224,9 @@ const accessChecks = <String, Check<StateManApi>>{
   'the config-item fingerprint follows list\'s gating and counts what list '
           'returns':
       checkConfigItemsFingerprintFollowsListGatingAndCounts,
+  'replacing a kind set grades by the set, guards with the caller\'s '
+          'revisions, and never writes on a refusal':
+      checkConfigItemsReplaceGradesByKindSetAndGuardsWithRevisions,
   // configuration history
   'configuration history reads refuse a session holding operate and permit '
           'configure, and an action nobody wrote stays absent':

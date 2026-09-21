@@ -246,11 +246,19 @@ const Set<String> expectedHandlerTable = {
   // read as parentless, including the ones whose header the backend held.
   'audit.entriesByAction',
   // The fifth access family: the plant's `config_item` rows for a client
-  // with no mirror (the browser build). Two reads, no write; graded
-  // `operate` and refused to a session nobody signed in on
-  // (`_PolicyConfigItems`).
+  // with no mirror (the browser build). Two reads graded `operate` and
+  // refused to a session nobody signed in on (`_PolicyConfigItems`), and —
+  // since the gateway learned to author the plant's configuration — one
+  // write, graded at the preference key the caller's KIND SET maps to.
+  //
+  // `replace`, not `write`: `backendConfig.write` already exists, the
+  // contract kit's fake serves both families from one object, and the member
+  // is a whole-set replace rather than an append. It is the second of two
+  // write doors and deliberately cannot carry a preference — those are
+  // graded per key and keep `preferences.*`.
   'configItems.items',
   'configItems.fingerprint',
+  'configItems.replace',
   // The sixth access family: `config_change`, the configuration history a
   // relayed panel reads because `databaseProvider` answers null for it.
   // Three reads, no write — the log is written by whoever changed the
@@ -370,13 +378,14 @@ void main() {
               'registration.');
     });
 
-    test('the table is exactly the eighty-six names a client may call today',
+    test('the table is exactly the eighty-seven names a client may call today',
         () {
-      // The sentence is unchanged in shape and still true: eighty-six names
+      // The sentence is unchanged in shape and still true: eighty-seven names
       // a client may *call* — forty-four through Phase 14, 17-09's
       // twenty-eight access methods, the three `configHistory` reads and `audit.entriesByAction`, `alarmHistory`, the whitelist's two
       // admin writes, multi-role's two, `session.logout`, the relational
-      // config's two `configItems` reads, and the account home page and
+      // config's two `configItems` reads and the `configItems.replace` that
+      // gave the gateway a second write door, and the account home page and
       // alarm auto-navigation writes. `h` is not one of them — it is
       // announced, never called — so it is taken out of the ledger by name
       // here rather than being added to the literal, which would say a
@@ -388,7 +397,7 @@ void main() {
               'failure prints the whole table rather than a difference');
     });
 
-    test('the registered table is the eighty-six callable names plus the '
+    test('the registered table is the eighty-seven callable names plus the '
         'client notifications', () {
       expect(_session().registeredMethods, everyRegisterableName,
           reason: 'the ledger is the union, because json_rpc_2 dispatches a '
