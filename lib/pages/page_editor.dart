@@ -3446,7 +3446,11 @@ class _PageEditorState extends ConsumerState<PageEditor> {
             !_temporaryPages.containsKey(_currentPage)) {
           _currentPage = _temporaryPages.keys.firstOrNull;
         }
-        _currentJsonStale = true;
+        // Re-encode and mark clean, in that order. `_currentJson` is a
+        // cached field and `_currentJsonStale` is what says the cache is
+        // behind the pages; setting the flag and reading the field would
+        // leave the editor permanently dirty over a snapshot nobody edited.
+        _updateCurrentJson();
         _savedJson = _currentJson;
       });
     });

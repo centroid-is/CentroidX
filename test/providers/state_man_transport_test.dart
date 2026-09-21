@@ -42,6 +42,10 @@ import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' show AlarmKeys;
 import 'package:tfc/providers/config_store.dart';
 
 import '../helpers/test_helpers.dart';
+import 'package:tfc_dart/core/config/key_mapping_codec.dart' as codec;
+import 'package:tfc/core/device_local_preferences.dart' show kConfigItemsCachePrefsKey;
+import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' show ConfigItemsFingerprint;
+import 'dart:convert';
 
 /// What the gateway client was handed, recorded **before** one existed.
 ///
@@ -121,6 +125,15 @@ GatewayStateManFactory _recordingFactory(_RecordedDial into, int deadPort) => ({
         );
 
 void main() {
+  // `gatewayConfigProvider` decides where this panel's configuration rows
+  // come from, and it reads the device-local store to do it — so every
+  // provider graph that reaches the page manager, the key repository or the
+  // StateMan now needs one open. Without it the provider throws
+  // "initDeviceLocalPreferences() must run before
+  // createDeviceLocalPreferences()", which is the store saying so rather
+  // than anything about the case.
+  setUp(useInMemoryDeviceLocalPreferences);
+
   // Main's #465 made the device-local store a process-wide singleton that
   // `main()` opens before `runApp`, and `createDeviceLocalPreferences()`
   // throws rather than opening one lazily — a lazily-opened store is how a
@@ -265,10 +278,17 @@ void main() {
                     )),
             localPreferencesProvider.overrideWithValue(local),
             // The plant's wiring is `config_item` rows since main's #465, so
-            // `stateManProvider` reads `store.keyMappings` and no longer looks
-            // at the preference blob. Seeding both keeps the arms above (which
-            // are about `state_man_config`, still a preference) working while
+            // `stateManProvider` reads the rows and no longer looks at the
+            // preference blob. Seeding both keeps the arms above (which are
+            // about `state_man_config`, still a preference) working while
             // this one gets the mapping from where production gets it.
+            //
+            // **Two row sources now, and a gateway panel reads the second.**
+            // A relayed panel's mirror is never filled — `databaseProvider`
+            // answers null by design — so it reads the rows over the relay
+            // and from its device-local cache of them at boot. The cache is
+            // seeded below, in `local`, which is the same path production
+            // takes on a panel that has connected before.
             configStoreProvider.overrideWith(
                 (ref) => createTestConfigStore(keyMappings: mappings)),
             stateManFactoryProvider.overrideWithValue(({
@@ -293,6 +313,25 @@ void main() {
     Future<_RecordedDial> dial(GatewayConfig row) async {
       final local = InMemoryPreferences();
       await writeGatewayConfig(local, row);
+      // The relayed row cache, which is where a gateway panel's key mappings
+      // come from at boot — its mirror is never filled. Written in the same
+      // shape `RelayedConfigItems._persist` writes, so `restore()` reads it
+      // exactly as it reads a real panel's.
+      await local.setString(
+          kConfigItemsCachePrefsKey,
+          jsonEncode({
+            'fingerprint': const ConfigItemsFingerprint(count: 0, revSum: 0)
+                .toJson(),
+            'items': [
+              for (final item in codec.keyMappingItems(mappings))
+                {
+                  'kind': item.kind.wireName,
+                  'id': item.id,
+                  'payload': item.payload,
+                  'rev': 1,
+                },
+            ],
+          }));
 
       final recorded = _RecordedDial();
       final ref = dialHarness(

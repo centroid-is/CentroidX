@@ -1234,10 +1234,19 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
   /// this page outlives none of it and a field would be one more thing to
   /// keep level with a transport change.
   Future<bool> _fromWire() async => configRowsComeOverTheWire(
-      isGateway: (await ref.read(gatewayConfigProvider.future)).isGateway);
+      isGateway: (await _read(gatewayConfigProvider.future)).isGateway);
 
   Future<RelayedConfigItems> _relayedRows() =>
-      ref.read(relayedConfigItemsProvider.future);
+      _read(relayedConfigItemsProvider.future);
+
+  /// The captured container when the banner drove us here, `ref` otherwise.
+  ///
+  /// The same rule the save below states: `ref` throws "cannot use ref after
+  /// the widget was disposed", and accepting a batch from the banner can
+  /// dispose this section while a save is still in flight. The container
+  /// outlives it deliberately — that is what it is for.
+  Future<T> _read<T>(ProviderListenable<Future<T>> provider) =>
+      _container?.read(provider) ?? ref.read(provider);
 
   String _currentJson() =>
       _currentJsonCache ??= jsonEncode(_keyMappings!.toJson());

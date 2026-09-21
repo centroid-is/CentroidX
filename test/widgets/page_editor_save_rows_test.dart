@@ -32,7 +32,7 @@ import 'package:tfc/widgets/leave_guard.dart';
 
 import '../helpers/page_editor_harness.dart';
 import '../helpers/test_helpers.dart'
-    show createTestConfigStore, kConfiguringTestSession;
+    show createTestConfigStore, kConfiguringTestSession, useInMemoryDeviceLocalPreferences;
 
 /// A lamp with a name an operator would recognise, which is what the conflict
 /// message has to reach for — `ConfigConflict.key` is a 24-hex row id.
@@ -124,6 +124,15 @@ Future<void> _save(WidgetTester tester) async {
 }
 
 void main() {
+  // `gatewayConfigProvider` decides where this panel's configuration rows
+  // come from, and it reads the device-local store to do it — so every
+  // provider graph that reaches the page manager, the key repository or the
+  // StateMan now needs one open. Without it the provider throws
+  // "initDeviceLocalPreferences() must run before
+  // createDeviceLocalPreferences()", which is the store saying so rather
+  // than anything about the case.
+  setUp(useInMemoryDeviceLocalPreferences);
+
   setUp(setUpEditorEnvironment);
 
   group('the save reaches the rows', () {

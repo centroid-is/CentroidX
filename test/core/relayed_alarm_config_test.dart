@@ -27,6 +27,7 @@ import 'package:tfc_dart/core/alarm.dart';
 import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc_dart/core/secure_storage/secure_storage.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as rp;
+import '../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
 
 /// The backend's preference store, as the wire sees it.
 final class _Backend implements rp.PreferencesApi {
@@ -75,6 +76,15 @@ final class _NoSecrets implements MySecureStorage {
 }
 
 void main() {
+  // `gatewayConfigProvider` decides where this panel's configuration rows
+  // come from, and it reads the device-local store to do it — so every
+  // provider graph that reaches the page manager, the key repository or the
+  // StateMan now needs one open. Without it the provider throws
+  // "initDeviceLocalPreferences() must run before
+  // createDeviceLocalPreferences()", which is the store saying so rather
+  // than anything about the case.
+  setUp(useInMemoryDeviceLocalPreferences);
+
   late InMemoryPreferences mirror;
   late Preferences local;
   late _Backend backend;
@@ -171,13 +181,16 @@ void main() {
     slot.clear();
     slot.fail(StateError('forbidden'));
 
-    // Captured rather than allowed to escape, because escaping is exactly
-    // what it does: `_saveConfig` is an un-awaited `async` body, so a refused
-    // write surfaces as an **unhandled zone error** and reaches no editor and
-    // no operator. That is the residual named in `RelayAlarmSource`'s class
-    // doc, and it is pinned here so that fixing it — making the three
-    // mutators return futures the editor awaits — reddens this arm and gets
-    // the assertion updated rather than leaving a stale claim behind.
+    // It used to escape. `_saveConfig` is an un-awaited `async` body, so a
+    // refused write surfaced as an **unhandled zone error** — attributed to
+    // whatever ran next, reaching no editor and no operator, and pinned here
+    // as "bad but at least not silence".
+    //
+    // It is caught and recorded now. The mutators are still fire-and-forget
+    // — the class doc still names that, and it is still the residual — but
+    // the refusal is on the object where a banner can read it instead of in
+    // a zone handler nobody installed. The zone is kept precisely to assert
+    // that nothing escapes any more.
     final escaped = <Object>[];
     await runZonedGuarded(() async {
       source.addAlarm(AlarmConfig(
@@ -188,11 +201,13 @@ void main() {
       await pumpEventQueue();
     }, (error, _) => escaped.add(error));
 
-    expect(escaped, hasLength(1),
-        reason: 'the refusal must not be swallowed somewhere inside the '
-            'source; today it leaves as an unhandled error, which is bad but '
-            'is at least not silence');
-    expect(escaped.single, isA<StateError>());
+    expect(escaped, isEmpty,
+        reason: 'an un-awaited async body that throws is an unhandled '
+            'asynchronous error, which in a test is a failure attributed to '
+            'whatever ran next and on a panel is nothing at all');
+    expect(source.configError, contains('forbidden'),
+        reason: 'and the refusal is on the object, where a banner can say it '
+            '— the whole point of catching it rather than dropping it');
 
     // The half that must hold either way: a refused rule is in neither store.
     expect(await mirror.getString('alarm_man_config'), isNull,
