@@ -96,6 +96,28 @@ indistinguishable from a save the gateway threw away.
    its children overlap, and `tap` on a button inside it hit-tests the row
    header, warns, and does nothing. Pump *with a duration* after opening one.
 
+### Pre-existing red, proven not this branch's
+
+**`packages/tfc_relay_local` is not green, and was not green before this
+branch.** `test/collect/collection_runner_test.dart` fails **11 of 25** cases,
+and the package as a whole fails 20, all in the collector family and all with
+`the condition did not hold within 5000 ms`. The file uses no database at all
+— `FakeSink` and `FakeUpstreamLink` behind a real `LocalStateMan` — so this is
+logic or timing, not infrastructure, and it is not the load effect below: it
+reproduces identically on a quiet machine, running the file alone.
+
+Checked rather than assumed, twice:
+
+  * reverting this branch's `config_store.dart` and `database_drift.dart`
+    changes it not at all (14 pass, 11 fail either way);
+  * checking the branch **base** out (`848c27089`, `feat/relay-pipe`) and
+    running the same file gives the same 14 and 11.
+
+No commit on this branch touches `packages/tfc_relay_local/lib/src/collect/`
+or its tests. So it is PR #463's base that is red here, and it is outside this
+branch's work — but it is inside the merge, and somebody has to own it before
+"core protocol and transmission 100% on first merge" is true.
+
 ### A machine-level cause of mass red
 
 A green lane run failed 40 of 51 cases with "the gateway closed the socket"
