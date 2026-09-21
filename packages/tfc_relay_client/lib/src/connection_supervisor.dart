@@ -322,6 +322,18 @@ final class ConnectionSupervisor {
   String? _verifiedAccount;
   bool _disposed = false;
 
+  /// The username the gateway verified at this session's `session.login`,
+  /// or null while nobody is signed in — [verifiedAccount]'s sibling for a
+  /// person, with the same posture: attribution prose, never identity.
+  ///
+  /// Owned here rather than by `RemoteStateMan` because the one event that
+  /// must clear it is a new **hello** — the far end admits every new socket
+  /// as nobody — and this is where the hello answer is read. A re-subscribe
+  /// inside a live session (every page that opens is one) is not that event
+  /// and must leave it alone. `RemoteStateMan.sessionLogin` sets it and
+  /// `sessionLogout` clears it.
+  String? signedInUser;
+
   /// True while this session was admitted with no credential and has not yet
   /// signed in — the gateway's awaiting-sign-in sentinel, seen from the
   /// client. The socket is up and the hello is answered; the value barrier
@@ -790,6 +802,9 @@ final class ConnectionSupervisor {
       final account = hello.capabilities[HelloCapabilities.account];
       _verifiedAccount =
           account is String && account.isNotEmpty ? account : null;
+      // A new session is nobody until somebody signs in on it — see
+      // [signedInUser].
+      signedInUser = null;
       // The gateway's fan-out cadence, for the per-subscription staleness
       // limit and nothing else (04-REVIEW WR-06). The *link* deadline stays
       // configured and independent, as 04-CONTEXT rules.

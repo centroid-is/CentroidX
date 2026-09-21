@@ -48,44 +48,65 @@ merge", built an adversarial e2e bench, and fixed what the review found.
 
 ---
 
-## Where this is — 2026-09-21 (third pass)
+## Where this is — 2026-09-21 (fourth pass)
 
-58 commits, pushed to `feat/relay-pipe` (PR #463).
+Pushed to `feat/relay-pipe` (PR #463).
 
-**The keystone is closed, end to end.** A relayed panel now reads *and*
-writes the plant's shared configuration: preferences through
-`preferences.*`, and pages, assets and key mappings through
-`configItems.replace`. Eight of the thirteen known-reds this branch started
-with are green and promoted; **five remain**, and none of them is the
-keystone.
+**The keystone is closed, end to end, and so is every known-red.** A relayed
+panel reads *and* writes the plant's shared configuration: preferences
+through `preferences.*`, and pages, assets and key mappings through
+`configItems.replace`. All thirteen known-reds this branch started with are
+green and promoted; the `knownRed` gate stays in the lane with an expected
+count of zero, for the next found-not-yet-fixed defect.
+
+The fourth pass also ran an adversarial review of the core transport
+(`packages/tfc_relay_server/test/adversarial_write_nonfinite_test.dart`,
+`logout_race_test.dart`). It found two real breaks, both fixed red-first:
+
+- **`1e999` defeated the write path's non-finite refusal.** The ingress
+  sanitizer repaired a non-finite number to `null` before any handler saw
+  it, so `"expect": 1e999` dropped a compare-and-set guard (the write was
+  applied unconditionally) and `"value": 1e999` wrote `null` to a live tag.
+  `_defuse` now marks the repaired frame and `_on` refuses the request
+  whole, *with its id* — a bare `-32700` carries none and would hang a
+  caller with no deadline, which is the hang the repair existed to close.
+- **`session.logout` gave the identity up after awaiting the audit row**, so
+  a write dispatched during a slow sink — or batched `[logout, write]` — was
+  graded and recorded as the person who had just signed out. Identity first,
+  row second.
+
+Refuted with evidence, and worth not re-chasing: Zone-scoped action-id
+cross-talk on the preferences door, login/hello ordering, fingerprint and
+idempotency-window collisions, hold-tick reach across sessions,
+client-influenced audit identity, kind-set smuggling on
+`configItems.replace`, response-shaped inbound frames.
 
 The inventory this branch started from was 78 features: 51 served, 9 partial,
 18 unserved. Call it **~59 of 78** now.
 
 | Lane | State |
 |---|---|
-| `test/e2e_pages` | **46 pass, 5 known-red**, in UTC *and* `TZ=Europe/Copenhagen` |
+| `test/e2e_pages` | **51 pass, 0 known-red**, in UTC *and* `TZ=Europe/Copenhagen` |
 | `test/e2e_assets` | 6 pass |
 | app suite (`flutter test test/`) | 7888 pass, **2 pre-existing failures** (`gateway_link_test`) |
 | `tfc_stateman_contract` | 997 pass |
 | `tfc_relay_protocol` | 541 pass |
-| `tfc_relay_server` | 1238 pass |
-| `tfc_relay_client` | 771 pass |
+| `tfc_relay_server` | 1264 pass |
+| `tfc_relay_client` | 773 pass |
 | `tfc_relay_local` | **20 red, pre-existing** — see below |
 | surface | 87 callable names, 95 members over eleven types, 41 access wire names, 37 access checks |
 
-**The five that remain**, none of them a write path:
+The three lesser findings of that review are closed too, each pinned:
 
-| Known-red | Item |
+| Finding | Closed by |
 |---|---|
-| a tag write from the panel leaves an audit row | 3 |
-| an alarm acknowledge leaves an audit row | 3 |
-| the `station` column is the gateway's knowledge of the socket | 3 |
-| the knowledge base says it cannot be reached, not that it is empty | 4 |
-| the server-config attribution line names the person | 5 |
+| A session holding **no** group that attempted a `write`/`ackAlarm` was turned away at the read floor and left no audit row. | `requirePlantRead(method, itemKey:)` records a deny row under `plantReadFloor` for write-shaped calls; reads still leave nothing (`write_audit_row_test.dart`). |
+| `preferences.clear(allowList)` recorded one row per key with an unbounded list — one 1 MiB frame, tens of thousands of sink inserts. | `kPreferenceClearCeiling = 256`, refused pre-effect with `INVALID_PARAMS` (`ingress_ceilings_test.dart`). |
+| A pre-hello batch of unknown methods answered ~8× its size into the priority lane. | `RelaySession.maxBatchRequests = 32`, refused at `_defuse` with the ceiling's sourceless `-32700`; no client of ours batches. |
 
-**Every remaining gap is pinned by a `knownRed` case that fails today**, and
-the CI job fails the day one of them starts passing without being promoted.
+**The one gap that remains named, not closed:** the knowledge base still has
+no wire family (item 4 below); the screen now says so honestly instead of "No
+resources found".
 
 ### Two traps this lane sets, and both read as a backend refusal
 
@@ -127,20 +148,18 @@ noted no `HANDOFF-*.md` exists under `docs/` on `origin/main` — it is session
 state, not documentation of the product. Kept because it is what resumes this
 work; move it to the PR description if #463 is about to merge.
 
-### Unverified at the point this was written
+### Verified at the point this was written
 
-The compare-and-swap fix (`0bc62bca6`) landed after the last full lane run.
-Re-run before trusting the branch:
+Every number in the lane table above is from one sequential pass on the
+committed tree, on the pinned SDK (3.44.9): server suite, `test/e2e_pages`
+in UTC and in `TZ=Europe/Copenhagen`, the app suite, the client suite. The
+compare-and-swap fix (`0bc62bca6`) is included in that pass — the earlier
+"unverified" note is retired.
 
-```
-CENTROIDX_E2E_PAGES=1 flutter test test/e2e_pages --concurrency=1
-flutter test test/
-```
-
-`tfc_dart`'s config and relay suites (450 + 28) and `dart analyze` are green
-on it. The change is additive and only bites when `baseRevisions` is passed,
-which only the relayed `configItems.replace` path does — so the blast radius
-is confined, but it has not been proven.
+**Run lanes on the pinned SDK.** A homebrew Flutter (3.41.9) on PATH makes
+the app lanes fail with `ink_sparkle.frag … Expected 1, got 2` and a
+key-mapping save time out; that cost one whole lane run to diagnose. The dev
+Mac now has `~/flutter-sdks/current` first on PATH in zsh and fish.
 
 Also unread: the tail of that review's answer on the `preferences.*` door. It
 said the door "has the same read-outside-lock shape but carries no
@@ -206,17 +225,16 @@ Two screens had to learn that the rows can arrive after they opened — the
 page editor re-snapshots, the key repository re-reads, and both only when
 there is nothing unsaved to lose.
 
-### 3. Audit rows for what the panel actually does
+### 3. Audit rows for what the panel actually does — CLOSED
 
-**Three known-reds.** The one-action-id decision they were blocked on is now
-answered (see the design below): the decorator mints `newActionId()` per
-graded call instead of passing the method name.
-
-| Known-red case | What it needs |
-|---|---|
-| a tag write from the panel leaves an audit row | record on the write path |
-| an alarm acknowledge leaves an audit row | same |
-| the `station` column is the gateway's knowledge of the socket | stop trusting the label the client typed into `session.login` (D-11) |
+All three known-reds are green. `PolicyStateMan.canWrite` — the one
+predicate both `write` and `ackAlarm` ask — now leaves the verdict as a `tag`
+row, one per member, under a minted action id, the shape the keyboard path's
+`guardTagWrite` leaves (`write_audit_row_test.dart`, 11 arms, decorator and
+over the wire). The `station` column of a person's session is the socket's
+remote address as `RelayServer` read it off the upgrade
+(`RelaySession.stationColumnFor`), with the panel's typed label carried only
+as `(says …)` — never the bare claim (`station_column_test.dart`).
 
 Worth knowing before starting: `actionId: method` still reaches
 `audit_entry.action_id` for every relayed decision row **except the
@@ -231,7 +249,10 @@ commit.
 
 ### 4. Knowledge base — no wire family at all
 
-**One known-red**, and the largest single piece left. `guarded_knowledge_stores.dart`
+**Its known-red is green** — the screen now says the library could not be
+reached (`kTechDocLibraryUnreachableKey`) instead of "No resources found"
+when `techDocIndexProvider` is null — but the library itself is still not
+served over the wire, and that is the largest single piece left. `guarded_knowledge_stores.dart`
 has no `relayed_` twin. `TechDocIndex` carries `storeDocument`,
 `updateSections`, `renameDocument`, `deleteDocument`, `updatePdfBytes` and
 `search`, plus `PlcCodeIndex`'s own members — and `Uint8List` PDF payloads
@@ -240,8 +261,9 @@ Budget it as its own milestone, not an afternoon.
 
 ### 5. The smaller ones
 
-- **Server config attribution line** (one known-red): it says "a station
-  account, not a person" over a save that IS recorded against a person.
+- **Server config attribution line** — CLOSED: it names the person the
+  gateway verified at sign-in when there is one, and the station account
+  only for a station-credential session.
 - **Chat / MCP** — `StateError('Database not connected')`, behind
   `kChatEnabled` (default true).
 - **First-account creation** — impossible from a relayed panel.
@@ -507,13 +529,13 @@ TZ=Europe/Copenhagen CENTROIDX_E2E_PAGES=1 \
   flutter test test/e2e_pages --concurrency=1
 
 # The gated set. Every KNOWN RED case must still FAIL; one that passes is a
-# case protecting nothing and the CI job fails on it.
+# case protecting nothing and the CI job fails on it. Empty as of this pass.
 CENTROIDX_E2E_PAGES=1 CENTROIDX_E2E_PAGES_KNOWN_RED=1 \
   flutter test test/e2e_pages --concurrency=1
 ```
 
-The CI job `e2e-pages-test` runs all four and reconciles the counts (42 green,
-9 known-red), so a switch that stops reaching the tests is an error rather
+The CI job `e2e-pages-test` runs all four and reconciles the counts (51 green,
+0 known-red), so a switch that stops reaching the tests is an error rather
 than a green run.
 
 **Before believing a mass failure in this lane, check the machine.** See

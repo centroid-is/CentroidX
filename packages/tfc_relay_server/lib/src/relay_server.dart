@@ -614,20 +614,32 @@ final class RelayServer {
         : TrustDocument(caPem: await File(trust.caPath).readAsString());
 
     _http = await shelf_io.serve(
-      webSocketHandler(
-        _onConnect,
-        protocols: const [subprotocol],
-        // From the config, never a literal (threat T-03-10). Empty — the
-        // default — rejects every browser `Origin` with 403 and leaves
-        // origin-less clients, which is what the panels are, untouched.
-        allowedOrigins: config.allowedOrigins,
-        // NAT keepalive, and a backstop for a client whose heartbeat logic is
-        // broken while its socket still works. **Never the liveness reaper**:
-        // Finding 7 measured half-open detection through the ping at 1.85x
-        // the interval, which at 20 s is a ~37 s window. 03-11's app-level
-        // heartbeat is the reaper.
-        pingInterval: config.pingInterval,
-      ),
+      (shelf.Request request) {
+        // The socket's remote address: the one fact about a session's
+        // whereabouts the client did not type. `shelf_io` leaves it in the
+        // request context and `webSocketHandler` never sees it, so the
+        // upgrade handler is built per request with the address closed
+        // over. It becomes the `station` column of every row a person's
+        // session leaves — see `RelaySession.stationColumnFor`.
+        final info = request.context['shelf.io.connection_info'];
+        final peer =
+            info is HttpConnectionInfo ? info.remoteAddress.address : null;
+        return webSocketHandler(
+          (WebSocketChannel ws, String? negotiated) =>
+              _onConnect(ws, negotiated, peer: peer),
+          protocols: const [subprotocol],
+          // From the config, never a literal (threat T-03-10). Empty — the
+          // default — rejects every browser `Origin` with 403 and leaves
+          // origin-less clients, which is what the panels are, untouched.
+          allowedOrigins: config.allowedOrigins,
+          // NAT keepalive, and a backstop for a client whose heartbeat
+          // logic is broken while its socket still works. **Never the
+          // liveness reaper**: Finding 7 measured half-open detection
+          // through the ping at 1.85x the interval, which at 20 s is a
+          // ~37 s window. 03-11's app-level heartbeat is the reaper.
+          pingInterval: config.pingInterval,
+        )(request);
+      },
       config.address,
       config.port,
       securityContext: security,
@@ -872,7 +884,7 @@ final class RelayServer {
   /// isolate — `socket_harness.dart:50-56`'s rule — and be attributed to
   /// whichever test happened to be running; it is delivered to the connection
   /// that caused it instead.
-  void _onConnect(WebSocketChannel ws, String? negotiated) {
+  void _onConnect(WebSocketChannel ws, String? negotiated, {String? peer}) {
     if (_closed || _draining) {
       // Accepted while the drain was running. Refused with the same code every
       // drained session gets, because from the panel's side it is the same
@@ -954,6 +966,7 @@ final class RelayServer {
 
       final session = RelaySession.serve(
         channel: channel,
+        peerLabel: peer,
         // **Policy over health over source.** `RelaySession` wraps whatever it
         // is handed in its own per-session `PolicyStateMan`, so handing it the
         // health overlay puts the two decorators in the order 06-09 argues

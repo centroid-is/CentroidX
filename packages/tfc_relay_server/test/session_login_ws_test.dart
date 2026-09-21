@@ -297,12 +297,15 @@ void main() {
               'role grants — graded per call by the policy decorator');
 
       // The trail: one login row, attributed to the verified account, at
-      // the station label the panel reported, stamped relay.
+      // the place the GATEWAY put the socket — here a by-hand channel, so
+      // "unlabelled" — with the panel's own label carried as the claim it
+      // is. Never the bare claim: `stationColumnFor`'s reason.
       final logins =
           sink.rows.where((row) => row.itemKey == 'login').toList();
       expect(logins, hasLength(1));
       expect(logins.single.who, 'jon');
-      expect(logins.single.station, 'PACK-02');
+      expect(logins.single.station, '127.0.0.1 (says PACK-02)',
+          reason: 'the loopback socket the harness binds, then the claim, marked as one');
       expect(logins.single.roleName, 'Engineering');
       expect(logins.single.origin, 'relay',
           reason: 'a gateway-verified sign-in must not read as a row some '

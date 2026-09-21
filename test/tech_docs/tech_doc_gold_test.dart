@@ -272,8 +272,11 @@ void main() {
       // strict floor, seeded-Operator groups only, which does not hold
       // `kKnowledgeWriteGroup` (`AccessGroup.configure`). That, and not any
       // ambient process state, is why the button is absent here. What must be
-      // present for a reader either way is the empty state and the headers.
-      expect(find.text('No resources found'), findsOneWidget);
+      // present for a reader either way is the empty state and the headers —
+      // and with no service behind it, the empty state is the honest one:
+      // the library could not be reached, not "nothing in it".
+      expect(find.byKey(kTechDocLibraryUnreachableKey), findsOneWidget);
+      expect(find.text('No resources found'), findsNothing);
       expect(find.text('Name'), findsOneWidget);
     });
 

@@ -1056,6 +1056,25 @@ final gatewayVerifiedAccountProvider = FutureProvider<String?>((ref) async {
   return remote?.verifiedAccount;
 });
 
+/// The person the gateway verified at this session's `session.login`, or
+/// null while nobody is signed in — `RemoteStateMan.signedInUser`, reached
+/// exactly as [gatewayVerifiedAccountProvider] reaches the station account.
+///
+/// **Not the access session**, deliberately. `accessSessionProvider` reaches
+/// for `databaseProvider` on its way to the repository, and the transport
+/// card's test pins that showing this page opens no database. The relay
+/// client already holds the answer, and it is the same answer the gateway
+/// records saves under.
+final gatewaySignedInPersonProvider = FutureProvider<String?>((ref) async {
+  final gateway = await ref.watch(gatewayConfigProvider.future);
+  if (!gateway.isGateway) return null;
+  final stateMan = await ref.watch(stateManProvider.future);
+  final remote = stateMan is GuardedStateMan
+      ? stateMan.innerAs<GatewayStateMan>()?.remote
+      : null;
+  return remote?.signedInUser;
+});
+
 /// The editable half of the backend's configuration document.
 const Key kBackendConfigEditorKey = Key('backend_config_editor');
 
@@ -1094,22 +1113,34 @@ class _GatewayAttributionLine extends ConsumerWidget {
     final theme = Theme.of(context);
     final verifiedAccount =
         ref.watch(gatewayVerifiedAccountProvider).valueOrNull;
+    // A person the gateway verified at `session.login` outranks the station
+    // account. The rows a save leaves carry that person's username — the
+    // gateway mints the identity its families record under from the
+    // verified login, not from the hello — so a line reading "a station
+    // account, not a person" under that save was the wrong sentence on the
+    // screen an operator reads before pressing it. The name is null until
+    // somebody signs in, which is exactly when the station account is the
+    // truth.
+    final person = ref.watch(gatewaySignedInPersonProvider).valueOrNull;
     return Row(
       key: kBackendConfigAttributionKey,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Icon(Icons.desktop_windows,
+        Icon(person == null ? Icons.desktop_windows : Icons.person,
             size: 14,
             color: theme.colorScheme.onSurface.withValues(alpha: 0.65)),
         const SizedBox(width: 8),
         Expanded(
           child: Text(
-            verifiedAccount == null
-                ? 'Saves are recorded against this station\'s verified '
-                    'account — a station account, not a person.'
-                : 'Saves are recorded against this station\'s verified '
-                    'account ($verifiedAccount) — a station account, not a '
-                    'person.',
+            person != null
+                ? 'Saves are recorded against the account the gateway '
+                    'verified at sign-in ($person) — you, not this station.'
+                : verifiedAccount == null
+                    ? 'Saves are recorded against this station\'s verified '
+                        'account — a station account, not a person.'
+                    : 'Saves are recorded against this station\'s verified '
+                        'account ($verifiedAccount) — a station account, '
+                        'not a person.',
             style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurface.withValues(alpha: 0.65)),
           ),

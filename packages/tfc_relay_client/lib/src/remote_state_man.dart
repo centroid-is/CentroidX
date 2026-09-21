@@ -810,6 +810,26 @@ final class RemoteStateMan implements StateManApi {
   /// [ConnectionSupervisor.verifiedAccount] carries the whole argument.
   String? get verifiedAccount => _supervisor.verifiedAccount;
 
+  /// The username the gateway verified at this session's `session.login`,
+  /// or null while nobody is signed in.
+  ///
+  /// [verifiedAccount]'s sibling and its exact posture: advisory display
+  /// material for attribution prose, never identity — the gateway grades
+  /// every call by what IT resolved, and this is only what it answered. Set
+  /// from the login answer, cleared by [sessionLogout] and by every new
+  /// establishment ([_adoptTypes]), because the far end admits a reconnect
+  /// as nobody and a stale name here would attribute a save to a person the
+  /// gateway no longer knows about.
+  ///
+  /// Why it lives on the client and not on the access session: the one
+  /// screen that names it (`server_config.dart`'s attribution line) must not
+  /// build the access session to ask, because that provider reaches for the
+  /// database on its way to the repository, and a page that only shows
+  /// settings must not open one — its own test pins exactly that. Held by
+  /// the supervisor, which is where a new hello — the one event that clears
+  /// it — is read; a re-subscribe inside a live session leaves it alone.
+  String? get signedInUser => _supervisor.signedInUser;
+
   /// Whether this session was admitted with no credential and is waiting for
   /// a `session.login` — the client's view of the gateway's awaiting-sign-in
   /// sentinel. True means the socket is up and the sign-in screen is the
@@ -861,6 +881,7 @@ final class RemoteStateMan implements StateManApi {
     // the supervisor guards it), and taken down like any other resync if the
     // now-permitted subscribe still fails.
     await _supervisor.resumeAfterSignIn();
+    _supervisor.signedInUser = result.user.username;
     return result;
   }
 
@@ -868,8 +889,14 @@ final class RemoteStateMan implements StateManApi {
   /// sentinel and refuses everything but liveness and a fresh sign-in.
   /// Idempotent on a session that is already nobody — a reconnect may have
   /// reset the far end without this client knowing.
-  Future<void> sessionLogout() =>
-      _sessionRequest(Methods.sessionLogout, const <String, Object?>{});
+  ///
+  /// [signedInUser] is cleared BEFORE the request goes out, the gateway's
+  /// own ordering for its identity: nothing that reads the name while the
+  /// sign-out is in flight may still attribute to the person leaving.
+  Future<void> sessionLogout() {
+    _supervisor.signedInUser = null;
+    return _sessionRequest(Methods.sessionLogout, const <String, Object?>{});
+  }
 
   /// A request that waits on the SESSION gate rather than the value barrier.
   ///

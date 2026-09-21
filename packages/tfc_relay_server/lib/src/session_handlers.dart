@@ -97,7 +97,7 @@ final class SessionHandlers {
     this.types,
   });
 
-  static void _openToAll(String method) {}
+  static void _openToAll(String method, {String? itemKey}) {}
 
   final StateManApi api;
 
@@ -134,8 +134,9 @@ final class SessionHandlers {
   /// up with the value barrier shut (`connection_supervisor.dart`), and a
   /// successful `session.login` drives the deferred resync. Per-key
   /// rejections would not do that — they would answer a snapshot of nothing
-  /// and leave the panel "ready" with every tile blank.
-  final void Function(String method) requirePlantRead;
+  /// and leave the panel "ready" with every tile blank. A subscribe is a
+  /// read and names no [itemKey]: a refusal here leaves no row.
+  final void Function(String method, {String? itemKey}) requirePlantRead;
 
   /// `subscribe`: one call, one answer, everything in it.
   Future<Object?> subscribe(rpc.Parameters params) async {

@@ -20,7 +20,9 @@ import 'package:tfc/pages/audit_trail.dart';
 import 'package:tfc/providers/access.dart';
 import 'package:tfc/providers/state_man.dart';
 import 'package:tfc/widgets/access_gate.dart';
+import 'package:tfc/widgets/audit_trail_filters.dart' show auditGroupChipKey;
 import 'package:tfc/widgets/audit_trail_row.dart' show AuditActionTile;
+import 'package:tfc_access/tfc_access.dart' show AccessGroup;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart'
     show AccessMethods;
 
@@ -50,8 +52,9 @@ void auditTrailCases(BackendBench Function() bench) {
     //
     // A real clock is what the page has in production, so this restores it
     // rather than widening the window or weakening the assertion. The rest of
-    // the lane does not need it: no other case asks a page to answer about a
-    // row it wrote itself.
+    // the lane does not need it; the tag-write case below is the one other
+    // case that asks a page to answer about a row it wrote itself, and it
+    // takes the same clock.
     //
     // The skew this uncovers is NOT confined to the harness — see the
     // relay-mode note in the handoff: the bound comes from the PANEL's clock
@@ -158,14 +161,23 @@ void auditTrailCases(BackendBench Function() bench) {
       await dismount(tester);
     });
 
-    knownRed(
-        'KNOWN RED: a tag write made from the panel leaves an audit row the '
-        'trail can show', (tester) async {
+    testWidgets(
+        'a tag write made from the panel leaves an audit row the trail can '
+        'show', (tester) async {
       // The access spec's §2: every hand-made write recorded. The relay's
-      // `write` handler grades the write through `PolicyStateMan` and never
-      // records it, allowed or refused — so the trail, which is the only
-      // record, cannot show that anybody moved a setpoint over the wire.
+      // `write` handler used to grade the write through `PolicyStateMan` and
+      // never record it, allowed or refused — so the trail, which is the only
+      // record, could not show that anybody moved a setpoint over the wire.
+      // `PolicyStateMan.canWrite` now leaves the verdict as a `tag` row, one
+      // per member, the shape the keyboard path's `guardTagWrite` leaves.
       // The write below is real: the plant counts it at the node.
+      //
+      // `withClock(const Clock())` for the first case's reason: this case
+      // asks the page about a row it wrote itself, and the frozen ambient
+      // clock would close the seven-day window before the backend stamped
+      // it. Measured — the row was in the store and the page said 36 rows,
+      // none of them this one.
+      await withClock(const Clock(), () async {
       await useDesktopSurface(tester, size: const Size(1400, 2600));
       final key = plantKey(_setpointNode);
       final before = bench().actuations(_setpointNode);
@@ -192,17 +204,26 @@ void auditTrailCases(BackendBench Function() bench) {
       await tester.pumpWidget(
           hostRoute(panel, _route, kAuditTrailTitle, const AuditTrailPage()));
       await untilFound(tester, find.byKey(kAuditTrailListKey));
+      // A setpoint write is graded at `operate`, and the page hides operate
+      // rows until the chip is tapped — it says so on screen. The row's
+      // existence was asserted above against the store; this is the page
+      // showing it once asked to.
+      await tester.tap(find.byKey(auditGroupChipKey(AccessGroup.operate.name)));
+      await settleFrames(tester);
       await untilFound(tester, find.textContaining(key),
           within: const Duration(seconds: 10),
           describe: 'the setpoint write on the trail page');
       await dismount(tester);
+      });
     });
 
-    knownRed(
-        'KNOWN RED: an alarm acknowledge — refused, here — leaves an audit '
-        'row', (tester) async {
+    testWidgets(
+        'an alarm acknowledge — refused, here — leaves an audit row',
+        (tester) async {
       // A refused acknowledge is still a decision about a change, and D-05
-      // says a refusal leaves a deny row. `ackAlarm` records neither outcome.
+      // says a decision leaves a row. `ackAlarm` used to record neither
+      // outcome; it asks the same `canWrite` question about `AlarmKeys.
+      // active` a tag write asks, and that question now records its verdict.
       // Decision rows only: the sign-in below adds an auth row by itself,
       // and counting that would make this case pass for the wrong reason.
       final before = await live(tester, () => bench().decisionRows());
@@ -224,15 +245,15 @@ void auditTrailCases(BackendBench Function() bench) {
           reason: 'an acknowledge attempt must leave a row');
     });
 
-    knownRed(
-        'KNOWN RED: the station column is the gateway\'s knowledge of the '
-        'socket, not a label the client typed into session.login',
-        (tester) async {
-      // `relay_session.dart`'s `_stationLabelOf` copies `SessionLoginParams.
-      // station` into every audit row the session leaves. A laptop on the
-      // plant LAN can therefore sign in claiming to be a panel and have its
-      // writes attributed to that panel's station. The probe below is that
-      // laptop.
+    testWidgets(
+        'the station column is the gateway\'s knowledge of the socket, not a '
+        'label the client typed into session.login', (tester) async {
+      // `relay_session.dart` used to copy `SessionLoginParams.station` into
+      // every audit row the session left. A laptop on the plant LAN could
+      // therefore sign in claiming to be a panel and have its writes
+      // attributed to that panel's station. `stationColumnFor` now leads
+      // with the socket's remote address and carries the claim only marked
+      // as one. The probe below is that laptop.
       const claimed = 'ST101-PANEL-07';
       const marker = '/e2e/station-marker';
       await live(tester, () async {

@@ -39,7 +39,7 @@ final class AlarmHandlers {
   static bool _anyKeyWritable(String key,
           {required List<String?> members}) =>
       true;
-  static void _openToAll(String method) {}
+  static void _openToAll(String method, {String? itemKey}) {}
 
   /// The session's `PolicyStateMan` view of the source.
   ///
@@ -85,8 +85,10 @@ final class AlarmHandlers {
   /// keys it asked about exist. Defaults to open, for the fixtures that build
   /// these handlers without a policy; the session never does.
   /// The history is the plant's alarms with a time axis, and takes what
-  /// reading `ALARM.active` live takes.
-  final void Function(String method) requirePlantRead;
+  /// reading `ALARM.active` live takes. [itemKey] is the ack's key, so a
+  /// refusal at the floor still leaves its deny row (`ValueHandlers`'s
+  /// reason, same seam).
+  final void Function(String method, {String? itemKey}) requirePlantRead;
 
   /// An operator acknowledging one active alarm.
   ///
@@ -139,7 +141,7 @@ final class AlarmHandlers {
     // Refuses nobody who could have acked: the gate below is the same
     // `canWriteKey` a tag write takes, and a tag write requires at least
     // `operate` — the group the floor asks for.
-    requirePlantRead(Methods.ackAlarm);
+    requirePlantRead(Methods.ackAlarm, itemKey: AlarmKeys.active);
 
     // **Existence first, and the placement is the property.** See step 2 above.
     // The sentence is the write path's, deliberately: one refusal a client

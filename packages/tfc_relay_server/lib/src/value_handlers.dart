@@ -89,7 +89,7 @@ final class ValueHandlers {
   static bool _anyKeyWritable(String key,
           {required List<String?> members}) =>
       true;
-  static void _openToAll(String method) {}
+  static void _openToAll(String method, {String? itemKey}) {}
 
   final StateManApi api;
   final ServerConfig config;
@@ -138,8 +138,11 @@ final class ValueHandlers {
   /// refused by name — with the sign-in marker when nobody has signed in on
   /// it, with the group when somebody has — and is never told which of the
   /// keys it asked about exist. Defaults to open, for the fixtures that build
-  /// these handlers without a policy; the session never does.
-  final void Function(String method) requirePlantRead;
+  /// these handlers without a policy; the session never does. [itemKey] is
+  /// what a write-shaped call names, so a refusal at the floor still leaves
+  /// the deny row a refused write owes the trail (`PolicyStateMan.
+  /// requirePlantRead`); reads name nothing.
+  final void Function(String method, {String? itemKey}) requirePlantRead;
 
   /// How many outcomes are being held. Read by the test that proves the log
   /// is bounded (T-04-06); nothing in production depends on it.
@@ -472,7 +475,7 @@ final class ValueHandlers {
     // Refuses nobody who could have written: every tag write requires at
     // least `operate` (the 2026-09-02 floor, and bindings only raise it),
     // which is the same group the read floor asks for.
-    requirePlantRead(Methods.write);
+    requirePlantRead(Methods.write, itemKey: request.key);
     if (!api.keys.contains(request.key)) {
       throw _refuseUnknownKey(Methods.write, request.key);
     }

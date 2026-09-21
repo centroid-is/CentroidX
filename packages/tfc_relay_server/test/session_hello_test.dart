@@ -272,7 +272,11 @@ void main() {
             'and a caller with no deadline waits forever');
 
     final error = ((await answered.future)['error'] as Map).cast<String, Object?>();
-    expect(error['code'], ServerErrorCodes.typeMismatch);
+    // json_rpc_2's INVALID_PARAMS: refused whole by the ingress non-finite
+    // marker, with its id — no longer repaired into a hello the handler then
+    // mis-types (`relay_session.dart`'s `_defuse`, and the write it was
+    // silently unguarding).
+    expect(error['code'], -32602);
     expect(((error['data'] as Map)['request'] as String), contains('omitted'),
         reason: 'the substitution is what keeps the answer sendable');
   });

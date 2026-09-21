@@ -307,6 +307,10 @@ mixin _GroupGate {
   }
 }
 
+/// The most keys one `preferences.clear` may name — see
+/// `_PolicyPreferences.clear` for why a list from the wire is bounded.
+const int kPreferenceClearCeiling = 256;
+
 /// A refusal's `data`, pre-substituted.
 ///
 /// Copied from `value_handlers.dart` and `data_handlers.dart` rather than
@@ -595,20 +599,68 @@ final class PolicyStateMan implements StateManApi, TypeDescriptions {
   /// tags exist. `key_policy.dart`'s rule that a hidden key is spelled as
   /// absent is untouched, because [canSee] still decides that afterwards for
   /// the sessions that pass here.
-  void requirePlantRead(String method) =>
+  ///
+  /// [itemKey] is what a **write-shaped** caller names — `write` passes its
+  /// key, `ackAlarm` passes `AlarmKeys.active` — and turns a refusal here
+  /// into a deny row under [plantReadFloor], because a hand-made write turned
+  /// away one step before the write gate is still a hand-made write refused
+  /// (access spec §2), and the trail is its only record. Reads pass nothing
+  /// and leave nothing: a walk-up display re-subscribing two hundred keys on
+  /// every reconnect would otherwise bury the trail in its own refusals,
+  /// which is the failure `audit_trail_store.dart` refuses by design.
+  void requirePlantRead(String method, {String? itemKey}) {
+    try {
       requireReadFloor(identityOf(), method, 'nothing was read');
+    } on rpc.RpcException {
+      if (itemKey != null) {
+        _ledger.record(
+            identity: identityOf(),
+            surface: AccessSurface.tag.wireName,
+            itemKey: itemKey,
+            group: plantReadFloor,
+            allowed: false,
+            actionId: newActionId());
+      }
+      rethrow;
+    }
+  }
 
-  /// Whether this session may actuate [key], moving [members].
+  /// Whether this session may actuate [key], moving [members] — **and the
+  /// row that says so** (D-05).
   ///
   /// [members] carries the member paths the write moves, so a template that
   /// raises one member of a struct above the operate floor is enforced here
   /// rather than flattened. The default is the key-level question, which is
   /// what a scalar write means and what every caller asked before member
   /// grading reached the wire — `ValueHandlers` names the members it can.
+  ///
+  /// One row per member asked about, under one action id: the shape
+  /// `guardTagWrite` leaves from a keyboard. The access spec's §2 requires
+  /// every hand-made write recorded, and until this recorded, a setpoint
+  /// moved over the wire — or an alarm acknowledged, which asks this same
+  /// question about `AlarmKeys.active` — left no trace anywhere. The row is
+  /// a **verdict, not an outcome**: an allowed write the plant then rejects,
+  /// or one the idempotency window answers from the log, still records that
+  /// this session was allowed to try, exactly as the keyboard path's row
+  /// precedes its write. The action id is minted here and never taken from
+  /// the frame — a client-chosen id could join its row to another operator's
+  /// action in the trail.
   bool canWrite(String key, {required List<String?> members}) {
     final identity = identityOf();
-    return identity != null &&
-        policy.canWrite(key, identity, members: members);
+    final allowed =
+        identity != null && policy.canWrite(key, identity, members: members);
+    final actionId = newActionId();
+    for (final member in members.isEmpty ? kWholeKeyWrite : members) {
+      _ledger.record(
+          identity: identity,
+          surface: AccessSurface.tag.wireName,
+          itemKey: key,
+          member: member,
+          group: master.groupForTag(key, member: member),
+          allowed: allowed,
+          actionId: actionId);
+    }
+    return allowed;
   }
 
   // -------------------------------------------------------------------------
@@ -1718,6 +1770,23 @@ final class _PolicyPreferences with _GroupGate implements PreferencesApi {
   @override
   Future<void> clear({Set<String>? allowList}) {
     if (allowList != null) {
+      // **Bounded**, before anything is graded. Every named key becomes a
+      // row in the trail (a deny or an allow), and the list arrives from the
+      // wire, so an `operate` session could otherwise turn one 1 MiB frame
+      // into tens of thousands of sink inserts — an audit flood, found by
+      // adversarial review. A settings page tidying its own section names a
+      // handful; the ceiling is far above any real clear and far below any
+      // flood. Pre-effect, like every refusal in this class.
+      if (allowList.length > kPreferenceClearCeiling) {
+        throw rpc.RpcException(
+            rpc_errors.INVALID_PARAMS,
+            'preferences.clear names ${allowList.length} keys, more than the '
+            '$kPreferenceClearCeiling this gateway grades in one call: every '
+            'key named becomes a row in the audit trail, and a list that '
+            'long is a flood, not a clear. Nothing was removed. Clear fewer '
+            'keys per call',
+            data: substitutedRequest('preferences.clear'));
+      }
       // Graded per named key: clearing a row is writing it, and a list that
       // mixes gradings is refused at its most demanding member — the first
       // key the session's groups do not cover, named in the refusal.

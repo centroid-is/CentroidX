@@ -92,28 +92,31 @@ void serverConfigCases(BackendBench Function() bench) {
       await dismount(tester);
     });
 
-    knownRed(
-        'KNOWN RED (found here): the attribution line names the PERSON the '
-        'gateway verified at session.login, not a station account that does '
-        'not exist', (tester) async {
+    testWidgets(
+        'the attribution line names the PERSON the gateway verified at '
+        'session.login, not a station account that does not exist',
+        (tester) async {
       // `gatewayVerifiedAccountProvider` answers `RemoteStateMan.
       // verifiedAccount`, which the supervisor fills from the HELLO
       // capabilities — the token-verified station account. A browser or a
-      // panel that signed in as a person presents no token, so the line reads
-      // "recorded against this station's verified account — a station
-      // account, not a person", while the audit rows the save actually
-      // produces (asserted in the round-trip case below) carry the person's
-      // username. A line that says "not a person" under a save that is
-      // recorded against a person is the wrong sentence on the screen an
-      // operator reads before saving.
+      // panel that signed in as a person presents no token, so the line used
+      // to read "recorded against this station's verified account — a
+      // station account, not a person", while the audit rows the save
+      // actually produces (asserted in the round-trip case below) carry the
+      // person's username. The line now watches the access session and
+      // names the person when there is one; the station text stays for a
+      // station-credential session, where it is the truth.
       await useDesktopSurface(tester, size: const Size(1100, 2600));
       final panel =
           await _signedIn(tester, bench(), kEngineer, kEngineerPassword);
       await tester.pumpWidget(
           hostRoute(panel, _route, _title, const ServerConfigPage()));
       await untilFound(tester, find.byKey(kBackendConfigAttributionKey));
-      expect(find.textContaining('($kEngineer)'), findsOneWidget,
-          reason: 'the account the save is recorded against is the one the '
+      // The name arrives through a FutureProvider, one frame or more after
+      // the row itself mounts — wait for it rather than reading the row on
+      // the frame it appeared.
+      await untilFound(tester, find.textContaining('($kEngineer)'),
+          describe: 'the account the save is recorded against — the one the '
               'gateway resolved at session.login');
       await dismount(tester);
     });

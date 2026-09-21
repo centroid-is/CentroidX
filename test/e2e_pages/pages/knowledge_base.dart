@@ -52,9 +52,9 @@ void knowledgeBaseCases(BackendBench Function() bench) {
       await dismount(tester);
     });
 
-    knownRed(
-        'KNOWN RED (found here): over the relay the library says it cannot '
-        'be reached, not that it is empty', (tester) async {
+    testWidgets(
+        'over the relay the library says it cannot be reached, not that it '
+        'is empty', (tester) async {
       await useDesktopSurface(tester, size: const Size(1400, 1600));
       final panel = await live(tester, () async {
         final p = await Panel.dial(bench().port);

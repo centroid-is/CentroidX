@@ -239,6 +239,7 @@ final class RelaySession {
     AccessScopeFactory? accessFor,
     AuthProvider? loginVerifier,
     UserResolver? loginAccounts,
+    String? peerLabel,
     required SeriesResolver resolver,
     List<String> serverSupported = const [protocolVersion],
     WriteOutcomeLog? writeOutcomes,
@@ -303,6 +304,7 @@ final class RelaySession {
       .._accessFor = accessFor
       .._loginVerifier = loginVerifier
       .._loginAccounts = loginAccounts
+      .._peerLabel = peerLabel
       .._start();
   }
 
@@ -336,6 +338,12 @@ final class RelaySession {
   /// the way into two different refusal markers and an audit row for only
   /// one of them.
   AuthProvider? _loginVerifier;
+
+  /// Where the gateway saw this session's socket come from — the remote
+  /// address `RelayServer` read off the upgrade — or null for a session
+  /// served over no socket (every by-hand channel in this package's suite).
+  /// What [stationColumnFor] names; never anything the client sent.
+  String? _peerLabel;
 
   /// Where a verified username becomes an account and its grants — the same
   /// synchronous, embedder-refreshed [UserResolver] the file validator and
@@ -462,11 +470,12 @@ final class RelaySession {
   /// link. That is the 02-05 hang, reachable by anything that can open a
   /// socket.
   ///
-  /// So the frame is decoded, sanitized and re-encoded here, at the boundary,
-  /// which is where CLAUDE.md says wire hazards belong. The cost is one extra
-  /// `jsonDecode` per **inbound** frame — requests only, never the telemetry
-  /// fan-out, which is the path Finding 2 measured — and the re-encode is paid
-  /// only by a frame that actually carried a non-finite number.
+  /// So the frame is decoded and sanitized here, at the boundary, which is
+  /// where CLAUDE.md says wire hazards belong, and **a frame that carried a
+  /// non-finite number is refused** — see the body for why it is not repaired
+  /// and passed on. The cost is one extra `jsonDecode` per **inbound** frame —
+  /// requests only, never the telemetry fan-out, which is the path Finding 2
+  /// measured.
   ///
   /// **A frame the sanitizer cannot process is refused, not passed through**
   /// (06-04, 06-RESEARCH §H.2). This paragraph used to argue the opposite —
@@ -506,6 +515,20 @@ final class RelaySession {
     // not-JSON case above and must reach json_rpc_2 with its source intact.
     final decoded = jsonDecode(frame);
 
+    // **A batch is bounded**, before it is sanitized or dispatched. Every
+    // member of a pre-hello batch is answered with a gate refusal carrying
+    // the `_substitute` text, so an 80 KB batch of unknown names came back
+    // as ~8× its size into the priority lane — bounded by `maxPendingBytes`
+    // and then dropped, an amplification rather than a hang, found by
+    // adversarial review. No client of ours batches at all (`json_rpc_2`'s
+    // `withBatch` is unused in `tfc_relay_client`), so the ceiling costs
+    // nobody and the refusal is the same sourceless `-32700` a frame over
+    // the byte ceiling gets.
+    if (decoded is List && decoded.length > maxBatchRequests) {
+      throw FormatException('batch of ${decoded.length} requests exceeds '
+          'the $maxBatchRequests-request ingress ceiling');
+    }
+
     final SanitizeResult sanitized;
     try {
       sanitized = sanitize(decoded);
@@ -516,8 +539,42 @@ final class RelaySession {
           'rather than passed on: $error');
     }
     if (!sanitized.hadNonFinite) return frame;
-    return jsonEncode(sanitized.value);
+    // **Repaired for the envelope, marked for the handler.** This used to
+    // re-encode the cleaned tree and pass it on, and stop there — which put
+    // `null` wherever the wire carried `1e999`, so every handler behind the
+    // `Peer` saw a frame with no non-finite number in it. `ValueHandlers.
+    // write`'s own refusal and `WriteParams.fromJson`'s were dead over a
+    // real socket: `"expect": 1e999` arrived as `null`, which on that path
+    // spells "no compare-and-set guard", so a guarded write was applied
+    // unconditionally; `"value": 1e999` arrived as `null` and **`null` was
+    // written to a live tag**. Found by adversarial review, over a socket,
+    // with an `operate` session.
+    //
+    // Refusing the whole frame here instead would be the sourceless
+    // `-32700` a frame over the ceiling gets — and a `-32700` carries no id,
+    // so a caller with no deadline waits forever on it: the 02-05 hang, by
+    // another door. So the repair stays, for the id and the envelope, and
+    // the params carry [nonFiniteMarker] so [_on] refuses the request by
+    // name, with its id. A client that sets the marker itself buys the same
+    // refusal, which is nothing. Nothing inbound legitimately carries a
+    // non-finite number — Dart's own `jsonEncode` throws on one, so no
+    // client of ours can even send it.
+    final repaired = sanitized.value;
+    for (final request in repaired is List ? repaired : [repaired]) {
+      if (request is Map && request['params'] is Map) {
+        (request['params'] as Map)[nonFiniteMarker] = true;
+      }
+    }
+    return jsonEncode(repaired);
   }
+
+  /// The key [_defuse] plants in a request's params when the frame carried a
+  /// non-finite number, and [_on] refuses on. A `$`-prefixed name no wire DTO
+  /// reads, so it collides with nothing a handler decodes.
+  static const String nonFiniteMarker = r'$nonFinite';
+
+  /// The most requests one JSON-RPC batch frame may carry — see [_defuse].
+  static const int maxBatchRequests = 32;
 
   /// The shared source this gateway serves, **before** the policy.
   ///
@@ -992,8 +1049,28 @@ final class RelaySession {
     _registered.add(method);
     peer.registerMethod(
         method,
-        (rpc.Parameters params) =>
-            _gated(method, () => _answer(method, () async => handler(params))));
+        (rpc.Parameters params) => _gated(
+            method,
+            () => _answer(method, () async {
+                  // The non-finite refusal, for every method at once — see
+                  // [_defuse] for why the frame was repaired rather than
+                  // dropped, and why a handler cannot be trusted to notice
+                  // on its own. Inside `_answer` so the answer is armored
+                  // like any other refusal, and behind the gate so a
+                  // pre-hello frame is still answered as pre-hello.
+                  final value = params.value;
+                  if (value is Map && value[nonFiniteMarker] == true) {
+                    throw rpc.RpcException(
+                        rpc_errors.INVALID_PARAMS,
+                        'the request carried a non-finite number (1e999 or '
+                        'the like) and was refused whole: no method on this '
+                        'wire has a use for one, and passing it on as null '
+                        'would turn a guarded write into an unguarded one. '
+                        'Nothing was applied',
+                        data: _substitute(method));
+                  }
+                  return handler(params);
+                })));
   }
 
   /// As [_on], for a **notification**.
@@ -1535,22 +1612,34 @@ final class RelaySession {
             'unencodable error on a path with no deadline is a hang',
       };
 
-  /// The station label an unlabelled login's audit rows carry. Self-naming,
-  /// [SessionLoginValidator.station]'s reason: it reaches the trail and must
-  /// read as "the panel did not say", never as a station somebody configured.
+  /// The station label a login's audit rows carry when the gateway has no
+  /// socket address to name — a session served over a by-hand channel.
+  /// Self-naming, [SessionLoginValidator.station]'s reason: it reaches the
+  /// trail and must read as "the gateway could not say", never as a station
+  /// somebody configured.
   static const String unlabelledStation = 'unlabelled-panel';
 
-  /// The audit trail's `station` column for this login: the panel's own
-  /// claim about WHERE it stands, trimmed and capped — a location label,
-  /// exactly what a direct-mode panel writes from its own hostname. Never an
-  /// identity: who signed in is [_loginVerifier]'s answer alone, and no
-  /// length of string here can influence it.
-  static String _stationLabelOf(SessionLoginParams login) {
-    final label = login.station?.trim() ?? '';
-    if (label.isEmpty) return unlabelledStation;
-    // The close-reason clamp's neighbourhood: a station label rides in close
-    // reasons ("credential revoked for station …", capped at 123 bytes) and
-    // in every audit row, so a pasted megabyte must not become either.
+  /// The audit trail's `station` column for a person's session: **where the
+  /// gateway saw the socket come from**, never a label the panel typed.
+  ///
+  /// `SessionLoginParams.station` used to be copied into every row the
+  /// session left, which let a laptop on the plant LAN sign in claiming to
+  /// be `ST101-PANEL-07` and have its writes attributed to that panel's
+  /// station. [peer] is what the gateway knows. The claim still rides along,
+  /// marked as one, because it is what an operator recognises on a trail
+  /// that would otherwise read `10.50.10.11` — but it can never stand alone
+  /// as the column, so nothing a client sends can be mistaken for a place
+  /// the gateway vouched for. Trimmed and capped for the close-reason
+  /// clamp's reason: a station label rides in "credential revoked for
+  /// station …" (123 bytes) and in every audit row, so a pasted megabyte
+  /// must not become either. Never an identity: who signed in is
+  /// [_loginVerifier]'s answer alone.
+  static String stationColumnFor(SessionLoginParams login,
+      {required String? peer}) {
+    final claim = login.station?.trim() ?? '';
+    final where = peer ?? unlabelledStation;
+    if (claim.isEmpty) return where;
+    final label = '$where (says $claim)';
     return label.length > 63 ? label.substring(0, 63) : label;
   }
 
@@ -1613,7 +1702,7 @@ final class RelaySession {
     // `_answer`'s TypeError arm as a typed refusal.
     final login = SessionLoginParams.fromJson(
         (sanitize(params.asMap).value as Map).cast<String, Object?>());
-    final station = _stationLabelOf(login);
+    final station = stationColumnFor(login, peer: _peerLabel);
 
     final AuthenticatedUser? verified;
     try {
@@ -1764,13 +1853,14 @@ final class RelaySession {
           'socket',
           data: _substitute(Methods.sessionLogout));
     }
-    await _recordAuth(AuditRecord.logout(
-      who: current.user.username,
-      station: current.station,
-      roleName: current.session.roleName,
-      actionId: newActionId(),
-      origin: 'relay',
-    ));
+    // **The identity goes first, the row second.** json_rpc_2 dispatches
+    // without awaiting between frames, so anything that arrives while the
+    // row below is in flight — a slow sink, or a batched `[logout, write]` —
+    // runs against whatever `_identity` holds at that instant. It used to
+    // hold the engineer until the row had been written, and a write sent in
+    // that window was graded as them, applied, and recorded under a name
+    // that had signed out. Found by adversarial review; `logout_race_test`.
+    //
     // Back to the identity this session was admitted as, and NOT a freshly
     // minted one: the group set is the master system's answer at the moment a
     // session begins (`key_policy.dart`, policy is static per session), so a
@@ -1783,6 +1873,13 @@ final class RelaySession {
     _credentialDigest = null;
     _scoped = _accessFor?.call(_anonymous!);
     subscriptions.clear();
+    await _recordAuth(AuditRecord.logout(
+      who: current.user.username,
+      station: current.station,
+      roleName: current.session.roleName,
+      actionId: newActionId(),
+      origin: 'relay',
+    ));
     return null;
   }
 

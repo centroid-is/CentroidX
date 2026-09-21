@@ -1595,14 +1595,16 @@ jobs:
                     failed += 1
         green = ran - known_red - other_skips
         print(f"e2e_pages: {ran} case(s) started, {green} ran green, {known_red} known-red, {other_skips} other skip(s), {failed} failed")
-        # 46 green and 5 known-red as of this commit. 38/13 before the
+        # 51 green and 0 known-red as of this commit. 38/13 before the
         # gateway could write a config_item row at all; 42/9 once the
         # preferences door closed the report editor's two, the preferences
         # JSON editor and the alarm editor; 46/5 once `configItems.replace`
         # and the relayed read path closed the page editor's two and the key
-        # repository's two.
-        if other_skips or green < 46 or known_red < 5:
-            print(f"::error::the e2e_pages lane ran {green} case(s) with {other_skips} unexplained skip(s), expected 46 and 0 — the CENTROIDX_E2E_PAGES switch is not reaching the tests, or a case stopped running")
+        # repository's two; 51/0 once the write path recorded its verdicts,
+        # the station column stopped trusting the client, and the two
+        # honest-sentence screens (knowledge base, attribution line) landed.
+        if other_skips or green < 51 or known_red < 0:
+            print(f"::error::the e2e_pages lane ran {green} case(s) with {other_skips} unexplained skip(s), expected 51 and 0 — the CENTROIDX_E2E_PAGES switch is not reaching the tests, or a case stopped running")
             sys.exit(1)
         PY
 
@@ -1681,8 +1683,12 @@ jobs:
                if 'KNOWN RED' in n and results.get(i) == 'success']
         total = sum(1 for n in names.values() if 'KNOWN RED' in n)
         print(f"e2e_pages known-red: {total} case(s), {len(red)} now passing")
-        if total < 5:
-            print(f"::error::only {total} known-red case(s) ran, expected 5 — CENTROIDX_E2E_PAGES_KNOWN_RED is not reaching the tests")
+        # Zero as of this commit: every known-red this branch carried has
+        # been promoted. The step stays, because the next found-not-yet-fixed
+        # defect goes back through it — raise the expected count with it.
+        expected_known_red = 0
+        if total < expected_known_red:
+            print(f"::error::only {total} known-red case(s) ran, expected {expected_known_red} — CENTROIDX_E2E_PAGES_KNOWN_RED is not reaching the tests")
             sys.exit(1)
         for n in red:
             print(f"::error::this KNOWN RED case now PASSES and is protecting nothing — promote it to a normal case: {n}")
