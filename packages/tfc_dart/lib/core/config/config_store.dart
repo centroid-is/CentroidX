@@ -641,12 +641,33 @@ class ConfigStore {
   /// moved in between fails its compare-and-swap, which is the right answer.
   /// Omitted, the snapshot at write time is used, which is only correct for
   /// a caller that built [wanted] on the chain itself (undo does).
+  ///
+  /// ## [station]: whose write this was, not whose process wrote it
+  ///
+  /// `config_change.station` is [_station] — this process's hostname — for
+  /// every caller that omits it, which is right for a panel writing its own
+  /// configuration: the machine that ran the write is the machine the
+  /// operator sat at.
+  ///
+  /// It is wrong for the relay gateway. There, one process writes on behalf
+  /// of whichever panel is connected, and the `audit_entry` row for the same
+  /// action already carries **that** panel's station (D-11, the gateway's
+  /// knowledge of the socket). Leaving this to default would put the
+  /// gateway's own hostname in the change row and the panel's in the audit
+  /// row — one action id, two answers to "where did this come from", in the
+  /// history this branch just put on the wire. So a caller that knows better
+  /// than this process's hostname says so here.
+  ///
+  /// It is not derived from [who]: an account is not a machine, the same
+  /// account signs in from several panels, and the history's station column
+  /// exists precisely to tell those apart.
   Future<ConfigWriteResult> writeItems({
     required Set<ConfigKind> kinds,
     required List<ConfigItem> wanted,
     required String actionId,
     required String who,
     required String roleName,
+    String? station,
     String? reason,
     List<ConfigItem>? derivedFrom,
   }) =>
@@ -656,6 +677,7 @@ class ConfigStore {
             actionId: actionId,
             who: who,
             roleName: roleName,
+            station: station,
             reason: reason,
             derivedFrom: derivedFrom,
           ));
@@ -666,9 +688,15 @@ class ConfigStore {
     required String actionId,
     required String who,
     required String roleName,
+    String? station,
     String? reason,
     List<ConfigItem>? derivedFrom,
   }) async {
+    // Resolved once, here, rather than at each of the three change-row sites:
+    // three `station ?? _station` spellings is three places for one of them
+    // to be missed, and the miss would be a single row in a trail nobody
+    // re-reads.
+    final changeStation = station ?? _station;
     final attempted = _describeItems(kinds, wanted);
     final seen = <String>{};
     for (final item in wanted) {
@@ -796,7 +824,7 @@ class ConfigStore {
                 at: at,
                 actionId: actionId,
                 who: who,
-                station: _station,
+                station: changeStation,
                 roleName: roleName,
                 after: item,
                 reason: reason,
@@ -836,7 +864,7 @@ class ConfigStore {
                 at: at,
                 actionId: actionId,
                 who: who,
-                station: _station,
+                station: changeStation,
                 roleName: roleName,
                 before: stored,
                 after: item,
@@ -860,7 +888,7 @@ class ConfigStore {
                 at: at,
                 actionId: actionId,
                 who: who,
-                station: _station,
+                station: changeStation,
                 roleName: roleName,
                 before: item,
                 reason: reason,
