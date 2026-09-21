@@ -1,7 +1,7 @@
 # Handoff — `relay-transmission-e2e`
 
-Worktree `/Users/jonb/Projects/tfc-hmi-worktrees/relay-transmission-e2e`,
-branched off `origin/feat/relay-pipe` (PR #463). 33 commits, tree clean.
+Worktree `../tfc-hmi-worktrees/relay-transmission-e2e`,
+branched off `origin/feat/relay-pipe` (PR #463). 56 commits, tree clean.
 Nothing pushed; no PR opened.
 
 **The plan lives in `docs/websocket-feature-completeness.md`.** Read that
@@ -48,7 +48,7 @@ merge", built an adversarial e2e bench, and fixed what the review found.
 
 ## Where this is — 2026-09-21 (third pass)
 
-57 commits. Tree clean, nothing pushed, no PR opened.
+56 commits.
 
 **The keystone is closed, end to end.** A relayed panel now reads *and*
 writes the plant's shared configuration: preferences through
