@@ -75,6 +75,7 @@ import 'dart:collection';
 import 'package:logger/logger.dart';
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:open62541/open62541_types.dart' as ua;
+import 'package:rxdart/rxdart.dart' show BehaviorSubject;
 import 'package:tfc_dart/core/config/config_diff.dart';
 // The interface only, never `state_man.dart`: that library also holds
 // `OpcUaStateMan` and so `dart:ffi`, and this is the class a browser uses.
@@ -230,8 +231,18 @@ class GatewayStateMan implements StateMan {
   // ------------------------------------------------------------ substitution
 
   final Map<String, String> _substitutions = {};
-  final StreamController<Map<String, String>> _subsChanged =
-      StreamController<Map<String, String>>.broadcast();
+  /// A seeded subject, as `StateMan`'s is — not a broadcast controller.
+  ///
+  /// A readout whose key carries a `$variable` re-resolves when this fires,
+  /// and a watcher can arrive after the variable was set: the page's selector
+  /// and the readout are siblings, and which builds first is not something a
+  /// page can promise. A broadcast controller replays nothing, so on a gateway
+  /// panel the readout that arrived second never heard the value and stayed on
+  /// its unresolved key — the Speedbatchers throughput lines were blank on the
+  /// first visit and right on the second. The station's subject replays the
+  /// current map to every new listener; this one now does the same.
+  final BehaviorSubject<Map<String, String>> _subsChanged =
+      BehaviorSubject<Map<String, String>>.seeded(const {});
 
   @override
   void setSubstitution(String key, String value) {

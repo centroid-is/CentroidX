@@ -209,10 +209,43 @@ void main() {
       adapter.setSubstitution('n', '2');
       await Future<void>.delayed(Duration.zero);
 
+      // The first event is the map as it stood when the listener attached —
+      // empty here — which is what `StateMan`'s seeded subject gives a station
+      // too. After that, one announcement per distinct change.
       expect(seen, [
+        <String, String>{},
         {'n': '1'},
         {'n': '2'}
       ]);
+    });
+  });
+
+  // The Speedbatchers throughput readouts did not show on the first visit in
+  // a browser. Their keys carry `$sb_line_stats_period`, filled in by the
+  // page's own period selector, and a readout re-resolves its key when
+  // `substitutionsChangedProvider` fires. On a station that stream is a
+  // seeded `BehaviorSubject` (`state_man.dart`), so a watcher that arrives
+  // after the selector published still receives the current map. Here it was
+  // a plain broadcast controller, which replays nothing: when the selector
+  // happened to build first, the readout never heard the value, stayed on the
+  // unresolved key, and came right only after leaving the page and coming
+  // back. Which widget builds first is not something a page can promise.
+  group('substitutions reach a watcher that arrives late', () {
+    test('a listener attached after a value was set receives the current map',
+        () async {
+      final adapter = _adapter();
+      addTearDown(adapter.close);
+      adapter.setSubstitution('sb_line_stats_period', 'Minute5');
+
+      final seen = <Map<String, String>>[];
+      adapter.substitutionsChanged.listen(seen.add);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(seen, isNotEmpty,
+          reason: 'the selector published before this watcher arrived; a '
+              'stream that does not replay leaves the readout on its '
+              'unresolved key until the operator changes the period');
+      expect(seen.last, {'sb_line_stats_period': 'Minute5'});
     });
   });
 
