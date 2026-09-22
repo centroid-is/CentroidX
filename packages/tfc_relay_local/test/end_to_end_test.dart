@@ -352,9 +352,16 @@ void main() {
       expect(e2e.panel.read(perSession)!.value, isFalse,
           reason: 'a quiet panel\'s send buffer is not shedding');
 
+      // The motor speed too, in the same wait: it comes down the identical
+      // path, but a key yields nothing until its first value arrives, and on
+      // the macOS CI runner the health keys landed first and the assertion
+      // below read an empty list.
       await until(
-          () => seen[perPlant]!.isNotEmpty && seen[perSession]!.isNotEmpty,
-          describe: 'both health keys arriving in the subscribe snapshot');
+          () =>
+              seen[perPlant]!.isNotEmpty &&
+              seen[perSession]!.isNotEmpty &&
+              seen[speedKey]!.isNotEmpty,
+          describe: 'both health keys and the motor speed arriving');
       print('HEALTH snapshot pushes: $perPlant=${seen[perPlant]!.length} '
           '$perSession=${seen[perSession]!.length} '
           '$speedKey=${seen[speedKey]!.length}');

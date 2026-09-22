@@ -54,8 +54,8 @@
 /// rule `timeseries_read_test.dart` and 8b's `side_by_side_test.dart` follow,
 /// and the reason the two phases can point at one server.
 ///
-/// `flutter_preferences` and the four history-view tables cannot be prefixed:
-/// they are drift's own schema and the contract's preference keys are literal
+/// `config_item`'s preference rows and the four history-view tables cannot be
+/// prefixed: they are drift's own schema and the contract's preference keys are literal
 /// strings inside the kit. Those rows are deleted by name in `setUp` and
 /// `tearDownAll` instead. See the SUMMARY's note on the residual cross-suite
 /// hazard in `TIMESCALEDB_EXTERNAL` mode, where every db suite shares one
@@ -263,7 +263,8 @@ void main() {
       // and a cleanup that ran first would answer it for us.
       await probeForUnprefixedTables();
       await admin.execute(
-          pg.Sql.named('DELETE FROM flutter_preferences WHERE key = ANY(@k)'),
+          pg.Sql.named("DELETE FROM config_item WHERE kind = 'preference' "
+              'AND id = ANY(@k)'),
           parameters: {'k': contractPreferenceKeys});
       await deleteContractViews();
       try {
@@ -287,7 +288,8 @@ void main() {
       await admin
           .execute('TRUNCATE TABLE "${physicalTables[recordedSeries]}"');
       await admin.execute(
-          pg.Sql.named('DELETE FROM flutter_preferences WHERE key = ANY(@k)'),
+          pg.Sql.named("DELETE FROM config_item WHERE kind = 'preference' "
+              'AND id = ANY(@k)'),
           parameters: {'k': contractPreferenceKeys});
     });
 

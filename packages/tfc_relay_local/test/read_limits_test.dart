@@ -739,7 +739,8 @@ void main() {
 
       tearDown(() async {
         await admin.execute(
-            "DELETE FROM flutter_preferences WHERE key LIKE '$ns%'");
+            "DELETE FROM config_item WHERE kind = 'preference' "
+            "AND id LIKE '$ns%'");
       });
 
       Future<PreferenceStore> seededStore({ReadLimits? limits}) async {

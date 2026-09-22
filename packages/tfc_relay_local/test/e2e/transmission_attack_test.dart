@@ -474,6 +474,13 @@ void main() {
         'are a separate gap, see the comment)',
         () async {
       final bench = await standUpPlant();
+      // Waited for, not read once: since d713e72ea a key yields nothing until
+      // its first value arrives (no placeholder), and on a slow runner the
+      // stand-up can return a turn before the struct's first push lands —
+      // measured on the macOS CI runner as `null`.
+      await until(() => bench.panel.read(driveKey) != null,
+          within: const Duration(seconds: 30),
+          describe: 'the drive struct\'s first value');
       expect(bench.panel.read(driveKey)!.toString(), contains('run_mode'),
           reason: 'the type dictionary reached the panel on the first '
               'snapshot');

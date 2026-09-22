@@ -31,6 +31,7 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:postgres/postgres.dart' as pg;
 import 'package:test/test.dart';
@@ -87,12 +88,20 @@ DatabaseConfig gateConfig() => DatabaseConfig(
       applicationName: gateAppName,
     );
 
+/// Writes a shared preference row the way an HMI station does: straight at
+/// `config_item`, through a connection this gateway does not own.
 Future<void> writeBehindTheGateway(String key, String value) async {
   await admin.execute(
-    pg.Sql.named('INSERT INTO flutter_preferences (key, value, type) '
-        'VALUES (@k, @v, \'String\') ON CONFLICT (key) DO UPDATE SET '
-        'value = EXCLUDED.value, type = EXCLUDED.type'),
-    parameters: {'k': key, 'v': value},
+    pg.Sql.named('INSERT INTO config_item '
+        '(kind, id, scope, payload, rev, updated_at, updated_by) '
+        "VALUES ('preference', @k, 'shared', @p, 1, now(), 'hmi-station') "
+        'ON CONFLICT (kind, id, scope) DO UPDATE SET '
+        'payload = EXCLUDED.payload, rev = config_item.rev + 1, '
+        'updated_at = EXCLUDED.updated_at, updated_by = EXCLUDED.updated_by'),
+    parameters: {
+      'k': key,
+      'p': jsonEncode({'type': 'String', 'value': value}),
+    },
   );
 }
 
@@ -142,7 +151,8 @@ void main() {
 
   tearDownAll(() async {
     await admin.execute(
-        pg.Sql.named('DELETE FROM flutter_preferences WHERE key LIKE @p'),
+        pg.Sql.named("DELETE FROM config_item WHERE kind = 'preference' "
+            'AND id LIKE @p'),
         parameters: {'p': '$ns%'});
     try {
       await writer.close();
@@ -193,7 +203,7 @@ void main() {
       await writeBehindTheGateway(key, 'saved at the HMI station');
 
       expect(await settle(() => seen.contains(key)), isTrue,
-          reason: 'an HMI station at SVN writes flutter_preferences directly '
+          reason: 'an HMI station at SVN writes its preference rows directly '
               'today, and Preferences._onPreferencesChanged fires only for '
               'writes made through THIS instance '
               '(preferences.dart:154-155). Without the channel half that '

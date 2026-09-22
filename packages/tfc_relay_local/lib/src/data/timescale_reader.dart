@@ -104,7 +104,12 @@ import 'read_limits.dart';
 
 /// Whatever `Database` the composition currently holds, or null while the
 /// historian is not up.
-typedef DatabaseSupplier = ts.Database? Function();
+typedef DatabaseSupplier = SuppliedDatabase? Function();
+
+/// What a [DatabaseSupplier] answers, named so a neighbour holding one can
+/// spell the type without importing `core/database.dart` itself — which is
+/// what keeps `freeze_test.dart`'s `declaredSeamImportFiles` at two.
+typedef SuppliedDatabase = ts.Database;
 
 /// Why a read was refused. Sealed so the disposition below is a switch the
 /// compiler checks rather than a string match.

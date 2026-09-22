@@ -1,77 +1,62 @@
-/// The fifteen `PreferencesApi` members over the `Preferences` `tfc_dart`
-/// builds for this gateway.
+/// The fifteen `PreferencesApi` members over the plant's shared preference
+/// rows — `config_item` rows of kind `preference`, shared scope.
 ///
-/// ## After main's #465 this store is memory-only
+/// ## After main's #465: the rows, not the retired table
 ///
-/// Everything below was written over `tfc_dart`'s shared `flutter_preferences`
-/// table, which `Preferences.create` filled a cache from. That table is
-/// retired: the shared settings are `config_item` rows, served to the app by
-/// `SharedRowPreferences` over a `ConfigStore`, and `Preferences.create(db:)`
-/// now reads nothing from the database it is handed. What [_load] builds is
-/// therefore a store holding exactly what was written through it in this
-/// process, and [invalidate] rebuilds it EMPTY. Serving the rows from this
-/// gateway needs a `ConfigStore` behind a guard, a policy, an audit sink and a
-/// station identity — a design, not a merge fix — so the trap and the
-/// rebuild reasoning below still describe this file's shape, over a table it
-/// no longer reaches. [clear] is the one member rewritten for it, because its
-/// old body was a `DELETE` against the retired table.
+/// This store was written over `tfc_dart`'s `flutter_preferences` table, which
+/// `Preferences.create` filled a cache from. #465 retired that table: the
+/// shared settings are `config_item` rows, and `Preferences.create(db:)` now
+/// reads nothing from the database it is handed. Built over it, this store
+/// answered every key a station had written as absent and kept every write in
+/// this process only — the `db` lane's round-trip, row-count and
+/// other-writer cases are what showed it.
 ///
-/// ## TRAP 8: a `Preferences` built by hand answers "no keys"
+/// So the store now goes where the backend goes. Reads decode the rows with
+/// `readSharedConfigItemsOfKind` and `decodePreferencePayload`, the codec both
+/// stations write with, so `7` and `'7'` stay apart. Writes go through
+/// `BackendConfigWriter` — the backend's one writer of shared configuration,
+/// which reads the plant's current rows from Postgres before every write and
+/// lands it through `ConfigStore.writeItems`, so the change log and the
+/// compare-and-swap see a harness write exactly as they see a station's.
+/// There is no session here to attribute a write to, so every write carries
+/// [writerIdentity].
 ///
-/// `getKeys` and `getAll` read an **in-memory cache**
-/// (`preferences.dart:267-274`), not the table. The only thing that fills that
-/// cache is `Preferences.create`, which awaits `loadFromPostgres()` (`:233`).
-/// A gateway that constructed `Preferences(database: db, …)` directly — the
-/// public constructor, which compiles and looks right — would answer an empty
-/// set to a store that at SVN today holds **four rows and 675,890 bytes**,
-/// `key_mappings` alone being 530,287 of them (`svn-prefs-live-20260811.csv`,
-/// measured). Nothing throws. The first symptom is a settings page that looks
-/// like a fresh install, which is not a thing anybody reports as a fault, and
-/// the second is somebody re-entering configuration that was never lost.
+/// ## TRAP 8: the cache has to have been filled from the rows
 ///
-/// So this store never uses the constructor. [_load] goes through
-/// `Preferences.create`, and there is a case asserting a freshly built store
-/// answers a seeded database's keys.
+/// `getKeys`, `getAll` and the getters answer from an **in-memory copy** of
+/// the rows ([_load]). A store that started from an empty map would answer an
+/// empty set to a plant that at SVN today holds `key_mappings` alone at
+/// 530,287 bytes (`svn-prefs-live-20260811.csv`, measured). Nothing throws;
+/// the first symptom is a settings page that looks like a fresh install. So
+/// the copy is only ever built by reading every shared preference row, and
+/// there is a case asserting a freshly built store answers a seeded
+/// database's keys.
 ///
-/// ## The cache is rebuilt, never patched
+/// ## The cache is rebuilt, never patched from outside
 ///
-/// The cache is a process-local copy of a table **other processes write** — an
-/// HMI station at SVN saves its settings straight into it. When
-/// `preference_change_feed.dart` hears that happen it calls [invalidate], and
-/// the next call rebuilds through `Preferences.create` rather than refreshing
-/// the one key that changed.
-///
-/// A per-key refresh was considered and rejected, for a reason worth writing
-/// down: upstream offers no way to **evict** a key from the cache that does not
-/// also delete its row. `Preferences.remove` clears the entry *and* issues a
-/// `DELETE` (`preferences.dart:421-436`), so reflecting somebody else's delete
-/// with it would mean this gateway issuing a delete of its own — against a row
-/// that a racing writer may have just re-created. `loadFromPostgres` on the
-/// live instance has the mirror-image flaw: it overwrites and adds, and never
-/// removes, so a deleted key would live in the cache forever. Rebuilding is
-/// the only operation that is total, and its cost is one full read — 660 KiB
-/// at SVN's present size, on a change nobody makes twice a minute.
+/// The copy is of rows **other processes write** — an HMI station at SVN saves
+/// its settings straight into them. When `preference_change_feed.dart` hears
+/// that happen it calls [invalidate], and the next call rebuilds the whole
+/// copy rather than refreshing the one key that changed: a rebuild is total,
+/// so a row somebody else deleted cannot live on in it. The store's own writes
+/// patch the copy after the row has landed, which is what lets [resync]
+/// compare what this store last knew against what the table holds now.
 ///
 /// ## The seam stays at two files
 ///
 /// This file does not import `core/database.dart`. It takes 10-07's
-/// [DatabaseSupplier] from next door and hands what it returns to
-/// `Preferences.create`, whose `db` parameter has exactly that type — so the
-/// call is statically checked and `freeze_test.dart`'s
-/// `declaredSeamImportFiles` does not move. `history_view_store.dart`'s
-/// library doc carries the full argument.
-///
-/// `Preferences.create` accepts a **null** database and quietly degrades to a
-/// memory-only store when given one. That is Trap 8 wearing a second hat, so
-/// [_load] refuses instead: null means the historian is not up, and
+/// [DatabaseSupplier] from next door and reaches the drift database through
+/// it, so `freeze_test.dart`'s `declaredSeamImportFiles` does not move.
+/// `history_view_store.dart`'s library doc carries the full argument. A null
+/// supplier answer means the historian is not up, and
 /// [PreferenceStoreUnavailable] is retryable and says so.
 ///
 /// ## SEC-01: `secret:` is not spelled in this file
 ///
 /// The concrete `Preferences` carries a `{bool secret = false}` on twelve
-/// members, which routes the call to the OS keychain instead of the table. The
-/// interface this store implements omits it, every call below uses the
-/// non-secret overload, and `preference_store_test.dart` greps this source for
+/// members, which routes the call to the OS keychain instead of the table.
+/// The interface this store implements omits it and nothing below reaches a
+/// `Preferences` at all; `preference_store_test.dart` greps this source for
 /// the word — because the obvious future edit is to add it back "for
 /// symmetry", and that one client-supplied boolean would be remote retrieval
 /// of the secure store (T-10-35).
@@ -79,8 +64,15 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show Platform;
 
-import 'package:tfc_dart/core/preferences.dart' show Preferences;
+import 'package:tfc_dart/core/config/config_item.dart'
+    show ConfigKind;
+import 'package:tfc_dart/core/config/key_mapping_rows.dart'
+    show readSharedConfigItemsOfKind;
+import 'package:tfc_dart/core/config/preference_payload.dart';
+import 'package:tfc_dart/core/relay/backend_config_writer.dart'
+    show BackendConfigWriter;
 import 'package:tfc_dart/core/secure_storage/interface.dart'
     show MySecureStorage;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart'
@@ -88,7 +80,7 @@ import 'package:tfc_relay_protocol/tfc_relay_protocol.dart'
 
 import 'preference_change_feed.dart';
 import 'read_limits.dart';
-import 'timescale_reader.dart' show DatabaseSupplier;
+import 'timescale_reader.dart' show DatabaseSupplier, SuppliedDatabase;
 
 /// The preference store cannot be reached right now.
 ///
@@ -212,7 +204,7 @@ final class NoSecretStorage implements MySecureStorage {
   Future<void> delete({required String key}) async => _refuse('delete');
 }
 
-/// `PreferencesApi` over the shared `flutter_preferences` table.
+/// `PreferencesApi` over the plant's shared `config_item` preference rows.
 final class PreferenceStore implements PreferencesApi {
   PreferenceStore({required this.database, this.log, ReadLimits? limits})
       : limits = limits ?? ReadLimits() {
@@ -225,120 +217,119 @@ final class PreferenceStore implements PreferencesApi {
     );
   }
 
-  /// The shared instance, borrowed per call. See the library doc.
+  /// Who the change log records for a write made through this store. The
+  /// harness has no session to take a user or a role from.
+  static const String writerIdentity = 'relay_gateway';
+
+  /// Where the rows come from. Called per operation, never cached: the sink
+  /// replaces its `Database` on reconnect, and a store holding the old one
+  /// would read through a closed connection.
   final DatabaseSupplier database;
 
-  /// The outbound ceilings. See `read_limits.dart` for the arithmetic.
+  /// The ceiling [getAll] enforces on its encoded answer.
   final ReadLimits limits;
 
-  /// Where a swallowed failure goes. Optional and injected, following
-  /// `HistoryViewStore`'s shape: a store built in a test asserts what it was
-  /// told, and one built by `bin/relay_gateway.dart` writes to the gateway's
-  /// logger.
   final void Function(String message)? log;
 
-  /// Writes made **through this gateway**, forwarded from whichever
-  /// `Preferences` instance is current.
-  ///
-  /// Broadcast and forwarded rather than handed out directly, because the
-  /// instance is rebuilt whenever the cache is invalidated or the database
-  /// is swapped, and a subscriber holding the old instance's stream would go
-  /// quiet without anything closing.
+  /// This store's own writes, as keys. Merged into [onPreferencesChanged] by
+  /// the feed, which also de-duplicates the NOTIFY each of them causes.
   final StreamController<String> _local = StreamController<String>.broadcast();
 
   late final PreferenceChangeFeed _feed;
 
-  /// The merged change signal: this gateway's writes and everybody else's.
+  /// The change feed behind [onPreferencesChanged], exposed so a test can
+  /// read whether its channel is up.
   PreferenceChangeFeed get feed => _feed;
 
-  /// The `Preferences` currently loaded, or null when it must be rebuilt.
-  Future<Preferences>? _loaded;
+  /// The copy of the shared rows, or null when it must be rebuilt.
+  Future<Map<String, Object?>>? _loaded;
 
-  /// The database instance [_loaded] was built over, for the swap check.
-  ///
-  /// Deliberately `Object?`: only [identical] is asked of it, and naming the
-  /// real type here would mean importing the seam.
+  /// The `Database` [_loaded] was read over. A different one — the sink
+  /// reconnected — means the copy is rebuilt rather than trusted.
   Object? _loadedOver;
 
-  StreamSubscription<String>? _localSource;
+  /// The writer, and the `Database` it was built over, for the same reason.
+  BackendConfigWriter? _writer;
+  Object? _writerOver;
 
   bool _closed = false;
 
-  /// The loaded `Preferences`, built if it is absent or built over a
-  /// database instance the supplier has since replaced.
-  ///
-  /// The *future* is cached rather than the value, so two concurrent first
-  /// calls share one `loadFromPostgres` instead of racing two.
-  Future<Preferences> _load() async {
+  SuppliedDatabase _database() {
     if (_closed) throw StateError('this preference store has been closed');
     final db = database();
     if (db == null) throw const PreferenceStoreUnavailable();
+    return db;
+  }
+
+  /// The copy of the rows, read in full if it is absent or was read over a
+  /// connection that has since been replaced. See TRAP 8 in the library doc.
+  Future<Map<String, Object?>> _load() async {
+    final db = _database();
     final loaded = _loaded;
     if (loaded != null && identical(_loadedOver, db)) return loaded;
 
-    // `create` and not the constructor. See TRAP 8 in the library doc.
-    final building = Preferences.create(db: db);
+    final building = _readRows(db);
     _loaded = building;
     _loadedOver = db;
-    final Preferences prefs;
     try {
-      prefs = await building;
+      return await building;
     } catch (_) {
-      // A failed build must not be cached as the answer: the next caller has
-      // to try again rather than inherit a broken instance forever.
+      // A failed read must not be cached as the answer: the next caller has
+      // to try again rather than inherit a broken copy forever.
       if (identical(_loaded, building)) {
         _loaded = null;
         _loadedOver = null;
       }
       rethrow;
     }
-    await _localSource?.cancel();
-    _localSource = prefs.onPreferencesChanged.listen(
-      (key) {
-        if (!_local.isClosed) _local.add(key);
-      },
-      onError: (Object e) {
-        log?.call('preference change stream error: $e');
-      },
-    );
-    return prefs;
+  }
+
+  /// Every shared preference row, decoded. One query, whatever the count.
+  static Future<Map<String, Object?>> _readRows(SuppliedDatabase db) async {
+    final items = await readSharedConfigItemsOfKind(
+        db.db, ConfigKind.preference);
+    return <String, Object?>{
+      for (final item in items) item.id: decodePreferencePayload(item.payload),
+    };
+  }
+
+  BackendConfigWriter _writerFor(SuppliedDatabase db) {
+    final held = _writer;
+    if (held != null && identical(_writerOver, db)) return held;
+    final previous = _writer;
+    _writer = null;
+    _writerOver = null;
+    if (previous != null) unawaited(previous.close());
+    final built = BackendConfigWriter.create(
+        remote: db, station: Platform.localHostname);
+    if (built == null) {
+      // `create` has already logged why; the store refuses the write by name
+      // rather than keeping it in memory and reporting success.
+      throw StateError('this gateway could not build its configuration '
+          'writer, so it cannot write the shared preference rows. Nothing '
+          'was written.');
+    }
+    _writer = built;
+    _writerOver = db;
+    return built;
   }
 
   // ------------------------------------------------------------------- reads
 
   @override
-  Future<Set<String>> getKeys({Set<String>? allowList}) async =>
-      (await _load()).getKeys(allowList: allowList);
+  Future<Set<String>> getKeys({Set<String>? allowList}) async {
+    final keys = (await _load()).keys;
+    return allowList == null
+        ? keys.toSet()
+        : keys.where(allowList.contains).toSet();
+  }
 
-  /// Every key and value, or every one in [allowList] — refused if the
-  /// **encoded** answer would be over [ReadLimits.maxPreferenceBytes].
+  /// Every stored value — or the ones [allowList] names — measured on the
+  /// **encoded** bytes before it is answered.
   ///
-  /// ## Why encoded, and not the sum of the value lengths
-  ///
-  /// The frame is what fills the session's priority lane, and JSON escaping is
-  /// not free: the store's two big rows are themselves JSON documents, so every
-  /// `"` inside them becomes `\"` on the way out. Measured on the live store,
-  /// the encoded map is **11.7 % larger** than the sum of its values — 754 707
-  /// B against 675 890. A cap that measured the raw lengths would let through
-  /// an answer eleven percent over its own ceiling, which is the same class of
-  /// mistake as having no cap.
-  ///
-  /// The measurement is through the same `jsonEncode` the wire uses, and the
-  /// cost is one encode of an answer that is about to be encoded again by
-  /// `json_rpc_2` anyway. That double encode is the price of not guessing; at
-  /// three quarters of a megabyte it is a few milliseconds, on a call a panel
-  /// makes when a settings page opens.
-  ///
-  /// ## And why the allow-list is what the refusal names
-  ///
-  /// There is no smaller method to suggest. `getAll` with no allow-list is the
-  /// whole store by definition, and the store grows with the plant — one
-  /// `key_mappings` entry per tag. The fix is the parameter every real caller
-  /// should already be passing, which the interface's own doc calls "highly
-  /// recommended".
-  ///
-  /// **Nothing is truncated.** A partial map is a settings page rendering its
-  /// *defaults* over values that are really there, with nothing saying so.
+  /// A value `jsonEncode` refuses (a non-finite double is the one a row can
+  /// hold) is an [UnencodablePreference] naming the key: permanent, because
+  /// no retry changes what is stored (10-REVIEW WR-06).
   @override
   Future<Map<String, Object?>> getAll({Set<String>? allowList}) async {
     final all = await _allOf(allowList);
@@ -346,8 +337,6 @@ final class PreferenceStore implements PreferencesApi {
     try {
       json = jsonEncode(all);
     } on JsonUnsupportedObjectError catch (bad) {
-      // 10-REVIEW WR-06. The measurement already has the answer in hand; what
-      // it did not have was a *type* the wire could read as permanent.
       throw UnencodablePreference(_firstUnencodable(all), _oneLine(bad));
     }
     final encoded = utf8.encode(json).length;
@@ -366,30 +355,15 @@ final class PreferenceStore implements PreferencesApi {
     return all;
   }
 
-  /// The cache's whole answer, **uncapped**.
-  ///
-  /// [ReadLimits.maxPreferenceBytes] is a ceiling on what crosses a socket, and
-  /// [resync] is not crossing one: it diffs the store against itself in this
-  /// process to work out which keys to announce. Subjecting it to the wire's
-  /// cap would mean a plant whose store outgrew 1 MiB stopped announcing
-  /// preference changes altogether — [resync] catches and logs, so the failure
-  /// would be a quiet one, and "nobody saw the edit" is the failure DB-03
-  /// exists to prevent.
-  Future<Map<String, Object?>> _allOf(Set<String>? allowList) async =>
-      (await _load()).getAll(allowList: allowList);
+  Future<Map<String, Object?>> _allOf(Set<String>? allowList) async {
+    final rows = await _load();
+    return <String, Object?>{
+      for (final entry in rows.entries)
+        if (allowList == null || allowList.contains(entry.key))
+          entry.key: entry.value,
+    };
+  }
 
-  /// The first key in [all] whose value `jsonEncode` refuses, or null.
-  ///
-  /// **One extra pass, on a path that has already failed.** That is the whole
-  /// justification: this runs only after the bulk encode threw, so the cost is
-  /// paid by a request that was not going to be answered anyway — and what it
-  /// buys is the difference between "something in the store" and "this key",
-  /// which is the difference between a support call and an `UPDATE`.
-  ///
-  /// Null is a legitimate answer and is not a failure: a value can be
-  /// unencodable in a way that only shows up in composition (a cycle), and a
-  /// refusal that guessed a key would send somebody to correct a row that is
-  /// fine.
   static String? _firstUnencodable(Map<String, Object?> all) {
     for (final entry in all.entries) {
       try {
@@ -401,32 +375,31 @@ final class PreferenceStore implements PreferencesApi {
     return null;
   }
 
-  /// The first line of [error]'s own message.
-  ///
-  /// The whole `toString()` of a `JsonUnsupportedObjectError` carries the
-  /// offending object, which is the thing that could not be encoded — putting
-  /// it in a refusal that is about to be encoded is the same trap one turn
-  /// later.
   static String _oneLine(Object error) {
     final text = error.runtimeType.toString();
     return text.split('\n').first;
   }
 
+  /// A stored value of another type is a [TypeError], as the interface
+  /// promises — the casts below are the refusal, and `async` makes it a
+  /// rejected future rather than a synchronous throw.
   @override
-  Future<bool?> getBool(String key) async => (await _load()).getBool(key);
+  Future<bool?> getBool(String key) async => (await _load())[key] as bool?;
 
   @override
-  Future<int?> getInt(String key) async => (await _load()).getInt(key);
+  Future<int?> getInt(String key) async => (await _load())[key] as int?;
 
   @override
-  Future<double?> getDouble(String key) async => (await _load()).getDouble(key);
+  Future<double?> getDouble(String key) async =>
+      (await _load())[key] as double?;
 
   @override
-  Future<String?> getString(String key) async => (await _load()).getString(key);
+  Future<String?> getString(String key) async =>
+      (await _load())[key] as String?;
 
   @override
   Future<List<String>?> getStringList(String key) async =>
-      (await _load()).getStringList(key);
+      ((await _load())[key] as List?)?.cast<String>().toList();
 
   @override
   Future<bool> containsKey(String key) async =>
@@ -435,135 +408,104 @@ final class PreferenceStore implements PreferencesApi {
   // ------------------------------------------------------------------ writes
 
   @override
-  Future<void> setBool(String key, bool value) async =>
-      (await _load()).setBool(key, value);
+  Future<void> setBool(String key, bool value) =>
+      _set(key, kPrefBoolType, value);
 
   @override
-  Future<void> setInt(String key, int value) async =>
-      (await _load()).setInt(key, value);
+  Future<void> setInt(String key, int value) => _set(key, kPrefIntType, value);
 
   @override
-  Future<void> setDouble(String key, double value) async =>
-      (await _load()).setDouble(key, value);
+  Future<void> setDouble(String key, double value) =>
+      _set(key, kPrefDoubleType, value);
 
   @override
-  Future<void> setString(String key, String value) async =>
-      (await _load()).setString(key, value);
+  Future<void> setString(String key, String value) =>
+      _set(key, kPrefStringType, value);
 
   @override
-  Future<void> setStringList(String key, List<String> value) async =>
-      (await _load()).setStringList(key, value);
+  Future<void> setStringList(String key, List<String> value) =>
+      _set(key, kPrefStringListType, List<String>.unmodifiable(value));
+
+  /// Lands the row, then patches the copy and announces the key. The copy is
+  /// loaded first so that [resync] has what this store knew to compare
+  /// against, exactly as it would after a read.
+  Future<void> _set(String key, String type, Object value) async {
+    final db = _database();
+    final rows = await _load();
+    await _writerFor(db).setPreference(key, type, value,
+        who: writerIdentity,
+        roleName: writerIdentity,
+        station: Platform.localHostname);
+    rows[key] = value;
+    if (!_local.isClosed) _local.add(key);
+  }
 
   @override
-  Future<void> remove(String key) async => (await _load()).remove(key);
+  Future<void> remove(String key) async {
+    final db = _database();
+    final rows = await _load();
+    await _writerFor(db).removePreference(key,
+        who: writerIdentity,
+        roleName: writerIdentity,
+        station: Platform.localHostname);
+    rows.remove(key);
+    if (!_local.isClosed) _local.add(key);
+  }
 
-  /// Removes every stored preference, or every one named by [allowList].
+  /// Removes the rows [allowList] names — or every shared preference row when
+  /// it is null — and announces them in **one turn**.
   ///
-  /// **A delegation, and the paragraphs this replaced said it could not be.**
-  /// They were written when `Preferences.create` filled a cache from the
-  /// shared `flutter_preferences` table: `Preferences.clear` emptied that
-  /// cache and never touched Postgres, so a delegation was a clear that undid
-  /// itself on the next rebuild. This method therefore issued the `DELETE`
-  /// itself (10-09), borrowed the database once across both awaits, and
-  /// rebuilt the cache first so the key list was the table's and not the
-  /// cache's (10-REVIEW WR-07).
+  /// The keys are what the **table** holds, not what the copy last saw: the
+  /// copy is rebuilt first, so a key another process created since the last
+  /// rebuild is removed too. `clear` is the one member whose whole contract is
+  /// totality.
   ///
-  /// Main's #465 retired the table, and every one of those reasons with it.
-  /// `Preferences.create(db:)` reads nothing from the database it is handed —
-  /// see the library doc — so the `Preferences` this store holds is memory
-  /// only: what it holds is what was written through it, `getKeys` is total
-  /// over that, and its own `clear` is the whole clear. There is no second
-  /// borrow because there is no second statement. And [invalidate] before the
-  /// read would now be worse than useless: a rebuild is an EMPTY store, so a
-  /// clear that rebuilt first would find nothing to clear and report success.
-  /// A `DELETE FROM flutter_preferences` here would be exactly the
-  /// reintroduced reference `scripts/check-flutter-preferences-retired.sh`
-  /// exists to catch — green in every test and broken on the night the drop
-  /// tool runs. The shared rows are `config_item` and are
-  /// `SharedRowPreferences`' to remove; this gateway holds no `ConfigStore`
-  /// to reach them through, and the library doc records that gap rather than
-  /// this method papering over it.
-  ///
-  /// **The caller's [allowList] goes down unchanged**, and the keys are read
-  /// first only to be announced: totality is the store's, over what it holds,
-  /// not "everything, as of what `getKeys` just answered".
-  ///
-  /// **One call and one turn, not a `remove` per key.** The obvious
-  /// implementation — loop over the keys calling [remove] — was written,
-  /// measured and rejected: each `remove` awaits a round trip, so the event
-  /// loop turns between them, and `data_handlers._scheduleFlush`'s `Timer.run`
-  /// fires in every gap. Eight keys produced **eight** frames. At the five
-  /// hundred keys 10-05 sized the coalescing for, that is T-10-19 restored
-  /// from the caller's side: five hundred priority-lane frames per connected
-  /// client and then `close(4004)`, which every operator reads as the network
-  /// having dropped.
-  ///
-  /// So the store is cleared in one call — `Preferences.clear` fires no change
-  /// event, so it is this method that announces — and the keys go out in a
-  /// single pass with no `await` between them. Everything the burst announces
-  /// is therefore pending before the flush timer can run, and the wire sees
-  /// one frame carrying the whole set.
-  ///
-  /// **The blast radius is real and is not this file's to narrow.** With no
-  /// allow-list this clears every key the gateway holds, and the interface's
-  /// own doc says as much ("It is highly recommended that an allowList be
-  /// provided"). The gate on the call is 10-05's `operate` role, which is the
-  /// same role that writes a motor setpoint; narrowing it further is a policy
-  /// decision, and policy lives in `policy_state_man.dart`, not here.
-  /// Recorded as a threat flag rather than quietly refused, because a store
-  /// that silently declined an unrestricted clear would be a fourth behaviour
-  /// nobody could predict from the interface.
+  /// No `await` sits between the announcements. A settings page coalesces
+  /// changes per frame; a loop that yielded between keys would let the flush
+  /// timer fire in every gap and turn one clear into one frame per key.
   @override
   Future<void> clear({Set<String>? allowList}) async {
-    final prefs = await _load();
-    final keys = (await prefs.getKeys(allowList: allowList)).toList();
-    await prefs.clear(allowList: allowList);
+    final db = _database();
+    invalidate();
+    final rows = await _load();
+    final keys = allowList == null
+        ? rows.keys.toSet()
+        : rows.keys.where(allowList.contains).toSet();
     if (keys.isEmpty) return;
-
-    // No `await` in this loop. That is the whole point — see the doc above.
+    await _writerFor(db).clearPreferences(keys,
+        who: writerIdentity,
+        roleName: writerIdentity,
+        station: Platform.localHostname);
+    // The writer keeps bookkeeping and reserved rows whatever the list says,
+    // so the copy is re-read rather than trimmed by the same list.
+    invalidate();
+    final after = await _load();
     for (final key in keys) {
+      if (after.containsKey(key)) continue;
       if (!_local.isClosed) _local.add(key);
     }
   }
 
   // ------------------------------------------------------------------ events
 
-  /// Every key whose value changed, **whoever changed it**.
-  ///
-  /// The merged feed and not `Preferences`' own stream: that one fires only
-  /// for writes made through this instance (`preferences.dart:154-155`), and
-  /// at SVN an HMI station writes the table directly.
-  /// `preference_change_feed.dart` carries the merge, the de-duplication and
-  /// the gap handling.
+  /// Every key that changed, whoever changed it: this store's own writes and
+  /// any other process's, merged and de-duplicated by the feed.
   @override
   Stream<String> get onPreferencesChanged => _feed.changes;
 
-  /// Drops the loaded cache so the next call rebuilds it from the table.
-  ///
-  /// Called by the feed when somebody else wrote. Synchronous and lazy on
-  /// purpose: a burst of notifications with no read between them costs one
-  /// rebuild, not one per key.
+  /// Drops the copy, so the next call reads the rows again.
   void invalidate() {
     _loaded = null;
     _loadedOver = null;
   }
 
-  /// Rebuilds from the table and answers every key whose value changed.
-  ///
-  /// This is how a gap in the notification stream stops being silent. The
-  /// feed calls it after every successful (re-)listen, so changes made while
-  /// nothing was listening — a dead notify connection, or simply no session
-  /// connected, because the channel is listener-gated — are announced rather
-  /// than lost.
-  ///
-  /// Answers an empty set, and says so in the log, when the store could not
-  /// be read: a resync that failed must never be reported as "nothing
-  /// changed".
+  /// Rebuilds the copy and answers every key whose value differs from what
+  /// the copy held — the changes nobody was listening for.
   Future<Set<String>> resync() async {
     if (_closed) return const <String>{};
     final Map<String, Object?> before;
     try {
-      before = await _allOf(null);
+      before = Map<String, Object?>.of(await _load());
     } catch (e) {
       log?.call('preference resync could not read the store: $e');
       return const <String>{};
@@ -571,24 +513,21 @@ final class PreferenceStore implements PreferencesApi {
     invalidate();
     final Map<String, Object?> after;
     try {
-      after = await _allOf(null);
+      after = await _load();
     } catch (e) {
       log?.call('preference resync could not re-read the store: $e');
       return const <String>{};
     }
     final changed = <String>{};
     for (final key in <String>{...before.keys, ...after.keys}) {
-      if (!_sameStoredValue(before[key], after[key])) changed.add(key);
+      if (before.containsKey(key) != after.containsKey(key) ||
+          !_sameStoredValue(before[key], after[key])) {
+        changed.add(key);
+      }
     }
     return changed;
   }
 
-  /// Whether two cached values are indistinguishable.
-  ///
-  /// Lists element by element: `getStringList` hands back a new `List` on
-  /// every rebuild, and `==` on two lists is identity — so a comparison that
-  /// did not do this would report every string-list preference as changed on
-  /// every resync.
   static bool _sameStoredValue(Object? a, Object? b) {
     if (a is List && b is List) {
       if (a.length != b.length) return false;
@@ -600,15 +539,16 @@ final class PreferenceStore implements PreferencesApi {
     return a == b;
   }
 
-  /// Releases the feed, its channel subscription and the forwarded stream.
   Future<void> close() async {
     if (_closed) return;
     _closed = true;
     await _feed.close();
-    await _localSource?.cancel();
-    _localSource = null;
     await _local.close();
     _loaded = null;
     _loadedOver = null;
+    final writer = _writer;
+    _writer = null;
+    _writerOver = null;
+    await writer?.close();
   }
 }

@@ -22,7 +22,7 @@
 ///
 /// ## Cleanup, and why it is by key prefix
 ///
-/// `flutter_preferences` is keyed by string, named by drift's schema, and
+/// `config_item`'s preference rows are keyed by string and
 /// shared with the application's own HMI and with any 8b case running against
 /// the same server. So every key this file writes carries a per-run prefix and
 /// `tearDownAll` deletes exactly those rows. **Nothing here calls `clear()`
@@ -88,21 +88,31 @@ Future<Database> openWriter() async {
 PreferenceStore freshStore() =>
     PreferenceStore(database: () => writer, log: notices.add);
 
-/// Writes a row the way another process would: straight at the table, through
-/// a connection this gateway does not own.
-Future<void> writeBehindTheStore(String key, String value,
-    [String type = 'String']) async {
+/// Writes a shared preference row the way another process would: straight at
+/// `config_item`, through a connection this gateway does not own, with the
+/// `{type, value}` payload every station writes.
+Future<void> writeBehindTheStore(String key, Object value,
+        [String type = 'String']) =>
+    writeRawBehindTheStore(key, jsonEncode({'type': type, 'value': value}));
+
+/// The same, with the payload exactly as given — for a row no well-behaved
+/// writer would produce.
+Future<void> writeRawBehindTheStore(String key, String payload) async {
   await admin.execute(
-    pg.Sql.named('INSERT INTO flutter_preferences (key, value, type) '
-        'VALUES (@k, @v, @t) ON CONFLICT (key) DO UPDATE SET '
-        'value = EXCLUDED.value, type = EXCLUDED.type'),
-    parameters: {'k': key, 'v': value, 't': type},
+    pg.Sql.named('INSERT INTO config_item '
+        '(kind, id, scope, payload, rev, updated_at, updated_by) '
+        "VALUES ('preference', @k, 'shared', @p, 1, now(), 'hmi-station') "
+        'ON CONFLICT (kind, id, scope) DO UPDATE SET '
+        'payload = EXCLUDED.payload, rev = config_item.rev + 1, '
+        'updated_at = EXCLUDED.updated_at, updated_by = EXCLUDED.updated_by'),
+    parameters: {'k': key, 'p': payload},
   );
 }
 
 Future<int> rowCount(String key) async {
   final result = await admin.execute(
-      pg.Sql.named('SELECT count(*) FROM flutter_preferences WHERE key = @k'),
+      pg.Sql.named("SELECT count(*) FROM config_item WHERE kind = 'preference' "
+          "AND scope = 'shared' AND id = @k"),
       parameters: {'k': key});
   return result.first.first! as int;
 }
@@ -148,7 +158,8 @@ void main() {
   tearDownAll(() async {
     await store.close();
     await admin.execute(
-        pg.Sql.named("DELETE FROM flutter_preferences WHERE key LIKE @p"),
+        pg.Sql.named("DELETE FROM config_item WHERE kind = 'preference' "
+            'AND id LIKE @p'),
         parameters: {'p': '$ns%'});
     try {
       await writer.close();
@@ -314,15 +325,18 @@ void main() {
     test('a stored value the encoder refuses is a PERMANENT refusal naming '
         'the key', () async {
       final poisoned = '${ns}poison';
-      // A double the table can hold and JSON cannot. Written behind the store
-      // because it is not writable through it — which is the whole point:
-      // this row is somebody else's.
-      await writeBehindTheStore(poisoned, 'Infinity', 'double');
+      // A double the row can hold and `jsonEncode` cannot: `1e999` is valid
+      // JSON that decodes to infinity. Written behind the store because it is
+      // not writable through it — which is the whole point: this row is
+      // somebody else's.
+      await writeRawBehindTheStore(
+          poisoned, '{"type":"double","value":1e999}');
       // Registered before the assertions: a poisoned row left behind makes
       // every later case in this file read an unencodable store, and the
       // report would name five cases for one defect.
       addTearDown(() => admin.execute(
-          pg.Sql.named('DELETE FROM flutter_preferences WHERE key = @k'),
+          pg.Sql.named("DELETE FROM config_item WHERE kind = 'preference' "
+              'AND id = @k'),
           parameters: {'k': poisoned}));
 
       final fresh = freshStore();
