@@ -26,6 +26,8 @@ LinkWaypoint _$LinkWaypointFromJson(Map<String, dynamic> json) => LinkWaypoint(
       n: (json['n'] as num?)?.toDouble(),
       dx: (json['dx'] as num?)?.toDouble(),
       dy: (json['dy'] as num?)?.toDouble(),
+      x: (json['x'] as num?)?.toDouble(),
+      y: (json['y'] as num?)?.toDouble(),
     );
 
 Map<String, dynamic> _$LinkWaypointToJson(LinkWaypoint instance) =>
@@ -35,6 +37,8 @@ Map<String, dynamic> _$LinkWaypointToJson(LinkWaypoint instance) =>
       'n': instance.n,
       'dx': instance.dx,
       'dy': instance.dy,
+      if (instance.x case final value?) 'x': value,
+      if (instance.y case final value?) 'y': value,
     };
 
 LinkRun _$LinkRunFromJson(Map<String, dynamic> json) => LinkRun(

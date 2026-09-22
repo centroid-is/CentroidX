@@ -24,12 +24,38 @@ class _Block extends BaseAsset {
   Map<String, dynamic> toJson() => const {};
 }
 
+/// A device with two sockets on its bottom edge, like an ATV320.
+class _Drive extends BaseAsset implements NetworkPorted {
+  _Drive({required double x, required double y, String? name}) {
+    coordinates = Coordinates(x: x, y: y);
+    size = const RelativeSize(width: 0.05, height: 0.4);
+    text = name;
+  }
+
+  @override
+  List<NetworkPort> get networkPorts => const [
+        NetworkPort('A', PortSide.bottom, at: 0.35, description: 'In'),
+        NetworkPort('B', PortSide.bottom, at: 0.65, description: 'Out'),
+      ];
+
+  @override
+  Widget build(BuildContext context) => const SizedBox.shrink();
+  @override
+  Widget configure(BuildContext context) => const SizedBox.shrink();
+  @override
+  Map<String, dynamic> toJson() => const {};
+}
+
 /// The overlay on its own canvas, which is all it needs — it takes the page as
 /// a plain list rather than reaching for one.
 Future<int> pumpOverlay(
   WidgetTester tester, {
   required EtherCatLinkConfig link,
   required List<Asset> assets,
+  VoidCallback? onBeginEdit,
+  VoidCallback? onEndEdit,
+  VoidCallback? onConfigure,
+  void Function(Offset local, Offset global)? onSecondaryTap,
 }) async {
   var changes = 0;
   await tester.pumpWidget(MaterialApp(
@@ -44,7 +70,10 @@ Future<int> pumpOverlay(
                 link: link,
                 assets: assets,
                 canvas: _canvas,
-                onBeginEdit: () {},
+                onBeginEdit: onBeginEdit ?? () {},
+                onEndEdit: onEndEdit,
+                onConfigure: onConfigure,
+                onSecondaryTap: onSecondaryTap,
                 onChanged: () => changes++,
               ),
             ],
@@ -172,10 +201,11 @@ void main() {
 
     expect(find.text('Delete point'), findsOneWidget);
     expect(find.text('Straighten run'), findsOneWidget);
-    expect(find.text('This corner follows'), findsOneWidget);
+    expect(find.text('Stays where it is'), findsOneWidget);
+    expect(find.text('Follows both ends'), findsOneWidget);
     // Named by the devices the run is plugged into, not by opaque ids.
-    expect(find.text('EK1100'), findsOneWidget);
-    expect(find.text('EP2338'), findsOneWidget);
+    expect(find.text('Moves with EK1100'), findsOneWidget);
+    expect(find.text('Moves with EP2338'), findsOneWidget);
   });
 
   testWidgets('Delete point removes that corner', (tester) async {
@@ -183,6 +213,7 @@ void main() {
       ..add(LinkWaypoint.onRun(0.3, -0.2))
       ..add(LinkWaypoint.onRun(0.7, -0.2));
     await pumpOverlay(tester, link: link, assets: page);
+    final second = resolvedPoint(2);
 
     await tester.tapAt(onCanvas(tester, resolvedPoint(1)),
         buttons: kSecondaryButton);
@@ -192,7 +223,7 @@ void main() {
 
     expect(link.run.waypoints, hasLength(1));
     // The one that survived is the second, so the right index was removed.
-    expect(link.run.waypoints.single.t, closeTo(0.7, 1e-6));
+    expect(resolvedPoint(1), within(distance: 0.01, from: second));
   });
 
   testWidgets('pinning a corner to a device changes what holds it',
@@ -203,7 +234,7 @@ void main() {
     await tester.tapAt(onCanvas(tester, resolvedPoint(1)),
         buttons: kSecondaryButton);
     await tester.pumpAndSettle();
-    await tester.tap(find.text('EK1100'));
+    await tester.tap(find.text('Moves with EK1100'));
     await tester.pumpAndSettle();
 
     expect(link.run.waypoints.single.pinnedTo, a.id);
@@ -234,6 +265,146 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(link.run.waypoints, hasLength(1));
+  });
+
+  testWidgets('dragging an end leaves every corner where it was',
+      (tester) async {
+    // The "it just goes nuts" report. Corners held in the run's frame swung
+    // across the page with every pixel the end moved.
+    final cable = _shortCableWithCorners();
+    final onPage = <Asset>[cable];
+    await pumpOverlay(tester, link: cable, assets: onPage);
+    Offset at(int i) =>
+        cable.run.resolve(_canvas, _anchorsFor(onPage)).points[i];
+    final corners = [at(1), at(2), at(3)];
+    final end = at(4);
+
+    final gesture = await tester.startGesture(onCanvas(tester, end));
+    for (var i = 1; i <= 10; i++) {
+      await gesture.moveBy(const Offset(25, -30));
+      await tester.pump();
+      for (var c = 0; c < 3; c++) {
+        expect(at(c + 1), within(distance: 1, from: corners[c]),
+            reason: 'corner $c moved during step $i of the end drag');
+      }
+    }
+    await gesture.up();
+    await tester.pumpAndSettle();
+    for (var c = 0; c < 3; c++) {
+      expect(at(c + 1), within(distance: 1, from: corners[c]));
+    }
+  });
+
+  testWidgets('an end dropped just below a socket plugs into that socket',
+      (tester) async {
+    // A drive's sockets are on the edge of its box. Letting go a little
+    // outside it used to land on empty canvas and unplug the cable.
+    final drive = _Drive(x: 0.5, y: 0.45, name: 'Drive 2');
+    page = [a, b, drive, link];
+    await pumpOverlay(tester, link: link, assets: page);
+
+    final portB = Offset((0.5 - 0.025 + 0.05 * 0.65) * _canvas.width,
+        (0.45 + 0.2) * _canvas.height);
+    final end = resolvedPoint(1);
+    await tester.dragFrom(
+        onCanvas(tester, end), portB + const Offset(0, 13) - end);
+    await tester.pumpAndSettle();
+
+    expect(link.run.to.assetId, drive.id);
+    expect(link.run.to.port, 'B');
+  });
+
+  testWidgets('a dragged end snaps to a socket before it is dropped',
+      (tester) async {
+    final drive = _Drive(x: 0.5, y: 0.45, name: 'Drive 2');
+    page = [a, b, drive, link];
+    await pumpOverlay(tester, link: link, assets: page);
+
+    final portA = Offset((0.5 - 0.025 + 0.05 * 0.35) * _canvas.width,
+        (0.45 + 0.2) * _canvas.height);
+    final end = resolvedPoint(1);
+    final target = portA + const Offset(4, 12);
+    final gesture = await tester.startGesture(onCanvas(tester, end));
+    await gesture.moveBy((target - end) / 2);
+    await gesture.moveBy((target - end) / 2);
+    await tester.pump();
+
+    expect(resolvedPoint(1), within(distance: 0.5, from: portA),
+        reason: 'the end should sit on the socket it will plug into');
+    expect(drive.id, isNull,
+        reason: 'hovering must not give the device an id, only a drop');
+
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(link.run.to.assetId, drive.id);
+    expect(link.run.to.port, 'A');
+  });
+
+  testWidgets('a corner dropped near, but not on, a neighbour is kept',
+      (tester) async {
+    link.run.waypoints.add(LinkWaypoint.onRun(0.5, -0.3));
+    await pumpOverlay(tester, link: link, assets: page);
+
+    final corner = resolvedPoint(1);
+    final end = resolvedPoint(0);
+    await tester.dragFrom(
+        onCanvas(tester, corner), end + const Offset(12, -12) - corner);
+    await tester.pumpAndSettle();
+
+    expect(link.run.waypoints, hasLength(1));
+  });
+
+  testWidgets('double-clicking the cable asks for its form', (tester) async {
+    var opened = 0;
+    await pumpOverlay(tester,
+        link: link, assets: page, onConfigure: () => opened++);
+    final quarter =
+        resolvedPoint(0) + (resolvedPoint(1) - resolvedPoint(0)) / 4;
+
+    await tester.tapAt(onCanvas(tester, quarter));
+    await tester.pump(const Duration(milliseconds: 50));
+    await tester.tapAt(onCanvas(tester, quarter));
+    await tester.pumpAndSettle();
+
+    expect(opened, 1);
+  });
+
+  testWidgets('right-clicking the cable hands the spot to the editor',
+      (tester) async {
+    Offset? local;
+    await pumpOverlay(tester,
+        link: link, assets: page, onSecondaryTap: (l, _) => local = l);
+    final quarter =
+        resolvedPoint(0) + (resolvedPoint(1) - resolvedPoint(0)) / 4;
+
+    await tester.tapAt(onCanvas(tester, quarter), buttons: kSecondaryButton);
+    await tester.pumpAndSettle();
+
+    expect(local, within(distance: 0.5, from: quarter));
+    expect(find.text('Add point here'), findsNothing,
+        reason: 'the editor shows its own menu instead');
+  });
+
+  testWidgets('one drag is one undo step and one settle', (tester) async {
+    var begins = 0, ends = 0;
+    link.run.waypoints.add(LinkWaypoint.onRun(0.5, -0.2));
+    await pumpOverlay(tester,
+        link: link,
+        assets: page,
+        onBeginEdit: () => begins++,
+        onEndEdit: () => ends++);
+
+    final gesture =
+        await tester.startGesture(onCanvas(tester, resolvedPoint(1)));
+    for (var i = 0; i < 5; i++) {
+      await gesture.moveBy(const Offset(10, 10));
+      await tester.pump();
+    }
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(begins, 1);
+    expect(ends, 1);
   });
 
   testWidgets('every edit reports a change so the page is re-encoded',
@@ -271,3 +442,18 @@ void main() {
 }
 
 LinkAnchors _anchorsFor(List<Asset> assets) => PageLinkAnchors(assets, _canvas);
+
+/// A short free cable with corners drawn well off to one side of it: its ends
+/// 2 % of the page apart, its corners one to two run lengths away. The shape
+/// that made every corner swing when an end was dragged.
+EtherCatLinkConfig _shortCableWithCorners() => EtherCatLinkConfig(
+      run: LinkRun(
+        from: LinkEnd(x: 0.30, y: 0.70),
+        to: LinkEnd(x: 0.32, y: 0.70),
+        waypoints: [
+          LinkWaypoint.onRun(0.10, 1.30),
+          LinkWaypoint.onRun(0.50, 2.20),
+          LinkWaypoint.onRun(0.80, 1.00),
+        ],
+      ),
+    );

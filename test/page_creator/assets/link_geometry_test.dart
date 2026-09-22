@@ -372,12 +372,86 @@ void main() {
           run.resolve(canvas, anchors).points[2].dx, closeTo(target.dx, 0.5));
     });
 
-    test('an inserted corner follows the run by default', () {
+    test('an inserted corner stays where it was put', () {
       run.insertWaypoint(const Offset(300, 40),
           canvas: canvas, anchors: anchors);
-      expect(run.waypoints.single.isPinned, isFalse);
-      expect(run.waypoints.single.t, isNotNull);
-      expect(run.waypoints.single.dx, isNull);
+      final w = run.waypoints.single;
+      expect(w.isOnPage, isTrue);
+      expect(w.t, isNull);
+      expect(w.n, isNull);
+      expect(w.dx, isNull);
+      expect(run.resolve(canvas, anchors).points[1],
+          within(distance: 0.01, from: const Offset(300, 40)));
+    });
+
+    test('a page corner does not move when an end does', () {
+      // The bug this model exists to fix: a corner held in the run's frame
+      // swung with every pixel an end moved.
+      final free = LinkRun(
+        from: LinkEnd(x: 0.42, y: 0.93),
+        to: LinkEnd(x: 0.44, y: 0.93),
+      );
+      free.insertWaypoint(const Offset(215, 480),
+          canvas: canvas, anchors: anchors);
+      final before = free.resolve(canvas, anchors).points[1];
+      free.to
+        ..x = 0.9
+        ..y = 0.1;
+      expect(free.resolve(canvas, anchors).points[1],
+          within(distance: 0.01, from: before));
+    });
+
+    test('corners on a very short cable are stored as sane numbers', () {
+      final short = LinkRun(
+        from: LinkEnd(x: 0.42, y: 0.93),
+        to: LinkEnd(x: 0.44, y: 0.93),
+      );
+      short.insertWaypoint(const Offset(300, 100),
+          canvas: canvas, anchors: anchors);
+      final w = short.waypoints.single;
+      expect(w.x, closeTo(300 / canvas.width, 1e-9));
+      expect(w.y, closeTo(100 / canvas.height, 1e-9));
+    });
+
+    test('settling a run-frame corner onto the page does not move it', () {
+      run.waypoints
+        ..add(LinkWaypoint.onRun(0.4, 0.15))
+        ..add(LinkWaypoint.pinned('a', 0.2, 0.1));
+      final before = run.resolve(canvas, anchors).points;
+
+      expect(run.settleOnPage(anchors), isTrue);
+      expect(run.waypoints[0].isOnPage, isTrue);
+      expect(run.waypoints[0].t, isNull);
+      expect(run.waypoints[0].n, isNull);
+      expect(run.waypoints[1].pinnedTo, 'a',
+          reason: 'a pinned corner keeps its pin');
+      final after = run.resolve(canvas, anchors).points;
+      for (var i = 0; i < before.length; i++) {
+        expect(after[i], within(distance: 0.01, from: before[i]));
+      }
+      expect(run.settleOnPage(anchors), isFalse,
+          reason: 'nothing left to settle the second time');
+    });
+
+    test('a page saved before page corners loads and saves unchanged', () {
+      final json = {
+        'pinnedTo': null,
+        't': 0.4,
+        'n': 0.15,
+        'dx': null,
+        'dy': null,
+      };
+      final w = LinkWaypoint.fromJson(json);
+      expect(w.isOnRun, isTrue);
+      expect(w.toJson(), json);
+    });
+
+    test('a page corner round-trips through JSON', () {
+      final w = LinkWaypoint.fromJson(
+          LinkWaypoint.onPage(0.25, 0.75).toJson());
+      expect(w.isOnPage, isTrue);
+      expect(w.x, 0.25);
+      expect(w.y, 0.75);
     });
 
     test('moving a corner keeps whichever rule already held it', () {
@@ -393,13 +467,18 @@ void main() {
       run.waypoints.add(LinkWaypoint.onRun(0.4, 0.15));
       final before = run.resolve(canvas, anchors).points[1];
 
-      run.repin(0, 'a', anchors: anchors);
+      run.repin(0, const LinkCornerRule.pinned('a'), anchors: anchors);
       expect(run.waypoints.single.pinnedTo, 'a');
       expect(run.resolve(canvas, anchors).points[1],
           within(distance: 0.01, from: before));
 
-      run.repin(0, null, anchors: anchors);
-      expect(run.waypoints.single.pinnedTo, isNull);
+      run.repin(0, LinkCornerRule.page, anchors: anchors);
+      expect(run.waypoints.single.isOnPage, isTrue);
+      expect(run.resolve(canvas, anchors).points[1],
+          within(distance: 0.01, from: before));
+
+      run.repin(0, LinkCornerRule.run, anchors: anchors);
+      expect(run.waypoints.single.isOnRun, isTrue);
       expect(run.resolve(canvas, anchors).points[1],
           within(distance: 0.01, from: before));
     });
@@ -408,14 +487,20 @@ void main() {
       // Two live coordinate systems on one corner is how it ends up in two
       // places; the inactive pair has to actually be gone.
       run.waypoints.add(LinkWaypoint.onRun(0.4, 0.15));
-      run.repin(0, 'a', anchors: anchors);
+      run.repin(0, const LinkCornerRule.pinned('a'), anchors: anchors);
       expect(run.waypoints.single.t, isNull);
       expect(run.waypoints.single.n, isNull);
       expect(run.waypoints.single.dx, isNotNull);
 
-      run.repin(0, null, anchors: anchors);
+      run.repin(0, LinkCornerRule.page, anchors: anchors);
       expect(run.waypoints.single.dx, isNull);
       expect(run.waypoints.single.dy, isNull);
+      expect(run.waypoints.single.t, isNull);
+      expect(run.waypoints.single.x, isNotNull);
+
+      run.repin(0, LinkCornerRule.run, anchors: anchors);
+      expect(run.waypoints.single.x, isNull);
+      expect(run.waypoints.single.y, isNull);
       expect(run.waypoints.single.t, isNotNull);
     });
   });

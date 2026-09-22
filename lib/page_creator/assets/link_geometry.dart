@@ -19,13 +19,20 @@
 ///    all of which move each other; the whole point of this model is that the
 ///    equivalent numbers are *derived* from where the corner was dropped.
 ///
-///  - **A corner follows something.** By default it follows the run: stored as
-///    a fraction [LinkWaypoint.t] along the port-to-port axis and an offset
-///    [LinkWaypoint.n] across it, so moving either device rotates and scales
-///    the shape as a whole. Pinned to an asset instead, it is a fixed offset
-///    from that asset's box and ignores the far end completely — which is the
-///    truthful model for a run that leaves a cabinet at a fixed point on a
-///    tray and only then heads for the device.
+///  - **A corner stays where it was put.** By default it is a point on the
+///    page ([LinkWaypoint.x], [LinkWaypoint.y]), so moving an end or a device
+///    only stretches the segment next to it. Pinned to an asset instead, it
+///    is a fixed offset from that asset's box — the truthful model for a run
+///    that leaves a cabinet at a fixed point on a tray and only then heads for
+///    the device.
+///
+///    Older pages stored corners in the run's own frame: a fraction
+///    [LinkWaypoint.t] along the port-to-port axis and an offset
+///    [LinkWaypoint.n] across it, in run lengths. That still resolves, but it
+///    is not written any more. On a short cable `n` is several run lengths,
+///    so a pixel of end movement swung every corner across the page;
+///    [LinkRun.settleOnPage] turns those corners into page points without
+///    moving them, and the editor calls it before any edit.
 ///
 /// Everything stored is normalised to the 0..1 page space the rest of the
 /// page_creator uses, so a page still scales to any screen. [LinkRun.resolve]
@@ -69,21 +76,22 @@ class LinkEnd {
 
 /// One corner of a run.
 ///
-/// Exactly one of the two coordinate pairs is authoritative, and the other is
-/// null — [pinnedTo] says which. Nulling the inactive pair rather than leaving
-/// a stale value there is deliberate: two live coordinate systems on one
-/// object is how a corner ends up in two places at once, and a null is a
-/// reader's proof of which rule holds this corner.
+/// Exactly one of the three coordinate pairs is authoritative, and the others
+/// are null. [pinnedTo] set means [dx]/[dy]; otherwise [x]/[y] set means a
+/// page point; otherwise [t]/[n], the run frame older pages were saved in.
+/// Nulling the inactive pairs rather than leaving stale values there is
+/// deliberate: two live coordinate systems on one object is how a corner ends
+/// up in two places at once, and a null is a reader's proof of which rule
+/// holds this corner.
 @JsonSerializable()
 class LinkWaypoint {
-  /// The asset this corner is nailed to, or null to follow the run.
+  /// The asset this corner is nailed to, or null.
   String? pinnedTo;
 
-  /// Fraction along the port-to-port axis. Non-null iff [pinnedTo] is null.
+  /// Fraction along the port-to-port axis, for a corner that follows the run.
   double? t;
 
-  /// Offset across that axis, as a fraction of the run's length. Non-null iff
-  /// [pinnedTo] is null.
+  /// Offset across that axis, as a fraction of the run's length.
   double? n;
 
   /// Page-relative offset from the pinned asset's centre. Non-null iff
@@ -91,10 +99,23 @@ class LinkWaypoint {
   double? dx;
   double? dy;
 
-  LinkWaypoint({this.pinnedTo, this.t, this.n, this.dx, this.dy});
+  /// Page-relative position of a corner that stays where it was put.
+  ///
+  /// Left out of the JSON when null, so a page saved before corners could be
+  /// page points round-trips exactly as it was.
+  @JsonKey(includeIfNull: false)
+  double? x;
+  @JsonKey(includeIfNull: false)
+  double? y;
+
+  LinkWaypoint(
+      {this.pinnedTo, this.t, this.n, this.dx, this.dy, this.x, this.y});
 
   /// A corner held in the frame of the run.
   LinkWaypoint.onRun(double t, double n) : this(t: t, n: n);
+
+  /// A corner at a fixed page-relative point.
+  LinkWaypoint.onPage(double x, double y) : this(x: x, y: y);
 
   /// A corner nailed to [assetId] at a fixed page-relative offset from its
   /// centre.
@@ -103,12 +124,44 @@ class LinkWaypoint {
 
   bool get isPinned => pinnedTo != null;
 
+  /// True for a corner that stays at a page point.
+  bool get isOnPage => !isPinned && x != null && y != null;
+
+  /// True for a corner that follows the run — the older, run-frame rule.
+  bool get isOnRun => !isPinned && !isOnPage;
+
   LinkWaypoint copy() =>
-      LinkWaypoint(pinnedTo: pinnedTo, t: t, n: n, dx: dx, dy: dy);
+      LinkWaypoint(pinnedTo: pinnedTo, t: t, n: n, dx: dx, dy: dy, x: x, y: y);
 
   factory LinkWaypoint.fromJson(Map<String, dynamic> json) =>
       _$LinkWaypointFromJson(json);
   Map<String, dynamic> toJson() => _$LinkWaypointToJson(this);
+}
+
+/// What holds a corner in place: the page, one asset, or the run.
+class LinkCornerRule {
+  const LinkCornerRule._(this.pinnedTo, this.followsRun);
+
+  /// Stays at a page point. What every new corner gets.
+  static const page = LinkCornerRule._(null, false);
+
+  /// Follows the run, rotating and scaling with the line between the ends.
+  static const run = LinkCornerRule._(null, true);
+
+  /// A fixed offset from [assetId]'s box.
+  const LinkCornerRule.pinned(String assetId) : this._(assetId, false);
+
+  final String? pinnedTo;
+  final bool followsRun;
+
+  @override
+  bool operator ==(Object other) =>
+      other is LinkCornerRule &&
+      other.pinnedTo == pinnedTo &&
+      other.followsRun == followsRun;
+
+  @override
+  int get hashCode => Object.hash(pinnedTo, followsRun);
 }
 
 /// Where a run's ends and pinned corners get their positions.
@@ -365,37 +418,73 @@ class LinkRun {
       // page that looks slightly wrong and one that looks broken.
       if (origin != null) return origin + Offset(w.dx ?? 0, w.dy ?? 0);
     }
+    final x = w.x, y = w.y;
+    if (x != null && y != null) return Offset(x, y);
     return frame.place(w.t ?? 0.5, w.n ?? 0);
   }
 
-  /// Re-expresses [index]'s corner so it follows [pinnedTo] (or the run, when
-  /// that is null) **without moving it on screen**.
+  /// Re-expresses [index]'s corner under [rule] **without moving it on
+  /// screen**.
   ///
   /// Re-anchoring is a change to the rule that holds a corner, not to where it
   /// is. A corner that jumps when you change what it follows teaches the
   /// operator that the setting is dangerous, and they stop using it.
-  void repin(int index, String? pinnedTo, {required LinkAnchors anchors}) {
+  void repin(int index, LinkCornerRule rule, {required LinkAnchors anchors}) {
     final frame = frameIn(anchors);
     final at = _resolveWaypoint(waypoints[index], frame, anchors);
-    waypoints[index] = _describe(at, pinnedTo, frame: frame, anchors: anchors);
+    waypoints[index] = _describe(at, rule, frame: frame, anchors: anchors);
   }
 
-  /// Describes the page-space point [at] under whichever rule [pinnedTo] names.
+  /// Turns every corner that follows the run into a page point where it
+  /// already is. Pinned corners and page corners are left alone.
+  ///
+  /// The editor calls this before any edit, so a legacy corner is converted
+  /// the first time somebody touches the cable and never swings again, while
+  /// a page nobody edits still saves exactly as it was loaded.
+  ///
+  /// Returns true if anything changed.
+  bool settleOnPage(LinkAnchors anchors) {
+    final frame = frameIn(anchors);
+    var changed = false;
+    for (var i = 0; i < waypoints.length; i++) {
+      final w = waypoints[i];
+      if (!w.isOnRun) continue;
+      final at = _resolveWaypoint(w, frame, anchors);
+      waypoints[i] = LinkWaypoint.onPage(at.dx, at.dy);
+      changed = true;
+    }
+    return changed;
+  }
+
+  /// The rule currently holding [w].
+  static LinkCornerRule ruleOf(LinkWaypoint w) {
+    final pin = w.pinnedTo;
+    if (pin != null) return LinkCornerRule.pinned(pin);
+    return w.isOnPage ? LinkCornerRule.page : LinkCornerRule.run;
+  }
+
+  /// Describes the page-space point [at] under [rule].
   static LinkWaypoint _describe(
     Offset at,
-    String? pinnedTo, {
+    LinkCornerRule rule, {
     required LinkRunFrame frame,
     required LinkAnchors anchors,
   }) {
-    if (pinnedTo != null) {
-      final origin = anchors.assetAnchor(pinnedTo);
+    final pin = rule.pinnedTo;
+    if (pin != null) {
+      final origin = anchors.assetAnchor(pin);
       if (origin != null) {
         final d = at - origin;
-        return LinkWaypoint.pinned(pinnedTo, d.dx, d.dy);
+        return LinkWaypoint.pinned(pin, d.dx, d.dy);
       }
+      // Nothing on the page to be an offset from: keep the corner where it is.
+      return LinkWaypoint.onPage(at.dx, at.dy);
     }
-    final l = frame.locate(at);
-    return LinkWaypoint.onRun(l.t, l.n);
+    if (rule.followsRun) {
+      final l = frame.locate(at);
+      return LinkWaypoint.onRun(l.t, l.n);
+    }
+    return LinkWaypoint.onPage(at.dx, at.dy);
   }
 
   /// Moves the corner at [index] to the canvas point [at], keeping whatever
@@ -406,12 +495,12 @@ class LinkRun {
     required Size canvas,
     required LinkAnchors anchors,
   }) {
-    waypoints[index] = _describe(_toPage(at, canvas), waypoints[index].pinnedTo,
+    waypoints[index] = _describe(_toPage(at, canvas), ruleOf(waypoints[index]),
         frame: frameIn(anchors), anchors: anchors);
   }
 
   /// Inserts a corner at the canvas point [at], into whichever segment it is
-  /// nearest. A fresh corner always follows the run.
+  /// nearest. A fresh corner stays where it was put.
   int insertWaypoint(
     Offset at, {
     required Size canvas,
@@ -421,9 +510,47 @@ class LinkRun {
     final seg = resolved.nearestSegment(at);
     waypoints.insert(
         seg,
-        _describe(_toPage(at, canvas), null,
+        _describe(_toPage(at, canvas), LinkCornerRule.page,
             frame: resolved.frame, anchors: anchors));
     return seg;
+  }
+
+  /// Moves the free ends and the page corners by ([dx], [dy]) page units.
+  ///
+  /// This is what dragging an unplugged cable does. Pinned corners and
+  /// corners that follow the run move with whatever holds them.
+  void translateFree(double dx, double dy) {
+    for (final end in [from, to]) {
+      end
+        ..x += dx
+        ..y += dy;
+    }
+    for (final w in waypoints) {
+      if (!w.isOnPage) continue;
+      w
+        ..x = w.x! + dx
+        ..y = w.y! + dy;
+    }
+  }
+
+  /// Scales the free ends and the page corners about [centre], by [sx]
+  /// across and [sy] down.
+  void scaleFree(Offset centre, double sx, double sy) {
+    Offset scale(Offset p) => Offset(centre.dx + (p.dx - centre.dx) * sx,
+        centre.dy + (p.dy - centre.dy) * sy);
+    for (final end in [from, to]) {
+      final p = scale(Offset(end.x, end.y));
+      end
+        ..x = p.dx
+        ..y = p.dy;
+    }
+    for (final w in waypoints) {
+      if (!w.isOnPage) continue;
+      final p = scale(Offset(w.x!, w.y!));
+      w
+        ..x = p.dx
+        ..y = p.dy;
+    }
   }
 
   /// The page-relative box the run occupies, so the asset can publish the
