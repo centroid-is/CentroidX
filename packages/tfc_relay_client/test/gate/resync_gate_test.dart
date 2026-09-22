@@ -219,7 +219,12 @@ void main() {
               'armed and this case has not run its own scenario');
         }
         final arrived = fixture.seam.inbound.sublist(markBefore);
-        if (arrived.isNotEmpty) {
+        // And the new link must exist. A frame the OLD connection was still
+        // draining after the first kill also lands past `markBefore`; arming
+        // on it fired the second kill at a socket already dying, so it cost
+        // no redial — measured on the Windows CI runner as one dial where
+        // this case needs two.
+        if (fixture.seam.dials > dialsBefore && arrived.isNotEmpty) {
           atKill = (
             frames: arrived.length,
             snapshotSeen: arrived.any(_isSnapshotAnswer),
