@@ -223,10 +223,7 @@ class $AlarmHistoryTable extends AlarmHistory
   @override
   late final GeneratedColumn<String> alarmUid = GeneratedColumn<String>(
       'alarm_uid', aliasedName, false,
-      type: DriftSqlType.string,
-      requiredDuringInsert: true,
-      defaultConstraints:
-          GeneratedColumn.constraintIsAlways('REFERENCES alarm (uid)'));
+      type: DriftSqlType.string, requiredDuringInsert: true);
   static const VerificationMeta _alarmTitleMeta =
       const VerificationMeta('alarmTitle');
   @override
@@ -280,6 +277,24 @@ class $AlarmHistoryTable extends AlarmHistory
   late final GeneratedColumn<DateTime> acknowledgedAt =
       GeneratedColumn<DateTime>('acknowledged_at', aliasedName, true,
           type: DriftSqlType.dateTime, requiredDuringInsert: false);
+  static const VerificationMeta _ruleIndexMeta =
+      const VerificationMeta('ruleIndex');
+  @override
+  late final GeneratedColumn<int> ruleIndex = GeneratedColumn<int>(
+      'rule_index', aliasedName, true,
+      type: DriftSqlType.int, requiredDuringInsert: false);
+  static const VerificationMeta _tsSourceMeta =
+      const VerificationMeta('tsSource');
+  @override
+  late final GeneratedColumn<String> tsSource = GeneratedColumn<String>(
+      'ts_source', aliasedName, true,
+      type: DriftSqlType.string, requiredDuringInsert: false);
+  static const VerificationMeta _deactivatedReasonMeta =
+      const VerificationMeta('deactivatedReason');
+  @override
+  late final GeneratedColumn<String> deactivatedReason =
+      GeneratedColumn<String>('deactivated_reason', aliasedName, true,
+          type: DriftSqlType.string, requiredDuringInsert: false);
   @override
   List<GeneratedColumn> get $columns => [
         id,
@@ -292,7 +307,10 @@ class $AlarmHistoryTable extends AlarmHistory
         pendingAck,
         createdAt,
         deactivatedAt,
-        acknowledgedAt
+        acknowledgedAt,
+        ruleIndex,
+        tsSource,
+        deactivatedReason
       ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -375,6 +393,20 @@ class $AlarmHistoryTable extends AlarmHistory
           acknowledgedAt.isAcceptableOrUnknown(
               data['acknowledged_at']!, _acknowledgedAtMeta));
     }
+    if (data.containsKey('rule_index')) {
+      context.handle(_ruleIndexMeta,
+          ruleIndex.isAcceptableOrUnknown(data['rule_index']!, _ruleIndexMeta));
+    }
+    if (data.containsKey('ts_source')) {
+      context.handle(_tsSourceMeta,
+          tsSource.isAcceptableOrUnknown(data['ts_source']!, _tsSourceMeta));
+    }
+    if (data.containsKey('deactivated_reason')) {
+      context.handle(
+          _deactivatedReasonMeta,
+          deactivatedReason.isAcceptableOrUnknown(
+              data['deactivated_reason']!, _deactivatedReasonMeta));
+    }
     return context;
   }
 
@@ -406,6 +438,12 @@ class $AlarmHistoryTable extends AlarmHistory
           DriftSqlType.dateTime, data['${effectivePrefix}deactivated_at']),
       acknowledgedAt: attachedDatabase.typeMapping.read(
           DriftSqlType.dateTime, data['${effectivePrefix}acknowledged_at']),
+      ruleIndex: attachedDatabase.typeMapping
+          .read(DriftSqlType.int, data['${effectivePrefix}rule_index']),
+      tsSource: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}ts_source']),
+      deactivatedReason: attachedDatabase.typeMapping.read(
+          DriftSqlType.string, data['${effectivePrefix}deactivated_reason']),
     );
   }
 
@@ -418,6 +456,32 @@ class $AlarmHistoryTable extends AlarmHistory
 class AlarmHistoryData extends DataClass
     implements Insertable<AlarmHistoryData> {
   final int id;
+
+  /// The alarm definition this activation belongs to.
+  ///
+  /// **Deliberately NOT `.references(Alarm, #uid)`** (schema v14). Alarm
+  /// definitions live in the `alarm_man_config` preference JSON, not as rows:
+  /// nothing anywhere in this codebase has ever inserted into the [Alarm]
+  /// table. On Postgres, where a foreign key is always enforced, a database
+  /// created from this definition therefore refuses **every** insert into
+  /// `alarm_history` with SQLSTATE 23503.
+  ///
+  /// **Measured both ways, 2026-09-23.** A scratch database created from the
+  /// definition as it stood carried `alarm_history_alarm_uid_fkey` and
+  /// refused an insert naming an alarm no row defines. The plants in the
+  /// field do **not** carry the constraint — their `alarm_history` predates
+  /// the reference entering this class (2026-02-03) and drift's `createAll`
+  /// is `IF NOT EXISTS`, so it never re-created the table — which is why
+  /// history has been written there all along, thousands of rows of it.
+  ///
+  /// So this drop is what a **newly provisioned** plant needs, and a no-op on
+  /// an existing one, where [_dropAlarmHistoryForeignKeys] finds nothing and
+  /// says so. It is not a claim that anything in the field has been failing.
+  ///
+  /// A SQLite test cannot see any of this — drift never issues
+  /// `PRAGMA foreign_keys = ON`, so the constraint is inert there and a green
+  /// unit suite proves nothing about a Postgres plant. The arms that do see
+  /// it are 1 and 2 of `test/integration/alarm_schema_v14_test.dart`.
   final String alarmUid;
   final String alarmTitle;
   final String alarmDescription;
@@ -428,6 +492,41 @@ class AlarmHistoryData extends DataClass
   final DateTime createdAt;
   final DateTime? deactivatedAt;
   final DateTime? acknowledgedAt;
+
+  /// Which rule of the alarm produced this activation.
+  ///
+  /// An alarm may carry several rules and, before v14, the table could not tell
+  /// them apart. `(alarm_uid, rule_index)` with `deactivated_at IS NULL` is the
+  /// identity of an **open** row, enforced by
+  /// [_alarmHistoryOpenRowIndexStatement].
+  ///
+  /// **Nullable, and that has a consequence every writer must honour: NULLs are
+  /// DISTINCT in a unique index.** Two open rows for the same `alarm_uid` with
+  /// a NULL `rule_index` both insert — measured, arm 5 of
+  /// `alarm_schema_v14_test.dart`. So the "one open row per alarm-rule"
+  /// guarantee holds only for rows written WITH a rule index, and every writer
+  /// has to supply one. It is nullable only because rows
+  /// written before v14 have no rule to point at; do not "fix" the index into
+  /// `COALESCE(rule_index, -1)` to close the gap, because that starts refusing
+  /// legacy rows the database is already holding.
+  final int? ruleIndex;
+
+  /// Where [createdAt] / [deactivatedAt] came from: `plant` when every value
+  /// contributing to the evaluation carried a `sourceTime`, `backend_receipt`
+  /// when at least one did not and the backend's own receipt instant was used
+  /// instead.
+  ///
+  /// Nullable: rows written before v14 have no provenance to record, and a
+  /// missing label is honest about that where a defaulted one would not be.
+  final String? tsSource;
+
+  /// Why the row was closed: `cleared`, `acknowledged`, `inferred_restart` or
+  /// `inferred_config_change`.
+  ///
+  /// The two `inferred_*` values are the point of the column — they let a stop
+  /// analysis tell a measured clear from one reconstructed after a backend
+  /// restart, rather than reading both as the same fact.
+  final String? deactivatedReason;
   const AlarmHistoryData(
       {required this.id,
       required this.alarmUid,
@@ -439,7 +538,10 @@ class AlarmHistoryData extends DataClass
       required this.pendingAck,
       required this.createdAt,
       this.deactivatedAt,
-      this.acknowledgedAt});
+      this.acknowledgedAt,
+      this.ruleIndex,
+      this.tsSource,
+      this.deactivatedReason});
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
     final map = <String, Expression>{};
@@ -459,6 +561,15 @@ class AlarmHistoryData extends DataClass
     }
     if (!nullToAbsent || acknowledgedAt != null) {
       map['acknowledged_at'] = Variable<DateTime>(acknowledgedAt);
+    }
+    if (!nullToAbsent || ruleIndex != null) {
+      map['rule_index'] = Variable<int>(ruleIndex);
+    }
+    if (!nullToAbsent || tsSource != null) {
+      map['ts_source'] = Variable<String>(tsSource);
+    }
+    if (!nullToAbsent || deactivatedReason != null) {
+      map['deactivated_reason'] = Variable<String>(deactivatedReason);
     }
     return map;
   }
@@ -482,6 +593,15 @@ class AlarmHistoryData extends DataClass
       acknowledgedAt: acknowledgedAt == null && nullToAbsent
           ? const Value.absent()
           : Value(acknowledgedAt),
+      ruleIndex: ruleIndex == null && nullToAbsent
+          ? const Value.absent()
+          : Value(ruleIndex),
+      tsSource: tsSource == null && nullToAbsent
+          ? const Value.absent()
+          : Value(tsSource),
+      deactivatedReason: deactivatedReason == null && nullToAbsent
+          ? const Value.absent()
+          : Value(deactivatedReason),
     );
   }
 
@@ -500,6 +620,10 @@ class AlarmHistoryData extends DataClass
       createdAt: serializer.fromJson<DateTime>(json['createdAt']),
       deactivatedAt: serializer.fromJson<DateTime?>(json['deactivatedAt']),
       acknowledgedAt: serializer.fromJson<DateTime?>(json['acknowledgedAt']),
+      ruleIndex: serializer.fromJson<int?>(json['ruleIndex']),
+      tsSource: serializer.fromJson<String?>(json['tsSource']),
+      deactivatedReason:
+          serializer.fromJson<String?>(json['deactivatedReason']),
     );
   }
   @override
@@ -517,6 +641,9 @@ class AlarmHistoryData extends DataClass
       'createdAt': serializer.toJson<DateTime>(createdAt),
       'deactivatedAt': serializer.toJson<DateTime?>(deactivatedAt),
       'acknowledgedAt': serializer.toJson<DateTime?>(acknowledgedAt),
+      'ruleIndex': serializer.toJson<int?>(ruleIndex),
+      'tsSource': serializer.toJson<String?>(tsSource),
+      'deactivatedReason': serializer.toJson<String?>(deactivatedReason),
     };
   }
 
@@ -531,7 +658,10 @@ class AlarmHistoryData extends DataClass
           bool? pendingAck,
           DateTime? createdAt,
           Value<DateTime?> deactivatedAt = const Value.absent(),
-          Value<DateTime?> acknowledgedAt = const Value.absent()}) =>
+          Value<DateTime?> acknowledgedAt = const Value.absent(),
+          Value<int?> ruleIndex = const Value.absent(),
+          Value<String?> tsSource = const Value.absent(),
+          Value<String?> deactivatedReason = const Value.absent()}) =>
       AlarmHistoryData(
         id: id ?? this.id,
         alarmUid: alarmUid ?? this.alarmUid,
@@ -546,6 +676,11 @@ class AlarmHistoryData extends DataClass
             deactivatedAt.present ? deactivatedAt.value : this.deactivatedAt,
         acknowledgedAt:
             acknowledgedAt.present ? acknowledgedAt.value : this.acknowledgedAt,
+        ruleIndex: ruleIndex.present ? ruleIndex.value : this.ruleIndex,
+        tsSource: tsSource.present ? tsSource.value : this.tsSource,
+        deactivatedReason: deactivatedReason.present
+            ? deactivatedReason.value
+            : this.deactivatedReason,
       );
   AlarmHistoryData copyWithCompanion(AlarmHistoryCompanion data) {
     return AlarmHistoryData(
@@ -570,6 +705,11 @@ class AlarmHistoryData extends DataClass
       acknowledgedAt: data.acknowledgedAt.present
           ? data.acknowledgedAt.value
           : this.acknowledgedAt,
+      ruleIndex: data.ruleIndex.present ? data.ruleIndex.value : this.ruleIndex,
+      tsSource: data.tsSource.present ? data.tsSource.value : this.tsSource,
+      deactivatedReason: data.deactivatedReason.present
+          ? data.deactivatedReason.value
+          : this.deactivatedReason,
     );
   }
 
@@ -586,7 +726,10 @@ class AlarmHistoryData extends DataClass
           ..write('pendingAck: $pendingAck, ')
           ..write('createdAt: $createdAt, ')
           ..write('deactivatedAt: $deactivatedAt, ')
-          ..write('acknowledgedAt: $acknowledgedAt')
+          ..write('acknowledgedAt: $acknowledgedAt, ')
+          ..write('ruleIndex: $ruleIndex, ')
+          ..write('tsSource: $tsSource, ')
+          ..write('deactivatedReason: $deactivatedReason')
           ..write(')'))
         .toString();
   }
@@ -603,7 +746,10 @@ class AlarmHistoryData extends DataClass
       pendingAck,
       createdAt,
       deactivatedAt,
-      acknowledgedAt);
+      acknowledgedAt,
+      ruleIndex,
+      tsSource,
+      deactivatedReason);
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
@@ -618,7 +764,10 @@ class AlarmHistoryData extends DataClass
           other.pendingAck == this.pendingAck &&
           other.createdAt == this.createdAt &&
           other.deactivatedAt == this.deactivatedAt &&
-          other.acknowledgedAt == this.acknowledgedAt);
+          other.acknowledgedAt == this.acknowledgedAt &&
+          other.ruleIndex == this.ruleIndex &&
+          other.tsSource == this.tsSource &&
+          other.deactivatedReason == this.deactivatedReason);
 }
 
 class AlarmHistoryCompanion extends UpdateCompanion<AlarmHistoryData> {
@@ -633,6 +782,9 @@ class AlarmHistoryCompanion extends UpdateCompanion<AlarmHistoryData> {
   final Value<DateTime> createdAt;
   final Value<DateTime?> deactivatedAt;
   final Value<DateTime?> acknowledgedAt;
+  final Value<int?> ruleIndex;
+  final Value<String?> tsSource;
+  final Value<String?> deactivatedReason;
   const AlarmHistoryCompanion({
     this.id = const Value.absent(),
     this.alarmUid = const Value.absent(),
@@ -645,6 +797,9 @@ class AlarmHistoryCompanion extends UpdateCompanion<AlarmHistoryData> {
     this.createdAt = const Value.absent(),
     this.deactivatedAt = const Value.absent(),
     this.acknowledgedAt = const Value.absent(),
+    this.ruleIndex = const Value.absent(),
+    this.tsSource = const Value.absent(),
+    this.deactivatedReason = const Value.absent(),
   });
   AlarmHistoryCompanion.insert({
     this.id = const Value.absent(),
@@ -658,6 +813,9 @@ class AlarmHistoryCompanion extends UpdateCompanion<AlarmHistoryData> {
     required DateTime createdAt,
     this.deactivatedAt = const Value.absent(),
     this.acknowledgedAt = const Value.absent(),
+    this.ruleIndex = const Value.absent(),
+    this.tsSource = const Value.absent(),
+    this.deactivatedReason = const Value.absent(),
   })  : alarmUid = Value(alarmUid),
         alarmTitle = Value(alarmTitle),
         alarmDescription = Value(alarmDescription),
@@ -677,6 +835,9 @@ class AlarmHistoryCompanion extends UpdateCompanion<AlarmHistoryData> {
     Expression<DateTime>? createdAt,
     Expression<DateTime>? deactivatedAt,
     Expression<DateTime>? acknowledgedAt,
+    Expression<int>? ruleIndex,
+    Expression<String>? tsSource,
+    Expression<String>? deactivatedReason,
   }) {
     return RawValuesInsertable({
       if (id != null) 'id': id,
@@ -690,6 +851,9 @@ class AlarmHistoryCompanion extends UpdateCompanion<AlarmHistoryData> {
       if (createdAt != null) 'created_at': createdAt,
       if (deactivatedAt != null) 'deactivated_at': deactivatedAt,
       if (acknowledgedAt != null) 'acknowledged_at': acknowledgedAt,
+      if (ruleIndex != null) 'rule_index': ruleIndex,
+      if (tsSource != null) 'ts_source': tsSource,
+      if (deactivatedReason != null) 'deactivated_reason': deactivatedReason,
     });
   }
 
@@ -704,7 +868,10 @@ class AlarmHistoryCompanion extends UpdateCompanion<AlarmHistoryData> {
       Value<bool>? pendingAck,
       Value<DateTime>? createdAt,
       Value<DateTime?>? deactivatedAt,
-      Value<DateTime?>? acknowledgedAt}) {
+      Value<DateTime?>? acknowledgedAt,
+      Value<int?>? ruleIndex,
+      Value<String?>? tsSource,
+      Value<String?>? deactivatedReason}) {
     return AlarmHistoryCompanion(
       id: id ?? this.id,
       alarmUid: alarmUid ?? this.alarmUid,
@@ -717,6 +884,9 @@ class AlarmHistoryCompanion extends UpdateCompanion<AlarmHistoryData> {
       createdAt: createdAt ?? this.createdAt,
       deactivatedAt: deactivatedAt ?? this.deactivatedAt,
       acknowledgedAt: acknowledgedAt ?? this.acknowledgedAt,
+      ruleIndex: ruleIndex ?? this.ruleIndex,
+      tsSource: tsSource ?? this.tsSource,
+      deactivatedReason: deactivatedReason ?? this.deactivatedReason,
     );
   }
 
@@ -756,6 +926,15 @@ class AlarmHistoryCompanion extends UpdateCompanion<AlarmHistoryData> {
     if (acknowledgedAt.present) {
       map['acknowledged_at'] = Variable<DateTime>(acknowledgedAt.value);
     }
+    if (ruleIndex.present) {
+      map['rule_index'] = Variable<int>(ruleIndex.value);
+    }
+    if (tsSource.present) {
+      map['ts_source'] = Variable<String>(tsSource.value);
+    }
+    if (deactivatedReason.present) {
+      map['deactivated_reason'] = Variable<String>(deactivatedReason.value);
+    }
     return map;
   }
 
@@ -772,7 +951,10 @@ class AlarmHistoryCompanion extends UpdateCompanion<AlarmHistoryData> {
           ..write('pendingAck: $pendingAck, ')
           ..write('createdAt: $createdAt, ')
           ..write('deactivatedAt: $deactivatedAt, ')
-          ..write('acknowledgedAt: $acknowledgedAt')
+          ..write('acknowledgedAt: $acknowledgedAt, ')
+          ..write('ruleIndex: $ruleIndex, ')
+          ..write('tsSource: $tsSource, ')
+          ..write('deactivatedReason: $deactivatedReason')
           ..write(')'))
         .toString();
   }
@@ -10167,26 +10349,6 @@ typedef $$AlarmTableUpdateCompanionBuilder = AlarmCompanion Function({
   Value<int> rowid,
 });
 
-final class $$AlarmTableReferences
-    extends BaseReferences<_$AppDatabase, $AlarmTable, AlarmConfig> {
-  $$AlarmTableReferences(super.$_db, super.$_table, super.$_typedResult);
-
-  static MultiTypedResultKey<$AlarmHistoryTable, List<AlarmHistoryData>>
-      _alarmHistoryRefsTable(_$AppDatabase db) =>
-          MultiTypedResultKey.fromTable(db.alarmHistory,
-              aliasName:
-                  $_aliasNameGenerator(db.alarm.uid, db.alarmHistory.alarmUid));
-
-  $$AlarmHistoryTableProcessedTableManager get alarmHistoryRefs {
-    final manager = $$AlarmHistoryTableTableManager($_db, $_db.alarmHistory)
-        .filter((f) => f.alarmUid.uid.sqlEquals($_itemColumn<String>('uid')!));
-
-    final cache = $_typedResult.readTableOrNull(_alarmHistoryRefsTable($_db));
-    return ProcessedTableManager(
-        manager.$state.copyWith(prefetchedData: cache));
-  }
-}
-
 class $$AlarmTableFilterComposer extends Composer<_$AppDatabase, $AlarmTable> {
   $$AlarmTableFilterComposer({
     required super.$db,
@@ -10209,27 +10371,6 @@ class $$AlarmTableFilterComposer extends Composer<_$AppDatabase, $AlarmTable> {
 
   ColumnFilters<String> get rules => $composableBuilder(
       column: $table.rules, builder: (column) => ColumnFilters(column));
-
-  Expression<bool> alarmHistoryRefs(
-      Expression<bool> Function($$AlarmHistoryTableFilterComposer f) f) {
-    final $$AlarmHistoryTableFilterComposer composer = $composerBuilder(
-        composer: this,
-        getCurrentColumn: (t) => t.uid,
-        referencedTable: $db.alarmHistory,
-        getReferencedColumn: (t) => t.alarmUid,
-        builder: (joinBuilder,
-                {$addJoinBuilderToRootComposer,
-                $removeJoinBuilderFromRootComposer}) =>
-            $$AlarmHistoryTableFilterComposer(
-              $db: $db,
-              $table: $db.alarmHistory,
-              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
-              joinBuilder: joinBuilder,
-              $removeJoinBuilderFromRootComposer:
-                  $removeJoinBuilderFromRootComposer,
-            ));
-    return f(composer);
-  }
 }
 
 class $$AlarmTableOrderingComposer
@@ -10280,27 +10421,6 @@ class $$AlarmTableAnnotationComposer
 
   GeneratedColumn<String> get rules =>
       $composableBuilder(column: $table.rules, builder: (column) => column);
-
-  Expression<T> alarmHistoryRefs<T extends Object>(
-      Expression<T> Function($$AlarmHistoryTableAnnotationComposer a) f) {
-    final $$AlarmHistoryTableAnnotationComposer composer = $composerBuilder(
-        composer: this,
-        getCurrentColumn: (t) => t.uid,
-        referencedTable: $db.alarmHistory,
-        getReferencedColumn: (t) => t.alarmUid,
-        builder: (joinBuilder,
-                {$addJoinBuilderToRootComposer,
-                $removeJoinBuilderFromRootComposer}) =>
-            $$AlarmHistoryTableAnnotationComposer(
-              $db: $db,
-              $table: $db.alarmHistory,
-              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
-              joinBuilder: joinBuilder,
-              $removeJoinBuilderFromRootComposer:
-                  $removeJoinBuilderFromRootComposer,
-            ));
-    return f(composer);
-  }
 }
 
 class $$AlarmTableTableManager extends RootTableManager<
@@ -10312,9 +10432,9 @@ class $$AlarmTableTableManager extends RootTableManager<
     $$AlarmTableAnnotationComposer,
     $$AlarmTableCreateCompanionBuilder,
     $$AlarmTableUpdateCompanionBuilder,
-    (AlarmConfig, $$AlarmTableReferences),
+    (AlarmConfig, BaseReferences<_$AppDatabase, $AlarmTable, AlarmConfig>),
     AlarmConfig,
-    PrefetchHooks Function({bool alarmHistoryRefs})> {
+    PrefetchHooks Function()> {
   $$AlarmTableTableManager(_$AppDatabase db, $AlarmTable table)
       : super(TableManagerState(
           db: db,
@@ -10358,33 +10478,9 @@ class $$AlarmTableTableManager extends RootTableManager<
             rowid: rowid,
           ),
           withReferenceMapper: (p0) => p0
-              .map((e) =>
-                  (e.readTable(table), $$AlarmTableReferences(db, table, e)))
+              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
               .toList(),
-          prefetchHooksCallback: ({alarmHistoryRefs = false}) {
-            return PrefetchHooks(
-              db: db,
-              explicitlyWatchedTables: [if (alarmHistoryRefs) db.alarmHistory],
-              addJoins: null,
-              getPrefetchedDataCallback: (items) async {
-                return [
-                  if (alarmHistoryRefs)
-                    await $_getPrefetchedData<AlarmConfig, $AlarmTable,
-                            AlarmHistoryData>(
-                        currentTable: table,
-                        referencedTable:
-                            $$AlarmTableReferences._alarmHistoryRefsTable(db),
-                        managerFromTypedResult: (p0) =>
-                            $$AlarmTableReferences(db, table, p0)
-                                .alarmHistoryRefs,
-                        referencedItemsForCurrentItem:
-                            (item, referencedItems) => referencedItems
-                                .where((e) => e.alarmUid == item.uid),
-                        typedResults: items)
-                ];
-              },
-            );
-          },
+          prefetchHooksCallback: null,
         ));
 }
 
@@ -10397,9 +10493,9 @@ typedef $$AlarmTableProcessedTableManager = ProcessedTableManager<
     $$AlarmTableAnnotationComposer,
     $$AlarmTableCreateCompanionBuilder,
     $$AlarmTableUpdateCompanionBuilder,
-    (AlarmConfig, $$AlarmTableReferences),
+    (AlarmConfig, BaseReferences<_$AppDatabase, $AlarmTable, AlarmConfig>),
     AlarmConfig,
-    PrefetchHooks Function({bool alarmHistoryRefs})>;
+    PrefetchHooks Function()>;
 typedef $$AlarmHistoryTableCreateCompanionBuilder = AlarmHistoryCompanion
     Function({
   Value<int> id,
@@ -10413,6 +10509,9 @@ typedef $$AlarmHistoryTableCreateCompanionBuilder = AlarmHistoryCompanion
   required DateTime createdAt,
   Value<DateTime?> deactivatedAt,
   Value<DateTime?> acknowledgedAt,
+  Value<int?> ruleIndex,
+  Value<String?> tsSource,
+  Value<String?> deactivatedReason,
 });
 typedef $$AlarmHistoryTableUpdateCompanionBuilder = AlarmHistoryCompanion
     Function({
@@ -10427,26 +10526,10 @@ typedef $$AlarmHistoryTableUpdateCompanionBuilder = AlarmHistoryCompanion
   Value<DateTime> createdAt,
   Value<DateTime?> deactivatedAt,
   Value<DateTime?> acknowledgedAt,
+  Value<int?> ruleIndex,
+  Value<String?> tsSource,
+  Value<String?> deactivatedReason,
 });
-
-final class $$AlarmHistoryTableReferences extends BaseReferences<_$AppDatabase,
-    $AlarmHistoryTable, AlarmHistoryData> {
-  $$AlarmHistoryTableReferences(super.$_db, super.$_table, super.$_typedResult);
-
-  static $AlarmTable _alarmUidTable(_$AppDatabase db) => db.alarm.createAlias(
-      $_aliasNameGenerator(db.alarmHistory.alarmUid, db.alarm.uid));
-
-  $$AlarmTableProcessedTableManager get alarmUid {
-    final $_column = $_itemColumn<String>('alarm_uid')!;
-
-    final manager = $$AlarmTableTableManager($_db, $_db.alarm)
-        .filter((f) => f.uid.sqlEquals($_column));
-    final item = $_typedResult.readTableOrNull(_alarmUidTable($_db));
-    if (item == null) return manager;
-    return ProcessedTableManager(
-        manager.$state.copyWith(prefetchedData: [item]));
-  }
-}
 
 class $$AlarmHistoryTableFilterComposer
     extends Composer<_$AppDatabase, $AlarmHistoryTable> {
@@ -10459,6 +10542,9 @@ class $$AlarmHistoryTableFilterComposer
   });
   ColumnFilters<int> get id => $composableBuilder(
       column: $table.id, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get alarmUid => $composableBuilder(
+      column: $table.alarmUid, builder: (column) => ColumnFilters(column));
 
   ColumnFilters<String> get alarmTitle => $composableBuilder(
       column: $table.alarmTitle, builder: (column) => ColumnFilters(column));
@@ -10489,25 +10575,15 @@ class $$AlarmHistoryTableFilterComposer
       column: $table.acknowledgedAt,
       builder: (column) => ColumnFilters(column));
 
-  $$AlarmTableFilterComposer get alarmUid {
-    final $$AlarmTableFilterComposer composer = $composerBuilder(
-        composer: this,
-        getCurrentColumn: (t) => t.alarmUid,
-        referencedTable: $db.alarm,
-        getReferencedColumn: (t) => t.uid,
-        builder: (joinBuilder,
-                {$addJoinBuilderToRootComposer,
-                $removeJoinBuilderFromRootComposer}) =>
-            $$AlarmTableFilterComposer(
-              $db: $db,
-              $table: $db.alarm,
-              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
-              joinBuilder: joinBuilder,
-              $removeJoinBuilderFromRootComposer:
-                  $removeJoinBuilderFromRootComposer,
-            ));
-    return composer;
-  }
+  ColumnFilters<int> get ruleIndex => $composableBuilder(
+      column: $table.ruleIndex, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get tsSource => $composableBuilder(
+      column: $table.tsSource, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get deactivatedReason => $composableBuilder(
+      column: $table.deactivatedReason,
+      builder: (column) => ColumnFilters(column));
 }
 
 class $$AlarmHistoryTableOrderingComposer
@@ -10521,6 +10597,9 @@ class $$AlarmHistoryTableOrderingComposer
   });
   ColumnOrderings<int> get id => $composableBuilder(
       column: $table.id, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<String> get alarmUid => $composableBuilder(
+      column: $table.alarmUid, builder: (column) => ColumnOrderings(column));
 
   ColumnOrderings<String> get alarmTitle => $composableBuilder(
       column: $table.alarmTitle, builder: (column) => ColumnOrderings(column));
@@ -10552,25 +10631,15 @@ class $$AlarmHistoryTableOrderingComposer
       column: $table.acknowledgedAt,
       builder: (column) => ColumnOrderings(column));
 
-  $$AlarmTableOrderingComposer get alarmUid {
-    final $$AlarmTableOrderingComposer composer = $composerBuilder(
-        composer: this,
-        getCurrentColumn: (t) => t.alarmUid,
-        referencedTable: $db.alarm,
-        getReferencedColumn: (t) => t.uid,
-        builder: (joinBuilder,
-                {$addJoinBuilderToRootComposer,
-                $removeJoinBuilderFromRootComposer}) =>
-            $$AlarmTableOrderingComposer(
-              $db: $db,
-              $table: $db.alarm,
-              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
-              joinBuilder: joinBuilder,
-              $removeJoinBuilderFromRootComposer:
-                  $removeJoinBuilderFromRootComposer,
-            ));
-    return composer;
-  }
+  ColumnOrderings<int> get ruleIndex => $composableBuilder(
+      column: $table.ruleIndex, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<String> get tsSource => $composableBuilder(
+      column: $table.tsSource, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<String> get deactivatedReason => $composableBuilder(
+      column: $table.deactivatedReason,
+      builder: (column) => ColumnOrderings(column));
 }
 
 class $$AlarmHistoryTableAnnotationComposer
@@ -10584,6 +10653,9 @@ class $$AlarmHistoryTableAnnotationComposer
   });
   GeneratedColumn<int> get id =>
       $composableBuilder(column: $table.id, builder: (column) => column);
+
+  GeneratedColumn<String> get alarmUid =>
+      $composableBuilder(column: $table.alarmUid, builder: (column) => column);
 
   GeneratedColumn<String> get alarmTitle => $composableBuilder(
       column: $table.alarmTitle, builder: (column) => column);
@@ -10612,25 +10684,14 @@ class $$AlarmHistoryTableAnnotationComposer
   GeneratedColumn<DateTime> get acknowledgedAt => $composableBuilder(
       column: $table.acknowledgedAt, builder: (column) => column);
 
-  $$AlarmTableAnnotationComposer get alarmUid {
-    final $$AlarmTableAnnotationComposer composer = $composerBuilder(
-        composer: this,
-        getCurrentColumn: (t) => t.alarmUid,
-        referencedTable: $db.alarm,
-        getReferencedColumn: (t) => t.uid,
-        builder: (joinBuilder,
-                {$addJoinBuilderToRootComposer,
-                $removeJoinBuilderFromRootComposer}) =>
-            $$AlarmTableAnnotationComposer(
-              $db: $db,
-              $table: $db.alarm,
-              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
-              joinBuilder: joinBuilder,
-              $removeJoinBuilderFromRootComposer:
-                  $removeJoinBuilderFromRootComposer,
-            ));
-    return composer;
-  }
+  GeneratedColumn<int> get ruleIndex =>
+      $composableBuilder(column: $table.ruleIndex, builder: (column) => column);
+
+  GeneratedColumn<String> get tsSource =>
+      $composableBuilder(column: $table.tsSource, builder: (column) => column);
+
+  GeneratedColumn<String> get deactivatedReason => $composableBuilder(
+      column: $table.deactivatedReason, builder: (column) => column);
 }
 
 class $$AlarmHistoryTableTableManager extends RootTableManager<
@@ -10642,9 +10703,12 @@ class $$AlarmHistoryTableTableManager extends RootTableManager<
     $$AlarmHistoryTableAnnotationComposer,
     $$AlarmHistoryTableCreateCompanionBuilder,
     $$AlarmHistoryTableUpdateCompanionBuilder,
-    (AlarmHistoryData, $$AlarmHistoryTableReferences),
+    (
+      AlarmHistoryData,
+      BaseReferences<_$AppDatabase, $AlarmHistoryTable, AlarmHistoryData>
+    ),
     AlarmHistoryData,
-    PrefetchHooks Function({bool alarmUid})> {
+    PrefetchHooks Function()> {
   $$AlarmHistoryTableTableManager(_$AppDatabase db, $AlarmHistoryTable table)
       : super(TableManagerState(
           db: db,
@@ -10667,6 +10731,9 @@ class $$AlarmHistoryTableTableManager extends RootTableManager<
             Value<DateTime> createdAt = const Value.absent(),
             Value<DateTime?> deactivatedAt = const Value.absent(),
             Value<DateTime?> acknowledgedAt = const Value.absent(),
+            Value<int?> ruleIndex = const Value.absent(),
+            Value<String?> tsSource = const Value.absent(),
+            Value<String?> deactivatedReason = const Value.absent(),
           }) =>
               AlarmHistoryCompanion(
             id: id,
@@ -10680,6 +10747,9 @@ class $$AlarmHistoryTableTableManager extends RootTableManager<
             createdAt: createdAt,
             deactivatedAt: deactivatedAt,
             acknowledgedAt: acknowledgedAt,
+            ruleIndex: ruleIndex,
+            tsSource: tsSource,
+            deactivatedReason: deactivatedReason,
           ),
           createCompanionCallback: ({
             Value<int> id = const Value.absent(),
@@ -10693,6 +10763,9 @@ class $$AlarmHistoryTableTableManager extends RootTableManager<
             required DateTime createdAt,
             Value<DateTime?> deactivatedAt = const Value.absent(),
             Value<DateTime?> acknowledgedAt = const Value.absent(),
+            Value<int?> ruleIndex = const Value.absent(),
+            Value<String?> tsSource = const Value.absent(),
+            Value<String?> deactivatedReason = const Value.absent(),
           }) =>
               AlarmHistoryCompanion.insert(
             id: id,
@@ -10706,48 +10779,14 @@ class $$AlarmHistoryTableTableManager extends RootTableManager<
             createdAt: createdAt,
             deactivatedAt: deactivatedAt,
             acknowledgedAt: acknowledgedAt,
+            ruleIndex: ruleIndex,
+            tsSource: tsSource,
+            deactivatedReason: deactivatedReason,
           ),
           withReferenceMapper: (p0) => p0
-              .map((e) => (
-                    e.readTable(table),
-                    $$AlarmHistoryTableReferences(db, table, e)
-                  ))
+              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
               .toList(),
-          prefetchHooksCallback: ({alarmUid = false}) {
-            return PrefetchHooks(
-              db: db,
-              explicitlyWatchedTables: [],
-              addJoins: <
-                  T extends TableManagerState<
-                      dynamic,
-                      dynamic,
-                      dynamic,
-                      dynamic,
-                      dynamic,
-                      dynamic,
-                      dynamic,
-                      dynamic,
-                      dynamic,
-                      dynamic,
-                      dynamic>>(state) {
-                if (alarmUid) {
-                  state = state.withJoin(
-                    currentTable: table,
-                    currentColumn: table.alarmUid,
-                    referencedTable:
-                        $$AlarmHistoryTableReferences._alarmUidTable(db),
-                    referencedColumn:
-                        $$AlarmHistoryTableReferences._alarmUidTable(db).uid,
-                  ) as T;
-                }
-
-                return state;
-              },
-              getPrefetchedDataCallback: (items) async {
-                return [];
-              },
-            );
-          },
+          prefetchHooksCallback: null,
         ));
 }
 
@@ -10760,9 +10799,12 @@ typedef $$AlarmHistoryTableProcessedTableManager = ProcessedTableManager<
     $$AlarmHistoryTableAnnotationComposer,
     $$AlarmHistoryTableCreateCompanionBuilder,
     $$AlarmHistoryTableUpdateCompanionBuilder,
-    (AlarmHistoryData, $$AlarmHistoryTableReferences),
+    (
+      AlarmHistoryData,
+      BaseReferences<_$AppDatabase, $AlarmHistoryTable, AlarmHistoryData>
+    ),
     AlarmHistoryData,
-    PrefetchHooks Function({bool alarmUid})>;
+    PrefetchHooks Function()>;
 typedef $$FlutterPreferencesTableCreateCompanionBuilder
     = FlutterPreferencesCompanion Function({
   required String key,

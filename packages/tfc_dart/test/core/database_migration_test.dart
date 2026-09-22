@@ -121,13 +121,15 @@ void main() {
       }
     });
 
-    test('schema version is 13', () async {
+    test('schema version is 14', () async {
       final db = AppDatabase.inMemoryForTest();
       addTearDown(() => db.close());
-      // 13 is the config-store arm widened from `from < 10`, which is a bump
-      // because widening an arm has to reach databases that have already
-      // passed the old bound. See the arm's comment in `database_drift.dart`.
-      expect(db.schemaVersion, 13);
+      // 14 is `alarm_history` becoming writable: the `alarm(uid)` foreign key
+      // dropped, `rule_index` / `ts_source` / `deactivated_reason` added, and
+      // the partial unique index that makes two OPEN rows for one alarm-rule
+      // unrepresentable. This literal is the pin that makes a version bump a
+      // deliberate edit rather than a side effect.
+      expect(db.schemaVersion, 14);
     });
 
     test('fresh install creates the config tables and their indexes',
