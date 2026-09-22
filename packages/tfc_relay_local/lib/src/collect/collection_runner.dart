@@ -218,11 +218,20 @@ final class CollectionRunner {
     final interval = entry.sampleInterval;
     final members = entry.sampleMembers;
 
-    // The first event a subscription yields is the store's cached snapshot
-    // replaying — not an arrival. In change mode it is never a row; in
-    // interval mode it may be held (a warm cache is a legitimate current
-    // value for a trend) but a skip it causes is not a counted loss,
-    // because nothing arrived to lose.
+    // The store's cached snapshot replaying is not an arrival. In change
+    // mode it is never a row; in interval mode it may be held (a warm cache
+    // is a legitimate current value for a trend) but a skip it causes is not
+    // a counted loss, because nothing arrived to lose.
+    //
+    // "The first event" is NOT the test for it, and was once: since
+    // d713e72ea `StateManApi.subscribe` opens with NO event for a key nothing
+    // has arrived for (rule 2 of its doc) instead of pushing the
+    // not-yet-known placeholder, so a cold key's first event is the plant's
+    // first reading — and treating it as the replay dropped it. What the
+    // contract does promise (rule 1) is that a snapshot, when there is one,
+    // is delivered on a microtask after `listen`: inside the turn that
+    // listened. So the replay window is that turn, closed by the `Timer.run`
+    // below, and at most one event in it is the snapshot.
     var awaitingReplay = true;
     var heldIsArrival = false;
     DynamicValue? latest;
@@ -321,6 +330,11 @@ final class CollectionRunner {
       cancelOnError: false,
     );
     _subscriptions[entry.key] = subscription;
+    // Every microtask of this turn — the snapshot's delivery included — runs
+    // before this does; an arrival from the plant needs a later turn.
+    // `Timer.run` holds nothing open and cannot outlive the turn it was
+    // scheduled in (freeze_test's exemption).
+    Timer.run(() => awaitingReplay = false);
 
     if (interval != null) {
       var lastTick = 0;
