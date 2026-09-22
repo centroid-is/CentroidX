@@ -388,6 +388,12 @@ class CentroidWebApp extends ConsumerStatefulWidget {
 class _CentroidWebAppState extends ConsumerState<CentroidWebApp> {
   late final BeamerDelegate _routerDelegate = BeamerDelegate(
     initialPath: '/',
+    // The browser tab says "CentroidX" and nothing else. Left on, Beamer
+    // retitles the tab on every navigation — to the page's title, or to the
+    // bare URL path when a page has none, which every plant page does
+    // (`/speedbatchers`). `MaterialApp.title` below and `web/index.html` both
+    // say CentroidX, and with this off nothing overrides them.
+    setBrowserTabTitle: false,
     notFoundPage: const BeamPage(child: PageNotFound()),
     transitionDelegate: MyNoAnimationTransitionDelegate(),
     locationBuilder: buildWebRoutes(),
