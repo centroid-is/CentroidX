@@ -2736,7 +2736,7 @@ class _BeckhoffEL2912 extends ConsumerWidget {
 class BeckhoffPS2001Config extends EtherCatAsset with EcNamedByNameOrId implements NativelySized {
   @JsonKey(includeFromJson: false, includeToJson: false)
   @override
-  List<NetworkPort> get networkPorts => kEcTerminalPorts;
+  List<NetworkPort> get networkPorts => kPs2001Ports;
 
   /// The aspect this slice draws at, for a rack laying its row out.
   @JsonKey(includeFromJson: false, includeToJson: false)

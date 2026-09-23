@@ -29,6 +29,8 @@ import 'package:shared_preferences_platform_interface/in_memory_shared_preferenc
 import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
 import 'package:tfc/page_creator/assets/beckhoff.dart';
 import 'package:tfc/page_creator/assets/common.dart';
+import 'package:tfc/page_creator/assets/ethercat_asset.dart'
+    show EcSubDeviceBinding;
 import 'package:tfc/page_creator/assets/ethercat_link.dart';
 import 'package:tfc/page_creator/assets/link_geometry.dart';
 import 'package:tfc/page_creator/assets/schneider.dart';
@@ -44,10 +46,15 @@ import '../../helpers/test_helpers.dart';
 
 const _key = Key('ethercat_cable_ports');
 
-/// A cable between two named sockets, drawn idle: `key` is empty, so nothing
-/// is subscribed and the run paints in the neutral colour. The point here is
-/// geometry, and a health colour would only make the two goldens differ for a
-/// reason that has nothing to do with where the ends are.
+/// A cable between two named sockets. `key` is empty, so nothing is
+/// subscribed on its own account.
+///
+/// It does not follow that the run paints neutral. An end on a *bound* device
+/// derives its colour from that device's master instead — and a drive has to
+/// be bound before it draws the option card these goldens are about, so the
+/// runs that touch one paint as a link the PLC is not reporting. That is the
+/// truth about this page and not what is being asserted: the assertion is
+/// where the ends land.
 EtherCatLinkConfig _cable({
   required Asset from,
   required String fromPort,
@@ -66,6 +73,16 @@ EtherCatLinkConfig _cable({
       ),
       thickness: 0.005,
     );
+
+/// Binds [drive] to a subdevice, which is what makes it draw the option
+/// card's sockets.
+///
+/// The keys point at nothing — the fake publishes no EtherCAT diagnostics and
+/// these goldens are about geometry, not health. What the binding buys is the
+/// drawing: an unbound ATV320 has a blank face, and a golden of a cable ending
+/// on blank housing would pin the opposite of what this file is checking.
+SchneiderATV320Config _bound(SchneiderATV320Config drive) => drive
+  ..ecSubDevice = EcSubDeviceBinding(diagKey: 'ec.diag', position: 1);
 
 T _place<T extends Asset>(T asset,
     {required double x,
@@ -141,11 +158,14 @@ void main() {
       final terminal = _place(BeckhoffEL1008Config(nameOrId: 'ST101.A1.01'),
           x: 0.30, y: 0.28, w: 0.08, h: 0.46);
 
-      // Two drives. Their sockets are underneath, at 0.35 and 0.65 across the
-      // bottom face, so a cable to a drive has to come up from below it.
-      final drive1 = _place(SchneiderATV320Config(label: 'CVS01.CN01.FD01'),
+      // Two drives. Their sockets are the option card's, low on the face at
+      // 0.30 and 0.70 across, so a cable to a drive ends on the drawing's own
+      // RJ45 rather than on the housing under it.
+      final drive1 = _place(
+          _bound(SchneiderATV320Config(label: 'CVS01.CN01.FD01')),
           x: 0.52, y: 0.70, w: 0.058, h: 0.34);
-      final drive2 = _place(SchneiderATV320Config(label: 'CVS01.CN02.FD01'),
+      final drive2 = _place(
+          _bound(SchneiderATV320Config(label: 'CVS01.CN02.FD01')),
           x: 0.80, y: 0.70, w: 0.058, h: 0.34);
 
       final assets = <Asset>[
@@ -171,6 +191,39 @@ void main() {
       await pumpPage(tester, assets);
       await expectLater(find.byKey(_key),
           matchesGoldenFile('goldens/ethercat_cable_ports.png'));
+    });
+
+    testWidgets('a supply, an extension, and a drive plug into their sockets',
+        (tester) async {
+      await loadGoldenFonts();
+
+      // The three parts whose sockets are drawn on the *face* rather than on
+      // an edge. Every end here has to land on the RJ45 in the picture: the
+      // supply's X1 IN and X2 OUT, the extension's one X1, and the drive's
+      // option card. A cable to the middle of a housing is the bug.
+      final supply = _place(BeckhoffPS2001Config(nameOrId: 'ST101.A1.T1'),
+          x: 0.12, y: 0.32, w: 0.09, h: 0.44);
+
+      final extension = _place(BeckhoffEK1110Config()..nameOrId = 'ST101.A1.09',
+          x: 0.40, y: 0.32, w: 0.04, h: 0.44);
+
+      final drive = _place(
+          _bound(SchneiderATV320Config(label: 'CVS01.CN01.FD01')),
+          x: 0.74, y: 0.42, w: 0.058, h: 0.62);
+
+      final assets = <Asset>[
+        supply,
+        extension,
+        drive,
+        // Out of the supply's X2 OUT, across to the extension's X1.
+        _cable(from: supply, fromPort: 'B', to: extension, toPort: 'B'),
+        // On to the drive's A, the option card's in socket.
+        _cable(from: extension, fromPort: 'B', to: drive, toPort: 'A'),
+      ];
+
+      await pumpPage(tester, assets);
+      await expectLater(find.byKey(_key),
+          matchesGoldenFile('goldens/ethercat_face_sockets.png'));
     });
 
     // No rotated golden here on purpose. `PageLinkAnchors` turns a port about
