@@ -14,7 +14,7 @@ import 'package:tfc_dart/core/stop_interval_source.dart';
 import '../providers/alarm.dart';
 import '../theme.dart';
 import 'alarm.dart' show formatAlarmGroup;
-import 'button_graph.dart' show showSetDatePicker;
+import 'period_menu.dart';
 import 'stop_timeline_geometry.dart';
 import 'stop_timeline_painter.dart';
 
@@ -970,86 +970,30 @@ class _StopTimelineViewState extends State<StopTimelineView> {
   /// it the view could only ever show the last [StopTimelineSpec.periodHours]
   /// hours, so yesterday's night shift was not reachable at all.
   Widget _periodMenu(BuildContext context) {
-    final theme = Theme.of(context);
-    final live = widget.range == null;
-
-    return PopupMenuButton<Object>(
-      key: const ValueKey('stop-timeline-period-menu'),
-      tooltip: 'Period shown',
-      position: PopupMenuPosition.under,
-      itemBuilder: (context) => [
-        if (!live)
-          PopupMenuItem<Object>(
-            key: const ValueKey('stop-timeline-period-live'),
-            value: _liveAction,
-            child: const Text('Back to live'),
-          ),
-        if (!live) const PopupMenuDivider(),
-        for (final (label, span) in _intervalPresets)
-          CheckedPopupMenuItem<Object>(
-            key: ValueKey('stop-timeline-interval-${span.inMinutes}'),
-            value: span,
-            checked: live && _liveSpan == span,
-            child: Text(label),
-          ),
-        const PopupMenuDivider(),
-        PopupMenuItem<Object>(
-          key: const ValueKey('stop-timeline-pick-range'),
-          value: _pickRangeAction,
-          child: const Text('Pick a date range…'),
-        ),
-      ],
-      onSelected: (value) {
-        if (value is Duration) {
-          widget.onIntervalChanged?.call(value);
-        } else if (value == _liveAction) {
-          widget.onRangeChanged?.call(null);
-        } else {
-          _pickRange(context);
-        }
+    return PeriodMenu(
+      keyPrefix: 'stop-timeline',
+      range: widget.range,
+      interval: widget.interval,
+      defaultSpan: Duration(hours: widget.config.periodHours),
+      window: () {
+        final period = _period;
+        return DateTimeRange(start: period.start, end: period.end);
       },
+      onRangeChanged: widget.onRangeChanged,
+      onIntervalChanged: widget.onIntervalChanged,
       child: ValueListenableBuilder(
         valueListenable: _window,
-        builder: (context, window, _) => Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(live ? Icons.calendar_month : Icons.history,
-                size: 12, color: theme.colorScheme.onSurface),
-            const SizedBox(width: 4),
-            Text(
-              _windowLabel(window),
-              maxLines: 1,
-              softWrap: false,
-              style: theme.textTheme.labelSmall?.copyWith(
-                  fontFeatures: const [FontFeature.tabularFigures()]),
-            ),
-            Icon(Icons.arrow_drop_down,
-                size: 14, color: theme.colorScheme.onSurface),
-          ],
+        builder: (context, window, _) => PeriodMenuLabel(
+          live: widget.range == null,
+          label: _windowLabel(window),
         ),
       ),
     );
   }
 
-  Future<void> _pickRange(BuildContext context) async {
-    final period = _period;
-    final picked = await showSetDatePicker(
-        context, DateTimeRange(start: period.start, end: period.end));
-    if (picked == null) return;
-    widget.onRangeChanged?.call(picked);
-  }
-
   /// The window, with the day spelled out whenever "today" would be a guess.
-  String _windowLabel(TimelineWindow window) {
-    final crossesDay = !_sameDay(window.start, window.end);
-    if (!crossesDay && _sameDay(window.end, _now)) {
-      return '${_hhmm(window.start)} – ${_hhmm(window.end)}';
-    }
-    final end = crossesDay
-        ? '${_dayLabel(window.end)} ${_hhmm(window.end)}'
-        : _hhmm(window.end);
-    return '${_dayLabel(window.start)} ${_hhmm(window.start)} – $end';
-  }
+  String _windowLabel(TimelineWindow window) => periodWindowLabel(
+      DateTimeRange(start: window.start, end: window.end), _now);
 
   /// Over a window inside one day every tick reads as a time. Once the
   /// window crosses midnight, "00:00" seven times over is seven ways of
@@ -2354,25 +2298,6 @@ String _hhmmss(DateTime t) => '${_hhmm(t)}:${_two(t.second)}';
 String _dayLabel(DateTime t) => '${_two(t.day)}/${_two(t.month)}';
 bool _sameDay(DateTime a, DateTime b) =>
     a.year == b.year && a.month == b.month && a.day == b.day;
-
-/// Menu value for "back to live", which no [Duration] can stand for.
-const Object _liveAction = 'live';
-
-/// Menu value for the date-range picker.
-const Object _pickRangeAction = 'range';
-
-/// The rolling spans offered off the period menu.
-///
-/// A shift, a day and a week — the stretches a stop analysis is actually
-/// asked about. Anything else is what the date-range picker is for.
-const _intervalPresets = <(String, Duration)>[
-  ('Last hour', Duration(hours: 1)),
-  ('Last 4 hours', Duration(hours: 4)),
-  ('Last 8 hours', Duration(hours: 8)),
-  ('Last 12 hours', Duration(hours: 12)),
-  ('Last 24 hours', Duration(hours: 24)),
-  ('Last 7 days', Duration(days: 7)),
-];
 
 String _durShort(Duration d) {
   // A future-dated start (clock skew between stations) must not read "-42s".

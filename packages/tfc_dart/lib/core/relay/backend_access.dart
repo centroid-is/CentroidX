@@ -122,17 +122,6 @@ final class BackendAccessTemplates implements relay.AccessTemplateApi {
   @override
   Future<List<AccessTemplate>> list() async => _require('list').list();
 
-  /// **Cut from the wire** (17-06 live correction): the protocol loses
-  /// `accessTemplates.template`, and a remote needing one template derives it
-  /// from [list]. This member exists only until the interface deletion lands
-  /// and dies with it; it deliberately does not delegate to the store, so the
-  /// backend cannot quietly keep serving a surface the wire no longer has.
-  @override
-  Future<AccessTemplate?> template(String name) async =>
-      throw UnsupportedError('BackendAccessTemplates.template is not served: '
-          'accessTemplates.template is cut from the wire; derive one template '
-          'from list() instead.');
-
   @override
   Future<Map<String, String>> bindings() async =>
       _require('bindings').bindings();

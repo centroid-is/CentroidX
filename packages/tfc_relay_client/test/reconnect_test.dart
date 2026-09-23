@@ -410,8 +410,17 @@ void main() {
       // threw on a gateway which is not up yet would leave the screen grey
       // until somebody drove to the factory.
       panel.supervisor.start();
+      // **The budget is the operating system's, not the policy's.** Windows
+      // does not refuse a connect to a dead loopback port promptly: measured
+      // 2016 ms, 2002 ms and 2002 ms (WSAECONNREFUSED, 1225) against a port
+      // bound and released moments earlier, where Linux and macOS answer in
+      // microseconds. Three attempts therefore spend six seconds inside
+      // `connect` before a single backoff has been waited, so `_recovery`
+      // here would be asserting on that timer rather than on the retry policy
+      // this arm is about -- and it failed on the Windows lane for exactly
+      // that reason, while the shape it checks was correct all along.
       await within(thirdDown, 'three failed attempts against a dead port',
-          budget: _recovery);
+          budget: Platform.isWindows ? const Duration(seconds: 20) : _recovery);
 
       expect(panel.log.seen.take(4),
           [LinkState.connecting, LinkState.down, LinkState.connecting,

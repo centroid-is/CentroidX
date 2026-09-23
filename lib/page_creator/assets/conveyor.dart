@@ -2839,15 +2839,17 @@ class _ConveyorState extends ConsumerState<Conveyor>
               ? () => _showDrivePane(context, widget.config.wagonMotorKey!,
                   subtitle: 'Wagon drive',
                   icon: Icons.swap_horiz,
+                  subjectPart: _motorPart,
                   forwardPointsLeft:
                       widget.config.reverseWagonDirection ?? false)
               : null,
           onLeftEdgeTap: leftEdgeKey != null
-              ? () => _showSafetyEdgePane(context, leftEdgeKey, side: 'left')
+              ? () => _showSafetyEdgePane(context, leftEdgeKey,
+                  side: 'left', subjectPart: _leftEdgePart)
               : null,
           onRightEdgeTap: rightEdgeKey != null
-              ? () =>
-                  _showSafetyEdgePane(context, rightEdgeKey, side: 'right')
+              ? () => _showSafetyEdgePane(context, rightEdgeKey,
+                  side: 'right', subjectPart: _rightEdgePart)
               : null,
         );
       },
@@ -3206,6 +3208,21 @@ class _ConveyorState extends ConsumerState<Conveyor>
     final beltArea = painter.beltRect(size);
     final docks =
         onStationTap == null ? const <WagonDock>[] : painter.docks(size);
+    // The pieces that answer a tap somewhere other than on the carriage, each
+    // with the rectangle its own pane mark is traced around. Only the ones
+    // with a pane to open: an unbound edge has no pane and no subject, and
+    // the rail band is null off the rails.
+    final railBand = onMotorTap == null ? null : painter.railBandRect(size);
+    final leftBumper =
+        onLeftEdgeTap == null ? null : painter.safetyEdgeRect(size, left: true);
+    final rightBumper = onRightEdgeTap == null
+        ? null
+        : painter.safetyEdgeRect(size, left: false);
+    final parts = <Object, Rect>{
+      if (railBand != null) _motorPart: railBand,
+      if (leftBumper != null) _leftEdgePart: leftBumper,
+      if (rightBumper != null) _rightEdgePart: rightBumper,
+    };
     return GestureDetector(
       onTapUp: (details) {
         final p = details.localPosition;
@@ -3265,17 +3282,21 @@ class _ConveyorState extends ConsumerState<Conveyor>
         }
         (onBeltTap ?? onMotorTap)?.call();
       },
-      child: docks.isEmpty ? child : _withStationSubjects(child, docks, size),
+      child: docks.isEmpty && parts.isEmpty
+          ? child
+          : _withPartSubjects(child, size, docks: docks, parts: parts),
     );
   }
 
-  Widget _stationSubjectBox(WagonDock dock) {
-    final subject = _stationSubject(dock.station.index);
-    final dockSize = dock.body.size;
+  /// An empty box over one piece of the wagon, naming that piece as the
+  /// subject of the pane it opens and publishing its own rectangle as the
+  /// shape to ring.
+  Widget _partSubjectBox(Object handle, Size partSize) {
+    final subject = _partSubject(handle);
     return KeyedSubtree(
       key: ObjectKey(subject.part),
       child: AssetHitShape(
-        shape: () => Path()..addRect(Offset.zero & dockSize),
+        shape: () => Path()..addRect(Offset.zero & partSize),
         child: SidePaneSubject(
           subject: subject.part,
           child: SizedBox.expand(key: subject.anchor),
@@ -3284,15 +3305,29 @@ class _ConveyorState extends ConsumerState<Conveyor>
     );
   }
 
-  /// Lays an empty box over each dock that names the station as its pane's
-  /// subject and publishes the dock as the shape to ring.
+  /// Lays one of those boxes over every piece of the wagon that has a pane:
+  /// each station dock, the rail band the traverse drive answers on, and
+  /// each bound safety edge's bumper strip.
+  ///
+  /// Without them all four panes inherited the conveyor's own subject, so
+  /// whichever one an operator opened the plant view drew the conveyor's hit
+  /// shape — and on a wagon that is the carriage, which said nothing about
+  /// which of the four had been tapped. With them the ring is the piece: the
+  /// rails for the traverse drive, one bumper for a safety edge, one dock
+  /// for a station. The belt keeps the conveyor's own shape, which is now
+  /// the carriage alone (see [ConveyorPainter.hitShape]).
   ///
   /// The boxes take no taps — a childless box hit-tests nothing — so the
   /// dispatch above and [ConveyorPainter.hitTest] still decide every one.
   /// Laid over the belt rather than under it so the belt's own
   /// [AssetHitShape] is still the first one the plant view finds for the
   /// conveyor itself.
-  Widget _withStationSubjects(Widget child, List<WagonDock> docks, Size size) {
+  Widget _withPartSubjects(
+    Widget child,
+    Size size, {
+    required List<WagonDock> docks,
+    required Map<Object, Rect> parts,
+  }) {
     return SizedBox.fromSize(
       size: size,
       child: Stack(
@@ -3302,7 +3337,12 @@ class _ConveyorState extends ConsumerState<Conveyor>
           for (final dock in docks)
             Positioned.fromRect(
               rect: dock.body,
-              child: _stationSubjectBox(dock),
+              child: _partSubjectBox(dock.station.index, dock.body.size),
+            ),
+          for (final entry in parts.entries)
+            Positioned.fromRect(
+              rect: entry.value,
+              child: _partSubjectBox(entry.key, entry.value.size),
             ),
         ],
       ),
@@ -3599,19 +3639,26 @@ class _ConveyorState extends ConsumerState<Conveyor>
   String _stationPaneId(int index) =>
       _paneIdFor('${widget.config.stationsKey}#$index');
 
-  /// Each station slot's pane subject, and the context its pane opens from.
-  ///
-  /// One per slot for the life of this state, so the subject stays the same
-  /// object while the array's flags change under it. Re-minted when the
-  /// config is swapped, since the part names its owner.
-  final Map<int, ({AssetPart part, GlobalKey anchor})> _stationSubjects = {};
+  /// Handles for the pieces of a wagon that open a pane of their own without
+  /// being assets — the keys of [_partSubjects]. A station takes its slot
+  /// number; the fixed pieces take a name.
+  static const _motorPart = 'motor';
+  static const _leftEdgePart = 'edge:left';
+  static const _rightEdgePart = 'edge:right';
 
-  ({AssetPart part, GlobalKey anchor}) _stationSubject(int index) {
-    final known = _stationSubjects[index];
+  /// Each piece's pane subject, and the context its pane opens from.
+  ///
+  /// One per piece for the life of this state, so the subject stays the same
+  /// object while the values under it change. Re-minted when the config is
+  /// swapped, since the part names its owner.
+  final Map<Object, ({AssetPart part, GlobalKey anchor})> _partSubjects = {};
+
+  ({AssetPart part, GlobalKey anchor}) _partSubject(Object handle) {
+    final known = _partSubjects[handle];
     if (known != null && identical(known.part.owner, widget.config)) {
       return known;
     }
-    return _stationSubjects[index] =
+    return _partSubjects[handle] =
         (part: AssetPart(widget.config), anchor: GlobalKey());
   }
 
@@ -3624,7 +3671,7 @@ class _ConveyorState extends ConsumerState<Conveyor>
     // Opened from inside the dock's own subject, so the plant view rings the
     // tapped station rather than the wagon and every dock with it. The
     // conveyor's context is the fallback for a dock not laid out yet.
-    final anchor = _stationSubject(opened.index).anchor.currentContext;
+    final anchor = _partSubject(opened.index).anchor.currentContext;
     SidePane pane(WagonStation station, PaneStatus Function(BuildContext) status,
             {Widget? body, List<WagonStation> stations = const []}) =>
         SidePane(
@@ -3677,8 +3724,11 @@ class _ConveyorState extends ConsumerState<Conveyor>
   /// struct gets the sensor asset's own FB pane — same rows, same
   /// setpoints, one implementation — and a plain BOOL a minimal
   /// pressed/clear card.
+  ///
+  /// [subjectPart] names the piece whose box the pane opens from, so the
+  /// plant view rings that bumper rather than the carriage it is bolted to.
   void _showSafetyEdgePane(BuildContext context, String edgeKey,
-      {required String side}) {
+      {required String side, required Object subjectPart}) {
     final title = 'Safety edge · $side';
     SidePane simple(PaneStatus status, String detail) => SidePane(
           title: title,
@@ -3695,7 +3745,10 @@ class _ConveyorState extends ConsumerState<Conveyor>
           ),
         );
     showSidePane(
-      context: context,
+      // Opened from inside the bumper's own subject, so the ring is that
+      // strip. The conveyor's context is the fallback for a wagon whose
+      // bumper has not been laid out yet.
+      context: _partSubject(subjectPart).anchor.currentContext ?? context,
       id: _paneIdFor(edgeKey),
       builder: (paneContext) => StateManValueBuilder(
         keyName: edgeKey,
@@ -3768,12 +3821,20 @@ class _ConveyorState extends ConsumerState<Conveyor>
   ///
   /// [forwardPointsLeft] puts `Forward` on the left button with a left
   /// arrow — see [ConveyorConfig.reverseWagonDirection].
+  ///
+  /// [subjectPart] names the piece whose box the pane opens from. The belt
+  /// drive passes none and is the conveyor itself, so its ring is the
+  /// carriage; the traverse drive passes [_motorPart] and is ringed on the
+  /// rails it drives the carriage along.
   void _showDrivePane(BuildContext context, String driveKey,
       {required String subtitle,
       required IconData icon,
-      bool forwardPointsLeft = false}) {
+      bool forwardPointsLeft = false,
+      Object? subjectPart}) {
     showSidePane(
-      context: context,
+      context: subjectPart == null
+          ? context
+          : _partSubject(subjectPart).anchor.currentContext ?? context,
       id: _paneIdFor(driveKey),
       // One subscription for the life of the pane: see StateManValueBuilder
       // for why the stream must not be built inline (tapping a setpoint field
@@ -4607,17 +4668,19 @@ class ConveyorPainter extends CustomPainter {
       final band = straightBeltWidth ?? (onRails ? size.height : null);
       if (band == null) return null;
       final rect = onRails ? wagonRect(size) : beltRect(size);
-      final path = Path()
+      // The carriage alone. The docks answer taps too, and the rail band
+      // answers for the traverse drive, but neither belongs here: this
+      // outline is the mark drawn while the *belt's* pane is open, and a
+      // mark that took in every dock beside the rail told the operator the
+      // whole installation was what they had just tapped. Each of those
+      // pieces publishes its own rectangle instead (`_partSubjectBox`), so
+      // the ring is whatever the pane is actually about. [hitTest] is where
+      // the three come back together.
+      return Path()
         ..addRRect(RRect.fromRectAndRadius(
           rect,
           Radius.circular(rect.shortestSide * _endRadiusFactor),
         ));
-      // Each dock answers a tap with its station's pane, so each is part of
-      // what this conveyor takes taps on. The names beside them are not.
-      for (final dock in docks(size)) {
-        path.addRect(dock.body);
-      }
-      return path;
     }
     return g.bandOutline(0, 1,
         width: g.beltWidth, radius: g.beltWidth * _endRadiusFactor);
@@ -4632,14 +4695,18 @@ class ConveyorPainter extends CustomPainter {
   /// reachable.
   @override
   bool hitTest(Offset position) {
-    // The rail is painted ink running the whole box width, and it is the
-    // traverse drive's tap target — so it has to get past the hit test even
-    // though it is outside the wagon. Deliberately NOT folded into
-    // [hitShape]: that outline is also the open-pane mark, which should
-    // trace the wagon rather than stripe the whole asset.
+    // Two things outside the wagon answer a tap: the rail band, which is
+    // painted ink running the whole box width and is the traverse drive's
+    // target, and each station dock. Deliberately NOT folded into
+    // [hitShape]: that outline is the open-pane mark for the belt, and it
+    // should trace the carriage rather than stripe the whole asset or take
+    // in every dock. They have marks of their own — see `_partSubjectBox`.
     final size = paintSize;
-    if (size != null && (railBandRect(size)?.contains(position) ?? false)) {
-      return true;
+    if (size != null) {
+      if (railBandRect(size)?.contains(position) ?? false) return true;
+      for (final dock in docks(size)) {
+        if (dock.body.contains(position)) return true;
+      }
     }
     final shape = hitShape();
     if (shape != null) return shape.contains(position);

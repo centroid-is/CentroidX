@@ -23,7 +23,6 @@ library;
 import 'dart:async';
 
 import 'package:modbus_client/modbus_client.dart';
-import 'package:modbus_client_tcp/modbus_client_tcp.dart';
 import 'package:tfc_dart/core/modbus_client_wrapper.dart';
 import 'package:tfc_dart/core/modbus_device_client.dart';
 import 'package:tfc_dart/core/state_man.dart' show ConnectionStatus;

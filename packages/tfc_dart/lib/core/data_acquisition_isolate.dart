@@ -9,8 +9,6 @@ import 'package:tfc_dart/core/log_config.dart';
 import 'package:tfc_dart/core/modbus_device_client.dart';
 import 'package:tfc_dart/core/pipe_worker_endpoint.dart';
 import 'package:tfc_dart/core/state_man.dart';
-import 'package:tfc_dart/core/state_man_types.dart'
-    show ConnectionStatus, EffectiveDeviceStatus;
 
 /// Configuration for spawning a DataAcquisition isolate.
 class DataAcquisitionIsolateConfig {

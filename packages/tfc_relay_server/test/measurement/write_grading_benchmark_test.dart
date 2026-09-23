@@ -64,20 +64,40 @@ Map<String, Object?> _nestedWrite(int depth, {double moved = 0}) {
   return level(depth);
 }
 
-/// Runs [body] [n] times after a warm-up and reports microseconds per call.
-double _perCall(String what, int n, void Function() body) {
+/// Runs [body] [n] times after a warm-up and reports microseconds per call —
+/// the **best** of [trials] runs, not the last one.
+///
+/// The minimum, deliberately. These arms run on shared CI runners, where the
+/// scheduler, another job on the same box and a GC that lands mid-run can only
+/// ever ADD time to a measurement; nothing makes the work faster than it is.
+/// So the smallest of several runs is the closest estimate of the work itself,
+/// and a single run is an estimate of the work plus whatever else the machine
+/// was doing. That matters here because the arms below assert on a RATIO
+/// between two measurements: noise in either direction moves the ratio, and
+/// `depth8/depth2` came out at 6.76 against a 6.0 bound on a macOS runner —
+/// red for a shape that had not changed at all. Three runs of the same loop
+/// cost a few hundred milliseconds and take that failure mode away.
+double _perCall(String what, int n, void Function() body, {int trials = 3}) {
   for (var i = 0; i < n ~/ 10 + 1; i++) {
     body();
   }
-  final watch = Stopwatch()..start();
-  for (var i = 0; i < n; i++) {
-    body();
+  var best = double.infinity;
+  var bestMs = 0;
+  for (var t = 0; t < trials; t++) {
+    final watch = Stopwatch()..start();
+    for (var i = 0; i < n; i++) {
+      body();
+    }
+    watch.stop();
+    final per = watch.elapsedMicroseconds / n;
+    if (per < best) {
+      best = per;
+      bestMs = watch.elapsedMilliseconds;
+    }
   }
-  watch.stop();
-  final per = watch.elapsedMicroseconds / n;
-  print('  $what: ${per.toStringAsFixed(2)} us/call '
-      '(${watch.elapsedMilliseconds} ms for $n)');
-  return per;
+  print('  $what: ${best.toStringAsFixed(2)} us/call '
+      '($bestMs ms for $n, best of $trials)');
+  return best;
 }
 
 void main() {

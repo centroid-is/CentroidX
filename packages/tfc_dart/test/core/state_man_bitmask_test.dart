@@ -1,4 +1,3 @@
-import 'dart:convert';
 
 import 'package:open62541/open62541_types.dart' show DynamicValue, NodeId;
 import 'package:tfc_dart/core/state_man.dart'

@@ -4,7 +4,6 @@ library;
 import 'dart:io';
 
 import 'package:logger/logger.dart';
-import 'package:open62541/open62541.dart';
 import 'package:test/test.dart';
 import 'package:tfc_dart/core/log_config.dart';
 

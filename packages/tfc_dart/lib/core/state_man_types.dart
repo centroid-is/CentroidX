@@ -36,7 +36,6 @@ import 'package:modbus_client/modbus_client.dart'
 import 'modbus_client_wrapper.dart' show ModbusDataType;
 import 'collect_config.dart';
 import 'config/config_diff.dart';
-import 'preferences_api.dart';
 
 /// Pure plumbing that used to live in `state_man.dart`; re-exported so callers
 /// that reached it through this file are unaffected.

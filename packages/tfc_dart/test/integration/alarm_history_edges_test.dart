@@ -50,7 +50,6 @@ import 'package:tfc_dart/core/database_drift.dart';
 import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc_dart/core/relay/backend_alarm_history.dart';
 import 'package:tfc_dart/core/relay/backend_alarms.dart';
-import 'package:tfc_dart/core/secure_storage/interface.dart';
 import 'package:tfc_dart/core/secure_storage/secure_storage.dart';
 import 'package:tfc_dart/core/state_man.dart' show StateMan;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay;

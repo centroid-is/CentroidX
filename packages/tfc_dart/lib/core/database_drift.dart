@@ -59,23 +59,31 @@ class Alarm extends Table {
 
 class AlarmHistory extends Table {
   IntColumn get id => integer().autoIncrement()();
-
   /// The alarm definition this activation belongs to.
   ///
-  /// **Deliberately NOT `.references(Alarm, #uid)`** (schema v7). Alarm
+  /// **Deliberately NOT `.references(Alarm, #uid)`** (schema v14). Alarm
   /// definitions live in the `alarm_man_config` preference JSON, not as rows:
   /// nothing anywhere in this codebase has ever inserted into the [Alarm]
-  /// table. On Postgres, where foreign keys are always enforced, that made
-  /// **every** `alarm_history` insert a guaranteed SQLSTATE 23503, and it
-  /// never fired only because SVN has zero alarms configured and no alarm has
-  /// ever cleared. Dropping the constraint is what makes writing history
-  /// possible at all; backing definitions with the dead table instead is
-  /// recorded as a refused alternative (14-CONTEXT DI-5).
+  /// table. On Postgres, where a foreign key is always enforced, a database
+  /// created from this definition therefore refuses **every** insert into
+  /// `alarm_history` with SQLSTATE 23503.
   ///
-  /// Measured, not asserted: `test/integration/alarm_schema_v8_test.dart`
-  /// arms 1 and 2, against a real Postgres. A SQLite test cannot see this —
-  /// drift never issues `PRAGMA foreign_keys = ON`, so the constraint is inert
-  /// there and a green unit suite proves nothing about the plant.
+  /// **Measured both ways, 2026-09-23.** A scratch database created from the
+  /// definition as it stood carried `alarm_history_alarm_uid_fkey` and
+  /// refused an insert naming an alarm no row defines. The plants in the
+  /// field do **not** carry the constraint — their `alarm_history` predates
+  /// the reference entering this class (2026-02-03) and drift's `createAll`
+  /// is `IF NOT EXISTS`, so it never re-created the table — which is why
+  /// history has been written there all along, thousands of rows of it.
+  ///
+  /// So this drop is what a **newly provisioned** plant needs, and a no-op on
+  /// an existing one, where [_dropAlarmHistoryForeignKeys] finds nothing and
+  /// says so. It is not a claim that anything in the field has been failing.
+  ///
+  /// A SQLite test cannot see any of this — drift never issues
+  /// `PRAGMA foreign_keys = ON`, so the constraint is inert there and a green
+  /// unit suite proves nothing about a Postgres plant. The arms that do see
+  /// it are 1 and 2 of `test/integration/alarm_schema_v14_test.dart`.
   TextColumn get alarmUid => text()();
   TextColumn get alarmTitle => text()();
   TextColumn get alarmDescription => text()();
@@ -89,18 +97,18 @@ class AlarmHistory extends Table {
 
   /// Which rule of the alarm produced this activation.
   ///
-  /// An alarm may carry several rules and, before v7, the table could not tell
-  /// them apart. `(alarm_uid, rule_index)` with `deactivated_at IS NULL` is the
-  /// identity of an **open** row (14-CONTEXT D-4), enforced by
+  /// An alarm may carry several rules and, before v14, the table could not
+  /// tell them apart. `(alarm_uid, rule_index)` with `deactivated_at IS NULL`
+  /// is the identity of an **open** row, enforced by
   /// [_alarmHistoryOpenRowIndexStatement].
   ///
-  /// **Nullable, and that has a consequence every writer must honour: NULLs are
-  /// DISTINCT in a unique index.** Two open rows for the same `alarm_uid` with
-  /// a NULL `rule_index` both insert — measured, arm 5 of
-  /// `alarm_schema_v8_test.dart`. So the "one open row per alarm-rule"
+  /// **Nullable, and that has a consequence every writer must honour: NULLs
+  /// are DISTINCT in a unique index.** Two open rows for the same `alarm_uid`
+  /// with a NULL `rule_index` both insert -- measured, arm 5 of
+  /// `alarm_schema_v14_test.dart`. So the "one open row per alarm-rule"
   /// guarantee holds only for rows written WITH a rule index, and every writer
-  /// added by Phase 14 must supply one. It is nullable only because rows
-  /// written before v7 have no rule to point at; do not "fix" the index into
+  /// has to supply one. It is nullable only because rows written before v14
+  /// have no rule to point at; do not "fix" the index into
   /// `COALESCE(rule_index, -1)` to close the gap, because that starts refusing
   /// legacy rows the database is already holding.
   IntColumn get ruleIndex => integer().nullable()();
@@ -108,18 +116,18 @@ class AlarmHistory extends Table {
   /// Where [createdAt] / [deactivatedAt] came from: `plant` when every value
   /// contributing to the evaluation carried a `sourceTime`, `backend_receipt`
   /// when at least one did not and the backend's own receipt instant was used
-  /// instead (14-CONTEXT D-2).
+  /// instead.
   ///
-  /// Nullable: rows written before v7 have no provenance to record, and a
+  /// Nullable: rows written before v14 have no provenance to record, and a
   /// missing label is honest about that where a defaulted one would not be.
   TextColumn get tsSource => text().nullable()();
 
   /// Why the row was closed: `cleared`, `acknowledged`, `inferred_restart` or
-  /// `inferred_config_change` (14-CONTEXT D-4).
+  /// `inferred_config_change`.
   ///
-  /// The two `inferred_*` values are the point of the column — they let a stop
-  /// analysis tell a measured clear from one reconstructed after a backend
-  /// restart, rather than reading both as the same fact.
+  /// The two `inferred_*` values are the point of the column -- they let a
+  /// stop analysis tell a measured clear from one reconstructed after a
+  /// backend restart, rather than reading both as the same fact.
   TextColumn get deactivatedReason => text().nullable()();
 }
 
@@ -783,7 +791,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
 
   /// Create [_alarmHistoryOpenRowIndexStatement].
   ///
-  /// Called from `onCreate` **and** from the v7 upgrade branch, on both
+  /// Called from `onCreate` **and** from the v14 upgrade branch, on both
   /// backends. Both, not just the upgrade: a database created from scratch by
   /// a new station would otherwise carry no index at all, and the guarantee
   /// would hold only on databases that happened to have been upgraded.
@@ -1670,42 +1678,24 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
             await _createConfigIndexes(m);
           }
 
-          // **This arm has been renumbered three times and the number is not
-          // the point.** It was v7 on this branch, became v8 when main's
-          // page-visibility whitelist (#495) took 7, v10 when main also took 8
-          // (per-account inactivity timeout, #505) and 9 (additional roles,
-          // #512), v13 when relational configuration (#465) took 10, 11 and
-          // 12, and is v14 now that main (#580) stamps 13 for widening the
-          // config-store arm. That last one is not cosmetic: a station that ran
-          // main's build opens here at 13, and a `from < 13` arm would skip it
-          // and never create the columns. Each time the rule was the same and it is
-          // main's: whichever arm shipped first keeps its number, and this one
-          // moves up. That is also the safe direction — a station that has run
-          // the earlier arms gets this one on its next open, and one that has
-          // run none of them gets them all in order.
+          // Schema v14: `alarm_history` becomes writable.
           //
-          // The existence guard below is what makes a fourth renumber free,
-          // and this arm is now the case that reasoning was written for.
+          // `alarm_uid` carried `REFERENCES alarm (uid)` and nothing has ever
+          // inserted into `alarm` -- definitions live in the
+          // `alarm_man_config` preference JSON -- so a Postgres database
+          // created from that definition refuses every insert into this table
+          // with 23503. Existing plants predate the reference and do not carry
+          // the constraint, so the drop is a fix for newly provisioned ones and
+          // a logged no-op elsewhere. Three nullable columns arrive with it,
+          // plus the partial unique index that makes two OPEN rows for one
+          // alarm-rule unrepresentable.
           //
-          // Schema v14: `alarm_history` becomes writable, and an open
-          // activation row becomes a thing the database can hold exactly one
-          // of. See 14-CONTEXT D-5.
-          //
-          // **This is the first migration arm in this repository with an
-          // executed Postgres test** — `test/integration/alarm_schema_v8_test
-          // .dart` (named for the version it was written at), fourteen legs
-          // against a real server, half of them against a v6 shape built by
-          // hand and lifted through this branch. The v6 comment above records
-          // that no test had ever run one. This arm does not inherit that.
+          // **Safe on data already there.** Every existing row migrates with a
+          // NULL `rule_index`, and NULLs are DISTINCT in a unique index, so no
+          // pair of them can collide and the index builds on a table that is
+          // already full of history.
           if (from < 14) {
             if (native) {
-              // Guarded by whether the columns exist rather than by
-              // `from >= N`, which is the convention main's v8 arm above sets
-              // out and the reasoning holds here verbatim: an existence check
-              // is right in every merge order, a version comparison only in
-              // the one it was written for. This arm has now been renumbered
-              // three times, which is the case that reasoning is about.
-              //
               // SQLite has no `ADD COLUMN IF NOT EXISTS` and no
               // `DROP CONSTRAINT`. Neither matters here:
               //
@@ -1714,11 +1704,16 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
               // * The `alarm_uid -> alarm(uid)` foreign key is already inert.
               //   Drift never issues `PRAGMA foreign_keys = ON` and nothing in
               //   this package sets it in a `beforeOpen`, so SQLite has been
-              //   accepting these inserts all along — which is exactly why the
-              //   Postgres-only defect survived so long. Rebuilding the table
-              //   to remove a constraint that is not enforced would be a
+              //   accepting these inserts all along -- which is exactly why
+              //   the Postgres-only defect survived so long. Rebuilding the
+              //   table to remove a constraint that is not enforced would be a
               //   copy-and-swap of the plant's history for no behavioural
               //   change; it is deliberately not done.
+              //
+              // Guarded by whether the columns exist rather than by
+              // `from >= N`, which is the convention the arms above set out:
+              // an existence check is right in every merge order, a version
+              // comparison only in the one it was written for.
               final cols = await m.database
                   .customSelect("PRAGMA table_info('alarm_history')")
                   .get();
@@ -1738,21 +1733,21 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
               }
             } else {
               // PostgreSQL: idempotent, for the several-stations-share-one-
-              // database reason the v6 branch records. Each of these has to be
+              // database reason the v6 arm records. Each of these has to be
               // safe to run twice or the second station through aborts the
               // migration and leaves the database half-upgraded.
               //
               // **`BIGINT`, not `INTEGER`.** Drift's Postgres dialect maps
               // `IntColumn` to `bigint`, so a station that CREATES this schema
               // gets `rule_index bigint` while `INTEGER` here would give an
-              // upgraded station `int4` — two shapes for one column, from one
+              // upgraded station `int4` -- two shapes for one column, from one
               // release. It is not cosmetic: drift reads the column as
               // `DriftSqlType.int` and a client binding an int8 parameter
               // against an int4 column gets SQLSTATE 08P01, "insufficient data
               // left in message", which reads like a driver bug rather than a
-              // schema mismatch. Measured — `alarm_schema_v8_test.dart`'s
-              // column-parity arm compares the created and upgraded shapes
-              // column for column so the two paths cannot drift apart again.
+              // schema mismatch. Measured -- the column-parity arm of
+              // `alarm_schema_v14_test.dart` compares the created and upgraded
+              // shapes column for column so the two paths cannot drift apart.
               for (final stmt in [
                 'ALTER TABLE alarm_history ADD COLUMN IF NOT EXISTS rule_index BIGINT',
                 'ALTER TABLE alarm_history ADD COLUMN IF NOT EXISTS ts_source TEXT',

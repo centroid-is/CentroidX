@@ -18,7 +18,6 @@
 /// `as relay`.
 library;
 
-import 'package:open62541/open62541.dart';
 import 'package:test/test.dart';
 import 'package:tfc_dart/core/relay/relay_to_ua_value.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay;

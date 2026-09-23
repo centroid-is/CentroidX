@@ -1,4 +1,3 @@
-import 'dart:convert';
 
 import 'package:jbtm/jbtm.dart' show M2400RecordType, M2400Field;
 import 'package:test/test.dart';

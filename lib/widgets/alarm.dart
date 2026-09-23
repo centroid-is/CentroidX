@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:tfc/widgets/panes/standard_dialog.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -14,7 +16,9 @@ import '../providers/local_gateway_alarm.dart';
 import '../theme.dart';
 import 'base_scaffold.dart';
 import 'boolean_expression.dart';
+import 'button_graph.dart' show showSetDatePicker;
 import 'fuzzy_search_bar.dart';
+import 'period_menu.dart';
 import 'proposal_visual.dart';
 
 /// The alarm system's (background, foreground) colour pair for a level —
@@ -65,22 +69,47 @@ String alarmLevelLabel(AlarmLevel level) {
 /// Still-active entries sort to the top, newest activation first; the ended
 /// ones follow, newest deactivation first. An alarm that ran, cleared and came
 /// back is two entries, because it was two events.
+///
+/// [history] is the union of what the database was asked for and what
+/// [AlarmMan] still holds in memory, so the same activation arrives twice as
+/// two different objects. They are collapsed by *value* -- uid plus activation
+/// time -- rather than by identity, which only ever caught the in-memory case.
+///
+/// [window] drops what the period on screen does not cover, by **overlap**:
+/// an alarm that went off before the window and cleared inside it is part of
+/// that period, and one still standing overlaps every window it started
+/// before. Started-inside would hide exactly the alarm the operator came to
+/// read.
 List<(AlarmActive, DateTime?)> alarmHistoryEntries(
   Iterable<AlarmActive?> history,
-  Iterable<AlarmActive> active,
-) {
-  // By identity: [AlarmActive] has no value equality, and the same instance is
-  // what AlarmMan moves from the active set into the history buffer -- so a
-  // just-cleared alarm can be in both streams for a frame.
-  final seen = Set<AlarmActive>.identity();
+  Iterable<AlarmActive> active, {
+  DateTimeRange? window,
+}) {
+  bool inWindow(AlarmActive row, DateTime? deactivated) {
+    if (window == null) return true;
+    return !row.notification.timestamp.isAfter(window.end) &&
+        (deactivated == null || !deactivated.isBefore(window.start));
+  }
+
+  final seen = <String>{};
   final entries = <(AlarmActive, DateTime?)>[];
+  void add(AlarmActive alarm, DateTime? deactivated) {
+    if (!seen.add('${alarm.notification.uid}@'
+        '${alarm.notification.timestamp.microsecondsSinceEpoch}')) {
+      return;
+    }
+    if (!inWindow(alarm, deactivated)) return;
+    entries.add((alarm, deactivated));
+  }
+
+  // The live set first, so an alarm caught mid-clear -- in both the active set
+  // and the history buffer for a frame -- is listed as the standing one.
   for (final alarm in active) {
-    if (seen.add(alarm)) entries.add((alarm, null));
+    add(alarm, null);
   }
   for (final alarm in history) {
     if (alarm == null) continue;
-    if (!seen.add(alarm)) continue;
-    entries.add((alarm, alarm.deactivated));
+    add(alarm, alarm.deactivated);
   }
 
   entries.sort((a, b) {
@@ -833,6 +862,21 @@ class EditAlarm extends ConsumerWidget {
   }
 }
 
+/// The stretch the History list opens on when nothing has been picked.
+///
+/// A day, not the whole table. The list is now bounded at the *query*, so the
+/// default is also the promise the header makes — and a shift handover asks
+/// about the last day, not about last month.
+const kAlarmHistoryDefaultSpan = Duration(hours: 24);
+
+/// How many history rows one period may bring back.
+///
+/// The same ceiling the stop timeline uses. A busy plant can spend it all on
+/// an hour, which is why the window bounds the query rather than the list:
+/// an unbounded newest-first read would draw a week with six days missing,
+/// silently.
+const _historyRowLimit = 2000;
+
 class ListActiveAlarms extends ConsumerStatefulWidget {
   final void Function(AlarmActive)? onShow;
   final void Function()? onViewChanged;
@@ -842,11 +886,22 @@ class ListActiveAlarms extends ConsumerStatefulWidget {
   /// selection, so the detail pane is not empty on arrival.
   final void Function(List<AlarmActive> active)? onActiveAlarms;
 
+  /// Fixed clock for tests and goldens: bounds the rolling history window and
+  /// stills the refresh timer. Live when null.
+  final DateTime? clock;
+
+  /// What "Pick a date range…" opens. Injected so a test can exercise the
+  /// control without building a third-party modal, whose rendering is not
+  /// this repo's to pin.
+  final PeriodRangePicker pickRange;
+
   const ListActiveAlarms({
     super.key,
     this.onShow,
     this.onViewChanged,
     this.onActiveAlarms,
+    this.clock,
+    this.pickRange = showSetDatePicker,
   });
 
   @override
@@ -864,13 +919,64 @@ class _ListActiveAlarmsState extends ConsumerState<ListActiveAlarms> {
 
   final _searchBarKey = GlobalKey<FuzzySearchBarState>();
 
-  /// The list's stream, made once per mode (active / history). Built inline
-  /// it was a new object on every rebuild -- every search keystroke -- and
+  /// An absolute range the operator picked, or null for the live rolling
+  /// period. It bounds the database read as well as the list: asking a
+  /// newest-first buffer for last Tuesday returns yesterday instead.
+  DateTimeRange? _range;
+
+  /// A rolling span picked at runtime, or null for [kAlarmHistoryDefaultSpan].
+  Duration? _interval;
+
+  /// The database read for the period on screen. Merged with what the
+  /// [AlarmSource] still holds in memory, because the row for a clear is written
+  /// fire-and-forget and may not be readable for a moment after the alarm
+  /// closes — the in-memory ring has it instantly.
+  List<AlarmActive> _rows = const [];
+
+  /// Bumped by every [_loadHistory] so a superseded one cannot stomp the
+  /// winner: changing the period twice in a row starts two overlapping reads.
+  int _generation = 0;
+
+  /// True while a period change's read is in flight. The stale list stays up
+  /// under a thin progress strip rather than being replaced by a spinner,
+  /// which would throw away the scroll position and the selection with it.
+  bool _reloading = false;
+
+  /// Live safety net while History is on: the rolling window walks away from
+  /// the last read, and rows written by other stations never announce
+  /// themselves.
+  Timer? _refresh;
+
+  @override
+  void dispose() {
+    _refresh?.cancel();
+    super.dispose();
+  }
+
+  /// The stretch of history to show: the picked range, or the rolling one.
+  DateTimeRange _fetchWindow() {
+    final range = _range;
+    if (range != null) return range;
+    final now = widget.clock ?? DateTime.now();
+    return DateTimeRange(start: now.subtract(_span), end: now);
+  }
+
+  Duration get _span => _interval ?? kAlarmHistoryDefaultSpan;
+
+  /// The list's streams, made once per mode (active / history). Built inline
+  /// they were a new object on every rebuild -- every search keystroke -- and
   /// StreamBuilder answered each with its spinner.
-  Stream<(AlarmSource, List<(AlarmActive, DateTime?)>)>? _stream;
+  ///
+  /// Both modes carry the same triple so the builder is one shape: the
+  /// source, its in-memory ring of cleared activations, and the live set.
+  /// The Active list has no use for the ring and never subscribes to it.
+  ///
+  /// [AlarmSource], not [AlarmMan]: in gateway mode the ring and the live set
+  /// arrive over the relay, and the widget must not care which it has.
+  Stream<(AlarmSource, List<AlarmActive?>, List<AlarmActive>)>? _stream;
   bool? _streamShowsHistory;
 
-  Stream<(AlarmSource, List<(AlarmActive, DateTime?)>)> _streamFor(
+  Stream<(AlarmSource, List<AlarmActive?>, List<AlarmActive>)> _streamFor(
       bool showHistory) {
     final cached = _stream;
     if (cached != null && _streamShowsHistory == showHistory) return cached;
@@ -882,15 +988,72 @@ class _ListActiveAlarmsState extends ConsumerState<ListActiveAlarms> {
       // too -- see [alarmHistoryEntries].
       (alarmMan) => showHistory
           ? Rx.combineLatest2<List<AlarmActive?>, Set<AlarmActive>,
-              (AlarmSource, List<(AlarmActive, DateTime?)>)>(
+              (AlarmSource, List<AlarmActive?>, List<AlarmActive>)>(
               alarmMan.history(),
               alarmMan.activeAlarms(),
-              (history, active) =>
-                  (alarmMan, alarmHistoryEntries(history, active)),
+              (history, active) => (alarmMan, history, active.toList()),
             )
-          : alarmMan.activeAlarms().map((active) =>
-              (alarmMan, active.map((a) => (a, null as DateTime?)).toList())),
+          : alarmMan.activeAlarms().map(
+              (active) => (alarmMan, const <AlarmActive?>[], active.toList())),
     );
+  }
+
+  /// Reads the period out of the database.
+  ///
+  /// Failure keeps whatever is on screen and says so in the log rather than
+  /// replacing a working list with an error page: the in-memory ring still
+  /// answers for everything since this station started, which is the part an
+  /// operator most often wants.
+  Future<void> _loadHistory() async {
+    final generation = ++_generation;
+    final window = _fetchWindow();
+    try {
+      final man = await ref.read(alarmManProvider.future);
+      final rows = await man.getRecentAlarms(
+        limit: _historyRowLimit,
+        from: window.start,
+        to: window.end,
+      );
+      if (!mounted || generation != _generation) return;
+      setState(() {
+        _rows = rows;
+        _reloading = false;
+      });
+    } catch (e) {
+      if (!mounted || generation != _generation) return;
+      debugPrint('Alarm history read failed: $e');
+      setState(() => _reloading = false);
+    }
+  }
+
+  /// History is live too — but only its period drifts, so a minute is enough.
+  /// A fixed clock means a test or a golden, where a timer is only flake.
+  void _syncRefreshTimer() {
+    final wanted = _showHistory && widget.clock == null;
+    if (wanted == (_refresh != null)) return;
+    _refresh?.cancel();
+    _refresh = wanted
+        ? Timer.periodic(const Duration(minutes: 1), (_) => _loadHistory())
+        : null;
+  }
+
+  /// An absolute range, or null to go back to the live rolling period.
+  void _setRange(DateTimeRange? range) {
+    setState(() {
+      _range = range;
+      _reloading = true;
+    });
+    _loadHistory();
+  }
+
+  /// A rolling span ending now. Always live, so it drops any absolute range.
+  void _setInterval(Duration interval) {
+    setState(() {
+      _interval = interval;
+      _range = null;
+      _reloading = true;
+    });
+    _loadHistory();
   }
 
   @override
@@ -905,7 +1068,7 @@ class _ListActiveAlarmsState extends ConsumerState<ListActiveAlarms> {
     // must not be filterable away. It is NOT in the history list — history
     // is the persisted record, and this alarm is deliberately not a record.
     final localAlarm = ref.watch(localGatewayAlarmProvider);
-    return StreamBuilder<(AlarmSource, List<(AlarmActive, DateTime?)>)>(
+    return StreamBuilder<(AlarmSource, List<AlarmActive?>, List<AlarmActive>)>(
       stream: _streamFor(_showHistory),
       builder: (context, snapshot) {
         // An error is not a loading state. `alarmManProvider` throws for
@@ -948,15 +1111,20 @@ class _ListActiveAlarmsState extends ConsumerState<ListActiveAlarms> {
         // transport, so the one condition that takes the source away is the
         // condition the local alarm reports. Render what the panel knows.
         final alarmMan = snapshot.data?.$1;
-        var alarms =
-            snapshot.data?.$2 ?? const <(AlarmActive, DateTime?)>[];
+        final ring = snapshot.data?.$2 ?? const <AlarmActive?>[];
+        final active = snapshot.data?.$3 ?? const <AlarmActive>[];
+        final window = _fetchWindow();
+        var alarms = _showHistory
+            ? alarmHistoryEntries([..._rows, ...ring], active, window: window)
+            : [for (final a in active) (a, null as DateTime?)];
+
         if (!_showHistory && widget.onActiveAlarms != null) {
-          final active = [
+          final listed = [
             if (localAlarm != null) localAlarm,
             for (final a in alarms) a.$1,
           ];
           WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) widget.onActiveAlarms!(active);
+            if (mounted) widget.onActiveAlarms!(listed);
           });
         }
         if (_showHistory) {
@@ -997,97 +1165,105 @@ class _ListActiveAlarmsState extends ConsumerState<ListActiveAlarms> {
               .toList();
         }
 
+        final Widget body;
         if (alarms.isEmpty) {
-          return Column(
-            children: [
-              _buildSearchAndToggleBar(counts),
-              Expanded(
-                child: Center(
-                  child: Text(_levelFilter.isEmpty
-                      ? 'No alarms'
-                      : 'No alarms at the selected levels'),
-                ),
-              ),
-            ],
+          body = Expanded(
+            child: Center(
+              child: Text(_emptyMessage()),
+            ),
+          );
+        } else {
+          body = Expanded(
+            child: ListView.builder(
+              itemCount: alarms.length,
+              itemBuilder: (context, index) {
+                final (alarm, deactivationTime) = alarms[index];
+                final (backgroundColor, textColor) =
+                    alarm.notification.getColors(context);
+
+                return Card(
+                  color: backgroundColor,
+                  child: ListTile(
+                    title: Text(
+                      alarm.alarm.config.title,
+                      style: TextStyle(color: textColor),
+                    ),
+                    subtitle: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Activated: ${formatTimestamp(alarm.notification.timestamp)}',
+                          style: TextStyle(
+                            color: textColor.withAlpha(178),
+                          ),
+                        ),
+                        // The D-3 hold, named and dated. A held alarm can
+                        // neither clear nor re-fire, so a row without this
+                        // line is a warning the operator will wait on
+                        // forever — the rig-measured cooler defect
+                        // (2026-09-08). Bold on purpose: this is the row's
+                        // one actionable fact.
+                        if (alarm.notification.staleInputs.isNotEmpty)
+                          Text(
+                            'Input stale'
+                            '${alarm.notification.staleSince != null ? ' since ${formatTimestamp(alarm.notification.staleSince!)}' : ''}'
+                            ' — ${alarm.notification.staleInputs.join(', ')}',
+                            style: TextStyle(
+                              color: textColor,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        if (deactivationTime != null)
+                          Text(
+                            'Deactivated: ${formatTimestamp(deactivationTime)}',
+                            style: TextStyle(
+                              color: textColor.withAlpha(178),
+                            ),
+                          )
+                        // In the history list an alarm with no deactivation
+                        // time has not ended yet -- say so, rather than
+                        // leaving a row that looks like a missing timestamp.
+                        else if (_showHistory)
+                          Text(
+                            'Still active',
+                            style: TextStyle(
+                              color: textColor,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                      ],
+                    ),
+                    onTap: () => widget.onShow?.call(alarm),
+                  ),
+                );
+              },
+            ),
           );
         }
 
         return Column(
           children: [
-            _buildSearchAndToggleBar(counts),
-            Expanded(
-              child: ListView.builder(
-                itemCount: alarms.length,
-                itemBuilder: (context, index) {
-                  final (alarm, deactivationTime) = alarms[index];
-                  final (backgroundColor, textColor) =
-                      alarm.notification.getColors(context);
-
-                  return Card(
-                    color: backgroundColor,
-                    child: ListTile(
-                      title: Text(
-                        alarm.alarm.config.title,
-                        style: TextStyle(color: textColor),
-                      ),
-                      subtitle: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Activated: ${formatTimestamp(alarm.notification.timestamp)}',
-                            style: TextStyle(
-                              color: textColor.withAlpha(178),
-                            ),
-                          ),
-                          // The D-3 hold, named and dated. A held alarm can
-                          // neither clear nor re-fire, so a row without this
-                          // line is a warning the operator will wait on
-                          // forever — the rig-measured cooler defect
-                          // (2026-09-08). Bold on purpose: this is the row's
-                          // one actionable fact.
-                          if (alarm.notification.staleInputs.isNotEmpty)
-                            Text(
-                              'Input stale'
-                              '${alarm.notification.staleSince != null ? ' since ${formatTimestamp(alarm.notification.staleSince!)}' : ''}'
-                              ' — ${alarm.notification.staleInputs.join(', ')}',
-                              style: TextStyle(
-                                color: textColor,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          if (deactivationTime != null)
-                            Text(
-                              'Deactivated: ${formatTimestamp(deactivationTime)}',
-                              style: TextStyle(
-                                color: textColor.withAlpha(178),
-                              ),
-                            )
-                          // In the history list an alarm with no deactivation
-                          // time has not ended yet -- say so, rather than
-                          // leaving a row that looks like a missing timestamp.
-                          else if (_showHistory)
-                            Text(
-                              'Still active',
-                              style: TextStyle(
-                                color: textColor,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                        ],
-                      ),
-                      onTap: () => widget.onShow?.call(alarm),
-                    ),
-                  );
-                },
-              ),
-            ),
+            _buildSearchAndToggleBar(counts, window),
+            body,
           ],
         );
       },
     );
   }
 
-  Widget _buildSearchAndToggleBar(Map<AlarmLevel, int> counts) {
+  /// Why the list is empty, in the operator's terms.
+  ///
+  /// "No alarms" over a bounded history is the wrong answer: nothing happened
+  /// *in the last day* is a different statement from nothing ever happened,
+  /// and the one the period control exists to let them widen.
+  String _emptyMessage() {
+    if (_levelFilter.isNotEmpty) return 'No alarms at the selected levels';
+    if (_showHistory) return 'No alarms in this period';
+    return 'No alarms';
+  }
+
+  Widget _buildSearchAndToggleBar(
+      Map<AlarmLevel, int> counts, DateTimeRange window) {
     return Padding(
       padding: const EdgeInsets.all(16.0),
       child: Material(
@@ -1153,7 +1329,10 @@ class _ListActiveAlarmsState extends ConsumerState<ListActiveAlarms> {
                             _showHistory = newSelection.first;
                             _searchQuery = '';
                             _searchBarKey.currentState?.clear();
+                            _reloading = _showHistory;
                           });
+                          _syncRefreshTimer();
+                          if (_showHistory) _loadHistory();
                           widget.onViewChanged?.call();
                         },
                       ),
@@ -1163,19 +1342,73 @@ class _ListActiveAlarmsState extends ConsumerState<ListActiveAlarms> {
               }),
               Padding(
                 padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
-                child: AlarmLevelFilterChips(
-                  selected: _levelFilter,
-                  counts: counts,
-                  onChanged: (levels) => setState(() {
-                    _levelFilter
-                      ..clear()
-                      ..addAll(levels);
-                  }),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    AlarmLevelFilterChips(
+                      selected: _levelFilter,
+                      counts: counts,
+                      onChanged: (levels) => setState(() {
+                        _levelFilter
+                          ..clear()
+                          ..addAll(levels);
+                      }),
+                    ),
+                    // Its own line, not the chips' -- sharing one row took
+                    // enough width off the chips to fold them, and the period
+                    // is the one thing in this bar that must never be
+                    // abbreviated: an elided date reads as today.
+                    //
+                    // Only in History. The Active list is whatever is wrong
+                    // now, and a period over it would be a control that does
+                    // nothing.
+                    if (_showHistory)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: Align(
+                          alignment: Alignment.centerRight,
+                          child: _periodMenu(window),
+                        ),
+                      ),
+                  ],
                 ),
               ),
+              // The period changed and the read has not landed: the rows on
+              // screen are still the old period's. Said without tearing the
+              // list down. Clipped to the bar's own radius -- the Material
+              // above does not clip its children, so a square strip would
+              // overhang both rounded bottom corners.
+              if (_reloading)
+                const ClipRRect(
+                  borderRadius: BorderRadius.vertical(
+                      bottom: Radius.circular(12)),
+                  child: LinearProgressIndicator(minHeight: 2),
+                ),
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  /// The period control, hung off the read-out that names the stretch on
+  /// screen — the operator who wants a different stretch reaches for the
+  /// thing telling them which one they have.
+  Widget _periodMenu(DateTimeRange window) {
+    return PeriodMenu(
+      keyPrefix: 'alarm-history',
+      range: _range,
+      interval: _interval,
+      defaultSpan: kAlarmHistoryDefaultSpan,
+      window: _fetchWindow,
+      pickRange: widget.pickRange,
+      onRangeChanged: _setRange,
+      onIntervalChanged: _setInterval,
+      child: PeriodMenuLabel(
+        live: _range == null,
+        label: periodWindowLabel(window, widget.clock ?? DateTime.now()),
+        iconSize: 14,
+        textStyle: Theme.of(context).textTheme.labelMedium,
       ),
     );
   }

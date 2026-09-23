@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:typed_data';
 import 'dart:convert';
 
@@ -10,26 +9,19 @@ import 'package:rxdart/rxdart.dart';
 import 'package:collection/collection.dart';
 
 import 'package:jbtm/src/m2400.dart' show M2400RecordType;
-import 'package:jbtm/src/m2400_fields.dart' show M2400Field;
 import 'package:jbtm/src/m2400_client_wrapper.dart' show M2400ClientWrapper;
 import 'package:tfc_dart/core/log_config.dart' show opcuaLogLevelFromEnv;
 import 'package:jbtm/src/msocket.dart' as jbtm show ConnectionStatus;
 
-import 'package:modbus_client/modbus_client.dart'
-    show ModbusElementType, ModbusEndianness;
 
-import 'collector.dart';
 import 'config/config_diff.dart';
 import 'config/config_item.dart' show ConfigKind;
 import 'conn_meta.dart';
-import 'modbus_client_wrapper.dart' show ModbusDataType;
 import 'modbus_device_client.dart'
     show
         ModbusDeviceClientAdapter,
         buildUmasPollGroupsFromKeyMappings,
         buildVariableNamesFromKeyMappings;
-import 'preferences.dart';
-import 'auto_disposing_stream.dart';
 import 'state_man_types.dart';
 
 // The configuration types, the key mappings and the StateMan interface moved to
@@ -37,7 +29,6 @@ import 'state_man_types.dart';
 // Re-exported so every existing `import 'state_man.dart'` is unaffected.
 export 'state_man_types.dart';
 
-import 'state_man_config_storage.dart';
 /// Kept re-exported: `fromPrefs` is called from several places that also
 /// build a client, and they should not need two imports.
 export 'state_man_config_storage.dart';

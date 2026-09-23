@@ -1,6 +1,7 @@
-/// Golden of the alarm list, for design review of the two changes to it: the
-/// level quick-filter under the search bar, and the "Still active" row a
-/// standing alarm now gets in History.
+/// Golden of the alarm list, for design review of the three changes to it: the
+/// level quick-filter under the search bar, the "Still active" row a standing
+/// alarm now gets in History, and the period control beside the chips that
+/// names the stretch History is showing.
 ///
 /// The chips carry the alarm palette, which is deliberately the same under
 /// both themes — an info alarm must not change colour with the operator's
@@ -16,6 +17,7 @@ library;
 import 'dart:io' show File, Platform;
 import 'dart:typed_data' show ByteData;
 
+import 'package:flutter/material.dart' show DateTimeRange, ValueKey;
 import 'package:flutter/services.dart' show FontLoader;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/widgets/alarm.dart' show ListActiveAlarms, ViewActiveAlarm;
@@ -33,15 +35,19 @@ AlarmFixture _plant() => AlarmFixture(
         alarm('Shift started',
             level: AlarmLevel.info, at: DateTime(2026, 8, 29, 6, 0)),
       },
-      past: [
+      // In `stored`, not the in-memory ring: History is a bounded database
+      // read now, and the golden should be of the path an operator's screen
+      // actually takes. Both sit inside the default day, which the fixture
+      // clock puts at 28/08 12:00 – 29/08 12:00.
+      stored: [
         alarm('Line stopped',
             level: AlarmLevel.warning,
-            at: DateTime(2026, 8, 28, 6, 10),
-            ended: DateTime(2026, 8, 28, 6, 55)),
+            at: DateTime(2026, 8, 28, 18, 10),
+            ended: DateTime(2026, 8, 28, 18, 55)),
         alarm('Freezer door',
             level: AlarmLevel.error,
-            at: DateTime(2026, 8, 28, 5, 0),
-            ended: DateTime(2026, 8, 28, 5, 4)),
+            at: DateTime(2026, 8, 28, 17, 0),
+            ended: DateTime(2026, 8, 28, 17, 4)),
       ],
     );
 
@@ -108,6 +114,30 @@ void main() {
       await expectLater(
         find.byType(ListActiveAlarms),
         matchesGoldenFile('goldens/alarm_list_history_dark.png'),
+      );
+    });
+
+    testWidgets('history over a pinned range — light', (tester) async {
+      // The other half of the period control: the calendar glyph becomes the
+      // history one, the label names an absolute stretch, and the list is no
+      // longer rolling with the clock.
+      await pumpAlarmList(
+        tester,
+        _plant(),
+        pickRange: (_, __) async => DateTimeRange(
+          start: DateTime(2026, 8, 28, 16),
+          end: DateTime(2026, 8, 28, 20),
+        ),
+      );
+      await showHistory(tester);
+      await tester.tap(find.byKey(const ValueKey('alarm-history-period-menu')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('alarm-history-pick-range')));
+      await tester.pumpAndSettle();
+
+      await expectLater(
+        find.byType(ListActiveAlarms),
+        matchesGoldenFile('goldens/alarm_list_history_pinned.png'),
       );
     });
 
