@@ -21,6 +21,24 @@ import 'io8.dart' show bodyColor, ioLabelColor, ledOffColor;
 /// the port status has somewhere to put it, rather than a lamp that lies.
 enum EK1110Link { unknown, down, up }
 
+/// The RJ45's width as a fraction of the terminal's, and how far down the face
+/// its top edge sits. The painter draws with these; [kEk1110X1Face] is where
+/// they put the socket's centre.
+const double ek1110PortWidthFraction = 0.78;
+const double ek1110PortTopFraction = 0.16;
+
+/// Centre of the X1 socket, as a fraction of the terminal's 1:6 glyph.
+///
+/// Shared with `kEk1110Ports` rather than written down twice: a cable that
+/// ends on the middle of the right-hand edge instead of on the RJ45 is the
+/// bug this constant exists to prevent. The socket is square, so its height
+/// on the face is [ek1110PortWidthFraction] of the *width* — a sixth of the
+/// height — which is why the y here divides by six.
+const Offset kEk1110X1Face = Offset(
+  0.5,
+  ek1110PortTopFraction + ek1110PortWidthFraction / 6 / 2,
+);
+
 class EK1110Painter extends CustomPainter {
   EK1110Painter({
     this.name = 'EK1110',
@@ -106,10 +124,11 @@ class EK1110Painter extends CustomPainter {
       );
     }
 
-    // The RJ45, centred on the upper third — where it sits on the real part.
-    final portSize = size.width * 0.78;
+    // The RJ45, centred on the upper third — where it sits on the real part,
+    // and where [kEk1110X1Face] plugs a cable in.
+    final portSize = size.width * ek1110PortWidthFraction;
     final portLeft = (size.width - portSize) / 2;
-    final portTop = size.height * 0.16;
+    final portTop = size.height * ek1110PortTopFraction;
     canvas.save();
     canvas.translate(portLeft, portTop);
     canvas.scale(portSize / 100.0);

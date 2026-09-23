@@ -35,6 +35,23 @@ class _TwoOnTheRight extends _Box implements NetworkPorted {
       ];
 }
 
+/// A device whose socket is drawn in the middle of its face, on a glyph of a
+/// fixed shape — a drive's option card, a power supply's two RJ45s.
+class _SocketOnTheFace extends _Box implements NetworkPorted, NativelySized {
+  _SocketOnTheFace({super.x, super.y, super.w, super.h, this.glyph});
+
+  /// Null stands for a drawing that simply fills whatever box it is given.
+  final Size? glyph;
+
+  @override
+  Size get nativeSize => glyph ?? Size.zero;
+
+  @override
+  List<NetworkPort> get networkPorts => const [
+        NetworkPort('A', PortSide.left, at: 0.5, face: Offset(0.25, 0.8)),
+      ];
+}
+
 void main() {
   const canvas = Size(1000, 500);
 
@@ -110,6 +127,52 @@ void main() {
           within(distance: 1e-9, from: const Offset(0.55, 0.45)));
       expect(anchors.portPosition(t.id!, 'X2'),
           within(distance: 1e-9, from: const Offset(0.55, 0.55)));
+    });
+
+    test('a socket drawn on the face is where the cable ends', () {
+      // A 1:4 drawing in a square box: the fraction is a fraction of the
+      // *drawing*, which is not the same point as a fraction of the box.
+      final d = _SocketOnTheFace(
+          x: 0.5, y: 0.5, w: 0.1, h: 0.2, glyph: const Size(100, 400))
+        ..ensureId();
+      final anchors = PageLinkAnchors([d], canvas);
+      // canvas is 1000 x 500, so 0.1 x 0.2 is 100 x 100 px — but the glyph is
+      // 1:4, so it is fitted 25 x 100 and centred, and the socket lands a
+      // quarter across *that*, not across the box: 37.5 px of letterbox plus
+      // 6.25 into the drawing, which is 0.49375 of the page.
+      expect(anchors.portPosition(d.id!, 'A'),
+          within(distance: 1e-9, from: const Offset(0.49375, 0.56)));
+    });
+
+    test('the letterbox is measured in pixels, not in page fractions', () {
+      // Page space stretches x and y independently. A glyph fitted in
+      // fractions would letterbox by the wrong amount on any canvas that is
+      // not square, and the socket would drift off the drawing by that much.
+      final square = _SocketOnTheFace(
+          x: 0.5, y: 0.5, w: 0.1, h: 0.2, glyph: const Size(100, 100));
+      square.ensureId();
+
+      // 0.1 x 0.2 is 100 x 100 px on this canvas: a square box for a square
+      // glyph, so nothing is letterboxed at all.
+      final fitted = PageLinkAnchors([square], canvas)
+          .portPosition(square.id!, 'A')!;
+      expect(fitted, within(distance: 1e-9, from: const Offset(0.475, 0.56)));
+
+      // On a square canvas the same box is 100 x 200 px, so the glyph is
+      // letterboxed 50 px top and bottom and the socket rides up with it —
+      // four fifths down the *drawing* is only 0.65 of the way down the box.
+      final tall = PageLinkAnchors([square], const Size(1000, 1000))
+          .portPosition(square.id!, 'A')!;
+      expect(tall, within(distance: 1e-9, from: const Offset(0.475, 0.53)));
+      expect(tall.dy, lessThan(fitted.dy));
+    });
+
+    test('a drawing that fills its box needs no fitting', () {
+      // No glyph shape declared: the fraction is simply a fraction of the box,
+      // which is what an asset drawn edge to edge wants.
+      final d = _SocketOnTheFace(x: 0.5, y: 0.5, w: 0.1, h: 0.2)..ensureId();
+      expect(PageLinkAnchors([d], canvas).portPosition(d.id!, 'A'),
+          within(distance: 1e-9, from: const Offset(0.475, 0.56)));
     });
 
     test('an unknown asset answers null, so the end falls back', () {

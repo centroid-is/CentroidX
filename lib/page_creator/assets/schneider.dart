@@ -9,7 +9,7 @@ import 'package:open62541/open62541.dart'
 
 import 'common.dart';
 import 'ethercat_asset.dart';
-import 'link_anchors.dart' show NetworkPort;
+import 'link_anchors.dart' show NativelySized, NetworkPort;
 import '../../widgets/panes/pane_chrome.dart';
 import '../../widgets/panes/side_pane.dart';
 import '../../painter/schneider/atv320.dart';
@@ -22,9 +22,17 @@ import '../../widgets/tag_access_guard.dart';
 part 'schneider.g.dart';
 
 @JsonSerializable(explicitToJson: true)
-class SchneiderATV320Config extends EtherCatAsset {
+class SchneiderATV320Config extends EtherCatAsset implements NativelySized {
   @override
   String get displayName => 'Schneider ATV320';
+
+  /// The drive is 45 mm across a 215 mm body and [ATV320] fits that box into
+  /// whatever it is given, so a drawing in a box of another shape is
+  /// letterboxed — and the option card's sockets travel with the drawing.
+  /// This is what lets a cable find them. See [NativelySized].
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  Size get nativeSize => kAtv320DesignMm;
 
   /// The drive label is the CVS/SPB identifier on the plant pages, line break
   /// and all; bind-by-name normalises the whitespace away.
@@ -289,6 +297,11 @@ class _SchneiderATV320 extends ConsumerWidget {
                 displayText: displayText,
                 topLabel: topLabel,
                 labelFontSize: config.resolvedLabelFontSize,
+                // The RJ45s arrive on the VW3A3601 option card. A drive the
+                // page has bound to a subdevice is one the card is fitted to,
+                // by definition — it is talking EtherCAT — and one that is not
+                // keeps the blank face the real hardware has.
+                showEtherCatPorts: config.isEcBound,
               ),
             );
           },
