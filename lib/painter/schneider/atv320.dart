@@ -686,12 +686,18 @@ class ATV320 extends CustomPainter {
         final double cy = top + heightPixels * face.dy;
         final double side = kAtv320SocketMm * pxPerMm;
 
+        // Turned a quarter clockwise: the option card's sockets lie on their
+        // side, so the cable leaves the drive sideways rather than straight
+        // down out of the bottom edge.
+        canvas.save();
+        canvas.translate(cx, cy);
+        canvas.rotate(math.pi / 2);
         paintRj45(
           canvas,
-          Rect.fromCenter(
-              center: Offset(cx, cy), width: side, height: side),
+          Rect.fromCenter(center: Offset.zero, width: side, height: side),
           strokeScale: 1.0 / gScale,
         );
+        canvas.restore();
 
         // "In" and "Out" rather than the PLC's A and B: the caption is read by
         // whoever is holding the cable, and in/out is what the chain means to
