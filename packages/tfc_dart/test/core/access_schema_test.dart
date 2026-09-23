@@ -1267,7 +1267,7 @@ void main() {
       // every bump, and is the whole value of the test.
       final db = await open();
       addTearDown(() => db.close());
-      expect(db.schemaVersion, 13);
+      expect(db.schemaVersion, 14);
     });
   });
 

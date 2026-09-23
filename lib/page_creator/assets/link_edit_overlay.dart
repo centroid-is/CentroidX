@@ -10,12 +10,15 @@
 ///  - **Nothing is typed.** No sweep, no per-corner radius, none of the three
 ///    numbers a conveyor turn asks for. A corner is dropped where it goes and
 ///    the numbers are derived.
-///  - **A corner follows something**, and the right-click menu is where that
-///    is chosen — the run by default, or one device when the truthful model is
-///    a tray the cable leaves at a fixed point.
-///  - **Ends are ports.** Dragging an end onto a device plugs it in there;
-///    dragging it onto empty canvas unplugs it and leaves it where it was
-///    dropped.
+///  - **A corner stays where it was put.** Moving an end stretches the segment
+///    next to it and nothing else. Following a device instead is chosen from
+///    the corner's right-click menu.
+///  - **Ends are ports, and the ports are shown.** While a cable is selected
+///    every socket on the page is marked; dragging an end near one snaps to it
+///    and lights it up, and letting go there plugs it in. Dropped on empty
+///    canvas, an end unplugs and stays where it landed.
+///  - **The cable is still an asset.** Double-clicking it opens its form and
+///    right-clicking it opens the editor's menu, as for anything else.
 library;
 
 import 'dart:math' as math;
@@ -29,14 +32,30 @@ import 'link_anchors.dart';
 import 'link_geometry.dart';
 
 /// Radius of a corner handle, in logical pixels.
-const double _kHandleRadius = 7;
+const double _kHandleRadius = 8;
+
+/// Side of the square a handle can be grabbed by. Finger-sized, not ink-sized.
+const double _kHandleGrab = 32;
 
 /// How close a dropped corner has to come to a neighbour to collapse into it.
-const double _kMergeDistance = 14;
+/// Small, so it takes landing on the neighbour's handle: on a short cable a
+/// larger radius deleted any corner dropped anywhere near an end.
+const double _kMergeDistance = 8;
 
 /// Shortest segment that still earns a ghost. Below this the ghost would sit
 /// on top of the handles at either end and be impossible to grab.
-const double _kMinGhostSegment = 44;
+const double _kMinGhostSegment = 36;
+
+/// How near a dragged end has to come to a port to snap to it.
+///
+/// Generous on purpose. A device's sockets sit on the edge of its box, and a
+/// drop a few pixels outside that edge is a drop on the socket, not on the
+/// empty canvas beside it.
+const double kLinkPortSnapDistance = 28;
+
+/// Width of the invisible stroke along the cable that answers taps, drags and
+/// clicks. The ink is far too thin to aim at.
+const double _kCableTarget = 24;
 
 class LinkEditOverlay extends StatefulWidget {
   const LinkEditOverlay({
@@ -46,6 +65,9 @@ class LinkEditOverlay extends StatefulWidget {
     required this.canvas,
     required this.onChanged,
     required this.onBeginEdit,
+    this.onEndEdit,
+    this.onConfigure,
+    this.onSecondaryTap,
   });
 
   final EtherCatLinkConfig link;
@@ -55,19 +77,43 @@ class LinkEditOverlay extends StatefulWidget {
   final List<Asset> assets;
   final Size canvas;
 
-  /// Called after any edit, so the editor can re-encode and repaint.
+  /// Called after any edit, so the editor can repaint. During a drag this
+  /// fires on every pointer move; [onEndEdit] marks where the gesture settles.
   final VoidCallback onChanged;
 
   /// Called once at the start of a gesture, so one drag is one undo step
   /// rather than one per pointer move.
   final VoidCallback onBeginEdit;
 
+  /// Called once when a gesture settles, so the editor can do its per-gesture
+  /// work — re-encoding the page — once rather than on every move.
+  final VoidCallback? onEndEdit;
+
+  /// Double-click on the cable: open its form.
+  final VoidCallback? onConfigure;
+
+  /// Right-click on the cable, with the point in this overlay's (the
+  /// canvas's) coordinates and on screen. When null the overlay offers its
+  /// own small menu instead.
+  final void Function(Offset local, Offset global)? onSecondaryTap;
+
   @override
   State<LinkEditOverlay> createState() => _LinkEditOverlayState();
 }
 
+/// One socket on the page, where a cable end could go.
+class _PortSpot {
+  _PortSpot(this.asset, this.port, this.at);
+
+  final Asset asset;
+  final NetworkPort port;
+
+  /// Canvas pixels.
+  final Offset at;
+}
+
 class _LinkEditOverlayState extends State<LinkEditOverlay> {
-  LinkAnchors get _anchors => PageLinkAnchors(widget.assets, widget.canvas);
+  PageLinkAnchors get _anchors => PageLinkAnchors(widget.assets, widget.canvas);
 
   ResolvedLink get _resolved =>
       widget.link.run.resolve(widget.canvas, _anchors);
@@ -84,17 +130,77 @@ class _LinkEditOverlayState extends State<LinkEditOverlay> {
   /// Guards the whole gesture so a drag is one undo entry.
   bool _editing = false;
 
+  /// The port an end being dragged is snapped to, lit up until it is dropped.
+  _PortSpot? _snap;
+
   void _begin() {
     if (_editing) return;
     _editing = true;
     widget.onBeginEdit();
+    // After the undo snapshot, so undo brings back the page exactly as it
+    // was saved. A corner held in the run's frame would swing with every
+    // pixel the end moves; this puts it on the page where it already is.
+    widget.link.run.settleOnPage(_anchors);
   }
 
-  void _end() => _editing = false;
+  void _end() {
+    if (!_editing) return;
+    _editing = false;
+    widget.onEndEdit?.call();
+  }
 
   void _changed() {
     widget.onChanged();
     setState(() {});
+  }
+
+  /// Runs a one-shot edit as its own undo step.
+  void _edit(VoidCallback fn) {
+    _begin();
+    fn();
+    _changed();
+    _end();
+  }
+
+  /// Every socket on the page, the cable's own excepted. Only devices that
+  /// declare their sockets are marked: the X1/X2 assumed for anything else
+  /// would put two circles on every button and label on the page.
+  List<_PortSpot> _ports() {
+    final anchors = _anchors;
+    final spots = <_PortSpot>[];
+    void visit(Iterable<Asset> assets) {
+      for (final a in assets) {
+        if (identical(a, widget.link)) continue;
+        if (a is NetworkPorted) {
+          for (final p in (a as NetworkPorted).networkPorts) {
+            final page = anchors.portOn(a, p);
+            spots.add(_PortSpot(
+                a,
+                p,
+                Offset(page.dx * widget.canvas.width,
+                    page.dy * widget.canvas.height)));
+          }
+        }
+        visit(a.childAssets);
+      }
+    }
+
+    visit(widget.assets);
+    return spots;
+  }
+
+  /// The socket nearest [at], if one is within snapping distance.
+  _PortSpot? _portNear(Offset at) {
+    _PortSpot? best;
+    var bestD = kLinkPortSnapDistance;
+    for (final s in _ports()) {
+      final d = (s.at - at).distance;
+      if (d <= bestD) {
+        bestD = d;
+        best = s;
+      }
+    }
+    return best;
   }
 
   /// The asset under [at], ignoring the cable itself.
@@ -103,7 +209,7 @@ class _LinkEditOverlayState extends State<LinkEditOverlay> {
   /// box contains the point is the one drawn on top and the one the operator
   /// thinks they dropped onto.
   Asset? _assetUnder(Offset at) {
-    final anchors = PageLinkAnchors(widget.assets, widget.canvas);
+    final anchors = _anchors;
     Asset? found;
 
     void test(Asset asset, Rect box) {
@@ -138,12 +244,11 @@ class _LinkEditOverlayState extends State<LinkEditOverlay> {
   /// The port on [asset] nearest to [at], so dropping an end on a device picks
   /// the socket the operator dragged towards rather than always the first.
   String? _nearestPort(Asset asset, Offset at) {
-    final anchors = PageLinkAnchors(widget.assets, widget.canvas);
+    final anchors = _anchors;
     String? best;
     var bestD = double.infinity;
     for (final p in portsOf(asset)) {
-      final page = anchors.portPosition(asset.ensureId(), p.id);
-      if (page == null) continue;
+      final page = anchors.portOn(asset, p);
       final px =
           Offset(page.dx * widget.canvas.width, page.dy * widget.canvas.height);
       final d = (px - at).distance;
@@ -155,35 +260,57 @@ class _LinkEditOverlayState extends State<LinkEditOverlay> {
     return best;
   }
 
+  void _freeAt(LinkEnd end, Offset at) {
+    end
+      ..assetId = null
+      ..port = null
+      ..x = (at.dx / widget.canvas.width).clamp(0.0, 1.0)
+      ..y = (at.dy / widget.canvas.height).clamp(0.0, 1.0);
+  }
+
+  /// Follows the pointer, and shows where letting go would plug in: the end
+  /// sits on the snapped socket, but is not bound to it until the drop, so
+  /// sweeping past a rack gives none of its slices an id.
+  void _dragEnd(LinkEnd end, Offset at) {
+    final snap = _portNear(at);
+    _snap = snap;
+    _freeAt(end, snap?.at ?? at);
+    _changed();
+  }
+
   void _dropEnd(LinkEnd end, Offset at) {
-    final target = _assetUnder(at);
-    if (target == null) {
-      // Dropped on empty canvas: unplug, and leave the end where it landed.
-      end.assetId = null;
-      end.port = null;
-      end.x = (at.dx / widget.canvas.width).clamp(0.0, 1.0);
-      end.y = (at.dy / widget.canvas.height).clamp(0.0, 1.0);
+    final snap = _portNear(at);
+    _snap = null;
+    if (snap != null) {
+      end
+        ..assetId = snap.asset.ensureId()
+        ..port = snap.port.id;
     } else {
-      end.assetId = target.ensureId();
-      end.port = _nearestPort(target, at);
+      final target = _assetUnder(at);
+      if (target == null) {
+        // Dropped on empty canvas: unplug, and leave the end where it landed.
+        _freeAt(end, at);
+      } else {
+        end
+          ..assetId = target.ensureId()
+          ..port = _nearestPort(target, at);
+      }
     }
     _changed();
   }
 
+  String _nameOf(String id) {
+    final a = _anchors.assetFor(id);
+    if (a == null) return id;
+    return a.text?.isNotEmpty == true ? a.text! : a.displayName;
+  }
+
   void _showCornerMenu(int index, Offset globalPosition) {
     final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
-    final from = widget.link.run.from.assetId;
-    final to = widget.link.run.to.assetId;
-    final pinned = widget.link.run.waypoints[index].pinnedTo;
-
-    String nameOf(String id) {
-      for (final a in widget.assets) {
-        if (a.id == id) {
-          return a.text?.isNotEmpty == true ? a.text! : a.displayName;
-        }
-      }
-      return id;
-    }
+    final run = widget.link.run;
+    final from = run.from.assetId;
+    final to = run.to.assetId;
+    final rule = LinkRun.ruleOf(run.waypoints[index]);
 
     showMenu<VoidCallback>(
       context: context,
@@ -193,48 +320,39 @@ class _LinkEditOverlayState extends State<LinkEditOverlay> {
       ),
       items: [
         PopupMenuItem(
-          value: () {
-            _begin();
-            widget.link.run.waypoints.removeAt(index);
-            _end();
-            _changed();
-          },
+          value: () => _edit(() => run.waypoints.removeAt(index)),
           child: const Text('Delete point'),
         ),
         PopupMenuItem(
-          value: () {
-            _begin();
-            widget.link.run.waypoints.clear();
-            _end();
-            _changed();
-          },
+          value: () => _edit(run.waypoints.clear),
           child: const Text('Straighten run'),
         ),
         const PopupMenuDivider(),
         const PopupMenuItem<VoidCallback>(
           enabled: false,
-          child: Text('This corner follows'),
+          child: Text('This corner'),
         ),
-        _followItem(index, null, 'The run (both ends)', pinned == null),
+        _ruleItem(index, LinkCornerRule.page, 'Stays where it is', rule),
         if (from != null)
-          _followItem(index, from, nameOf(from), pinned == from),
-        if (to != null) _followItem(index, to, nameOf(to), pinned == to),
+          _ruleItem(index, LinkCornerRule.pinned(from),
+              'Moves with ${_nameOf(from)}', rule),
+        if (to != null && to != from)
+          _ruleItem(index, LinkCornerRule.pinned(to),
+              'Moves with ${_nameOf(to)}', rule),
+        _ruleItem(index, LinkCornerRule.run, 'Follows both ends', rule),
       ],
     ).then((chosen) => chosen?.call());
   }
 
-  PopupMenuItem<VoidCallback> _followItem(
-      int index, String? pin, String label, bool selected) {
+  PopupMenuItem<VoidCallback> _ruleItem(
+      int index, LinkCornerRule rule, String label, LinkCornerRule current) {
     return PopupMenuItem(
-      value: () {
-        _begin();
-        widget.link.run.repin(index, pin, anchors: _anchors);
-        _end();
-        _changed();
-      },
+      value: () =>
+          _edit(() => widget.link.run.repin(index, rule, anchors: _anchors)),
       child: Row(
         children: [
-          Icon(selected ? Icons.circle : Icons.circle_outlined, size: 10),
+          Icon(rule == current ? Icons.circle : Icons.circle_outlined,
+              size: 10),
           const SizedBox(width: 8),
           Text(label),
         ],
@@ -242,7 +360,12 @@ class _LinkEditOverlayState extends State<LinkEditOverlay> {
     );
   }
 
-  void _showCableMenu(Offset localPosition, Offset globalPosition) {
+  void _secondaryTap(Offset localPosition, Offset globalPosition) {
+    final forward = widget.onSecondaryTap;
+    if (forward != null) {
+      forward(localPosition, globalPosition);
+      return;
+    }
     final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
     showMenu<VoidCallback>(
       context: context,
@@ -252,17 +375,28 @@ class _LinkEditOverlayState extends State<LinkEditOverlay> {
       ),
       items: [
         PopupMenuItem(
-          value: () {
-            _begin();
-            widget.link.run.insertWaypoint(localPosition,
-                canvas: widget.canvas, anchors: _anchors);
-            _end();
-            _changed();
-          },
+          value: () => _edit(() => widget.link.run.insertWaypoint(localPosition,
+              canvas: widget.canvas, anchors: _anchors)),
           child: const Text('Add point here'),
         ),
       ],
     ).then((chosen) => chosen?.call());
+  }
+
+  Widget _endHandle(
+      String name, LinkEnd end, Offset at, HmiStateColors states) {
+    return _Handle(
+      key: ValueKey('end-$name'),
+      at: at,
+      colour: states.blue,
+      square: true,
+      onStart: _begin,
+      onMove: (global) => _dragEnd(end, _toLocal(global)),
+      onDone: (global) {
+        _dropEnd(end, _toLocal(global));
+        _end();
+      },
+    );
   }
 
   @override
@@ -278,18 +412,38 @@ class _LinkEditOverlayState extends State<LinkEditOverlay> {
         key: _frame,
         clipBehavior: Clip.none,
         children: [
-          // Right-clicking the cable itself adds a corner there. A wide
-          // invisible stroke, because the ink is far too thin to aim at.
-          //
-          // It sits over the canvas, so it also answers the drag the canvas
-          // would have: without that a selected cable could not be moved at
-          // all. An unplugged one moves with the pointer; a plugged one is
-          // placed by its devices and a drag along it means nothing.
+          // Every socket on the page, so there is something to aim an end at.
+          // Under everything else and deaf to the pointer: it only marks.
+          Positioned.fill(
+            child: IgnorePointer(
+              child: CustomPaint(
+                painter: _PortMarkerPainter(
+                  ports: [for (final s in _ports()) s.at],
+                  snapped: _snap?.at,
+                  snappedLabel: _snap == null
+                      ? null
+                      : [
+                          _snap!.port.id,
+                          if (_snap!.port.description != null)
+                            _snap!.port.description!,
+                        ].join(' · '),
+                  colour: states.blue,
+                  labelStyle: Theme.of(context).textTheme.labelSmall,
+                ),
+              ),
+            ),
+          ),
+
+          // The cable itself, as a target. It sits over the canvas, so it
+          // answers everything the canvas would have: a double-click opens
+          // the form, a right-click the menu, and a drag moves an unplugged
+          // cable (a plugged one is placed by its devices).
           Positioned.fill(
             child: GestureDetector(
               behavior: HitTestBehavior.deferToChild,
+              onDoubleTap: widget.onConfigure,
               onSecondaryTapUp: (d) =>
-                  _showCableMenu(d.localPosition, d.globalPosition),
+                  _secondaryTap(d.localPosition, d.globalPosition),
               onPanStart: widget.link.isPluggedIn ? null : (_) => _begin(),
               onPanUpdate: widget.link.isPluggedIn
                   ? null
@@ -315,6 +469,7 @@ class _LinkEditOverlayState extends State<LinkEditOverlay> {
           for (var i = 0; i < points.length - 1; i++)
             if ((points[i] - points[i + 1]).distance >= _kMinGhostSegment)
               _Handle(
+                key: ValueKey('ghost-$i'),
                 at: (points[i] + points[i + 1]) / 2,
                 colour: states.green,
                 ghost: true,
@@ -322,9 +477,11 @@ class _LinkEditOverlayState extends State<LinkEditOverlay> {
                   _begin();
                   // Materialises on the first move, then it is an ordinary
                   // corner at index i.
+                  final mid = (points[i] + points[i + 1]) / 2;
                   run.waypoints.insert(
                     i,
-                    _describeAt((points[i] + points[i + 1]) / 2),
+                    LinkWaypoint.onPage(mid.dx / widget.canvas.width,
+                        mid.dy / widget.canvas.height),
                   );
                 },
                 onMove: (global) {
@@ -334,15 +491,16 @@ class _LinkEditOverlayState extends State<LinkEditOverlay> {
                 },
                 onDone: (_) => _end(),
                 // A ghost sits in the middle of its segment, which is exactly
-                // where somebody right-clicks to add a point. Without this it
+                // where somebody right-clicks the cable. Without this it
                 // would swallow that click and offer nothing.
                 onSecondaryTap: (global) =>
-                    _showCableMenu(_toLocal(global), global),
+                    _secondaryTap(_toLocal(global), global),
               ),
 
           // A handle per corner.
           for (var j = 0; j < run.waypoints.length; j++)
             _Handle(
+              key: ValueKey('corner-$j'),
               at: points[j + 1],
               colour: run.waypoints[j].isPinned ? states.yellow : states.green,
               onStart: _begin,
@@ -358,70 +516,33 @@ class _LinkEditOverlayState extends State<LinkEditOverlay> {
                     (now[j + 1] - now[j]).distance < _kMergeDistance ||
                         (now[j + 1] - now[j + 2]).distance < _kMergeDistance;
                 if (tooClose) run.waypoints.removeAt(j);
-                _end();
                 _changed();
+                _end();
               },
               onSecondaryTap: (global) => _showCornerMenu(j, global),
             ),
 
           // The two ends. Square, because they are a different kind of thing
-          // from a corner: they belong to a device, not to the cable.
-          _Handle(
-            at: points.first,
-            colour: states.blue,
-            square: true,
-            onStart: _begin,
-            onMove: (global) {
-              final at = _toLocal(global);
-              run.from
-                ..assetId = null
-                ..x = (at.dx / widget.canvas.width).clamp(0.0, 1.0)
-                ..y = (at.dy / widget.canvas.height).clamp(0.0, 1.0);
-              _changed();
-            },
-            onDone: (global) {
-              _dropEnd(run.from, _toLocal(global));
-              _end();
-            },
-          ),
-          _Handle(
-            at: points.last,
-            colour: states.blue,
-            square: true,
-            onStart: _begin,
-            onMove: (global) {
-              final at = _toLocal(global);
-              run.to
-                ..assetId = null
-                ..x = (at.dx / widget.canvas.width).clamp(0.0, 1.0)
-                ..y = (at.dy / widget.canvas.height).clamp(0.0, 1.0);
-              _changed();
-            },
-            onDone: (global) {
-              _dropEnd(run.to, _toLocal(global));
-              _end();
-            },
-          ),
+          // from a corner: they belong to a device, not to the cable. Last,
+          // so an end is on top where it and a corner overlap.
+          _endHandle('from', run.from, points.first, states),
+          _endHandle('to', run.to, points.last, states),
         ],
       ),
     );
   }
-
-  /// A fresh corner at [canvasPoint], following the run.
-  ///
-  /// New corners are never pinned: pinning is the escape hatch, chosen
-  /// deliberately from the menu, not something a drag should decide.
-  LinkWaypoint _describeAt(Offset canvasPoint) {
-    final frame = widget.link.run.frameIn(_anchors);
-    final l = frame.locate(Offset(canvasPoint.dx / widget.canvas.width,
-        canvasPoint.dy / widget.canvas.height));
-    return LinkWaypoint.onRun(l.t, l.n);
-  }
 }
 
 /// One draggable dot.
+///
+/// Every handle is keyed. Ghosts come and go as segments grow past
+/// [_kMinGhostSegment] mid-drag, and without keys the framework re-paired the
+/// live handle under the pointer with whichever widget now sat at its index:
+/// dragging an end would hand the gesture to a corner, which then leapt to the
+/// pointer.
 class _Handle extends StatefulWidget {
   const _Handle({
+    super.key,
     required this.at,
     required this.colour,
     required this.onStart,
@@ -458,12 +579,11 @@ class _HandleState extends State<_Handle> {
 
   @override
   Widget build(BuildContext context) {
-    const grab = _kHandleRadius * 2 + 10; // finger-sized, not ink-sized
     return Positioned(
-      left: widget.at.dx - grab / 2,
-      top: widget.at.dy - grab / 2,
-      width: grab,
-      height: grab,
+      left: widget.at.dx - _kHandleGrab / 2,
+      top: widget.at.dy - _kHandleGrab / 2,
+      width: _kHandleGrab,
+      height: _kHandleGrab,
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onPanStart: (d) {
@@ -500,9 +620,85 @@ class _HandleState extends State<_Handle> {
   }
 }
 
+/// The sockets a cable end can go to: a faint ring on each, and the one a
+/// dragged end has snapped to filled, haloed and named.
+class _PortMarkerPainter extends CustomPainter {
+  _PortMarkerPainter({
+    required this.ports,
+    required this.snapped,
+    required this.snappedLabel,
+    required this.colour,
+    required this.labelStyle,
+  });
+
+  final List<Offset> ports;
+  final Offset? snapped;
+  final String? snappedLabel;
+  final Color colour;
+  final TextStyle? labelStyle;
+
+  static const double _ring = 5;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final ring = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5
+      ..color = colour.withValues(alpha: 0.55);
+    final fill = Paint()..color = colour.withValues(alpha: 0.12);
+    for (final p in ports) {
+      canvas.drawCircle(p, _ring, fill);
+      canvas.drawCircle(p, _ring, ring);
+    }
+
+    final s = snapped;
+    if (s == null) return;
+    canvas.drawCircle(s, 13, Paint()..color = colour.withValues(alpha: 0.22));
+    canvas.drawCircle(s, 6, Paint()..color = colour);
+    canvas.drawCircle(
+        s,
+        6,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.6
+          ..color = Colors.white);
+
+    final label = snappedLabel;
+    if (label == null) return;
+    final tp = TextPainter(
+      text: TextSpan(
+          text: label,
+          style: (labelStyle ?? const TextStyle(fontSize: 11))
+              .copyWith(color: Colors.white)),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    // Above and to the right of the socket, clear of the halo and the finger.
+    final box = Rect.fromLTWH(
+        s.dx + 14, s.dy - 14 - tp.height - 4, tp.width + 10, tp.height + 4);
+    canvas.drawRRect(RRect.fromRectAndRadius(box, const Radius.circular(4)),
+        Paint()..color = colour);
+    tp.paint(canvas, box.topLeft + const Offset(5, 2));
+  }
+
+  @override
+  bool shouldRepaint(_PortMarkerPainter old) =>
+      old.snapped != snapped ||
+      old.snappedLabel != snappedLabel ||
+      old.colour != colour ||
+      old.ports.length != ports.length ||
+      !_samePoints(old.ports, ports);
+
+  static bool _samePoints(List<Offset> a, List<Offset> b) {
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+}
+
 /// Nothing visible — its only job is to answer hit tests along the cable, so a
-/// right-click on the run reaches the overlay's menu instead of falling to the
-/// canvas underneath.
+/// click on the run reaches the overlay instead of falling to the canvas
+/// underneath.
 class _CableTargetPainter extends CustomPainter {
   _CableTargetPainter({required this.resolved, required this.hitWidth});
 
@@ -514,7 +710,7 @@ class _CableTargetPainter extends CustomPainter {
 
   @override
   bool hitTest(Offset position) =>
-      resolved.distanceTo(position) <= math.max(hitWidth, 18) / 2;
+      resolved.distanceTo(position) <= math.max(hitWidth, _kCableTarget) / 2;
 
   @override
   bool shouldRepaint(_CableTargetPainter old) =>

@@ -27,11 +27,14 @@ AlarmFixture _mixed() => AlarmFixture(
         alarm('Guard open',
             level: AlarmLevel.error, at: DateTime(2026, 8, 29, 5)),
       },
+      // Inside the default history period, which the fixture clock puts at
+      // 28/08 12:00 - 29/08 12:00. An ended alarm outside it is not in the
+      // History list to be counted, which is the period control's whole job.
       past: [
         alarm('Line stopped',
             level: AlarmLevel.warning,
-            at: DateTime(2026, 8, 28, 6),
-            ended: DateTime(2026, 8, 28, 7)),
+            at: DateTime(2026, 8, 28, 18),
+            ended: DateTime(2026, 8, 28, 19)),
       ],
     );
 

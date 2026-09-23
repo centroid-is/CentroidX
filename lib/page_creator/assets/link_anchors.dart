@@ -247,16 +247,30 @@ class PageLinkAnchors implements LinkAnchors {
     // reads as a bug.
     final spec = findPort(ports, port);
     if (spec == null) return _about(p.centre, p.pivot, p.angle);
+    return portOn(asset, spec);
+  }
 
+  /// Page-relative position of [port] on [asset], found by the asset itself
+  /// rather than its id.
+  ///
+  /// A rack slice nobody has plugged into yet has no id, and handing it one
+  /// just to draw its sockets in the editor would change the saved page.
+  ///
+  /// A port with a [NetworkPort.face] is a socket the drawing puts in the
+  /// middle of the front face rather than on an edge, and is placed on the
+  /// glyph instead. The editor's own port markers come through here too, so
+  /// they land on the same RJ45 the cable does.
+  Offset portOn(Asset asset, NetworkPort port) {
+    final p = _placement(asset);
     final w = p.width, h = p.height;
-    final face = spec.face;
+    final face = port.face;
     final local = face != null
         ? _onFace(face, glyphSizeOf(asset), w, h)
-        : switch (spec.side) {
-            PortSide.left => Offset(-w / 2, -h / 2 + h * spec.at),
-            PortSide.right => Offset(w / 2, -h / 2 + h * spec.at),
-            PortSide.top => Offset(-w / 2 + w * spec.at, -h / 2),
-            PortSide.bottom => Offset(-w / 2 + w * spec.at, h / 2),
+        : switch (port.side) {
+            PortSide.left => Offset(-w / 2, -h / 2 + h * port.at),
+            PortSide.right => Offset(w / 2, -h / 2 + h * port.at),
+            PortSide.top => Offset(-w / 2 + w * port.at, -h / 2),
+            PortSide.bottom => Offset(-w / 2 + w * port.at, h / 2),
           };
     return _about(p.centre + local, p.pivot, p.angle);
   }

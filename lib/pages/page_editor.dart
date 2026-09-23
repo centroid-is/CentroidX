@@ -18,6 +18,7 @@ import '../page_creator/assets/editor_clipboard.dart';
 import '../page_creator/assets/image.dart';
 import '../page_creator/assets/image_store.dart';
 import '../page_creator/assets/ethercat_link.dart';
+import '../page_creator/assets/link_anchors.dart' show PageLinkAnchors;
 import '../page_creator/assets/ethercat_asset.dart';
 import '../page_creator/assets/ethercat_name_match.dart';
 import '../page_creator/assets/ethercat_autocable.dart';
@@ -2869,6 +2870,8 @@ class _PageEditorState extends ConsumerState<PageEditor> {
   static const int _deleteAction = -12;
   static const int _bindEtherCatAction = -13;
   static const int _drawEtherCatCablesAction = -14;
+  static const int _addCablePointAction = -15;
+  static const int _straightenCableAction = -16;
 
   /// Assets a canvas action applies to: the whole selection when the asset
   /// acted on is part of it, otherwise just that asset. Mirrors [_moveAsset].
@@ -3005,8 +3008,9 @@ class _PageEditorState extends ConsumerState<PageEditor> {
     Asset asset,
     Offset globalPosition,
     BoxConstraints constraints,
-    Offset pasteTarget,
-  ) async {
+    Offset pasteTarget, {
+    Offset? cablePoint,
+  }) async {
     final aiItems = kChatEnabled
         ? buildEditorAssetMenuItems(asset)
         : const <AiMenuItem>[];
@@ -3046,6 +3050,29 @@ class _PageEditorState extends ConsumerState<PageEditor> {
             dense: true,
           ),
         ),
+        // A cable's own shape edits, next to Edit because they are edits of
+        // this one thing. "Add point" needs the clicked spot in canvas
+        // pixels, which only the cable's handles report.
+        if (asset is EtherCatLinkConfig && targets.length == 1) ...[
+          if (cablePoint != null)
+            const PopupMenuItem<int>(
+              value: _addCablePointAction,
+              child: ListTile(
+                leading: Icon(Icons.add_circle_outline),
+                title: Text('Add point here'),
+                dense: true,
+              ),
+            ),
+          if (asset.run.waypoints.isNotEmpty)
+            const PopupMenuItem<int>(
+              value: _straightenCableAction,
+              child: ListTile(
+                leading: Icon(Icons.horizontal_rule),
+                title: Text('Straighten run'),
+                dense: true,
+              ),
+            ),
+        ],
         const PopupMenuDivider(),
         PopupMenuItem<int>(
           value: _copyAction,
@@ -3226,6 +3253,21 @@ class _PageEditorState extends ConsumerState<PageEditor> {
         // is already the wanted end state.
         _openConfigPane(asset);
       }
+    } else if (choice == _addCablePointAction &&
+        asset is EtherCatLinkConfig &&
+        cablePoint != null) {
+      _saveToHistory();
+      final canvas = Size(constraints.maxWidth, constraints.maxHeight);
+      final anchors = PageLinkAnchors(assets, canvas);
+      _updateState(() {
+        asset.run.settleOnPage(anchors);
+        asset.run
+            .insertWaypoint(cablePoint, canvas: canvas, anchors: anchors);
+      });
+    } else if (choice == _straightenCableAction &&
+        asset is EtherCatLinkConfig) {
+      _saveToHistory();
+      _updateState(asset.run.waypoints.clear);
     } else if (choice == _sendToBackAction) {
       _sendToBack(targets);
     } else if (choice == _bringToFrontAction) {
@@ -3774,8 +3816,43 @@ class _PageEditorState extends ConsumerState<PageEditor> {
                                   canvas: Size(constraints.maxWidth,
                                       constraints.maxHeight),
                                   onBeginEdit: _saveToHistory,
-                                  onChanged: () =>
-                                      setState(_updateCurrentJson),
+                                  // Per move: repaint only. The overlay's
+                                  // gestures never reach the marquee
+                                  // listener's pointer-up, so the overlay
+                                  // says itself when a gesture settles.
+                                  onChanged: () => _updateState(() {},
+                                      deferJsonSync: true),
+                                  onEndEdit: () {
+                                    if (_currentJsonStale) {
+                                      setState(_updateCurrentJson);
+                                    }
+                                  },
+                                  // The overlay sits over the cable, so it
+                                  // has to hand the asset's own double-click
+                                  // and right-click back to the editor.
+                                  onConfigure: () {
+                                    final link = _selectedLink;
+                                    if (link != null &&
+                                        !identical(_configAsset, link)) {
+                                      _openConfigPane(link);
+                                    }
+                                  },
+                                  onSecondaryTap: (local, global) {
+                                    final link = _selectedLink;
+                                    if (link == null) return;
+                                    _showAssetContextMenu(
+                                      link,
+                                      global,
+                                      constraints,
+                                      Offset(
+                                        (local.dx / constraints.maxWidth)
+                                            .clamp(0.0, 1.0),
+                                        (local.dy / constraints.maxHeight)
+                                            .clamp(0.0, 1.0),
+                                      ),
+                                      cablePoint: local,
+                                    );
+                                  },
                                 ),
                               Positioned(
                                 top: 16,
