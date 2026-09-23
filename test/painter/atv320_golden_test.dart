@@ -69,11 +69,13 @@ void main() {
       );
     }
 
-    testWidgets('an EtherCAT drive wears the option card\'s A and B sockets',
+    testWidgets('an EtherCAT drive wears the option card\'s In and Out sockets',
         (tester) async {
       // The whole point of the pair: an electrician looking at the mimic can
       // see which socket is which before plugging anything in, and the cable
-      // on the page ends on the socket rather than on the housing.
+      // on the page ends on the socket rather than on the housing. They sit at
+      // the foot of the drive, where the option card puts them on the real
+      // part, with the caption above rather than under the bottom edge.
       //
       // The unbound drive needs no golden of its own — every other golden in
       // this file is one, because `showEtherCatPorts` defaults to false. What

@@ -158,9 +158,9 @@ void main() {
       final terminal = _place(BeckhoffEL1008Config(nameOrId: 'ST101.A1.01'),
           x: 0.30, y: 0.28, w: 0.08, h: 0.46);
 
-      // Two drives. Their sockets are the option card's, low on the face at
-      // 0.30 and 0.70 across, so a cable to a drive ends on the drawing's own
-      // RJ45 rather than on the housing under it.
+      // Two drives. Their sockets are the option card's, at the foot of the
+      // drive where the real RJ45s are, so a cable to a drive ends on the
+      // drawing's own socket rather than on the housing above it.
       final drive1 = _place(
           _bound(SchneiderATV320Config(label: 'CVS01.CN01.FD01')),
           x: 0.52, y: 0.70, w: 0.058, h: 0.34);

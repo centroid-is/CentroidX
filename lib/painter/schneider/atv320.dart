@@ -9,22 +9,31 @@ import '../beckhoff/hardware.dart' show paintRj45;
 /// [kAtv320PortAFace] and [kAtv320PortBFace] are fractions of.
 const Size kAtv320DesignMm = Size(45.0, 215.0);
 
-/// Where the EtherCAT option card's A socket is drawn, as a fraction of
-/// [kAtv320DesignMm].
+/// Where the EtherCAT option card's A socket — the one captioned "In" — is
+/// drawn, as a fraction of [kAtv320DesignMm].
+///
+/// At the foot of the drive, which is where the option card's RJ45s are on the
+/// hardware: a cable to an ATV320 comes up from underneath it, not across its
+/// face.
 ///
 /// Shared with `kAtv320Ports` rather than written down twice: a cable that
 /// lands somewhere other than the socket on the drawing is the whole bug this
 /// pair of constants exists to prevent.
-const Offset kAtv320PortAFace = Offset(0.30, 0.78);
+const Offset kAtv320PortAFace = Offset(0.30, 0.92);
 
-/// Where the EtherCAT option card's B socket is drawn. See [kAtv320PortAFace].
-const Offset kAtv320PortBFace = Offset(0.70, 0.78);
+/// Where the option card's B socket — captioned "Out" — is drawn. See
+/// [kAtv320PortAFace].
+const Offset kAtv320PortBFace = Offset(0.70, 0.92);
 
 /// Side of an option-card socket, in the drive's millimetres.
 const double kAtv320SocketMm = 15.0;
 
-/// Cap height of the A/B letter under a socket, in the drive's millimetres.
-const double kAtv320LetterMm = 8.0;
+/// Cap height of the In/Out caption above a socket, in the drive's
+/// millimetres.
+const double kAtv320LetterMm = 7.0;
+
+/// Clearance between a caption and the socket below it, in millimetres.
+const double kAtv320CaptionGapMm = 1.0;
 
 class ATV320 extends CustomPainter {
   final double widthMm = kAtv320DesignMm.width;
@@ -672,7 +681,7 @@ class ATV320 extends CustomPainter {
     // into, so the socket an electrician sees is the socket the cable ends
     // on.
     if (showEtherCatPorts) {
-      void socket(Offset face, String letter) {
+      void socket(Offset face, String caption) {
         final double cx = left + widthPixels * face.dx;
         final double cy = top + heightPixels * face.dy;
         final double side = kAtv320SocketMm * pxPerMm;
@@ -684,18 +693,24 @@ class ATV320 extends CustomPainter {
           strokeScale: 1.0 / gScale,
         );
 
-        // The letter under the socket, in the PLC's own A-D terms — what the
-        // subdevice pane and the CRC counters call the same port.
+        // "In" and "Out" rather than the PLC's A and B: the caption is read by
+        // whoever is holding the cable, and in/out is what the chain means to
+        // them. The letters are still the port ids the subdevice pane and the
+        // CRC counters use, and `kAtv320Ports` keeps them.
+        //
+        // Above the socket, not below it, because the sockets sit at the foot
+        // of the drive where the real ones are — a caption under them would be
+        // hanging off the bottom edge of the body.
         final tp = TextPainter(
           text: TextSpan(
-            text: letter,
+            text: caption,
             style: TextStyle(
               color: Colors.white,
               fontSize: kAtv320LetterMm * pxPerMm,
               fontWeight: FontWeight.bold,
               // Named, as the inline label is: a null family renders as the
               // test font's featureless boxes under `flutter test`, and a
-              // golden of boxes pins nothing about a letter.
+              // golden of boxes pins nothing about which socket is which.
               fontFamily: 'Courier',
             ),
           ),
@@ -703,12 +718,15 @@ class ATV320 extends CustomPainter {
         )..layout();
         tp.paint(
           canvas,
-          Offset(cx - tp.width / 2, cy + side / 2 + 1.0 * pxPerMm),
+          Offset(
+            cx - tp.width / 2,
+            cy - side / 2 - kAtv320CaptionGapMm * pxPerMm - tp.height,
+          ),
         );
       }
 
-      socket(kAtv320PortAFace, 'A');
-      socket(kAtv320PortBFace, 'B');
+      socket(kAtv320PortAFace, 'In');
+      socket(kAtv320PortBFace, 'Out');
     }
 
     // Done
