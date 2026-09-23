@@ -9,6 +9,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/providers/alarm.dart';
 import 'package:tfc/theme.dart' show solarized;
 import 'package:tfc/widgets/alarm.dart';
+import 'package:tfc/widgets/period_menu.dart';
 import 'package:tfc_dart/core/alarm.dart';
 import 'package:tfc_dart/core/boolean_expression.dart';
 
@@ -52,19 +53,54 @@ AlarmActive alarm(
 ///
 /// `implements AlarmMan` rather than a subclass: the real one has a private
 /// constructor and opens an OPC UA evaluation stream per alarm. Anything the
-/// widget reaches for beyond these three falls through to [noSuchMethod] and
+/// widget reaches for beyond these four falls through to [noSuchMethod] and
 /// throws loudly.
 class AlarmFixture implements AlarmMan {
-  AlarmFixture({this.active = const {}, this.past = const []});
+  AlarmFixture({
+    this.active = const {},
+    this.past = const [],
+    this.stored = const [],
+  });
 
   final Set<AlarmActive> active;
+
+  /// What the in-memory ring holds: the clears this station saw.
   final List<AlarmActive?> past;
+
+  /// What `alarm_history` holds — the rows only a database read reaches.
+  /// Empty in most tests, where the ring is the whole record.
+  final List<AlarmActive> stored;
+
+  /// The windows [getRecentAlarms] was asked for, newest last, so a test can
+  /// assert that the period control reached the query and not just the list.
+  final List<DateTimeRange> reads = [];
 
   @override
   Stream<Set<AlarmActive>> activeAlarms() => Stream.value(active);
 
   @override
   Stream<List<AlarmActive?>> history() => Stream.value(past);
+
+  /// Overlap, the way the real one bounds it: an alarm that went off before
+  /// the window and cleared inside it belongs to that window.
+  @override
+  Future<List<AlarmActive>> getRecentAlarms({
+    int limit = 1000,
+    DateTime? from,
+    DateTime? to,
+  }) async {
+    if (from != null && to != null) {
+      reads.add(DateTimeRange(start: from, end: to));
+    }
+    return [
+      for (final row in stored)
+        if ((to == null || !row.notification.timestamp.isAfter(to)) &&
+            (from == null ||
+                row.deactivated == null ||
+                !row.deactivated!.isBefore(from)))
+          row
+    ];
+  }
 
   /// The real one collapses an alarm's rules to its worst and fuzzy-matches
   /// the query; the list tests are about what happens after that.
@@ -76,10 +112,22 @@ class AlarmFixture implements AlarmMan {
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
+/// The clock the list fixtures run on.
+///
+/// The History list is bounded by a rolling period now, so a fixture built
+/// out of fixed dates needs a fixed "now" to sit inside — otherwise every
+/// test in this file would start failing the day after it was written.
+final alarmFixtureClock = DateTime(2026, 8, 29, 12);
+
 /// The alarm list in a column [width] wide, the way the Alarm View page hands
 /// it 2/5 of the window.
-Widget alarmList(AlarmFixture alarms,
-    {double width = 520, bool dark = false}) {
+Widget alarmList(
+  AlarmFixture alarms, {
+  double width = 520,
+  bool dark = false,
+  DateTime? clock,
+  PeriodRangePicker? pickRange,
+}) {
   final (light, darkTheme) = solarized();
   return ProviderScope(
     overrides: [alarmManProvider.overrideWith((ref) async => alarms)],
@@ -90,7 +138,10 @@ Widget alarmList(AlarmFixture alarms,
           child: SizedBox(
             width: width,
             height: 600,
-            child: const ListActiveAlarms(),
+            child: ListActiveAlarms(
+              clock: clock ?? alarmFixtureClock,
+              pickRange: pickRange ?? (_, __) async => null,
+            ),
           ),
         ),
       ),
@@ -103,14 +154,31 @@ Future<void> pumpAlarmList(
   AlarmFixture alarms, {
   double width = 520,
   bool dark = false,
+  DateTime? clock,
+  PeriodRangePicker? pickRange,
 }) async {
-  await tester.pumpWidget(alarmList(alarms, width: width, dark: dark));
+  await tester.pumpWidget(alarmList(alarms,
+      width: width, dark: dark, clock: clock, pickRange: pickRange));
   await tester.pumpAndSettle();
 }
 
 /// Taps the History segment of the Active/History toggle.
+///
+/// Scoped to the toggle: the period control carries the same history glyph
+/// once an absolute range is pinned, and a bare `byIcon` would then match two.
 Future<void> showHistory(WidgetTester tester) async {
-  await tester.tap(find.byIcon(Icons.history));
+  await tester.tap(find.descendant(
+    of: find.byType(SegmentedButton<bool>),
+    matching: find.byIcon(Icons.history),
+  ));
+  await tester.pumpAndSettle();
+}
+
+/// Opens the History period menu and picks the preset named [label].
+Future<void> pickPeriod(WidgetTester tester, String label) async {
+  await tester.tap(find.byKey(const ValueKey('alarm-history-period-menu')));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text(label).last);
   await tester.pumpAndSettle();
 }
 

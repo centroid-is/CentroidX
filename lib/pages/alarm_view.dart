@@ -5,8 +5,8 @@ import '../widgets/stop_timeline.dart';
 import 'package:tfc_dart/core/alarm.dart';
 
 class AlarmViewPage extends StatefulWidget {
-  /// Fixed clock handed to the stop analysis, for goldens and tests. Live
-  /// when null.
+  /// Fixed clock handed to the stop analysis and to the alarm History
+  /// period, for goldens and tests. Live when null.
   final DateTime? debugClock;
 
   const AlarmViewPage({Key? key, this.debugClock}) : super(key: key);
@@ -104,6 +104,7 @@ class _AlarmViewPageState extends State<AlarmViewPage> {
                           Expanded(
                             flex: 2,
                             child: ListActiveAlarms(
+                              clock: widget.debugClock,
                               onShow: (alarm) {
                                 setState(() {
                                   _selectedAlarm = alarm;
