@@ -149,7 +149,12 @@ void main() {
         ..pushValue('el/raw', DynamicValue(value: 0x16))
         ..pushValue('el/force', DynamicValue(value: 0))
         // Half way along the rail, between the docks.
-        ..pushValue('wg/pos', DynamicValue(value: 50.0));
+        ..pushValue('wg/pos', DynamicValue(value: 50.0))
+        // The traverse drive, on its own key so its pane is a pane of its
+        // own, and a pair of safety edges with nothing against them.
+        ..pushValue('wg/motor', _runningDrive())
+        ..push('wg/edgeL', false)
+        ..push('wg/edgeR', false);
       if (stations != null) fake.pushValue('wg/stations', stations);
       await tester.pumpWidget(ProviderScope(
         overrides: [stateManProvider.overrideWith((_) async => fake)],
@@ -562,6 +567,72 @@ void main() {
       await markAtFullBreath(tester);
 
       await expectCanvas(tester, 'hit_boundary_wagon_station');
+    });
+
+    /// The same wagon for the three frames below: a carriage on a rail run,
+    /// with a belt drive, a traverse drive and a safety edge on each bumper.
+    /// Four devices painted inside one box, and the mark is the only thing
+    /// on the page that says which of them a pane belongs to.
+    ConveyorConfig wagonWithDrives() => ConveyorConfig(
+          key: 'cn/drive',
+          onRails: true,
+          wagonMotorKey: 'wg/motor',
+          safetyLeftKey: 'wg/edgeL',
+          safetyRightKey: 'wg/edgeR',
+          positionKey: 'wg/pos',
+          wagonLength: 0.18,
+        )
+          ..coordinates = Coordinates(x: 0.42, y: 0.5)
+          ..size = const RelativeSize(width: 0.7, height: 0.45);
+
+    /// Taps the wagon at [local] in the painter's own coordinates and winds
+    /// the mark round to full breath, the way [tapGlyph] does for an asset
+    /// with one device in it.
+    Future<void> tapWagonAt(
+      WidgetTester tester,
+      Offset Function(ConveyorPainter painter, Size size) where,
+    ) async {
+      final paint = find
+          .descendant(
+              of: find.byType(Conveyor), matching: find.byType(CustomPaint))
+          .first;
+      final painter =
+          tester.widget<CustomPaint>(paint).painter! as ConveyorPainter;
+      await tester
+          .tapAt(tester.getTopLeft(paint) + where(painter, painter.paintSize!));
+      await tester.pump(const Duration(milliseconds: 16));
+      await tester.pump(const Duration(milliseconds: 16));
+      await tester.pump(const Duration(milliseconds: 400));
+      await markAtFullBreath(tester);
+    }
+
+    testWidgets('a wagon belt drive: the carriage, not the run it rides',
+        (tester) async {
+      await pump(tester, [wagonWithDrives()], surface: const Size(800, 500));
+      await tapWagonAt(tester, (p, size) => p.beltRect(size).center);
+      await expectCanvas(tester, 'hit_boundary_wagon_belt');
+    });
+
+    testWidgets('a wagon traverse drive: the rails it drives the carriage '
+        'along', (tester) async {
+      // The frame the complaint was about: this pane used to draw the belt
+      // drive's mark, so jogging the wagon along the track and running the
+      // belt across it were marked identically.
+      await pump(tester, [wagonWithDrives()], surface: const Size(800, 500));
+      await tapWagonAt(tester, (p, size) {
+        final rail = p.railBandRect(size)!;
+        // Bare track ahead of the carriage.
+        return Offset(p.wagonRect(size).right + 20, rail.center.dy);
+      });
+      await expectCanvas(tester, 'hit_boundary_wagon_rails');
+    });
+
+    testWidgets('a wagon safety edge: the bumper that was tapped',
+        (tester) async {
+      await pump(tester, [wagonWithDrives()], surface: const Size(800, 500));
+      await tapWagonAt(
+          tester, (p, size) => p.safetyEdgeRect(size, left: true)!.center);
+      await expectCanvas(tester, 'hit_boundary_wagon_edge');
     });
   });
 }
