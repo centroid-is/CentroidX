@@ -14,3 +14,22 @@ dependencies:
 dev_dependencies:
   test: ^1.25.0
   lints: ^5.0.0
+
+# open62541_dart#119, the panel's memory leak. See the note in the block.
+dependency_overrides:
+  # The panel leaks 72-122 MiB/h and is OOM-killed on a station capped at
+  # 1 GiB. Measured: a monitored item the server refuses -- which a key with a
+  # renamed tag is, forever, on the retry ladder -- leaked its native callback
+  # and the value map it captures on every rebuild, and `write()` closed its
+  # callback only on the success path. Fixed in open62541_dart#119.
+  #
+  # Pinned by SHA rather than by branch, the way the other overrides in this
+  # repository are: `pubspec.lock` is gitignored, so a branch ref lets a tagged
+  # build pick up untested code. Head of
+  # `fix/monitor-listener-and-write-callback-leaks` (CI green on all ten jobs).
+  # This whole block goes when the fix is released to pub.dev and the
+  # `open62541: ^1.5.7+3` constraint above can name that version instead.
+  open62541:
+    git:
+      url: https://github.com/centroid-is/open62541_dart.git
+      ref: 1d284ede1ed3db021c1f105afddd31659731ccf4
