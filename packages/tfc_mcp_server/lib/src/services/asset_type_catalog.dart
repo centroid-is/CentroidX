@@ -689,6 +689,68 @@ class AssetTypeCatalog {
       ],
     ),
     AssetTypeInfo(
+      assetName: 'LidInspectionConfig',
+      displayName: 'Lid inspection',
+      category: 'Visualization',
+      description:
+          'A camera button that is also an alarm beacon, for a box-lid '
+          'inspection camera run by a separate anomaly-detection service. '
+          'The tile is coloured by the live verdict (OK, anomaly, shadow '
+          'mode, camera offline) and pulses while a bound alarm is active; '
+          'tapping opens a side pane with the latest inspected frame and '
+          'heat-map, score against threshold, recent anomalies, the score '
+          'trend, and the service\'s controls (arm/shadow, collect training '
+          'lids, train, reload model, threshold setpoint). The service '
+          'exposes an OPC UA server whose nodes are mapped under one key '
+          'prefix (<prefix>.Score, .Threshold, .Anomaly, .Armed, .LastId, '
+          '.SecondsSinceLast, .CameraOk, .LidType, .ModelVersion, '
+          '.TrainingState, .GoodSamples, .Command) and writes one row per '
+          'lid, with JPEG previews for anomalies, to the lid_inspection '
+          'table. The configure form carries the full setup and training '
+          'instructions and can mint the anomaly alarm '
+          '("<prefix>.Anomaly AND <prefix>.Armed").',
+      properties: [
+        AssetPropertyInfo(
+            name: 'key_prefix',
+            type: 'String',
+            description: 'Key prefix the service\'s OPC UA nodes are '
+                'mapped under, e.g. LID01; every node key is '
+                '<prefix>.<suffix>.'),
+        AssetPropertyInfo(
+            name: 'camera',
+            type: 'String',
+            description: 'The camera column value of this camera\'s rows in '
+                'lid_inspection. Empty means the same as key_prefix.'),
+        AssetPropertyInfo(
+            name: 'recent_limit',
+            type: 'int',
+            description: 'How many recent anomalies the pane lists '
+                '(default 8).'),
+        AssetPropertyInfo(
+            name: 'training_batch',
+            type: 'int',
+            description: 'How many good lids one "Collect good lids" press '
+                'adds to the training set (default 20).'),
+        AssetPropertyInfo(
+            name: 'alarm_uids',
+            type: 'List<String>',
+            description: 'Uids of the alarms this tile pulses for and '
+                'announces in navigation; "Create anomaly alarm" in the '
+                'configure form fills this with the standard one.'),
+        AssetPropertyInfo(
+            name: 'announce_in_navigation',
+            type: 'bool',
+            description: 'Whether an active bound alarm also pulses the '
+                'page\'s navigation entry and steers auto-navigation '
+                '(default true).'),
+        AssetPropertyInfo(
+            name: 'show_when_inactive',
+            type: 'bool',
+            description: 'Inherited from the alarm beacon; the tile is '
+                'always visible, so it has no effect here.'),
+      ],
+    ),
+    AssetTypeInfo(
       assetName: 'RtspCameraConfig',
       displayName: 'RTSP camera',
       category: 'Visualization',
