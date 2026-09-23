@@ -143,7 +143,7 @@ final class FrozenSubLever {
     // Panel → gateway: verbatim. The panel's own frames (hello, subscribe,
     // heartbeats, RPC) are not the fault being injected.
     toPanel.listen(
-      toGateway.add,
+      (dynamic frame) => _forward(toGateway, frame),
       onDone: () => toGateway.close(),
       onError: (Object _) => toGateway.close(),
       cancelOnError: true,
@@ -151,13 +151,34 @@ final class FrozenSubLever {
     // Gateway → panel: through the frame builder.
     toGateway.listen(
       (dynamic frame) {
-        final out = _inbound(frame);
-        if (out != null) toPanel.add(out);
+        _forward(toPanel, _inbound(frame));
       },
       onDone: () => toPanel.close(),
       onError: (Object _) => toPanel.close(),
       cancelOnError: true,
     );
+  }
+
+  /// Hands [frame] to [sink], unless the far end has already hung up.
+  ///
+  /// The two sockets close independently: a panel whose arm has finished
+  /// closes while the gateway is still mid-tick, and this lever is still
+  /// rewriting ticks for the subscription it froze. `add` on a closed
+  /// WebSocket throws `Bad state: StreamSink is closed`, and thrown from
+  /// inside a stream callback it surfaces as an unhandled error that fails
+  /// whichever test is running -- F25a went red on macOS this way, after its
+  /// own assertion had already passed (the verdict flipped at 3055 ms
+  /// against a 3000 ms limit, which is the arm's pass condition).
+  ///
+  /// Dropping the frame is what a proxy whose far end has gone should do.
+  void _forward(WebSocket sink, Object? frame) {
+    if (frame == null) return;
+    if (sink.readyState != WebSocket.open) return;
+    try {
+      sink.add(frame);
+    } on StateError {
+      // Closed between the check above and this add.
+    }
   }
 
   /// The frame builder: what the panel is given for [frame], or null to drop.

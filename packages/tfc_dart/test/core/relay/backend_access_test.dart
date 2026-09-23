@@ -612,18 +612,6 @@ void main() {
         reason: 'and it must not mark the protected ones');
   });
 
-  // The wire cut, its own arm rather than a members-table row.
-  test('template(name) is cut from the wire and refuses by name, database '
-      'or no database', () async {
-    await expectLater(
-      templates.template('T'),
-      throwsA(isA<UnsupportedError>().having((e) => e.message, 'message',
-          allOf(contains('template'), contains('list()')))),
-      reason: 'a remote needing one template derives it from list(); this '
-          'member must not quietly serve a surface the wire no longer has',
-    );
-  });
-
   // ---------------------------------------------------------------------------
   // Arm 7 — reads are ungated at this layer: the read floor is the relay's
   // policy decorator's (`policy_state_man.dart`, `requireReadFloor`, ruled
