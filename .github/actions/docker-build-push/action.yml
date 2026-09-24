@@ -34,6 +34,20 @@ inputs:
   tags:
     description: Newline-separated image tags to push.
     required: true
+  target:
+    description: >
+      Build stage to stop at. Empty builds the Dockerfile's last stage, as
+      before; the backend's `-profile` variant is a named stage that is not
+      the last one, so nothing selects it by accident.
+    required: false
+    default: ''
+  push:
+    description: >
+      Push the result. Default true. `false` builds and discards — a
+      workflow_dispatch on a branch uses it to prove a Dockerfile change
+      builds before main pays to publish it.
+    required: false
+    default: 'true'
 
 runs:
   using: composite
@@ -45,7 +59,8 @@ runs:
       with:
         context: ${{ inputs.context }}
         file: ${{ inputs.file }}
-        push: true
+        target: ${{ inputs.target }}
+        push: ${{ inputs.push }}
         build-args: ${{ inputs.build-args }}
         cache-from: ${{ inputs.cache-from }}
         cache-to: ${{ inputs.cache-to }}
@@ -63,7 +78,8 @@ runs:
       with:
         context: ${{ inputs.context }}
         file: ${{ inputs.file }}
-        push: true
+        target: ${{ inputs.target }}
+        push: ${{ inputs.push }}
         build-args: ${{ inputs.build-args }}
         cache-from: ${{ inputs.cache-from }}
         cache-to: ${{ inputs.cache-to }}

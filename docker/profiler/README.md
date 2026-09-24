@@ -175,15 +175,81 @@ wedged and the service will not respond — which is when you most want it.
   timescaledb image, so that one table is normally absent and reported as such;
   the other four work regardless.
 
-### What is not covered
+## The backend
 
-`centroidx-backend` gets container and (with a second profiler instance
-pointed at it) thread-level figures, but **no call trees**. It is built with
-`dart build cli`, which produces product-mode AOT with the service protocol
-compiled out — confirmed: the executable ignores `--enable-vm-service`
-entirely. Dart-level profiling of the backend needs a JIT-runtime image
-variant, and that variant would be *slower* than the AOT one, so it is a
-diagnostic to swap in temporarily rather than something to run permanently.
+`centroidx-backend` has a profile tag of its own,
+`ghcr.io/centroid-is/centroid-backend:latest-profile` (and `<sha>-profile`
+on main, like the HMI's), and the compose file carries a second copy of this
+profiler, `backend-profiler`, that shares *its* namespaces instead of the
+panel's. Same rules as above, one difference that changes how a report is
+read:
+
+**It is JIT, not AOT.** `latest` is built with `dart build cli`, which embeds
+the SDK's `dartaotruntime` — a product build with the service protocol
+compiled out. Measured on the SDK the repo pins: the executable passes
+`--enable-vm-service` through to its own argv, `DART_VM_OPTIONS` answers
+"Unrecognized flags", and `getCpuSamples` — the marker the HMI workflow greps
+its engine for — has 0 hits in `dartaotruntime` against 1 in `dartvm`. Flutter
+can have AOT *and* a service because its engine is built in a separate
+profile configuration; nobody publishes such a build of the standalone
+runtime. So the profile image is the builder stage started with `dart run`
+(`docker/backend/Dockerfile`, stage `profile`, has the full argument).
+
+What that means for a memory investigation, which is what this exists for:
+
+- The **program is the same**, so what it allocates, retains and forgets is
+  the same. A class whose instance count climbs hour over hour in the
+  `Memory` table climbs for the same reason under `latest`. Take two reports
+  hours apart and diff the table; that comparison is valid.
+- The **heap is not the same**. A JIT heap also holds code, IC data and
+  kernel for everything that has run, so it starts larger and grows during
+  warm-up for reasons that are not leaks. Give it an hour before the first
+  report you intend to compare against, and do not compare its absolute size
+  to the AOT process's `/proc` figures.
+- **Timings are not production's.** Do not draw a CPU conclusion from this
+  image that you would act on for `latest`.
+- **Startup is slower**: tens of seconds of kernel compilation on every
+  start, by a compiler process that has exited before `main()` runs. The
+  `backend-profiler` service waits for it.
+
+The switches are the backend's counterpart of the engine's, read by the
+image's entrypoint from the environment under the same numbering:
+
+```yaml
+DART_VM_SWITCHES: 2
+DART_VM_SWITCH_1: enable-vm-service=8181       # fixed port; binds 127.0.0.1 unless told otherwise
+DART_VM_SWITCH_2: disable-service-auth-codes   # no per-boot secret in the ws path
+```
+
+Two rather than three: the standalone VM's sampling profiler is a runtime
+flag, and this profiler sets it itself over the service before every window
+(`setFlag profiler true`, as DevTools does). `dart run` takes no
+`--profiler`, and the launcher form that would was measured to skip the
+build hooks that produce open62541. The switches are inert on `latest` and
+`stable`, which read nothing, so they stay set in the compose file whichever
+tag is deployed — switching the image is the whole change.
+
+The security argument is unchanged and matters more here: this is the
+process that writes to the PLCs. Loopback bind, no `ports:` entry, and the
+sidecar reaches it through `network_mode: "service:centroidx-backend"`. 8181
+inside that namespace is the backend's loopback, not the panel's; the two
+never meet, so the image's default URI serves both.
+
+```sh
+# in the station's docker-compose.yml
+image: ghcr.io/centroid-is/centroid-backend:latest-profile
+docker compose up -d --force-recreate centroidx-backend
+
+docker compose --profile profiling up -d backend-profiler          # every 15 min
+docker compose run --rm backend-profiler report --seconds 30 --no-docker
+docker compose run --rm backend-profiler cpu --isolate all --seconds 30
+docker compose cp backend-profiler:/reports ./backend-profiler-reports
+```
+
+`--isolate all` matters more here than on the panel: acquisition runs in an
+isolate of its own, and a report of `main` alone says nothing about it. The
+`Frames` section is always empty — there is no UI to post them — and the
+report says so rather than leaving a blank.
 
 ## Reading the output
 

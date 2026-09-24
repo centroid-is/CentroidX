@@ -410,6 +410,19 @@ services:
       '
 
 
+  # Tag unchanged. To profile the backend, switch this to `latest-profile`
+  # and recreate the service, the same move as for `flutter` above:
+  #
+  #   ghcr.io/centroid-is/centroid-backend:latest-profile
+  #
+  # Unlike the HMI's, that image is JIT, not AOT: the Dart SDK's AOT runtime
+  # is a product build with the VM Service compiled out, so there is no AOT
+  # image that anything can attach to (docker/backend/Dockerfile, stage
+  # `profile`, has the measurements). It runs the same program, so what
+  # grows and what holds it are the same — but a JIT heap starts larger and
+  # its timings are not production's, and a memory report from it is read
+  # for the shape of the growth, not the figures. Swap it in for the
+  # investigation and back out after.
   centroidx-backend:
     image: ghcr.io/centroid-is/centroid-backend:latest
     container_name: centroidx-backend
@@ -422,10 +435,96 @@ services:
       CENTROID_PGPASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env - see .env.example}
       CENTROID_PGSSLMODE: require
       CENTROID_STATEMAN_FILE_PATH: /config/stateman.json
+      # VM switches, the backend's counterpart of FLUTTER_ENGINE_SWITCHES on
+      # `flutter`: numbered the same way, read the same way, by the
+      # `-profile` image's entrypoint (docker/backend/profile-entrypoint.sh).
+      # `latest` and `stable` are AOT and read nothing, so these are inert
+      # there and harmless to leave set whichever tag is deployed. Miscount
+      # DART_VM_SWITCHES and the profile image refuses to start, saying which
+      # one is missing.
+      #
+      #   1  a fixed port; the default is random and printed once, to the log
+      #   2  no per-boot secret in the websocket path, so tools need no
+      #      log-scraping to find the URI
+      #
+      # Two switches where `flutter` has three: the standalone VM's sampling
+      # profiler is a runtime flag that the profiler sets itself over the
+      # service (`setFlag profiler true`, as DevTools does), because `dart
+      # run` takes no `--profiler`, and the launcher form that does was
+      # measured to skip the build hooks that produce open62541.
+      #
+      # As on `flutter`: no bind address in switch 1 and no `ports:` entry for
+      # it. `--enable-vm-service` binds 127.0.0.1 unless told otherwise, so
+      # the service is unreachable from the plant network and from every
+      # other container here — and this is the process that writes to the
+      # PLCs. backend-profiler below reaches it by sharing this container's
+      # network namespace, where its own 127.0.0.1 is this loopback.
+      DART_VM_SWITCHES: 2
+      DART_VM_SWITCH_1: enable-vm-service=8181
+      DART_VM_SWITCH_2: disable-service-auth-codes
     volumes:
       - ./tfc_config:/config:rw # server can update config itself
     ports:
       - 4840:4840
+    labels:
+      - hmi-update.watch=true
+
+  # The profiler again, attached to the backend instead of the panel. Same
+  # image, same opt-in compose profile, same reasons for being a sidecar
+  # (see `profiler` above); what differs is which container's namespaces it
+  # shares. 8181 is the backend's own loopback here, not the panel's — the
+  # two never meet — so the image's default URI serves unchanged.
+  #
+  #   docker compose --profile profiling up -d backend-profiler
+  #   docker compose run --rm backend-profiler report --seconds 30 --no-docker
+  #   docker compose run --rm backend-profiler cpu --isolate all --seconds 30
+  #
+  # `--isolate all` matters more here than on the panel: the acquisition
+  # runs in its own isolate, and a report of `main` alone says nothing about
+  # it. The Frames section will always be empty — there is no UI to post
+  # them — and the report says so rather than leaving a blank.
+  #
+  # No Docker socket: the `profiler` service already carries that grant and
+  # reports every container, this one included, so a second holder of it
+  # buys nothing. Pass --no-docker, or the report says the section is
+  # missing and why.
+  backend-profiler:
+    image: ghcr.io/centroid-is/hmi-profiler:latest
+    profiles: ["profiling"]
+    network_mode: "service:centroidx-backend"
+    # Threads and RSS of the backend process. The Dart heap figure is the
+    # part the VM knows about; open62541 and the VM's own arenas are outside
+    # it, and only /proc shows how much.
+    pid: "service:centroidx-backend"
+    depends_on:
+      - centroidx-backend
+    # Its own budget, outside the backend's. A CPU-sample response is tens of
+    # megabytes of JSON, and a diagnostic must never be what OOM-kills the
+    # process that drives the machines.
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    volumes:
+      - backend-profiler-reports:/reports
+    environment:
+      HMI_VM_SERVICE_URI: ws://127.0.0.1:8181/ws
+      CENTROID_PGHOST: timescaledb
+      CENTROID_PGPORT: 5432
+      CENTROID_PGDATABASE: hmi
+      CENTROID_PGUSER: centroid
+      CENTROID_PGPASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env - see .env.example}
+      CENTROID_PGSSLMODE: require
+    # Same duty cycle as the panel's profiler; the backend is the process
+    # every OPC UA write goes through, so it is not sampled harder.
+    command:
+      - watch
+      - --seconds=20
+      - --interval=900
+      - --wait=120 # a JIT start compiles first; the AOT image was up in a second
+      - --no-docker
+      - --out-dir=/reports
+    restart: unless-stopped
     labels:
       - hmi-update.watch=true
 
@@ -492,3 +591,5 @@ services:
 volumes:
   # `docker compose cp profiler:/reports ./profiler-reports` to collect them.
   profiler-reports:
+  # Likewise `docker compose cp backend-profiler:/reports ./backend-profiler-reports`.
+  backend-profiler-reports:
