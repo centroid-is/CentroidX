@@ -2140,7 +2140,7 @@ class OpcUaStateMan implements StateMan {
           // per-key: on a flat interval ~140 keys retry once a second each,
           // which is the storm all over again by another route.
           retries++;
-          await Future<void>.delayed(_backoffFor(retries));
+          await Future<void>.delayed(subscribeBackoffFor(retries));
           continue;
         }
 
@@ -2249,7 +2249,7 @@ class OpcUaStateMan implements StateMan {
         // address space stays the way it is, but the address space can change
         // (a task starts, a symbol file reloads), so this backs off rather
         // than gives up -- it just does so all the way to the 600s step.
-        final backoff = _backoffFor(retries);
+        final backoff = subscribeBackoffFor(retries);
         // Log the first few attempts and then only occasionally: a storm must
         // not be able to amplify itself through the log sink, which flushes
         // per event.
@@ -2284,11 +2284,14 @@ class OpcUaStateMan implements StateMan {
 const List<int> kSubscribeBackoffSeconds = <int>[1, 10, 60, 600];
 
 /// The ladder step for the nth consecutive failure, clamped at the last rung.
-Duration _backoffFor(int retries) => Duration(
-    seconds: kSubscribeBackoffSeconds[
-        retries <= kSubscribeBackoffSeconds.length
-            ? retries - 1
-            : kSubscribeBackoffSeconds.length - 1]);
+///
+/// Shared with [Collector], which walks the same ladder when a collected
+/// stream completes under it: a server that just dropped every subscription
+/// it held gets asked again on the schedule above, not once a second per key.
+Duration subscribeBackoffFor(int retries) => Duration(
+    seconds: kSubscribeBackoffSeconds[retries <= kSubscribeBackoffSeconds.length
+        ? retries - 1
+        : kSubscribeBackoffSeconds.length - 1]);
 
 /// The variable names still unresolved in [key], e.g. `{sb_line_stats_period}`
 /// for `Line1.$sb_line_stats_period`.

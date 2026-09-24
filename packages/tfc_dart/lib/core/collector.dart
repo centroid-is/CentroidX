@@ -41,6 +41,14 @@ class Collector {
       _collectStreams = {};
   final Map<CollectEntry, Evaluator> _evaluators = {};
   final Map<CollectEntry, Timer> _sampleTimers = {};
+  // Recovery from a collected stream completing under us (see the onDone in
+  // collectEntryImpl). One generation per collectEntryImpl call: a done from
+  // a superseded listener, or a retry that fires after stopCollect, close or
+  // a re-collect, must find its generation gone and do nothing.
+  final Map<CollectEntry, int> _generation = {};
+  final Map<CollectEntry, Timer> _resubscribeTimers = {};
+  final Map<CollectEntry, int> _resubscribeFailures = {};
+  bool _closed = false;
   final Logger logger = Logger();
 
   // Performance instrumentation
@@ -169,6 +177,12 @@ class Collector {
 
     subscription = subscription.asBroadcastStream();
 
+    // Claim this entry. Anything the previous collectEntryImpl for it left
+    // behind -- its listener's onDone, a pending resubscribe -- is stale now.
+    final gen = (_generation[entry] ?? 0) + 1;
+    _generation[entry] = gen;
+    _resubscribeTimers.remove(entry)?.cancel();
+
     // Variables for sampling logic
     Timer? sampleTimer;
     DynamicValue? latestValue;
@@ -187,6 +201,9 @@ class Collector {
     _subscriptions[entry] = subscription.listen(
       (value) {
         _eventCount++;
+        // A value proves the subscription is alive: the next done starts the
+        // ladder from its first rung again.
+        _resubscribeFailures.remove(entry);
         if (_eventCount % 1000 == 1 || _eventCount <= 5) {
           logger.d('[collector] $name received value #$_eventCount');
         }
@@ -210,10 +227,26 @@ class Collector {
             stackTrace: stackTrace);
       },
       onDone: () {
-        logger.e('[collector] Stream DONE for $name — '
-            'no more data will be collected! sampleTimer active=${sampleTimer?.isActive}');
-        // Clean up timer when stream is done
+        // The stream behind a collected key completes when its OPC UA
+        // subscription is lost for good: the server drops the SecureChannel,
+        // the raw stream reports done, and AutoDisposingStream closes the
+        // subject and retires the entry. Every other consumer survives that
+        // because it subscribes again on its own -- a panel on its next
+        // navigation, and StateMan builds it a fresh subscription because the
+        // spent entry is gone. The collector subscribes once for the life of
+        // the process, so for it a done used to be terminal: the sample timer
+        // was cancelled, the log said "no more data will be collected", and
+        // that was true until the backend was restarted.
+        //
+        // Now a done is the cue to subscribe again. StateMan.subscribe()
+        // itself keeps trying for as long as the server is away, so the wait
+        // here only has to keep the collector from hammering a server that
+        // just lost hundreds of subscriptions at once -- the storm the ladder
+        // in state_man.dart exists for, so it is the same ladder.
         sampleTimer?.cancel();
+        if (_closed || _generation[entry] != gen) return;
+        _subscriptions.remove(entry);
+        _scheduleResubscribe(entry, gen, name);
       },
     );
 
@@ -232,6 +265,64 @@ class Collector {
     }
 
     _realTimeStreams[entry] = subscription;
+  }
+
+  /// Arms the next attempt to subscribe [entry] again after its stream
+  /// completed, or after the previous attempt failed.
+  ///
+  /// The wait walks [kSubscribeBackoffSeconds] per consecutive failure and
+  /// resets the moment a value arrives on the new stream. There is no give-up
+  /// rung: the node comes back when its server does, and the top of the
+  /// ladder is cheap enough to keep asking. Only [close] ends it.
+  void _scheduleResubscribe(CollectEntry entry, int gen, String name) {
+    final failures = (_resubscribeFailures[entry] ?? 0) + 1;
+    _resubscribeFailures[entry] = failures;
+    final delay = subscribeBackoffFor(failures);
+    logger.w('[collector] Stream DONE for $name -- subscribing again in '
+        '${delay.inSeconds}s (attempt $failures)');
+    _resubscribeTimers.remove(entry)?.cancel();
+    _resubscribeTimers[entry] = Timer(delay, () {
+      _resubscribeTimers.remove(entry);
+      unawaited(_resubscribe(entry, gen, name));
+    });
+  }
+
+  Future<void> _resubscribe(CollectEntry entry, int gen, String name) async {
+    if (_closed || _generation[entry] != gen) return;
+    // _toBeCollected builds a fresh Evaluator for a sampled-by-expression
+    // entry; the one that fed the dead stream would otherwise keep its
+    // variable subscriptions alive with nobody listening.
+    _evaluators.remove(entry)?.cancel();
+    final Stream<DynamicValue> stream;
+    try {
+      stream = await _toBeCollected(entry);
+    } catch (e) {
+      // Nothing to hold on to: a failed subscribe leaves no stream, and
+      // StateMan keeps or retires its own entry. Try again, one rung up --
+      // unless the collector went away while this waited.
+      if (_closed || _generation[entry] != gen) return;
+      logger.e('[collector] subscribing $name again failed '
+          '(attempt ${_resubscribeFailures[entry]}): $e');
+      _scheduleResubscribe(entry, gen, name);
+      return;
+    }
+    // The subscribe above can take as long as the server is away. If the
+    // collector was closed, or the entry re-collected, while it waited, the
+    // stream is somebody else's to own now.
+    if (_closed || _generation[entry] != gen) return;
+    try {
+      // A fresh subscription replays the node's current value at once. After
+      // a gap of unknown length that value is worth a row -- it is what marks
+      // the series alive again -- so it is not skipped the way the first
+      // value at startup is.
+      await collectEntryImpl(entry, stream, skipFirstSample: false);
+      logger.i('[collector] subscribed $name again');
+    } catch (e) {
+      if (_closed || _generation[entry] != gen) return;
+      logger.e('[collector] subscribing $name again failed '
+          '(attempt ${_resubscribeFailures[entry]}): $e');
+      _scheduleResubscribe(entry, gen, name);
+    }
   }
 
   /// Get performance statistics
@@ -447,6 +538,10 @@ class Collector {
 
   /// Stop a collection.
   void stopCollect(CollectEntry entry) {
+    // Retire the listener's onDone and any retry in flight for this entry.
+    _generation[entry] = (_generation[entry] ?? 0) + 1;
+    _resubscribeTimers.remove(entry)?.cancel();
+    _resubscribeFailures.remove(entry);
     _subscriptions[entry]?.cancel();
     _subscriptions.remove(entry);
     _sampleTimers.remove(entry)?.cancel();
@@ -455,6 +550,15 @@ class Collector {
   }
 
   void close() {
+    // Before the cancels: cancelling a subscription does not run its onDone,
+    // but a retry already armed would otherwise fire into a closed collector
+    // and subscribe on its behalf.
+    _closed = true;
+    for (final timer in _resubscribeTimers.values) {
+      timer.cancel();
+    }
+    _resubscribeTimers.clear();
+    _resubscribeFailures.clear();
     for (final subscription in _subscriptions.values) {
       subscription.cancel();
     }
