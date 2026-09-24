@@ -1,9 +1,43 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
+import '../beckhoff/hardware.dart' show paintRj45;
+
+/// The drive body's design box, in millimetres.
+///
+/// [ATV320] fits this into whatever box it is given, so it is also the frame
+/// [kAtv320PortAFace] and [kAtv320PortBFace] are fractions of.
+const Size kAtv320DesignMm = Size(45.0, 215.0);
+
+/// Where the EtherCAT option card's A socket — the one captioned "In" — is
+/// drawn, as a fraction of [kAtv320DesignMm].
+///
+/// At the foot of the drive, which is where the option card's RJ45s are on the
+/// hardware: a cable to an ATV320 comes up from underneath it, not across its
+/// face.
+///
+/// Shared with `kAtv320Ports` rather than written down twice: a cable that
+/// lands somewhere other than the socket on the drawing is the whole bug this
+/// pair of constants exists to prevent.
+const Offset kAtv320PortAFace = Offset(0.30, 0.92);
+
+/// Where the option card's B socket — captioned "Out" — is drawn. See
+/// [kAtv320PortAFace].
+const Offset kAtv320PortBFace = Offset(0.70, 0.92);
+
+/// Side of an option-card socket, in the drive's millimetres.
+const double kAtv320SocketMm = 15.0;
+
+/// Cap height of the In/Out caption above a socket, in the drive's
+/// millimetres.
+const double kAtv320LetterMm = 7.0;
+
+/// Clearance between a caption and the socket below it, in millimetres.
+const double kAtv320CaptionGapMm = 1.0;
+
 class ATV320 extends CustomPainter {
-  final double widthMm = 45.0;
-  final double heightMm = 215.0;
+  final double widthMm = kAtv320DesignMm.width;
+  final double heightMm = kAtv320DesignMm.height;
   static const schneiderGreen = Color(0xFF009639);
   static const schneiderLogoGreen = Color(0xFF009E4D);
   static const atvBodyGrey = Color(0xFF383E42);
@@ -17,11 +51,20 @@ class ATV320 extends CustomPainter {
   final double labelFontSize;
   final Color fillColor = atvBodyGrey;
 
+  /// Draw the EtherCAT option card's two RJ45s, captioned A and B.
+  ///
+  /// Off by default, and deliberately not assumed: the sockets are on the
+  /// VW3A3601 card, and a drive fitted with Modbus or nothing at all has a
+  /// blank face there. The asset turns it on for a drive bound to a subdevice,
+  /// which is the page saying the card is fitted.
+  final bool showEtherCatPorts;
+
   ATV320({
     required this.name,
     this.displayText = 'ATV3',
     this.topLabel = '',
     this.labelFontSize = defaultLabelFontSize,
+    this.showEtherCatPorts = false,
   }); // Add topLabel parameter
 
   /// Point size the inline label has always been drawn at, and the size the
@@ -629,33 +672,68 @@ class ATV320 extends CustomPainter {
       );
     }
 
-    // Add ethernet port on the right side, 5mm from edge, 109mm from top
-    final double ethernetWidth = 15.0 * pxPerMm; // 15mm wide
-    final double ethernetHeight = 15.0 * pxPerMm; // 15mm tall
-    final double ethernetLeft = left +
-        widthPixels -
-        (5.0 * pxPerMm) -
-        ethernetWidth; // 5mm from right edge
+    // --- The EtherCAT option card's two RJ45s ---
+    //
+    // A bare ATV320 has no network sockets at all: they arrive on the
+    // VW3A3601 card, which is why these are drawn only for a drive the page
+    // has bound to a subdevice. The positions are [kAtv320PortAFace] and
+    // [kAtv320PortBFace], the same fractions `kAtv320Ports` plugs a cable
+    // into, so the socket an electrician sees is the socket the cable ends
+    // on.
+    if (showEtherCatPorts) {
+      void socket(Offset face, String caption) {
+        final double cx = left + widthPixels * face.dx;
+        final double cy = top + heightPixels * face.dy;
+        final double side = kAtv320SocketMm * pxPerMm;
 
-    // Position ethernet port at 109mm from top, ensuring it's within device bounds
-    final double ethernetTop =
-        top + (240 * pxPerMm); // 109mm from top (no centering offset)
+        // Turned a quarter clockwise: the option card's sockets lie on their
+        // side, so the cable leaves the drive sideways rather than straight
+        // down out of the bottom edge.
+        canvas.save();
+        canvas.translate(cx, cy);
+        canvas.rotate(math.pi / 2);
+        paintRj45(
+          canvas,
+          Rect.fromCenter(center: Offset.zero, width: side, height: side),
+          strokeScale: 1.0 / gScale,
+        );
+        canvas.restore();
 
-    // Use the SimpleEthernetPainter for the ethernet port
-    final ethernetPainter = SimpleEthernetPainter(
-      strokeColor: Colors.black,
-      strokeWidth: 1.0,
-      fillColor: const Color(0xFF2A2F2A), // Dark gray fill
-    );
+        // "In" and "Out" rather than the PLC's A and B: the caption is read by
+        // whoever is holding the cable, and in/out is what the chain means to
+        // them. The letters are still the port ids the subdevice pane and the
+        // CRC counters use, and `kAtv320Ports` keeps them.
+        //
+        // Above the socket, not below it, because the sockets sit at the foot
+        // of the drive where the real ones are — a caption under them would be
+        // hanging off the bottom edge of the body.
+        final tp = TextPainter(
+          text: TextSpan(
+            text: caption,
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: kAtv320LetterMm * pxPerMm,
+              fontWeight: FontWeight.bold,
+              // Named, as the inline label is: a null family renders as the
+              // test font's featureless boxes under `flutter test`, and a
+              // golden of boxes pins nothing about which socket is which.
+              fontFamily: 'Courier',
+            ),
+          ),
+          textDirection: TextDirection.ltr,
+        )..layout();
+        tp.paint(
+          canvas,
+          Offset(
+            cx - tp.width / 2,
+            cy - side / 2 - kAtv320CaptionGapMm * pxPerMm - tp.height,
+          ),
+        );
+      }
 
-    canvas.save();
-    canvas.translate(ethernetLeft, ethernetTop);
-    canvas.scale(
-      ethernetWidth / 149.276032,
-      ethernetHeight / 172.848911,
-    ); // Scale to fit the ethernet dimensions
-    ethernetPainter.paint(canvas, const Size(149.276032, 172.848911));
-    canvas.restore();
+      socket(kAtv320PortAFace, 'In');
+      socket(kAtv320PortBFace, 'Out');
+    }
 
     // Done
     canvas.restore();
@@ -667,6 +745,7 @@ class ATV320 extends CustomPainter {
         displayText != old.displayText ||
         topLabel != old.topLabel ||
         labelFontSize != old.labelFontSize ||
+        showEtherCatPorts != old.showEtherCatPorts ||
         fillColor != old.fillColor;
   }
 }
@@ -679,12 +758,16 @@ class ATV320Widget extends StatelessWidget {
   /// Point size of the inline label. See [ATV320.labelFontSize].
   final double labelFontSize;
 
+  /// Draw the option card's A and B sockets. See [ATV320.showEtherCatPorts].
+  final bool showEtherCatPorts;
+
   const ATV320Widget({
     super.key,
     required this.name,
     this.displayText = 'ATV3',
     this.topLabel = '',
     this.labelFontSize = ATV320.defaultLabelFontSize,
+    this.showEtherCatPorts = false,
   }); // Add topLabel parameter
 
   @override
@@ -706,253 +789,11 @@ class ATV320Widget extends StatelessWidget {
               displayText: displayText,
               topLabel: topLabel,
               labelFontSize: labelFontSize,
+              showEtherCatPorts: showEtherCatPorts,
             ),
           ),
         );
       },
-    );
-  }
-}
-
-class SimpleEthernetPainter extends CustomPainter {
-  final double strokeWidth;
-  final Color strokeColor;
-  final Color? fillColor; // optional fill for closed shapes
-  const SimpleEthernetPainter({
-    this.strokeWidth = 1.0,
-    this.strokeColor = Colors.black,
-    this.fillColor,
-  });
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    const double _minX = 179.871662;
-    const double _minY = 615.792125;
-    const double _maxX = 329.147694;
-    const double _maxY = 788.641036;
-    const double _w = 149.27603200000001;
-    const double _h = 172.84891099999993;
-    if (_w == 0 || _h == 0) return;
-    final double scale = math.min(size.width / _w, size.height / _h);
-    final double dx = (size.width - _w * scale) / 2.0;
-    final double dy = (size.height - _h * scale) / 2.0;
-    canvas.save();
-    canvas.translate(dx, dy);
-    canvas.scale(scale, scale);
-    // Map DXF coords (y up) -> canvas (y down)
-    canvas.translate(-_minX, -_maxY);
-    canvas.scale(1, -1);
-
-    final Paint strokePaint = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = strokeWidth / scale
-      ..color = strokeColor;
-    final Paint? fillPaint = (fillColor == null)
-        ? null
-        : (Paint()
-          ..style = PaintingStyle.fill
-          ..color = fillColor!);
-
-    // Polyline #0 — 12 points — closed=true
-    final Path p0 = Path();
-    p0.moveTo(179.871662, 667.934419);
-    p0.lineTo(179.871662, 736.498741);
-    p0.lineTo(206.298089, 736.498741);
-    p0.lineTo(206.298089, 750.785333);
-    p0.lineTo(227.724204, 750.785333);
-    p0.lineTo(227.724204, 788.641036);
-    p0.lineTo(329.147694, 788.641036);
-    p0.lineTo(329.147694, 615.792125);
-    p0.lineTo(227.724204, 615.792125);
-    p0.lineTo(227.724204, 653.647827);
-    p0.lineTo(206.298089, 653.647827);
-    p0.lineTo(206.298089, 667.934419);
-    p0.close();
-    if (fillPaint != null) canvas.drawPath(p0, fillPaint);
-    canvas.drawPath(p0, strokePaint);
-
-    // Polyline #1 — 2 points — closed=false
-    final Path p1 = Path();
-    p1.moveTo(329.147694, 745.785029);
-    p1.lineTo(324.933532, 745.785029);
-    canvas.drawPath(p1, strokePaint);
-
-    // Polyline #2 — 2 points — closed=false
-    final Path p2 = Path();
-    p2.moveTo(329.147694, 747.213687);
-    p2.lineTo(329.147694, 750.071006);
-    canvas.drawPath(p2, strokePaint);
-
-    // Polyline #3 — 2 points — closed=false
-    final Path p3 = Path();
-    p3.moveTo(324.933532, 751.499664);
-    p3.lineTo(329.147694, 751.499664);
-    canvas.drawPath(p3, strokePaint);
-
-    // Polyline #4 — 2 points — closed=false
-    final Path p4 = Path();
-    p4.moveTo(329.147694, 731.498438);
-    p4.lineTo(324.933532, 731.498438);
-    canvas.drawPath(p4, strokePaint);
-
-    // Polyline #5 — 2 points — closed=false
-    final Path p5 = Path();
-    p5.moveTo(329.147694, 732.927095);
-    p5.lineTo(329.147694, 735.784411);
-    canvas.drawPath(p5, strokePaint);
-
-    // Polyline #6 — 2 points — closed=false
-    final Path p6 = Path();
-    p6.moveTo(324.933532, 737.213072);
-    p6.lineTo(329.147694, 737.213072);
-    canvas.drawPath(p6, strokePaint);
-
-    // Polyline #7 — 2 points — closed=false
-    final Path p7 = Path();
-    p7.moveTo(329.147694, 717.215614);
-    p7.lineTo(324.933532, 717.215614);
-    canvas.drawPath(p7, strokePaint);
-
-    // Polyline #8 — 2 points — closed=false
-    final Path p8 = Path();
-    p8.moveTo(329.147694, 718.644272);
-    p8.lineTo(329.147694, 721.501591);
-    canvas.drawPath(p8, strokePaint);
-
-    // Polyline #9 — 2 points — closed=false
-    final Path p9 = Path();
-    p9.moveTo(324.933532, 722.93026);
-    p9.lineTo(329.147694, 722.93026);
-    canvas.drawPath(p9, strokePaint);
-
-    // Polyline #10 — 2 points — closed=false
-    final Path p10 = Path();
-    p10.moveTo(329.147694, 702.929015);
-    p10.lineTo(324.933532, 702.929015);
-    canvas.drawPath(p10, strokePaint);
-
-    // Polyline #11 — 2 points — closed=false
-    final Path p11 = Path();
-    p11.moveTo(329.147694, 704.357681);
-    p11.lineTo(329.147694, 707.215);
-    canvas.drawPath(p11, strokePaint);
-
-    // Polyline #12 — 2 points — closed=false
-    final Path p12 = Path();
-    p12.moveTo(324.933532, 708.643657);
-    p12.lineTo(329.147694, 708.643657);
-    canvas.drawPath(p12, strokePaint);
-
-    // Polyline #13 — 2 points — closed=false
-    final Path p13 = Path();
-    p13.moveTo(329.147694, 688.646203);
-    p13.lineTo(324.933532, 688.646203);
-    canvas.drawPath(p13, strokePaint);
-
-    // Polyline #14 — 2 points — closed=false
-    final Path p14 = Path();
-    p14.moveTo(329.147694, 690.074861);
-    p14.lineTo(329.147694, 692.932176);
-    canvas.drawPath(p14, strokePaint);
-
-    // Polyline #15 — 2 points — closed=false
-    final Path p15 = Path();
-    p15.moveTo(324.933532, 694.360845);
-    p15.lineTo(329.147694, 694.360845);
-    canvas.drawPath(p15, strokePaint);
-
-    // Polyline #16 — 2 points — closed=false
-    final Path p16 = Path();
-    p16.moveTo(329.147694, 674.359608);
-    p16.lineTo(324.933532, 674.359608);
-    canvas.drawPath(p16, strokePaint);
-
-    // Polyline #17 — 2 points — closed=false
-    final Path p17 = Path();
-    p17.moveTo(329.147694, 675.78827);
-    p17.lineTo(329.147694, 678.645585);
-    canvas.drawPath(p17, strokePaint);
-
-    // Polyline #18 — 2 points — closed=false
-    final Path p18 = Path();
-    p18.moveTo(324.933532, 680.074254);
-    p18.lineTo(329.147694, 680.074254);
-    canvas.drawPath(p18, strokePaint);
-
-    // Polyline #19 — 2 points — closed=false
-    final Path p19 = Path();
-    p19.moveTo(329.147694, 660.076789);
-    p19.lineTo(324.933532, 660.076789);
-    canvas.drawPath(p19, strokePaint);
-
-    // Polyline #20 — 2 points — closed=false
-    final Path p20 = Path();
-    p20.moveTo(329.147694, 661.505458);
-    p20.lineTo(329.147694, 664.362773);
-    canvas.drawPath(p20, strokePaint);
-
-    // Polyline #21 — 2 points — closed=false
-    final Path p21 = Path();
-    p21.moveTo(324.933532, 665.791431);
-    p21.lineTo(329.147694, 665.791431);
-    canvas.drawPath(p21, strokePaint);
-
-    // Polyline #22 — 2 points — closed=false
-    final Path p22 = Path();
-    p22.moveTo(329.147694, 645.790197);
-    p22.lineTo(324.933532, 645.790197);
-    canvas.drawPath(p22, strokePaint);
-
-    // Polyline #23 — 2 points — closed=false
-    final Path p23 = Path();
-    p23.moveTo(329.147694, 647.218855);
-    p23.lineTo(329.147694, 650.07617);
-    canvas.drawPath(p23, strokePaint);
-
-    // Polyline #24 — 2 points — closed=false
-    final Path p24 = Path();
-    p24.moveTo(324.933532, 651.504839);
-    p24.lineTo(329.147694, 651.504839);
-    canvas.drawPath(p24, strokePaint);
-
-    canvas.restore();
-  }
-
-  @override
-  bool shouldRepaint(covariant SimpleEthernetPainter oldDelegate) {
-    return oldDelegate.strokeWidth != strokeWidth ||
-        oldDelegate.strokeColor != strokeColor ||
-        oldDelegate.fillColor != fillColor;
-  }
-}
-
-// Quick preview widget
-class SimpleEthernetWidget extends StatelessWidget {
-  final double width;
-  final double height;
-  final Color strokeColor;
-  final Color? fillColor;
-  final double strokeWidth;
-  const SimpleEthernetWidget({
-    super.key,
-    this.width = 200,
-    this.height = 200,
-    this.strokeColor = Colors.black,
-    this.fillColor,
-    this.strokeWidth = 1.0,
-  });
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      width: width,
-      height: height,
-      child: CustomPaint(
-        painter: SimpleEthernetPainter(
-          strokeColor: strokeColor,
-          strokeWidth: strokeWidth,
-          fillColor: fillColor,
-        ),
-      ),
     );
   }
 }

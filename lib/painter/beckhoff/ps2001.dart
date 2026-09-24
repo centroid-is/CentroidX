@@ -30,6 +30,25 @@ import 'io8.dart' show bodyColor, ledOffColor;
 /// The front face in mm — the housing is 48 wide by 124 high.
 const Size ps2001FaceMm = Size(48, 124);
 
+/// Side of the two RJ45 sockets, in face millimetres.
+const double ps2001SocketMm = 16;
+
+/// Top-left of the X1 IN socket on the face, in millimetres.
+const Offset ps2001X1Mm = Offset(6, 84);
+
+/// Top-left of the X2 OUT socket on the face, in millimetres.
+const Offset ps2001X2Mm = Offset(26, 84);
+
+/// Centre of [at] as a fraction of [ps2001FaceMm] — where a cable plugs in.
+///
+/// Derived from the same millimetres the painter draws the socket at, so the
+/// two cannot drift: a cable that lands beside the socket rather than on it is
+/// exactly the mistake this shares its numbers to prevent.
+Offset ps2001SocketFace(Offset at) => Offset(
+      (at.dx + ps2001SocketMm / 2) / ps2001FaceMm.width,
+      (at.dy + ps2001SocketMm / 2) / ps2001FaceMm.height,
+    );
+
 /// What the supply is doing, worst first. The order is the severity order:
 /// [Ps2001FaceState.values] is compared on `index` when something needs the
 /// worse of two.
@@ -200,7 +219,7 @@ class PS2001Painter extends CustomPainter {
 
     // --- (E)/(F) EtherCAT X1 IN and X2 OUT ---
     void port(Offset at, String label) {
-      const socket = 16.0;
+      const socket = ps2001SocketMm;
       canvas.save();
       canvas.translate(at.dx, at.dy);
       canvas.scale(socket / 100.0);
@@ -216,8 +235,8 @@ class PS2001Painter extends CustomPainter {
       );
     }
 
-    port(const Offset(6, 84), 'X1 IN');
-    port(const Offset(26, 84), 'X2 OUT');
+    port(ps2001X1Mm, 'X1 IN');
+    port(ps2001X2Mm, 'X2 OUT');
 
     canvas.restore();
   }

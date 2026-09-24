@@ -22,11 +22,31 @@ enum PortSide { left, right, top, bottom }
 /// [at] is the fraction along [side], measured left-to-right or top-to-bottom,
 /// so a terminal with two sockets stacked on its right face gives them the
 /// same side and different [at].
+///
+/// A socket the drawing puts in the *middle* of a face — a drive's option
+/// card, a power supply's two RJ45s — is not on an edge at all, and giving
+/// [face] the point it is drawn at is how the cable ends on the socket rather
+/// than on the box corner nearest it.
 class NetworkPort {
   /// What the operator sees on the label — `'X1'`, `'X2'`.
   final String id;
+
+  /// Which face the socket belongs to. [face] overrides it when set — the
+  /// side is then only a record of which way the cable leaves.
   final PortSide side;
+
+  /// How far along [side] the socket sits. Ignored when [face] is set.
   final double at;
+
+  /// Where the socket is drawn on the front face, as a fraction of the glyph's
+  /// own design box, or null for a socket on an edge.
+  ///
+  /// The glyph, not the asset's box: every device that declares one of these
+  /// draws itself `BoxFit.contain` at a fixed aspect, so on a box of another
+  /// shape the drawing is letterboxed and a fraction of the box would miss the
+  /// socket by the size of the letterbox. [NativelySized] is what says how big
+  /// that glyph is, and [PageLinkAnchors] does the fitting.
+  final Offset? face;
 
   /// What the port is for, shown when picking one. EtherCAT is a chain, so
   /// this is nearly always "in" or "out" and worth saying.
@@ -41,6 +61,7 @@ class NetworkPort {
     this.id,
     this.side, {
     this.at = 0.5,
+    this.face,
     this.description,
     this.aliases = const [],
   });
@@ -115,9 +136,20 @@ abstract class ChildPlacer {
 ///
 /// A rack row scales every slice to one height, so a slice's width is decided
 /// by its drawing, not by its configured size.
+///
+/// It is also the design box a [NetworkPort.face] is a fraction of: the glyph
+/// is fitted into the asset's box `BoxFit.contain`, and a socket drawn on the
+/// face travels with the glyph rather than with the box around it.
 abstract class NativelySized {
   Size get nativeSize;
 }
+
+/// The design box [asset]'s glyph is drawn at, or null when it simply fills
+/// whatever box it is given.
+Size? glyphSizeOf(Asset asset) =>
+    // Explicit cast: `Asset` and `NativelySized` are unrelated declarations,
+    // so there is no promotion to lean on here.
+    asset is NativelySized ? (asset as NativelySized).nativeSize : null;
 
 /// The ports [asset] offers, declared or assumed.
 List<NetworkPort> portsOf(Asset asset) {
@@ -215,15 +247,60 @@ class PageLinkAnchors implements LinkAnchors {
     // reads as a bug.
     final spec = findPort(ports, port);
     if (spec == null) return _about(p.centre, p.pivot, p.angle);
+    return portOn(asset, spec);
+  }
 
+  /// Page-relative position of [port] on [asset], found by the asset itself
+  /// rather than its id.
+  ///
+  /// A rack slice nobody has plugged into yet has no id, and handing it one
+  /// just to draw its sockets in the editor would change the saved page.
+  ///
+  /// A port with a [NetworkPort.face] is a socket the drawing puts in the
+  /// middle of the front face rather than on an edge, and is placed on the
+  /// glyph instead. The editor's own port markers come through here too, so
+  /// they land on the same RJ45 the cable does.
+  Offset portOn(Asset asset, NetworkPort port) {
+    final p = _placement(asset);
     final w = p.width, h = p.height;
-    final local = switch (spec.side) {
-      PortSide.left => Offset(-w / 2, -h / 2 + h * spec.at),
-      PortSide.right => Offset(w / 2, -h / 2 + h * spec.at),
-      PortSide.top => Offset(-w / 2 + w * spec.at, -h / 2),
-      PortSide.bottom => Offset(-w / 2 + w * spec.at, h / 2),
-    };
+    final face = port.face;
+    final local = face != null
+        ? _onFace(face, glyphSizeOf(asset), w, h)
+        : switch (port.side) {
+            PortSide.left => Offset(-w / 2, -h / 2 + h * port.at),
+            PortSide.right => Offset(w / 2, -h / 2 + h * port.at),
+            PortSide.top => Offset(-w / 2 + w * port.at, -h / 2),
+            PortSide.bottom => Offset(-w / 2 + w * port.at, h / 2),
+          };
     return _about(p.centre + local, p.pivot, p.angle);
+  }
+
+  /// [face] — a fraction of the glyph — as an offset from the centre of a
+  /// [w] x [h] box, in page space.
+  ///
+  /// The fitting is done in pixels, because `BoxFit.contain` is a pixel
+  /// operation: page space stretches x and y independently, so a scale worked
+  /// out in fractions would letterbox by the wrong amount on any canvas that
+  /// is not square. [glyph] null means the drawing fills the box, and the
+  /// fraction is simply a fraction of the box.
+  Offset _onFace(Offset face, Size? glyph, double w, double h) {
+    if (glyph == null ||
+        glyph.isEmpty ||
+        canvas.width == 0 ||
+        canvas.height == 0) {
+      return Offset(w * (face.dx - 0.5), h * (face.dy - 0.5));
+    }
+    final boxW = w * canvas.width, boxH = h * canvas.height;
+    final scale = math.min(boxW / glyph.width, boxH / glyph.height);
+    final drawnW = glyph.width * scale, drawnH = glyph.height * scale;
+    // Centred in the box, which is what `BoxFit.contain` inside an
+    // `Alignment.center` FittedBox does with the slack.
+    final px = (boxW - drawnW) / 2 + drawnW * face.dx;
+    final py = (boxH - drawnH) / 2 + drawnH * face.dy;
+    return Offset(
+      px / canvas.width - w / 2,
+      py / canvas.height - h / 2,
+    );
   }
 
   /// The box [asset] occupies on the page, its rack's placement included.

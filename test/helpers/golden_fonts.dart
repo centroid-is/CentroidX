@@ -54,6 +54,11 @@ Future<void> loadGoldenFonts() async {
   // does with its private loader; this is the same two lines, in the shared
   // helper, so the next themed golden does not have to rediscover it.
   await _load('dejavu-sans', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
+  // The ATV320 asks for 'Courier' by name — its inline label and the A/B
+  // letters under the option card's sockets. Unregistered, every one of those
+  // glyphs renders as an Ahem block, and a golden of blocks pins nothing about
+  // which socket is which.
+  await _load('Courier', 'lib/fonts/dejavu-sans/DejaVuSans.ttf');
 
   final flutterRoot = Platform.environment['FLUTTER_ROOT'];
   if (flutterRoot != null) {

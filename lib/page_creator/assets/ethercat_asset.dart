@@ -9,6 +9,11 @@ library;
 
 import 'package:json_annotation/json_annotation.dart';
 
+import '../../painter/beckhoff/ek1110.dart' show kEk1110X1Face;
+import '../../painter/beckhoff/ps2001.dart'
+    show ps2001SocketFace, ps2001X1Mm, ps2001X2Mm;
+import '../../painter/schneider/atv320.dart'
+    show kAtv320PortAFace, kAtv320PortBFace;
 import 'common.dart';
 import 'ethercat_subdevice.dart';
 import 'link_anchors.dart';
@@ -111,9 +116,27 @@ const List<NetworkPort> kEk1100Ports = [
 ];
 
 /// EK1110: the E-bus comes in on the left, the RJ45 carries it on.
+///
+/// B is the RJ45 the drawing puts on the face, not a point on the right-hand
+/// edge: X1 is the one socket on this part, and a cable that ends anywhere
+/// else is pointing at the housing.
 const List<NetworkPort> kEk1110Ports = [
   NetworkPort('A', PortSide.left, description: 'E-bus', aliases: ['X1']),
-  NetworkPort('B', PortSide.right, description: 'X1 out', aliases: ['X2']),
+  NetworkPort('B', PortSide.right,
+      face: kEk1110X1Face, description: 'X1 out', aliases: ['X2']),
+];
+
+/// PS2001: both RJ45s are on the front face, labelled X1 IN and X2 OUT, and
+/// the E-bus runs through the housing where no cable is ever drawn.
+final List<NetworkPort> kPs2001Ports = [
+  NetworkPort('A', PortSide.left,
+      face: ps2001SocketFace(ps2001X1Mm),
+      description: 'X1 in',
+      aliases: ['X1']),
+  NetworkPort('B', PortSide.right,
+      face: ps2001SocketFace(ps2001X2Mm),
+      description: 'X2 out',
+      aliases: ['X2']),
 ];
 
 /// CU2508: the uplink in, and the segment the next device hangs off.
@@ -128,10 +151,16 @@ const List<NetworkPort> kEpBoxPorts = [
   NetworkPort('B', PortSide.top, at: 0.7, description: 'Out', aliases: ['X2']),
 ];
 
-/// ATV320: the EtherCAT option card's two sockets, underneath.
+/// ATV320: the EtherCAT option card's two sockets, low on the drive's face.
+///
+/// On the face rather than on the bottom edge, and at the very fractions the
+/// drive paints the sockets at, so the cable ends on the RJ45 the drawing
+/// shows. The card is what carries them: an unbound drive draws no sockets,
+/// and a cable to one lands on a blank face — which reads as "bind this
+/// drive", and is true.
 const List<NetworkPort> kAtv320Ports = [
   NetworkPort('A', PortSide.bottom,
-      at: 0.35, description: 'In', aliases: ['X1']),
+      face: kAtv320PortAFace, description: 'In', aliases: ['X1']),
   NetworkPort('B', PortSide.bottom,
-      at: 0.65, description: 'Out', aliases: ['X2']),
+      face: kAtv320PortBFace, description: 'Out', aliases: ['X2']),
 ];

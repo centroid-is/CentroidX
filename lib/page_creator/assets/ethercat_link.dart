@@ -292,13 +292,7 @@ class EtherCatLinkConfig extends BaseAsset {
     super.coordinates = Coordinates(x: value.x, y: value.y);
   }
 
-  void _translateFree(double dx, double dy) {
-    for (final end in [run.from, run.to]) {
-      end
-        ..x += dx
-        ..y += dy;
-    }
-  }
+  void _translateFree(double dx, double dy) => run.translateFree(dx, dy);
 
   @override
   RelativeSize get size {
@@ -309,10 +303,11 @@ class EtherCatLinkConfig extends BaseAsset {
 
   /// Scales an unplugged run about its centre.
   ///
-  /// Uniformly, by whichever axis the run mostly lies along: corners are held
-  /// as a fraction of the run's length, so stretching one axis alone would
-  /// not stretch the drawing, it would bend it. A run with no extent at all
-  /// has nothing to scale and is laid out across the width instead.
+  /// Uniformly, by whichever axis the run mostly lies along, so the drawing
+  /// keeps its shape: corners that follow the run are held as a fraction of
+  /// its length, and stretching one axis alone would bend them away from the
+  /// page corners beside them. A run with no extent at all has nothing to
+  /// scale and is laid out across the width instead.
   @override
   set size(RelativeSize value) {
     super.size = value;
@@ -337,13 +332,9 @@ class EtherCatLinkConfig extends BaseAsset {
         .distance;
     var f = wanted / (along ? w : h);
     if (length * f < _kMinFreeLength) f = _kMinFreeLength / length;
-    for (final end in [run.from, run.to]) {
-      end
-        ..x = c.dx + (end.x - c.dx) * f
-        ..y = c.dy + (end.y - c.dy) * f;
-    }
     // Scaled about the old centre, so the new bounds are centred there too:
-    // every point, corners included, is an affine image of the ends.
+    // every point, corners included, is an affine image of the old ones.
+    run.scaleFree(c, f, f);
   }
 
   /// The box the run occupies: from wherever its devices currently are, or
@@ -379,7 +370,7 @@ class EtherCatLinkConfig extends BaseAsset {
   /// How wide the cable is to a finger, which is wider than its ink.
   double hitWidthOn(Size canvas) {
     final w = strokeWidthOn(canvas);
-    return w < 18 ? 18 : w;
+    return w < 24 ? 24 : w;
   }
 
   @override

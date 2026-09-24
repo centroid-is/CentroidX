@@ -321,8 +321,9 @@ class VmService:
                 if time.monotonic() >= deadline:
                     raise ProfilerError(
                         f"could not reach the VM service at {url} "
-                        f"({exc}). Is the container a profile build with "
-                        "FLUTTER_ENGINE_SWITCHES set?"
+                        f"({exc}). Is the container a profile build, with "
+                        "FLUTTER_ENGINE_SWITCHES (panel) or DART_VM_SWITCHES "
+                        "(backend) set?"
                     ) from exc
                 time.sleep(min(2.0 * attempt, 5.0))
 
@@ -1494,6 +1495,28 @@ def clip_samples(payload, window):
     return clipped, dropped
 
 
+def enable_profiler(service):
+    """Turn the VM's sampling profiler on, if it is not already.
+
+    The Flutter engine starts it from the `enable-dart-profiling` switch. The
+    standalone VM behind `dart run` — the backend's `-profile` image — has no
+    such switch: `--profiler` is a VM flag `dart run` will not forward, and
+    the launcher form that would (`dart --profiler bin/main.dart`) was
+    measured to skip the native-asset build hooks, so it comes up with the
+    profiler off and `getCpuSamples` answering "Feature is disabled".
+
+    `profiler` is one of the flags the service lets a client set at runtime,
+    and setting it on attach is exactly what DevTools does. On an engine that
+    already has it on this is a no-op; a release/product build has no service
+    to ask, so this is never reached there.
+
+    try_call, not call: a VM that refuses the flag still answers
+    getCpuSamples with the same "Feature is disabled" it always did, and the
+    report already knows how to say that.
+    """
+    service.try_call("setFlag", {"name": "profiler", "value": "true"}, timeout=10.0)
+
+
 def collect_cpu_multi(service, isolates, seconds, period_us=250, top=25):
     """Sample several isolates over one shared window.
 
@@ -1516,6 +1539,7 @@ def collect_cpu_multi(service, isolates, seconds, period_us=250, top=25):
     # 1000 µs is the VM default; 250 µs gives four times the resolution, which
     # matters when a paint pass is only a couple of milliseconds long. The flag
     # is VM-wide, so it is set once however many isolates were asked for.
+    enable_profiler(service)
     service.try_call("setFlag", {"name": "profile_period", "value": str(period_us)}, timeout=10.0)
     for isolate in isolates:
         service.call("clearCpuSamples", {"isolateId": isolate["id"]})
@@ -1664,6 +1688,7 @@ def collect_window(service, isolate, seconds, period_us=250):
     timeline_on = service.try_call("setVMTimelineFlags", {"recordedStreams": streams}) is not None
     if timeline_on:
         service.try_call("clearVMTimeline")
+    enable_profiler(service)
     service.try_call("setFlag", {"name": "profile_period", "value": str(period_us)}, timeout=10.0)
     service.call("clearCpuSamples", {"isolateId": isolate})
     started = timeline_now(service)
@@ -1747,8 +1772,9 @@ def render_cpu(folded):
     lines = ["### CPU\n"]
     if not folded["samples"]:
         lines.append(
-            "No CPU samples. The isolate was idle, or the engine was started "
-            "without `--enable-dart-profiling`.\n"
+            "No CPU samples. The isolate was idle, or the VM refused to turn "
+            "its profiler on (`setFlag profiler` is sent before every window; "
+            "a release/product build has no profiler to turn on).\n"
         )
         return "\n".join(lines)
     lines.append(

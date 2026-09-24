@@ -47,6 +47,7 @@ void main() {
       String displayText, {
       String topLabel = '',
       double labelFontSize = ATV320.defaultLabelFontSize,
+      bool showEtherCatPorts = false,
     }) {
       return MaterialApp(
         home: Scaffold(
@@ -60,12 +61,35 @@ void main() {
                 displayText: displayText,
                 topLabel: topLabel,
                 labelFontSize: labelFontSize,
+                showEtherCatPorts: showEtherCatPorts,
               ),
             ),
           ),
         ),
       );
     }
+
+    testWidgets('an EtherCAT drive wears the option card\'s In and Out sockets',
+        (tester) async {
+      // The whole point of the pair: an electrician looking at the mimic can
+      // see which socket is which before plugging anything in, and the cable
+      // on the page ends on the socket rather than on the housing. They sit at
+      // the foot of the drive, where the option card puts them on the real
+      // part, with the caption above rather than under the bottom edge.
+      //
+      // The unbound drive needs no golden of its own — every other golden in
+      // this file is one, because `showEtherCatPorts` defaults to false. What
+      // those images now show, and did not before, is a *blank* face: the
+      // drive used to carry one unlabelled RJ45 halfway down it whatever
+      // option card was fitted, which was neither the right count nor the
+      // right place.
+      await tester.pumpWidget(buildDisplay('sto',
+          topLabel: 'CN01\nFD01', showEtherCatPorts: true));
+      await expectLater(
+        find.byType(ATV320Widget),
+        matchesGoldenFile('goldens/atv320_ethercat_ports.png'),
+      );
+    });
 
     testWidgets('sto display', (tester) async {
       await tester.pumpWidget(buildDisplay('sto'));
