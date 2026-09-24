@@ -2275,23 +2275,6 @@ class OpcUaStateMan implements StateMan {
 /// single dead key asked for 248 times; at ~11 attempts/second the isolate
 /// never got a clear window and Flutter stopped painting frames.
 ///
-/// The first step stays short so a genuine blip (a PLC that is mid-restart,
-/// a channel that just dropped) still recovers in about a second. Past that
-/// the interval grows fast, so a key that cannot succeed costs six attempts
-/// an hour instead of six hundred -- visible in the log, invisible in the
-/// frame budget. There is no give-up step: a node can come back when its PLC
-/// task is started again, and 600s is cheap enough to keep asking forever.
-const List<int> kSubscribeBackoffSeconds = <int>[1, 10, 60, 600];
-
-/// The ladder step for the nth consecutive failure, clamped at the last rung.
-///
-/// Shared with [Collector], which walks the same ladder when a collected
-/// stream completes under it: a server that just dropped every subscription
-/// it held gets asked again on the schedule above, not once a second per key.
-Duration subscribeBackoffFor(int retries) => Duration(
-    seconds: kSubscribeBackoffSeconds[retries <= kSubscribeBackoffSeconds.length
-        ? retries - 1
-        : kSubscribeBackoffSeconds.length - 1]);
 
 /// The variable names still unresolved in [key], e.g. `{sb_line_stats_period}`
 /// for `Line1.$sb_line_stats_period`.
