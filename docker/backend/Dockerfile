@@ -14,6 +14,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ../tfc_access)
 WORKDIR /app/packages/tfc_dart
 
+# The pub cache outside /root. Nothing in this stage cares where it is, and
+# the AOT bundle it produces is byte-for-byte the same; the profile stage
+# below does care. The open62541 build hook writes CMake trees that record
+# absolute paths into the cache (the native_toolchain_cmake toolchain file,
+# for one), so the cache has to stay at the path those trees name — and the
+# profile stage hands the whole tree to a non-root user, who cannot traverse
+# /root. Measured: moving the cache afterwards fails the first hook run with
+# `include could not find requested file: /root/.pub-cache/.../x86_64-linux-gnu.toolchain.cmake`.
+ENV PUB_CACHE=/pub-cache
+
 # Copy all pubspecs so path dependencies resolve during pub get
 COPY packages/tfc_dart/pubspec.yaml ./
 COPY packages/jbtm/pubspec.yaml ../jbtm/
@@ -114,10 +124,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # `dart run` writes into .dart_tool on every start (the kernel snapshot, the
 # hook runner's locks).
 #
-# The pub cache moves out of /root, which appuser cannot traverse. The dart
-# image sets no PUB_CACHE, so the builder filled the default /root/.pub-cache.
+# The pub cache comes along at the path the builder used — see PUB_CACHE
+# there for why it is not /root/.pub-cache and why it must not move.
 COPY --from=dart-builder --chown=appuser:appuser /app /app
-COPY --from=dart-builder --chown=appuser:appuser /root/.pub-cache /pub-cache
+COPY --from=dart-builder --chown=appuser:appuser /pub-cache /pub-cache
 ENV PUB_CACHE=/pub-cache
 
 # Same tools the runtime image carries, so `docker compose run --rm
@@ -129,18 +139,17 @@ COPY --chmod=0555 docker/backend/profile-entrypoint.sh /app/profile-entrypoint.s
 WORKDIR /app/packages/tfc_dart
 USER appuser
 
-# Re-point package_config.json at the moved cache, offline: the lock file
-# already pins every version, and --offline is the proof that this stage
-# fetches nothing the AOT build did not.
-#
-# Then warm the JIT-mode build hooks as the user that will run them. `dart
-# build cli` ran the same hooks for the AOT bundle, but `dart run` keys its
-# cache on its own configuration and would otherwise compile open62541 again
-# on the first container start — minutes, in a container that is supposed
-# to be up in seconds. Running any bin/ script runs every hook in the package
-# graph; generate_certs --help is the one that then exits at once.
-RUN dart pub get --offline \
-    && dart run bin/generate_certs.dart --help > /dev/null
+# Warm the JIT-mode build hooks as the user that will run them. `dart build
+# cli` ran the same hooks for the AOT bundle, but `dart run` keys its cache
+# on its own configuration and would otherwise run open62541's hook again on
+# the first container start — a CMake reconfigure at best, minutes of
+# compiling at worst, in a container that is supposed to be up in seconds.
+# Running any bin/ script runs every hook in the package graph;
+# generate_certs --help is the one that then exits at once. No `pub get`
+# here: package_config.json already names /pub-cache, and a resolve that
+# found something to change would be the first sign the two stages had
+# drifted apart.
+RUN dart run bin/generate_certs.dart --help > /dev/null
 
 # A script rather than `dart run` inline: the switches come from the
 # environment (DART_VM_SWITCHES, see profile-entrypoint.sh) the way the
