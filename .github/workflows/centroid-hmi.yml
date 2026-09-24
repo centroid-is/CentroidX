@@ -582,6 +582,48 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/centroid-backend:pr-${{ github.event.pull_request.number }}
 
+      # The profile variant, tagged like the HMI's (`<sha>-profile`,
+      # `latest-profile`) and gated like the HMI's docker-profile-build: main
+      # only, never a PR, never a tag — so there is no `stable-profile` and a
+      # PR pays nothing for it. It is a JIT build with the VM Service on; the
+      # Dockerfile's `profile` stage says why AOT was not an option and what
+      # a JIT heap does and does not tell you.
+      #
+      # A step here rather than a job of its own, which is where the HMI's
+      # lives: the HMI's profile is a separate flutter build with nothing to
+      # share, whereas this target is the builder stage the step above just
+      # built, and the same runner's layer cache hands it over for free. A
+      # separate job would rebuild open62541 from scratch on a second runner.
+      # If this step fails, `latest` above has already been pushed and is not
+      # affected; the job going red on main is what stops the profile tag
+      # from rotting unnoticed.
+      - name: Build and push backend Docker image (main, profile)
+        if: github.ref == 'refs/heads/main'
+        uses: ./.github/actions/docker-build-push
+        with:
+          context: .
+          file: docker/backend/Dockerfile
+          target: profile
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/centroid-backend:${{ steps.get_sha.outputs.sha }}-profile
+            ghcr.io/${{ github.repository_owner }}/centroid-backend:latest-profile
+
+      # Same idea as elinux-profile-build running on workflow_dispatch: a
+      # dispatch on a branch builds the profile stage and publishes nothing,
+      # so a change to it can be proven to build before it merges. Nothing
+      # else in this job runs on a dispatch from a branch, and the tag is a
+      # local name that never leaves the runner.
+      - name: Build backend Docker image (workflow_dispatch on a branch, profile, no push)
+        if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+        uses: ./.github/actions/docker-build-push
+        with:
+          context: .
+          file: docker/backend/Dockerfile
+          target: profile
+          push: 'false'
+          tags: |
+            centroid-backend:dispatch-profile
+
   # The image that reads the VM Service the profile build exposes. It is a
   # python:alpine plus one stdlib-only script, so it is cheap enough to build
   # on every PR — and building it on PRs is what stops `docker/profiler` from

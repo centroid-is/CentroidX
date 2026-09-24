@@ -1,5 +1,20 @@
 # Backend Docker Setup
 
+## Image tags
+
+| tag | built from | what it is |
+|---|---|---|
+| `latest`, `<sha>` | every push to main | AOT, `dart build cli`, the station default |
+| `stable`, `<sha>` | every release tag | the same, pinned |
+| `pr-N` | every pull request | the same, for trying a branch |
+| `latest-profile`, `<sha>-profile` | every push to main | **JIT**, `dart run` with the Dart VM Service on, for attaching a profiler |
+
+The `-profile` variant is the Dockerfile's `profile` stage. It is not the
+default target and none of the other tags are built from it. The Dockerfile
+explains why the SDK leaves no AOT option and what a JIT heap does and does
+not tell you; `../profiler/README.md` says how to attach to it and how to
+read what comes back.
+
 ## Quick Start
 
 ```bash

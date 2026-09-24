@@ -413,6 +413,95 @@ class GatherTest(unittest.TestCase):
             service.close()
 
 
+class EnableProfilerTest(unittest.TestCase):
+    """The sampling profiler is switched on over the service, before sampling.
+
+    The backend's `-profile` image runs under `dart run`, which starts the
+    standalone VM with the profiler off and no command-line way to turn it
+    on; DevTools sets the `profiler` flag on attach, and so do we. Both
+    collectors have to do it, and before `clearCpuSamples`, or the first
+    window of a report against a fresh backend is always empty.
+    """
+
+    def serve_recording(self, clock=(1_000_000, 3_000_000)):
+        self.seen = []
+        clock_values = list(clock)
+
+        def handler(server):
+            while True:
+                request = server.recv_json()
+                method = request["method"]
+                params = request.get("params", {})
+                self.seen.append((method, params))
+                if method == "getVMTimelineMicros":
+                    result = {"timestamp": clock_values.pop(0) if clock_values else 0}
+                elif method == "getCpuSamples":
+                    result = {"samplePeriod": 250, "functions": [], "samples": []}
+                else:
+                    result = {"type": "Success"}
+                server.send_json({"jsonrpc": "2.0", "id": request["id"], "result": result})
+
+        server = serve(handler)
+        return hp.VmService.connect(server.url)
+
+    def assert_profiler_enabled_before_clearing(self):
+        methods = [method for method, _ in self.seen]
+        flags = [params for method, params in self.seen if method == "setFlag"]
+        self.assertIn({"name": "profiler", "value": "true"}, flags)
+        self.assertLess(methods.index("setFlag"), methods.index("clearCpuSamples"))
+
+    def test_collect_window_turns_the_profiler_on_first(self):
+        service = self.serve_recording()
+        try:
+            hp.collect_window(service, "isolates/1", 0.0)
+        finally:
+            service.close()
+        self.assert_profiler_enabled_before_clearing()
+
+    def test_collect_cpu_multi_turns_the_profiler_on_first(self):
+        service = self.serve_recording()
+        try:
+            hp.collect_cpu_multi(
+                service, [{"id": "isolates/1", "name": "main", "number": "1"}], 0.0, 250, top=5
+            )
+        finally:
+            service.close()
+        self.assert_profiler_enabled_before_clearing()
+
+    def test_a_vm_that_refuses_the_flag_still_gets_sampled(self):
+        # A refused setFlag is the VM's problem to report through getCpuSamples,
+        # not a reason to abandon the window: try_call swallows it and the
+        # clear/sample pair still goes out.
+        def handler(server):
+            while True:
+                request = server.recv_json()
+                method = request["method"]
+                if method == "setFlag":
+                    server.send_json(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": request["id"],
+                            "error": {"code": 102, "message": "Cannot set flag"},
+                        }
+                    )
+                    continue
+                if method == "getCpuSamples":
+                    result = {"samplePeriod": 250, "functions": [], "samples": []}
+                elif method == "getVMTimelineMicros":
+                    result = {"timestamp": 0}
+                else:
+                    result = {"type": "Success"}
+                server.send_json({"jsonrpc": "2.0", "id": request["id"], "result": result})
+
+        server = serve(handler)
+        service = hp.VmService.connect(server.url)
+        try:
+            window = hp.collect_window(service, "isolates/1", 0.0)
+        finally:
+            service.close()
+        self.assertEqual(window["cpu"]["samples"], [])
+
+
 class MainIsolateTest(unittest.TestCase):
     def test_prefers_the_isolate_named_main(self):
         def handler(server):
