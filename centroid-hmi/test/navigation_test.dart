@@ -14,6 +14,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart' show AsyncValue, Consume
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/access_routes.dart';
 import 'package:tfc/models/menu_item.dart';
+import 'package:tfc/page_creator/page.dart';
 import 'package:tfc/pages/access_admin.dart';
 import 'package:tfc/pages/alarm_editor.dart';
 import 'package:tfc/pages/audit_trail.dart';
@@ -29,6 +30,7 @@ import 'package:tfc/widgets/access_gate.dart';
 import 'package:tfc/widgets/page_access_gate.dart';
 import 'package:tfc_access/tfc_access.dart' show AccessGroup, AccessSession;
 import 'package:tfc/core/access_authority.dart' show AccessAuthority;
+import 'package:tfc_dart/core/preferences.dart' show PreferencesApi;
 import 'package:tfc/widgets/dbus_gate.dart';
 import 'package:tfc/widgets/route_redirect.dart';
 
@@ -54,6 +56,22 @@ List<String> _allPaths(List<MenuItem> items) => [
         ..._allPaths(item.children),
       ],
     ];
+
+/// Builds the BeamPage a route would produce, with a real BuildContext.
+Future<BeamPage> buildRoute(WidgetTester tester, RoutesLocationBuilder lb, String path) async {
+  late BuildContext context;
+  await tester.pumpWidget(Builder(builder: (c) {
+    context = c;
+    return const SizedBox.shrink();
+  }));
+  final builder = lb.routes[path];
+  expect(builder, isNotNull, reason: 'expected a route for $path');
+  return builder!(context, BeamState(), null) as BeamPage;
+}
+
+/// A page manager that never reaches storage: only its order and its pages
+/// matter here.
+class _NoPrefs extends Fake implements PreferencesApi {}
 
 void main() {
   group('buildTopLevelMenuItems', () {
@@ -223,37 +241,105 @@ void main() {
     });
   });
 
-  group('firstMenuPath', () {
-    test('finds the first path depth-first', () {
+  group('fallbackRootPath', () {
+    bool any(String _) => true;
+
+    test('finds the first routable path depth-first', () {
       expect(
-        firstMenuPath([
+        fallbackRootPath([
           const MenuItem(label: 'Section', icon: Icons.folder, children: [
             MenuItem(label: 'Leaf', path: '/leaf', icon: Icons.pageview),
           ]),
           _page('Other', '/other'),
-        ]),
+        ], isRoutable: any),
         '/leaf',
       );
     });
 
+    test('skips what the router cannot serve', () {
+      expect(
+        fallbackRootPath([_page('Gone', '/gone'), _page('Other', '/other')], isRoutable: (p) => p != '/gone'),
+        '/other',
+      );
+    });
+
+    test('never picks the Advanced grouping or anything under it', () {
+      // Advanced is a menu grouping, not a destination, and what sits under
+      // it is gated. It can be dragged first in the Pages dialog; that must
+      // not make the page editor where `/` lands.
+      final items = buildTopLevelMenuItems(isLinux: false, pageMenuItems: [_page('Chiller', '/chiller')]);
+      final advanced = _byPath(items, '/advanced')!;
+      expect(fallbackRootPath([advanced, _page('Chiller', '/chiller')], isRoutable: any), '/chiller');
+      expect(fallbackRootPath([advanced], isRoutable: any), isNull);
+    });
+
     test('is null when nothing is reachable', () {
-      expect(firstMenuPath(const []), isNull);
+      expect(fallbackRootPath(const [], isRoutable: any), isNull);
+    });
+  });
+
+  group('where / falls back to follows the menu order', () {
+    // A station whose Home page was deleted, with two pages the operator
+    // arranged in the Pages dialog. `topLevelOrder` is the shared row that
+    // arrangement is stored in; `navigation_priority` inside the page rows
+    // is only kept in step by the dialog itself, so a page written any other
+    // way -- the MCP server, the svn tools -- puts the two out of step.
+    PageManager manager(List<String> order) => PageManager(
+          pages: {
+            '/chiller': AssetPage(menuItem: _page('Chiller', '/chiller'), assets: [], mirroringDisabled: false),
+            '/freezer': AssetPage(menuItem: _page('Freezer', '/freezer'), assets: [], mirroringDisabled: false),
+          },
+          prefs: _NoPrefs(),
+        )..topLevelOrder = order;
+
+    /// The route table as `main()` builds it: the pages from the manager,
+    /// and the composed, sorted top-level menu the operator sees.
+    RoutesLocationBuilder table(PageManager pm) {
+      final menu = buildTopLevelMenuItems(isLinux: false, pageMenuItems: pm.getRootMenuItems());
+      pm.sortTopLevel(menu);
+      return createLocationBuilder(pm.getRootMenuItems(), pagePaths: pm.pages.keys, topLevelMenu: menu);
+    }
+
+    Future<String> target(WidgetTester tester, RoutesLocationBuilder lb, String path) async {
+      final page = await buildRoute(tester, lb, path);
+      expect(page.child, isA<RouteRedirect>(), reason: path);
+      return (page.child as RouteRedirect).target;
+    }
+
+    testWidgets('changing the arrangement changes where / lands', (tester) async {
+      expect(await target(tester, table(manager(['/freezer', '/chiller'])), '/'), '/freezer');
+      expect(await target(tester, table(manager(['/chiller', '/freezer'])), '/'), '/chiller');
+    });
+
+    testWidgets('a refused draft lands on the same page as /', (tester) async {
+      final pm = manager(['/freezer', '/chiller']);
+      pm.pages['/draft'] = AssetPage(
+          menuItem: _page('Draft', '/draft'), assets: [], mirroringDisabled: false, published: false);
+      expect(await target(tester, table(pm), '/draft'), '/freezer');
+    });
+
+    testWidgets('a built-in the operator put first is where / lands', (tester) async {
+      expect(await target(tester, table(manager(['/alarm-view', '/freezer', '/chiller'])), '/'), '/alarm-view');
+    });
+
+    testWidgets('Advanced dragged first is skipped', (tester) async {
+      expect(await target(tester, table(manager(['/advanced', '/freezer', '/chiller'])), '/'), '/freezer');
+    });
+
+    testWidgets('no arrangement keeps the page order', (tester) async {
+      expect(await target(tester, table(manager([])), '/'), '/chiller');
+    });
+
+    testWidgets('without the composed menu the pages alone decide, as before', (tester) async {
+      final lb = createLocationBuilder(
+        [_page('Freezer', '/freezer'), _page('Chiller', '/chiller')],
+        pagePaths: const ['/freezer', '/chiller'],
+      );
+      expect(await target(tester, lb, '/'), '/freezer');
     });
   });
 
   group('createLocationBuilder', () {
-    /// Builds the BeamPage a route would produce, with a real BuildContext.
-    Future<BeamPage> buildRoute(WidgetTester tester, RoutesLocationBuilder lb, String path) async {
-      late BuildContext context;
-      await tester.pumpWidget(Builder(builder: (c) {
-        context = c;
-        return const SizedBox.shrink();
-      }));
-      final builder = lb.routes[path];
-      expect(builder, isNotNull, reason: 'expected a route for $path');
-      return builder!(context, BeamState(), null) as BeamPage;
-    }
-
     testWidgets('with a Home page, / is served normally', (tester) async {
       final lb = createLocationBuilder(
         [_page('Home', '/')],

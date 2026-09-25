@@ -88,6 +88,7 @@ import 'package:tfc/widgets/panes/standard_dialog.dart';
 
 import 'marionette_init.dart';
 import 'navigation.dart';
+import 'root_route_location_builder.dart';
 import 'package:tfc/providers/menu.dart';
 import 'package:tfc/providers/home_page.dart';
 import 'package:tfc/widgets/page_access_gate.dart';
@@ -436,6 +437,7 @@ Future<void> _startApp([bool debugMode = false]) async {
   final locationBuilder = createLocationBuilder(
     extraMenuItems,
     pagePaths: pageManager.pages.keys,
+    topLevelMenu: topLevelMenuItems,
   );
 
   // The router starts on Home. Where this panel actually opens is the home
@@ -642,10 +644,16 @@ final managerLauncher = ManagerLauncher(
 /// manager. [pagePaths] is every page path the manager knows, reachable or
 /// not: paths in it that end up without a route — unpublished drafts, or
 /// children of a draft section — are refused by redirecting to the fallback
-/// page instead of dead-ending on "not found".
+/// page instead of dead-ending on "not found". [topLevelMenu] is the composed
+/// top-level menu in the operator's stored arrangement; when given, that
+/// fallback is the first destination in it (see [fallbackRootPath]), so where
+/// `/` lands on a station with no Home page is the first thing in the menu
+/// they see. Without it the pages alone decide, in `navigation_priority`
+/// order.
 RoutesLocationBuilder createLocationBuilder(
   List<MenuItem> extraMenuItems, {
   Iterable<String> pagePaths = const [],
+  List<MenuItem>? topLevelMenu,
 }) {
   // Route groups are declared by `RouteRegistry.replaceMenu`, which the boot
   // sequence calls once and `menuTreeProvider` calls on every recomposition —
@@ -991,17 +999,25 @@ RoutesLocationBuilder createLocationBuilder(
   // still land somewhere. First reachable page if there is one — when no
   // pages exist at all the page manager has already regenerated the default
   // Home, so this only stays null when every page is an unpublished draft.
-  final fallback = routes.containsKey('/') ? '/' : firstMenuPath(extraMenuItems);
+  //
+  // The target follows the menu the operator sees, built-ins included:
+  // [topLevelMenu] is the composed top-level menu in the stored arrangement,
+  // while [extraMenuItems] is ordered by each page's `navigation_priority` —
+  // which only the Pages dialog keeps in step with that arrangement, and
+  // which says nothing about where a built-in was put.
+  final fallback = routes.containsKey('/')
+      ? '/'
+      : fallbackRootPath(topLevelMenu ?? extraMenuItems, isRoutable: routes.containsKey);
   if (fallback != null) {
     if (!routes.containsKey('/')) {
       routes['/'] = (context, state, args) => BeamPage(
             key: const ValueKey('/'),
             title: 'Home',
-            // `from` is what stops this stub -- which Beamer keeps mounted
-            // underneath every page on a station with no Home -- from beaming
-            // away from whatever the operator is looking at. See
-            // `route_redirect.dart`: this is the widget that painted the panel
-            // white for the whole of a signed-out session.
+            // `from` is what stops this stub from beaming away from whatever
+            // the operator is looking at should it ever be mounted while
+            // another page is showing. See `route_redirect.dart`: this is the
+            // widget that painted the panel white for the whole of a
+            // signed-out session.
             child: RouteRedirect(from: '/', target: fallback),
           );
     }
@@ -1017,7 +1033,10 @@ RoutesLocationBuilder createLocationBuilder(
     }
   }
 
-  return RoutesLocationBuilder(routes: routes);
+  // Not a plain `RoutesLocationBuilder`: that stacks `/` under every page,
+  // which on a station with a Home page keeps Home built and subscribed
+  // beneath whatever the operator is looking at. See the builder's doc.
+  return RootRouteLocationBuilder(routes: routes);
 }
 
 /// Wires the elicitation UI handler into the MCP bridge so that write-tool
@@ -1199,9 +1218,11 @@ class MyApp extends ConsumerWidget {
                   // Says a write was refused, once, from the same "mounted
                   // exactly once" slot and for the same reason. It used to be
                   // mounted inside `BaseScaffold`, which meant one per page --
-                  // and the router keeps more than one page mounted, because
+                  // and the router kept more than one page mounted, because
                   // `RoutesLocationBuilder` stacks a page for every matching
-                  // route and `/` matches every path. Two scaffolds meant two
+                  // route and `/` matched every path (it no longer does --
+                  // `RootRouteLocationBuilder` -- but a section page still
+                  // sits under its child). Two scaffolds meant two
                   // subscriptions to one broadcast stream, so one refused
                   // write raised two dialogs with two stacked scrims: Close
                   // twice, and the dim lifting in between.

@@ -16,6 +16,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../providers/access.dart';
 import '../routes.dart';
+import 'always_on_top_dialog.dart';
 import 'home_page_navigation.dart';
 import 'panes/pane_chrome.dart';
 import 'panes/standard_dialog.dart';
@@ -102,7 +103,13 @@ const String kAccessSignInHonestyNote =
 /// needs no router in a test and the destination is a value an assertion can
 /// read.
 Future<void> showAccessSignInDialog(BuildContext context, WidgetRef ref) async {
-  final target = await showDialog<String>(
+  // Always-on-top rather than `showDialog`: a plain dialog route opens
+  // underneath any floating window that is already up, which for sign-in
+  // means asking for credentials behind something the operator cannot see
+  // while the plant view in front keeps taking their taps. See
+  // `always_on_top_dialog.dart`. It is still a route, so the `maybePop`s
+  // below are unchanged.
+  final target = await showAlwaysOnTopDialog<String>(
     context: context,
     builder: (_) => const AccessSignInDialog(),
   );

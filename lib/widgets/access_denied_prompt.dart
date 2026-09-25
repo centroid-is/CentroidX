@@ -174,8 +174,10 @@ const Key kAccessDeniedDismissKey = Key('access-denied-dismiss');
 /// `BaseScaffold`, which put one on every page — and that was the defect. The
 /// router stacks a page for *every* route that matches the location
 /// (`RoutesLocationBuilder`; see `lib/providers/menu.dart`), and a route below
-/// the top stays mounted. `/` matches every path, so on any station whose `/`
-/// is an ordinary page there were permanently **two** live `BaseScaffold`s,
+/// the top stays mounted. `/` matched every path (it no longer does, see
+/// `centroid-hmi/lib/root_route_location_builder.dart`, but a section page
+/// still sits under its child), so on any station whose `/`
+/// was an ordinary page there were permanently **two** live `BaseScaffold`s,
 /// two subscriptions to one broadcast stream, and two dialogs for one refused
 /// write: Close pressed twice, and the barrier visibly lightening in between
 /// as the first of two stacked `black54` scrims came off. The second dialog

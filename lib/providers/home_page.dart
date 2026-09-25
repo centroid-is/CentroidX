@@ -3,6 +3,7 @@
 /// See `lib/core/home_page.dart` for what a home page is.
 library;
 
+import 'package:flutter/foundation.dart' show ChangeNotifier;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:logger/logger.dart';
 import 'package:tfc_access/tfc_access.dart' show AccessSession, kAnonymousUsername;
@@ -75,14 +76,34 @@ final homePageLookupProvider = Provider<HomePageLookup>((ref) {
 /// were (`lib/core/last_route.dart`).
 ///
 /// A plain object rather than provider state because the shell has to
-/// forgive it from a global pointer route, outside any widget.
-class BootHomePageDebt {
+/// forgive it from a global pointer route, outside any widget. A
+/// [ChangeNotifier] so the route gate can hold the plant's pages back until
+/// it is known where the panel opens — see [holdsPages].
+class BootHomePageDebt extends ChangeNotifier {
   BootHomePageDebt({bool owed = true}) : _owed = owed;
 
   bool _owed;
+  bool _answered = false;
 
   /// Whether the boot navigation may still be taken.
   bool get owed => _owed;
+
+  /// Whether the plant's pages must wait: the navigation is still owed and
+  /// no lookup has answered yet, so nobody knows which page this panel opens
+  /// on.
+  ///
+  /// `PageAccessGate` shows its checking screen instead of a page while this
+  /// is true. The router starts on `/` — Home, or the redirect to the first
+  /// page on a station whose Home was deleted — and the session's home page
+  /// is a database read behind the session's own. Without the hold, that page
+  /// was built the moment the session resolved, ran its subscriptions for the
+  /// length of the second read, and was then taken away: an operator saw a
+  /// cabinet page they never asked for flash up before their own.
+  ///
+  /// Released by [settle], by [forgive], and by [answered] — a lookup that
+  /// could not read the account at all still opens the panel, where it is,
+  /// rather than holding it on a screen until somebody touches it.
+  bool get holdsPages => _owed && !_answered;
 
   /// The attempt some scaffold is making right now, or null.
   ///
@@ -98,10 +119,29 @@ class BootHomePageDebt {
   /// The navigation was taken, or the home page turned out to be where the
   /// panel already is. Only a scaffold still mounted when the answer arrives
   /// may say so: one that was unmounted during the lookup moved nothing.
-  void settle() => _owed = false;
+  void settle() {
+    if (!_owed && _answered) return;
+    _owed = false;
+    _answered = true;
+    notifyListeners();
+  }
 
   /// Somebody touched the screen, or the panel opened somewhere on purpose.
-  void forgive() => _owed = false;
+  void forgive() {
+    if (!_owed) return;
+    _owed = false;
+    notifyListeners();
+  }
+
+  /// A lookup answered, but could not say — no database yet, or one that
+  /// would not answer. The navigation stays owed for a session that resolves
+  /// later; the pages are released now, because waiting on a database that
+  /// has already failed is waiting forever.
+  void answered() {
+    if (_answered) return;
+    _answered = true;
+    notifyListeners();
+  }
 }
 
 /// This process's [BootHomePageDebt]. The shell overrides it with the instance

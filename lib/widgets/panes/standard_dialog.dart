@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../always_on_top_dialog.dart';
 import '../onscreen_keyboard.dart';
 import '../resizable_overlay_frame.dart';
 import 'pane_chrome.dart';
@@ -462,7 +463,11 @@ abstract final class FloatingDialogs {
     _stack.add(id);
     _onClosed[id] = onClosed;
     _completers[id] = completer;
-    overlay.insert(entry);
+    // Beneath any always-on-top modal that is open, above everything else.
+    // Without the anchor a window opened while sign-in is up would insert at
+    // the very top and bury the form the operator is typing into — the same
+    // fault from the other direction. See `always_on_top_dialog.dart`.
+    overlay.insert(entry, below: lowestAlwaysOnTopEntry);
     return completer.future;
   }
 

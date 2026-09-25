@@ -553,7 +553,16 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
       // An unmounted scaffold beamed nothing — `goToHomePage` returns before
       // beaming — so its answer settles nothing either. Settling there is what
       // left every panel on a database standing on `/`.
-      if (answer.known && mounted) debt.settle();
+      if (!mounted) return;
+      if (answer.known) {
+        debt.settle();
+      } else {
+        // Nobody could say. The navigation stays owed for a session that
+        // resolves later, but the pages the gate is holding back must open
+        // now: the panel is standing on a checking screen, and the database
+        // it is waiting on has already failed to answer.
+        debt.answered();
+      }
     } finally {
       debt.inFlight = null;
       attempt.complete();
