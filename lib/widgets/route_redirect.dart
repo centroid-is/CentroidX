@@ -10,9 +10,15 @@
 ///
 /// Beamer's `RoutesBeamLocation` **stacks every sub-matching route**, and `/`
 /// sub-matches everything. So on a station whose Home page has been deleted,
-/// the `/` stub is not a page the operator passes through at boot and leaves
-/// behind: it is mounted at the bottom of the navigator stack underneath every
+/// the `/` stub was not a page the operator passed through at boot and left
+/// behind: it was mounted at the bottom of the navigator stack underneath every
 /// page in the app, for the whole life of the process, with its [State] alive.
+/// (The app's route table no longer stacks `/` — see
+/// `centroid-hmi/lib/root_route_location_builder.dart` — so today the stub is
+/// mounted only while `/` is the location. Everything below still holds for
+/// the case it was written for, and the guards it describes are kept: a
+/// redirect that is correct only because of how the router happens to stack
+/// pages is one navigation change away from being the white panel again.)
 ///
 /// That is what made the original one-shot version a plant-floor fault. It
 /// beamed from `initState`, which runs **once**. Anything that later navigated
@@ -88,9 +94,12 @@ class RouteRedirect extends StatefulWidget {
   /// The path this stub stands at.
   ///
   /// Required, and compared against the router's current location before
-  /// anything is beamed. The stub for `/` is mounted underneath every page on
-  /// a station with no Home page, so a redirect that did not check would drag
-  /// the operator off whatever they were looking at on the next rebuild.
+  /// anything is beamed. The stub for `/` used to be mounted underneath every
+  /// page on a station with no Home page, and a redirect that did not check
+  /// dragged the operator off whatever they were looking at on the next
+  /// rebuild. The route table no longer stacks it; the check stays, because
+  /// a stub that is safe only while nothing is mounted beneath the current
+  /// page is not safe.
   final String from;
 
   /// The path to land on instead.

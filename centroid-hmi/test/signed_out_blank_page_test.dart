@@ -11,8 +11,11 @@
 ///     `/speedbatchers`; there is no `/`. So `createLocationBuilder` registers
 ///     `/` as a [RouteRedirect] stub.
 ///  2. Beamer's `RoutesBeamLocation` stacks every sub-matching route, and `/`
-///     sub-matches everything, so that stub is mounted *underneath every page
+///     sub-matches everything, so that stub was mounted *underneath every page
 ///     on the station* with its `State` alive for the life of the process.
+///     (`RootRouteLocationBuilder` has since taken `/` out of that stack; the
+///     stub is now mounted only while `/` is the location, and the chain
+///     below still has to land somewhere real.)
 ///  3. `BaseScaffold._returnHome` beams to `resolveHomePath(...)` on every
 ///     elevated-to-anonymous transition — a sign-out, or the fifteen-minute
 ///     inactivity expiry. The anonymous account on this station has no home
@@ -35,6 +38,7 @@ import 'package:tfc/providers/access.dart';
 import 'package:tfc/providers/home_page.dart';
 import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/route_registry.dart';
+import 'package:tfc/transition_delegate.dart';
 import 'package:tfc/widgets/access_status_action.dart';
 import 'package:tfc/widgets/route_redirect.dart';
 import 'package:tfc_access/tfc_access.dart';
@@ -128,6 +132,10 @@ Future<(BeamerDelegate, _DrivenSession)> _boot(WidgetTester tester) async {
     initialPath: startupPath,
     notFoundPage: const BeamPage(child: Text('not found')),
     clearBeamingHistoryOn: topLevelPaths,
+    // As MyApp wires it: `/` no longer sits under every page, so the page
+    // the redirect leaves really exits, and the default delegate would keep
+    // it mounted through a pop animation these pumps never finish.
+    transitionDelegate: MyNoAnimationTransitionDelegate(),
     locationBuilder: (ri, ctx) => locationBuilder(ri, ctx),
   );
 
