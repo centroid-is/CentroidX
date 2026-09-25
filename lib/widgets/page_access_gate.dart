@@ -30,6 +30,7 @@ import 'package:tfc_dart/core/access/access_repository.dart';
 
 import '../access_routes.dart';
 import '../providers/access.dart';
+import '../providers/home_page.dart' show bootHomePageDebtProvider;
 import '../providers/menu.dart' show visibleMenuProvider;
 // `kSessionWhileLoading` only — the single definition of the session a guard
 // resolves on while `accessSessionProvider` is still loading. Imported rather
@@ -355,8 +356,10 @@ class PageNotAvailableBody extends ConsumerWidget {
 /// circuits on `AccessGroup.operate` before anything is read, and a session
 /// with no whitelist answers [AccessSession.pageVisible] true without touching
 /// the database — so a station that raises no pages and configures no
-/// whitelist renders exactly as it did before this widget existed, and adds
-/// nothing around the child.
+/// whitelist renders exactly as it did before this widget existed.
+///
+/// It is also where a starting panel waits for its home page: see the boot
+/// hold in [build] and `BootHomePageDebt.holdsPages`.
 class PageAccessGate extends ConsumerWidget {
   const PageAccessGate({
     super.key,
@@ -396,6 +399,57 @@ class PageAccessGate extends ConsumerWidget {
       session: session,
     );
 
+    // The boot hold. The router starts on `/` — Home, or the redirect to the
+    // first page on a station whose Home was deleted — and moves to the
+    // session's home page once that is read from the database. That read is
+    // a second round trip after the session's own, and this gate used to
+    // release on the first: the page under `/` was built the moment the
+    // session resolved, subscribed, and was taken away again when the home
+    // page arrived. The operator saw a cabinet page they never asked for.
+    //
+    // So the checking screen stays up until the panel knows where it opens
+    // — the same screen, so the boot is one honest state resolving into the
+    // right page, not two. The debt is a `ChangeNotifier` rather than
+    // provider state because the shell forgives it from a global pointer
+    // route, outside any widget; `ListenableBuilder` is what makes that
+    // release, and the scaffold's `settle`, reach this widget.
+    //
+    // Nothing else pays for it: after boot the debt is settled or forgiven,
+    // `holdsPages` is false for the life of the process, and the builder
+    // returns the child it always returned. A harness or a test that owes no
+    // navigation never holds either.
+    final debt = ref.watch(bootHomePageDebtProvider);
+    return ListenableBuilder(
+      listenable: debt,
+      builder: (context, _) {
+        if (debt.holdsPages) return _checking();
+        return _resolved(
+          state,
+          group: group,
+          repository: repository,
+          session: session,
+        );
+      },
+    );
+  }
+
+  /// The screen a route shows while the decision behind it is still out —
+  /// the session, or where this panel opens.
+  ///
+  /// The same body `AccessGate` shows, for the same reason: this is the screen
+  /// a restricted panel boots on, so it must be one an operator can act from
+  /// rather than a spinner they can only stare at.
+  Widget _checking() => BaseScaffold(
+        title: title,
+        body: AccessCheckingBody(openSignIn: openSignIn),
+      );
+
+  Widget _resolved(
+    AccessGateState state, {
+    required AccessGroup group,
+    required AsyncValue<AccessRepository?> repository,
+    required AsyncValue<AccessSession> session,
+  }) {
     switch (state) {
       case AccessGateState.allowed:
         return child;
@@ -419,13 +473,7 @@ class PageAccessGate extends ConsumerWidget {
               : PageNotAvailableBody(openSignIn: openSignIn),
         );
       case AccessGateState.waiting:
-        // The same body `AccessGate` shows, for the same reason: this is the
-        // screen a restricted panel now boots on, so it must be one an
-        // operator can act from rather than a spinner they can only stare at.
-        return BaseScaffold(
-          title: title,
-          body: AccessCheckingBody(openSignIn: openSignIn),
-        );
+        return _checking();
     }
   }
 }
