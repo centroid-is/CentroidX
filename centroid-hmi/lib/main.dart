@@ -437,6 +437,7 @@ Future<void> _startApp([bool debugMode = false]) async {
   final locationBuilder = createLocationBuilder(
     extraMenuItems,
     pagePaths: pageManager.pages.keys,
+    topLevelMenu: topLevelMenuItems,
   );
 
   // The router starts on Home. Where this panel actually opens is the home
@@ -643,10 +644,16 @@ final managerLauncher = ManagerLauncher(
 /// manager. [pagePaths] is every page path the manager knows, reachable or
 /// not: paths in it that end up without a route — unpublished drafts, or
 /// children of a draft section — are refused by redirecting to the fallback
-/// page instead of dead-ending on "not found".
+/// page instead of dead-ending on "not found". [topLevelMenu] is the composed
+/// top-level menu in the operator's stored arrangement; when given, that
+/// fallback is the first destination in it (see [fallbackRootPath]), so where
+/// `/` lands on a station with no Home page is the first thing in the menu
+/// they see. Without it the pages alone decide, in `navigation_priority`
+/// order.
 RoutesLocationBuilder createLocationBuilder(
   List<MenuItem> extraMenuItems, {
   Iterable<String> pagePaths = const [],
+  List<MenuItem>? topLevelMenu,
 }) {
   // Route groups are declared by `RouteRegistry.replaceMenu`, which the boot
   // sequence calls once and `menuTreeProvider` calls on every recomposition —
@@ -989,7 +996,15 @@ RoutesLocationBuilder createLocationBuilder(
   // still land somewhere. First reachable page if there is one — when no
   // pages exist at all the page manager has already regenerated the default
   // Home, so this only stays null when every page is an unpublished draft.
-  final fallback = routes.containsKey('/') ? '/' : firstMenuPath(extraMenuItems);
+  //
+  // The target follows the menu the operator sees, built-ins included:
+  // [topLevelMenu] is the composed top-level menu in the stored arrangement,
+  // while [extraMenuItems] is ordered by each page's `navigation_priority` —
+  // which only the Pages dialog keeps in step with that arrangement, and
+  // which says nothing about where a built-in was put.
+  final fallback = routes.containsKey('/')
+      ? '/'
+      : fallbackRootPath(topLevelMenu ?? extraMenuItems, isRoutable: routes.containsKey);
   if (fallback != null) {
     if (!routes.containsKey('/')) {
       routes['/'] = (context, state, args) => BeamPage(

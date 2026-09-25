@@ -124,21 +124,32 @@ List<MenuItem> buildTopLevelMenuItems({
     if (advancedChildren.isNotEmpty)
       MenuItem(
         label: 'Advanced',
-        path: '/advanced',
+        path: kAdvancedMenuPath,
         icon: Icons.settings,
         children: advancedChildren,
       ),
   ];
 }
 
-/// Depth-first first path in [items] — where `/` and refused pages fall back
-/// to when the Home page itself is gone. Null when no page is reachable at
-/// all.
-String? firstMenuPath(List<MenuItem> items) {
-  for (final item in items) {
+/// The Advanced entry's path: a menu grouping, not a destination.
+const String kAdvancedMenuPath = '/advanced';
+
+/// Where `/` and refused pages fall back to when the Home page itself is
+/// gone: the first destination in [menu], depth-first, that [isRoutable] —
+/// with the Advanced grouping left out, since what sits under it is gated
+/// and a station whose Home was deleted must not open on the page editor.
+/// Null when nothing is reachable at all.
+///
+/// Meant for the composed, sorted top-level menu — the one the operator
+/// sees — so that the page `/` lands on is the first thing in the menu they
+/// arranged, built-ins included. Handed only the pages, it is the first
+/// page by `navigation_priority`, which is what it used to be.
+String? fallbackRootPath(List<MenuItem> menu, {required bool Function(String path) isRoutable}) {
+  for (final item in menu) {
+    if (item.path == kAdvancedMenuPath) continue;
     final path = item.path;
-    if (path != null && path.isNotEmpty) return path;
-    final childPath = firstMenuPath(item.children);
+    if (path != null && path.isNotEmpty && isRoutable(path)) return path;
+    final childPath = fallbackRootPath(item.children, isRoutable: isRoutable);
     if (childPath != null) return childPath;
   }
   return null;
