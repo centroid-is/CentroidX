@@ -88,6 +88,7 @@ import 'package:tfc/widgets/panes/standard_dialog.dart';
 
 import 'marionette_init.dart';
 import 'navigation.dart';
+import 'root_route_location_builder.dart';
 import 'package:tfc/providers/menu.dart';
 import 'package:tfc/providers/home_page.dart';
 import 'package:tfc/widgets/page_access_gate.dart';
@@ -994,11 +995,11 @@ RoutesLocationBuilder createLocationBuilder(
       routes['/'] = (context, state, args) => BeamPage(
             key: const ValueKey('/'),
             title: 'Home',
-            // `from` is what stops this stub -- which Beamer keeps mounted
-            // underneath every page on a station with no Home -- from beaming
-            // away from whatever the operator is looking at. See
-            // `route_redirect.dart`: this is the widget that painted the panel
-            // white for the whole of a signed-out session.
+            // `from` is what stops this stub from beaming away from whatever
+            // the operator is looking at should it ever be mounted while
+            // another page is showing. See `route_redirect.dart`: this is the
+            // widget that painted the panel white for the whole of a
+            // signed-out session.
             child: RouteRedirect(from: '/', target: fallback),
           );
     }
@@ -1014,7 +1015,10 @@ RoutesLocationBuilder createLocationBuilder(
     }
   }
 
-  return RoutesLocationBuilder(routes: routes);
+  // Not a plain `RoutesLocationBuilder`: that stacks `/` under every page,
+  // which on a station with a Home page keeps Home built and subscribed
+  // beneath whatever the operator is looking at. See the builder's doc.
+  return RootRouteLocationBuilder(routes: routes);
 }
 
 /// Wires the elicitation UI handler into the MCP bridge so that write-tool
@@ -1196,9 +1200,11 @@ class MyApp extends ConsumerWidget {
                   // Says a write was refused, once, from the same "mounted
                   // exactly once" slot and for the same reason. It used to be
                   // mounted inside `BaseScaffold`, which meant one per page --
-                  // and the router keeps more than one page mounted, because
+                  // and the router kept more than one page mounted, because
                   // `RoutesLocationBuilder` stacks a page for every matching
-                  // route and `/` matches every path. Two scaffolds meant two
+                  // route and `/` matched every path (it no longer does --
+                  // `RootRouteLocationBuilder` -- but a section page still
+                  // sits under its child). Two scaffolds meant two
                   // subscriptions to one broadcast stream, so one refused
                   // write raised two dialogs with two stacked scrims: Close
                   // twice, and the dim lifting in between.
