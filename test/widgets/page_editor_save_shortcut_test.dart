@@ -15,6 +15,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/pages/page_view.dart' show AssetStack;
 
 import '../helpers/page_editor_harness.dart';
+import '../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
 
 /// Presses the editor's save shortcut.
 Future<void> pressSave(WidgetTester tester) async {
@@ -34,6 +35,15 @@ Color? saveFabColor(WidgetTester tester) {
 }
 
 void main() {
+  // `gatewayConfigProvider` decides where this panel's configuration rows
+  // come from, and it reads the device-local store to do it — so every
+  // provider graph that reaches the page manager, the key repository or the
+  // StateMan now needs one open. Without it the provider throws
+  // "initDeviceLocalPreferences() must run before
+  // createDeviceLocalPreferences()", which is the store saying so rather
+  // than anything about the case.
+  setUp(useInMemoryDeviceLocalPreferences);
+
   setUp(setUpEditorEnvironment);
 
   testWidgets('Ctrl/Cmd+S persists the page', (tester) async {

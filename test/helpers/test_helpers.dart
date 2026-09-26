@@ -19,6 +19,7 @@ import 'package:tfc_dart/core/collector.dart';
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/modbus_client_wrapper.dart' show ModbusDataType;
 
+import 'package:tfc/providers/access.dart' show stationNameProvider;
 import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/providers/database.dart';
 import 'package:tfc/providers/config_store.dart';
@@ -26,6 +27,10 @@ import 'package:tfc/providers/state_man.dart';
 import 'package:tfc/widgets/access_denied_prompt.dart';
 import 'package:tfc/pages/key_repository.dart';
 import 'package:tfc/pages/server_config.dart';
+
+/// The station name every server-config fixture pins — see the override in
+/// [buildTestableServerConfig].
+const String kTestStationName = 'SVN-ST101';
 
 /// In-memory secure storage for tests.
 class FakeSecureStorage implements MySecureStorage {
@@ -323,6 +328,11 @@ Widget buildTestableKeyRepository({
             stateManConfig: stateManConfig,
           )),
       databaseProvider.overrideWith((ref) async => null),
+      // 17-12: the access store providers now consult the transport row
+      // (`gatewayConfigProvider` → `localPreferencesProvider`) before choosing
+      // their route. An in-memory device-local store reads as direct mode and
+      // keeps these page tests from reaching an unmocked SharedPreferences.
+      localPreferencesProvider.overrideWithValue(InMemoryPreferences()),
       // Since v1.2 phase 2 plan 06 the page loads and saves the plant's wiring
       // through the shared configuration store, not the preference blob. A
       // caller that wants to read back what a save wrote builds the store
@@ -477,24 +487,55 @@ Future<void> settle(WidgetTester tester) async {
 /// Bypasses [BaseScaffold] (which requires Beamer routing context) by
 /// rendering the same Column of sections that [ServerConfigPage.build]
 /// produces. This tests all section widgets without needing a full router.
+///
+/// [localPreferences] is the device-local store the transport-mode card reads
+/// and writes. Pass one to seed a station into gateway mode, or to read back
+/// what a save wrote; the default is an empty in-memory store, which is a
+/// station that has never been configured and therefore runs direct.
+///
+/// [theme] and [overrides] are **additive and defaulted**, so all thirteen
+/// existing callers render byte-identically without being edited. They exist
+/// for the themed goldens in plan 15-07: the bare `MaterialApp` below carries
+/// no theme at all, which means `HmiStateColors.of(context)` silently falls
+/// back to `solarizedLight` and a colour regression on the dark scheme cannot
+/// be caught. Pass `themedGoldenTheme(dark: …)` from
+/// `test/helpers/themed_golden_host.dart` to shoot this page under the real
+/// station themes.
+///
+/// [overrides] is appended **after** the four above, so a caller can add
+/// `gatewayLinkProvider.overrideWith(…)` without restating them — and, because
+/// it comes last, can deliberately replace one of them.
 Widget buildTestableServerConfig({
   StateManConfig? stateManConfig,
+  PreferencesApi? localPreferences,
+  ThemeData? theme,
+  List<Override> overrides = const [],
 }) {
   return ProviderScope(
     overrides: [
+      // 17-13's config-target banner names this station, and the production
+      // value is `Platform.localHostname` — a different string on every
+      // machine. Pinned here so the page's goldens do not disagree with
+      // themselves by machine; a caller that needs another name replaces it
+      // through [overrides], which comes last.
+      stationNameProvider.overrideWithValue(kTestStationName),
       preferencesProvider.overrideWith((ref) => createTestPreferences(
             stateManConfig: stateManConfig,
           )),
+      localPreferencesProvider
+          .overrideWithValue(localPreferences ?? InMemoryPreferences()),
       databaseProvider.overrideWith((ref) async => null),
       // Override stateManProvider to avoid real network connections.
       // Throwing makes valueOrNull return null and isLoading false,
       // so connection status shows "Not active" (grey).
       stateManProvider
           .overrideWith((ref) => throw StateError('No StateMan in tests')),
+      ...overrides,
     ],
     child: MaterialApp(
       // Keeps the debug ribbon out of the corner of golden captures.
       debugShowCheckedModeBanner: false,
+      theme: theme,
       home: Scaffold(
         body: const ServerConfigBody(),
       ),

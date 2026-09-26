@@ -1,5 +1,5 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:tfc_dart/core/state_man.dart' show KeyMappings;
+import 'package:tfc_dart/core/state_man_types.dart' show KeyMappings;
 import 'package:tfc_mcp_server/tfc_mcp_server.dart';
 
 import '../core/guarded_knowledge_stores.dart';

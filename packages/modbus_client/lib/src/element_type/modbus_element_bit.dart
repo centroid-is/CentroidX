@@ -33,14 +33,24 @@ class ModbusBitElement extends ModbusElement<bool> {
         endianness: endianness);
   }
 
+  /// The FC05 encoding of [value]: `0xFF00` for on, `0x0000` for off.
+  ///
+  /// A `bool`, or the integers `0` and `1` — the two spellings a control
+  /// surface actually sends. Everything else is refused: this used to read
+  /// "anything that is not `0` is on", so a `2`, a `5.5` or the string `"off"`
+  /// all energised the coil, the device acknowledged, and the caller was told
+  /// the write applied. A coil is an actuator; a value that does not name one
+  /// of its two states is not something to guess at.
   @override
-  int _getRawValue(dynamic value) => value is bool
-      ? !value
-          ? 0x0000
-          : 0xFF00
-      : value == 0
-          ? 0x0000
-          : 0xFF00;
+  int _getRawValue(dynamic value) {
+    if (value is bool) return value ? 0xFF00 : 0x0000;
+    if (value == 0) return 0x0000;
+    if (value == 1) return 0xFF00;
+    throw ModbusException(
+        context: ModbusNumRegister.writeRefusalContext,
+        msg: "$name: $value (${value.runtimeType}) is neither a bool nor 0/1 "
+            "and cannot be written to a coil; nothing was sent");
+  }
 }
 
 /// A Modbus [ModbusElementType.discreteInput] value element.

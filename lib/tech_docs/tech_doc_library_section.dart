@@ -30,6 +30,10 @@ import 'tech_doc_audit.dart';
 import 'tech_doc_section_detail_panel.dart';
 import 'tech_doc_upload_service.dart';
 
+/// The empty slot's honest sentence on a panel that has no route to the
+/// library — see the empty state in `_buildMasterTable`.
+const Key kTechDocLibraryUnreachableKey = Key('tech_doc_library_unreachable');
+
 /// Builds a structured prompt for the LLM to discuss a tech document.
 ///
 /// The message instructs the AI copilot to retrieve and summarise the
@@ -287,9 +291,26 @@ class _TechDocLibrarySectionState extends ConsumerState<TechDocLibrarySection> {
         // Scrollable data rows
         Expanded(
           child: totalItems == 0
-              ? const Center(
-                  child: Text('No resources found',
-                      style: TextStyle(color: Colors.grey)),
+              ? Center(
+                  // "No resources found" is a claim about the library, and a
+                  // panel with no route to it — a gateway panel, whose
+                  // `databaseProvider` is null by design — has not read it.
+                  // That panel gets a fact about itself instead.
+                  child: ref.watch(techDocIndexProvider) == null
+                      ? const Padding(
+                          key: kTechDocLibraryUnreachableKey,
+                          padding: EdgeInsets.all(24),
+                          child: Text(
+                              'The document library could not be reached '
+                              'from this panel. It lives in the plant\'s '
+                              'database, and this panel has no connection '
+                              'to it — nothing here says the library is '
+                              'empty.',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(color: Colors.grey)),
+                        )
+                      : const Text('No resources found',
+                          style: TextStyle(color: Colors.grey)),
                 )
               : ListView.builder(
                   itemCount: totalItems,

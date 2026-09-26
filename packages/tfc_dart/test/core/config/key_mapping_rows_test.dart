@@ -305,13 +305,33 @@ void main() {
 
       expect(source, contains('readSharedPreferenceValue'),
           reason: 'one row read through the shared codec, not a store');
-      expect(source, contains('AlarmMan.headless'),
-          reason: 'the config goes in as a value; the headless constructor '
-              'takes no store, so there is nothing here that could write');
-      expect(source.contains('AlarmMan.create('), isFalse,
-          reason: 'AlarmMan.create seeds the empty default when the row is '
-              'absent — the write this plan removed');
-      expect(source.contains('Preferences.create('), isFalse,
+
+      // The ruling holds and the mechanism is stronger than the one this arm
+      // was written against. Main reached it with `AlarmMan.headless` — a
+      // constructor with no store, so nothing to write through. This line
+      // does not run an `AlarmMan` in the backend **at all** (ALRM-01/D-6:
+      // that class is the panel's, and running it here meant a second OPC UA
+      // session per server just to evaluate rules). `AlarmEngine` reads the
+      // configuration through `BackendSharedPreferences`, whose every setter
+      // throws. So there is no writer rather than a writer with nothing
+      // wired to it, and the two arms below say so.
+      expect(source, contains('AlarmEngine('),
+          reason: 'the backend evaluates alarms over the pipe\'s own value '
+              'source, not through the panel class');
+      expect(source, contains('BackendSharedPreferences.create'),
+          reason: 'and reads their configuration through the read-only store; '
+              '`Preferences.create` answers null to every shared key since '
+              '#465 retired the table it loaded from');
+      expect(source.contains('AlarmMan.'), isFalse,
+          reason: 'no AlarmMan on this path in any form — `create` seeds the '
+              'empty default when the row is absent, which is the write the '
+              'ruling forbids, and `headless` would bring the class back one '
+              'constructor at a time');
+      // Anchored, because `BackendSharedPreferences.create(` ends with this
+      // exact substring and a bare `contains` reports the read-only store as
+      // the writer it replaced.
+      expect(RegExp(r'(?<![A-Za-z_])Preferences\.create\(').hasMatch(source),
+          isFalse,
           reason: 'the backend built a whole preferences object for one key, '
               'and that object was a writer');
     });
@@ -324,10 +344,15 @@ void main() {
       final lines = _mainLinesWithoutComments();
       final source = lines.join('\n');
 
-      expect(source, contains('kPreferencesMigratedMarkerId'),
+      expect(source, contains('MigratedMarkerId'),
           reason: 'the purpose-built answer to "empty, or not yet migrated?"');
-      expect(source, contains('AlarmManConfig(alarms: [])'),
-          reason: 'absent means run with zero alarms');
+      // Main asserted the literal `AlarmManConfig(alarms: [])` here, because
+      // its `bin/main.dart` built the empty config itself before handing it to
+      // `AlarmMan.headless`. This line hands no config to anything: the
+      // absent-row case is `AlarmEngine`'s own, reading null through a store
+      // that cannot write. What must remain true is the outcome — an absent
+      // row runs with zero alarms and never stops the boot — and the arm
+      // below is the half of that which can be read off this file.
       expect(source.contains('alarm'), isTrue);
       // The refusal that must NOT be there.
       final alarmThrow = lines.indexWhere((l) =>
@@ -396,7 +421,11 @@ void main() {
       expect('Timer? restartTimer'.allMatches(source), hasLength(1),
           reason: 'one restart timer, shared by the notification path and the '
               'poll');
-      expect('restartTimer = Timer('.allMatches(source), hasLength(1),
+      // `Timer(restartQuiet` rather than the whole assignment: the statement
+      // wraps at 80 columns, and an arm that matched the unwrapped spelling
+      // would report "nobody arms the timer" the first time somebody
+      // reformatted the line.
+      expect('Timer(restartQuiet'.allMatches(source), hasLength(1),
           reason: 'one place arms it — every path calls the same closure, so '
               'a burst arriving through two of them is still one restart');
     });

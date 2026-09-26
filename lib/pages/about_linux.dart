@@ -9,6 +9,7 @@ import 'package:dbus/dbus.dart';
 import 'package:nm/nm.dart' as nm;
 
 import '../widgets/base_scaffold.dart';
+import '../widgets/this_panel_notice.dart';
 
 import '../core/hardware_temperatures.dart';
 import '../core/system_clock.dart';
@@ -371,6 +372,13 @@ class _AboutLinuxPageState extends ConsumerState<AboutLinuxPage> {
             padding: const EdgeInsets.all(16),
             child: ListView(
               children: [
+                // First, above the card that names the host, because the
+                // page's power buttons act on whatever machine that card is
+                // describing. On a relayed panel an operator reaching for
+                // "restart the station" restarts the panel, and the card
+                // alone does not say which of the two it is showing.
+                const ThisPanelNotice(
+                    subject: 'system information, clock and power controls'),
                 // Which machine this page is showing and what it is running,
                 // as one card: hostname and addresses in the header band, OS,
                 // kernel, build and support end as rows under it. They were

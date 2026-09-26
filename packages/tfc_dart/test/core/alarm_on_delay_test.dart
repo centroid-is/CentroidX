@@ -1,9 +1,12 @@
 // A rule's on-delay: the expression has to hold for the whole delay before
 // the alarm goes active.
 //
-// This is evaluated in `Alarm.onChange`, which is what the backend's headless
-// `AlarmMan` runs (bin/main.dart). The delay is a property of the rule, so
-// every process evaluating the rule agrees on when the alarm went active.
+// This file pins it in `Alarm.onChange`, which is what a direct-mode panel's
+// `AlarmMan` runs. The backend on this line runs no `AlarmMan` (D-6): it
+// evaluates rules in `AlarmRuleWatcher` under `AlarmEngine`, and the same
+// properties are pinned there in `relay/alarm_on_delay_backend_test.dart`. The
+// delay is a property of the rule, so every process evaluating the rule agrees
+// on when the alarm went active.
 
 import 'dart:async';
 import 'dart:convert';
@@ -12,7 +15,10 @@ import 'package:fake_async/fake_async.dart';
 import 'package:open62541/open62541.dart' show DynamicValue;
 import 'package:test/test.dart';
 import 'package:tfc_dart/core/alarm.dart';
+import 'package:tfc_dart/core/alarm_stamp.dart';
 import 'package:tfc_dart/core/boolean_expression.dart';
+import 'package:tfc_dart/core/preferences.dart';
+import 'package:tfc_dart/core/secure_storage/interface.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
 AlarmRule _rule(String formula,
@@ -30,6 +36,10 @@ AlarmConfig _alarm(AlarmRule rule) => AlarmConfig(
       description: 'Conveyor jammed',
       rules: [rule],
     );
+
+/// The injected clock (D-2). Fixed, so a stamp read off it is recognisable.
+final DateTime _t0 = DateTime.utc(2026, 9, 17, 6, 0, 0);
+DateTime _clock() => _t0;
 
 void main() {
   group('AlarmRule.onDelay serialisation', () {
@@ -70,7 +80,9 @@ void main() {
 
     void listen(FakeAsync async, AlarmRule rule) {
       seen = [];
-      Alarm(config: _alarm(rule)).onChange(stateMan).listen(seen.add);
+      Alarm(config: _alarm(rule))
+          .onChange(stateMan, clock: _clock)
+          .listen(seen.add);
       async.flushMicrotasks();
     }
 
@@ -159,6 +171,36 @@ void main() {
       });
     });
 
+    test('the raise is stamped where the delay ends, from the plant instant '
+        'that started it', () {
+      fakeAsync((async) {
+        listen(async, _rule('A', onDelay: const Duration(seconds: 15)));
+        final plantOnset = _t0.subtract(const Duration(seconds: 2));
+        stateMan.pushValue(
+            'A', DynamicValue(value: true)..sourceTimestamp = plantOnset);
+        async.flushMicrotasks();
+        async.elapse(const Duration(seconds: 15));
+
+        expect(seen.single.timestamp,
+            plantOnset.add(const Duration(seconds: 15)),
+            reason: 'not this station\'s clock when the timer fired: that '
+                'would pair a receipt-time raise with a plant-time clear');
+        expect(seen.single.tsSource, AlarmTsSource.plant);
+      });
+    });
+
+    test('with no plant instant the raise is the injected clock plus the '
+        'delay, and says so', () {
+      fakeAsync((async) {
+        listen(async, _rule('A', onDelay: const Duration(seconds: 15)));
+        setA(async, true);
+        async.elapse(const Duration(seconds: 15));
+
+        expect(seen.single.timestamp, _t0.add(const Duration(seconds: 15)));
+        expect(seen.single.tsSource, AlarmTsSource.backendReceipt);
+      });
+    });
+
     test('without a delay the alarm goes active on the first true evaluation',
         () {
       fakeAsync((async) {
@@ -174,7 +216,7 @@ void main() {
         final sub = Alarm(
                 config: _alarm(
                     _rule('A', onDelay: const Duration(seconds: 15))))
-            .onChange(stateMan)
+            .onChange(stateMan, clock: _clock)
             .listen(seen.add);
         async.flushMicrotasks();
         setA(async, true);
@@ -189,16 +231,22 @@ void main() {
     });
   });
 
-  test('the headless AlarmMan (the backend) honours the delay', () {
+  // main pinned this against `AlarmMan.headless`, the backend's engine there.
+  // This line has no headless `AlarmMan` (D-6, `alarm_structure_test.dart` arm
+  // 3b); the backend's engine is pinned in
+  // `relay/alarm_on_delay_backend_test.dart`. What is left to pin here is the
+  // direct-mode panel's `AlarmMan`, which runs the same `Alarm.onChange`.
+  test('the direct-mode AlarmMan honours the delay', () {
     fakeAsync((async) {
       final stateMan = _FakeStateMan();
+      final prefs = Preferences(database: null, secureStorage: _NoSecrets());
+      prefs.setString(
+          'alarm_man_config',
+          jsonEncode(AlarmManConfig(alarms: [
+            _alarm(_rule('A', onDelay: const Duration(seconds: 15))),
+          ]).toJson()));
       late AlarmMan man;
-      AlarmMan.headless(
-        config: AlarmManConfig(alarms: [
-          _alarm(_rule('A', onDelay: const Duration(seconds: 15))),
-        ]),
-        stateMan: stateMan,
-      ).then((m) => man = m);
+      AlarmMan.create(prefs, stateMan, clock: _clock).then((m) => man = m);
       async.flushMicrotasks();
 
       Set<AlarmActive> active = {};
@@ -221,6 +269,15 @@ void main() {
   });
 }
 
+class _NoSecrets implements MySecureStorage {
+  @override
+  Future<void> delete({required String key}) async {}
+  @override
+  Future<void> write({required String key, required String value}) async {}
+  @override
+  Future<String?> read({required String key}) async => null;
+}
+
 /// A [StateMan] whose tags are pushed by the test.
 class _FakeStateMan implements StateMan {
   final _tags = <String, StreamController<DynamicValue>>{};
@@ -230,6 +287,8 @@ class _FakeStateMan implements StateMan {
 
   void push(String key, Object value) =>
       _tag(key).add(DynamicValue(value: value));
+
+  void pushValue(String key, DynamicValue value) => _tag(key).add(value);
 
   @override
   Future<Stream<DynamicValue>> subscribe(String key) async => _tag(key).stream;

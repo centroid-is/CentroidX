@@ -3,7 +3,7 @@ import 'dart:typed_data';
 
 import 'package:jbtm/jbtm.dart';
 import 'package:jbtm/src/connection_health.dart';
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 import 'package:test/test.dart';
 
 import 'tcp_proxy.dart';

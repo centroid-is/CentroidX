@@ -50,11 +50,13 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:shared_preferences_platform_interface/in_memory_shared_preferences_async.dart';
 import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
+import 'package:tfc/core/gateway_config.dart';
 import 'package:tfc/models/menu_item.dart';
 import 'package:tfc/pages/history_view.dart';
 import 'package:tfc/providers/access.dart';
 import 'package:tfc/providers/collector.dart';
 import 'package:tfc/providers/database.dart';
+import 'package:tfc/providers/gateway.dart';
 import 'package:tfc/providers/state_man.dart';
 import 'package:tfc/route_registry.dart';
 import 'package:tfc/theme.dart' show muted;
@@ -222,6 +224,11 @@ Widget _shell({
   return ProviderScope(
     overrides: [
       databaseProvider.overrideWith((ref) async => _FakeDatabase(db)),
+      // Direct mode, stated. `historyViewsProvider` asks the gateway
+      // declaration first, and left to resolve it reads a config file this
+      // test does not have — the picker then never loads and there is no
+      // saved view to select.
+      gatewayConfigProvider.overrideWith((ref) async => const GatewayConfig()),
       // Null, not left to resolve. The real `collectorProvider` reads the
       // shared preferences store, which reaches `AppDatabase.flutterPreferences`
       // — a member this file's `Fake` does not implement — and the second pass

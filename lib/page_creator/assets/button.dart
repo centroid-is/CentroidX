@@ -8,7 +8,7 @@ import 'package:tfc/widgets/panes/color_picker_dialog.dart';
 import 'package:tfc/widgets/panes/standard_dialog.dart';
 import 'package:logger/logger.dart';
 import 'package:rxdart/rxdart.dart';
-import 'package:open62541/open62541.dart' show DynamicValue, NodeId;
+import 'package:open62541/open62541_types.dart' show DynamicValue, NodeId;
 
 import 'common.dart';
 import 'icon.dart'; // Reuse IconConfig + IconAsset

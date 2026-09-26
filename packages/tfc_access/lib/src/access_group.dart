@@ -122,3 +122,33 @@ extension AccessGroupInfo on AccessGroup {
     }
   }
 }
+
+/// The group reading the plant takes.
+///
+/// **Here rather than in the relay, and that is the constitution's rule.** The
+/// relay decides "which identity is this" and asks the master "and may it do
+/// X"; it never answers "what does this require?" itself, because a second
+/// place that grades is a second policy, and two policies disagree eventually.
+/// `no_second_policy_test` arm 8 enforces exactly that by refusing any
+/// `AccessGroup` grade literal under `tfc_relay_server/lib/`, and it caught
+/// this constant living there.
+///
+/// Why `operate` and not the write group of the thing being read: a station
+/// reads `key_mappings` in order to build its client, and the key that takes
+/// `configure` to write is the one every operator's panel must read. A
+/// template binding a tag to `configure` withholds the *write* from an
+/// operator, not the reading.
+///
+/// Reads are graded at all since 2026-09-16: a session holds what the plant's
+/// `anonymous` account holds until somebody signs in, so a plant whose
+/// anonymous account is `NoOp` shows a browser nothing, and one that grants
+/// anonymous `operate` keeps its walk-up displays.
+const AccessGroup plantReadFloor = AccessGroup.operate;
+
+/// The second group a family's reads accept, when the family's own writes
+/// take something other than [plantReadFloor].
+///
+/// A `users`-holding administrator reads the templates screen; a
+/// `configure`-holding engineer reads the routing table. Whoever may save a
+/// thing may list it, without also needing the floor.
+const AccessGroup historyViewReadAlso = AccessGroup.configure;

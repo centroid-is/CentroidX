@@ -8,14 +8,20 @@ import 'package:tfc_dart/core/config/shared_row_preferences.dart';
 import 'package:tfc_dart/core/database_drift.dart';
 import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc_dart/core/secure_storage/secure_storage.dart';
-import 'package:tfc_dart/core/sqlite_preferences.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
-import '../core/device_local_store.dart';
+import '../core/gateway_config.dart';
 import '../core/home_page.dart';
+import '../core/relayed_preferences.dart';
+import 'access.dart';
+import 'access_policy.dart';
 import 'config_store.dart';
 import 'database.dart';
+import 'device_local_store_open.dart';
+import 'gateway.dart';
+import 'gateway_preferences_slot.dart';
+import '../core/gateway_default.dart';
 
 part 'preferences.g.dart';
 
@@ -44,7 +50,8 @@ PreferencesApi? _deviceLocalStore;
 ///
 /// Before the import, and once ever, rows an older build wrote under any
 /// hostname are adopted into [ConfigScope.local], newest write winning
-/// ([SqlitePreferences.adoptStationScopes]). Running first is what carries
+/// (`SqlitePreferences.adoptStationScopes`, called from the seam's station
+/// arm). Running first is what carries
 /// the old scope's import marker across, so the legacy import does not run a
 /// second time. A failed adoption is logged and the boot carries on with the
 /// store: nothing was moved, and the next boot tries again.
@@ -75,41 +82,33 @@ PreferencesApi? _deviceLocalStore;
 ///
 /// [hostnameForTest] replaces `Platform.localHostname`, so a test can show a
 /// hostname change hides nothing.
+///
+/// **What "the store" is depends on the platform**, and that is the seam
+/// `device_local_store_open.dart` holds: `config.sqlite` on a station — the
+/// fixed-scope open and the hostname adoption above both live in its station
+/// arm — and the browser's own per-origin `localStorage` in a web build,
+/// which has no SQLite to open, no hostname and no rows to adopt. The web
+/// entrypoint calls this exactly as `main.dart` does — it went for a while
+/// without, and every read of the store threw inside a provider, which is a
+/// white screen with nothing in the console.
 Future<void> initDeviceLocalPreferences({
   Future<Directory> Function()? directoryForTest,
   String Function()? hostnameForTest,
 }) async {
   if (_deviceLocalStore != null) return;
 
-  var directory = '<unresolved>';
   try {
-    final dir = await (directoryForTest ?? deviceLocalStoreDirectory)();
-    directory = dir.path;
-    final db = AppDatabase.createLocal(dir);
-    final store = SqlitePreferences(
-      db,
+    final opened = await openDeviceLocalStore(
       scope: ConfigScope.local,
       station: (hostnameForTest ?? _localHostname)(),
+      logger: _logger,
+      directoryForTest: directoryForTest,
     );
-    await _adoptHostnameScopes(store, dir);
-    // One shot, marked by a row inside the same transaction as the values it
-    // describes. A station that has already imported does no work here.
-    final imported = await store.importAll(
-      normalizeLegacyKeys(
-        await readLegacySharedPreferences(dir, logger: _logger),
-        logger: _logger,
-      ),
-      markerId: sharedPreferencesImportMarkerId,
-    );
-    if (imported) {
-      _logger.i('Imported the legacy shared_preferences store into '
-          '${dir.path}/config.sqlite. This happens once per station.');
-    }
-    _deviceLocalDb = db;
-    _deviceLocalStore = store;
+    _deviceLocalDb = opened.db;
+    _deviceLocalStore = opened.store;
   } catch (e, stack) {
     _logger.e(
-      'Could not open the device-local configuration store in $directory. '
+      'Could not open the device-local configuration store. '
       'This station is starting with an IN-MEMORY store: it will show the '
       'built-in default pages, nobody is signed in, and nothing it changes '
       'will survive a restart. Fix the store rather than the symptoms.',
@@ -176,7 +175,21 @@ PreferencesApi createDeviceLocalPreferences() {
 /// screen. So it gets an in-memory database: the mirror is empty, the remote
 /// path still works, and a station that reaches Postgres comes up with the
 /// plant's real wiring even though its local cache is gone.
+///
+/// **A browser gets none, by name.** There is no SQLite there at all, so the
+/// in-memory fallback below cannot be built either (`sqlite_executor_web.dart`
+/// refuses it). The readers that matter — `stateManProvider` and
+/// `pageManagerProvider` — branch on `kHasDeviceLocalMirror` and never call
+/// this on that platform; anything else that does is told what is missing
+/// rather than handed a database that throws on its first query.
 AppDatabase deviceLocalDatabase() {
+  if (!kHasDeviceLocalMirror) {
+    throw UnsupportedError(
+      'This platform has no device-local database: a browser holds no '
+      'SQLite mirror of the plant\'s configuration rows. Read the shared '
+      'configuration over the relay instead of through configStoreProvider.',
+    );
+  }
   if (_deviceLocalStore == null) {
     throw StateError(
       'initDeviceLocalPreferences() must run before deviceLocalDatabase(). '
@@ -190,36 +203,6 @@ AppDatabase deviceLocalDatabase() {
   // is between one and refusing to start the panel.
   // ignore: invalid_use_of_visible_for_testing_member
   return _deviceLocalDb ??= AppDatabase.inMemoryForTest();
-}
-
-/// Moves rows an older build wrote under a hostname scope into [store]'s,
-/// once, and says so in one line.
-///
-/// Never throws. The store is usable without it — the station comes up on
-/// defaults, which is what it did before this existed — and the move is one
-/// transaction, so a failure leaves nothing half-done for the next boot to
-/// retry. Falling back to the in-memory store over it would lose more than it
-/// protects. A database too broken to read fails the import right after, and
-/// that is contained as before.
-Future<void> _adoptHostnameScopes(SqlitePreferences store, Directory dir) async {
-  try {
-    final adoption = await store.adoptStationScopes(
-      markerId: stationScopeAdoptionMarkerId,
-    );
-    if (adoption != null && adoption.rowsTaken > 0) {
-      _logger.i('Adopted hostname-scoped preferences into ${store.scope} in '
-          '${dir.path}/config.sqlite: $adoption. This happens once per '
-          'station.');
-    }
-  } catch (e, stack) {
-    _logger.e(
-      'Could not adopt hostname-scoped preferences in '
-      '${dir.path}/config.sqlite. This station starts on whatever is already '
-      'at ${store.scope}; the adoption is retried on the next boot.',
-      error: e,
-      stackTrace: stack,
-    );
-  }
 }
 
 /// This station's hostname, for the station name change rows are stamped
@@ -280,29 +263,123 @@ Future<void> resetDeviceLocalPreferencesForTest() async {
 /// `administer` — `preferences_provider_test.dart` holds all four.
 @Riverpod(keepAlive: true)
 Future<Preferences> preferences(Ref ref) async {
-  final db = await ref.watch(databaseProvider.future);
+  // The transport branch, and it must sit HERE, not merely inside
+  // `databaseProvider`: this provider is `keepAlive` and watched by
+  // everything, so a watch on `databaseProvider` is what used to pull the
+  // station's Postgres pool up at boot in gateway mode with no screen asking.
+  // In gateway mode the dependency does not exist — not "exists but answers
+  // null" — which is what `database_transport_test.dart` pins by overriding
+  // `databaseProvider` to throw and building this provider anyway (17-12's
+  // technique). The shared store then runs on the device-local mirror the
+  // sync path already maintains.
+  //
+  // `ref.read` on the transport for the reason `database.dart` gives at its
+  // own branch: restart-to-apply, and a save on the server-config page
+  // invalidates `gatewayConfigProvider` without meaning to rebuild the world.
+  // The catch is `readGatewayConfig`'s own policy — direct in every direction.
+  GatewayConfig gateway;
+  try {
+    gateway = await ref.read(gatewayConfigProvider.future);
+  } catch (_) {
+    gateway = defaultGatewayConfig();
+  }
+  final db =
+      gateway.isGateway ? null : await ref.watch(databaseProvider.future);
   final localCache = createDeviceLocalPreferences();
-  // Watched, not read: the store is built once and keeps its identity for the
-  // life of the process (`config_store.dart`), so this is a dependency edge
-  // rather than a rebuild source.
-  final store = await ref.watch(configStoreProvider.future);
 
-  final prefs = SharedRowPreferences(
-    store: store,
-    secureStorage: SecureStorage.getInstance(),
-    // The `database` escape `Preferences` obliges the class to expose. Nothing
-    // in the row store reads it; it is here so that a caller reaching
-    // `prefs.database` gets what it got before rather than null.
-    database: db,
-  );
+  // **Two stores, because there are two transports, and the split is not
+  // cosmetic.**
+  //
+  // Direct mode takes main's [SharedRowPreferences] over the shared
+  // `config_item` rows, unwrapped: the check lives in
+  // `GuardedConfigStore.writePreference`, which `configStoreProvider` already
+  // built with this file's policy, session callback, audit sink and
+  // `onDenied`. Wrapping it in [GuardedPreferences] would put two checks and
+  // two `audit_entry` rows on one write, and the inner one is the only one
+  // that can share its `action_id` with the `config_change` rows underneath.
+  //
+  // Gateway mode cannot use it. `ConfigStore` reads and writes this station's
+  // own Postgres, and a gateway panel has none — `configStoreProvider` would
+  // attach to nothing and serve the plant's wiring out of the device-local
+  // mirror, which is exactly the defect [RelayedPreferences] was written to
+  // fix: an alarm rule edited on one panel that never left it. So that arm
+  // keeps the relayed store, wrapped in [GuardedPreferences] because there is
+  // no `GuardedConfigStore` on this path to hold the check.
+  //
+  // **The store is watched inside the direct arm, never above the branch**,
+  // and that placement is load-bearing rather than tidy. `configStoreProvider`
+  // does `ref.listen(databaseProvider, ...)`, so watching it here at all makes
+  // this provider — which is `keepAlive` and watched by everything — depend on
+  // `databaseProvider` in gateway mode, and a gateway panel would pull its
+  // station's Postgres pool up at boot with no screen asking. That is the
+  // property `database_transport_test.dart`'s `h.touched()` pins, and it
+  // caught this exact line during the merge.
+  //
+  // **What this merge did not close, and what has since**: `ConfigStore`
+  // itself has no relay route. Preferences reach the backend over the pipe by
+  // name, as before; the key mappings and pages that main moved out of the
+  // preference blob and into `config_item` rows reach a gateway *panel*
+  // through its local mirror, still. A client with no mirror — the browser
+  // build — reads those rows over the relay's `configItems.*` family instead
+  // (`core/relayed_config_items.dart`), reads only; the mirror's write path
+  // stays station work.
+  final Preferences prefs;
+  if (gateway.isGateway) {
+    final local = await Preferences.create(db: null, localCache: localCache);
+
+    // The client does not exist yet: `stateManProvider` builds it and it
+    // awaits *this* provider to do so, so the route is a slot it fills
+    // afterwards rather than a watch, which would deadlock. See
+    // [GatewayPreferencesSlot].
+    final inner = RelayedPreferences(
+      inner: local,
+      slot: ref.watch(gatewayPreferencesSlotProvider),
+    );
+
+    prefs = GuardedPreferences(
+      inner: inner,
+      policy: ref.watch(accessPolicyProvider),
+      // A callback, and never a watch on the session provider: a watch would
+      // rebuild this provider — and every provider downstream of it, including
+      // the plant connection — on every sign-in, sign-out and inactivity
+      // timeout. Pinned by `guard_wiring_test.dart`'s "the session is a
+      // callback, not a watch" group, which greps this file for that mistake.
+      session: () => sessionInForce(ref),
+      audit: RefAuditSink(ref),
+      station: ref.watch(stationNameProvider),
+      onDenied: (denial) => reportAccessDenial(ref, denial),
+    );
+  } else {
+    // Watched, not read: the store is built once and keeps its identity for
+    // the life of the process (`config_store.dart`), so this is a dependency
+    // edge rather than a rebuild source.
+    final store = await ref.watch(configStoreProvider.future);
+    prefs = SharedRowPreferences(
+      store: store,
+      secureStorage: SecureStorage.getInstance(),
+      // The `database` escape `Preferences` obliges the class to expose.
+      // Nothing in the row store reads it; it is here so that a caller
+      // reaching `prefs.database` gets what it got before rather than null.
+      database: db,
+    );
+  }
+
   // The change-feed subscription is the only thing this holds. `unawaited()`
   // would attach no error handler, and a throw out of a dispose becomes an
   // unhandled asynchronous error in whichever zone the container was torn
   // down in.
-  ref.onDispose(() {
-    prefs.close().catchError((Object e) =>
-        _logger.w('the shared preference store did not close cleanly: $e'));
-  });
+  // Only the row store holds one — the change feed it subscribes to. The
+  // relayed arm's lifetime is the client's, which `stateManProvider` owns.
+  // `unawaited()` would attach no error handler, and a throw out of a dispose
+  // becomes an unhandled asynchronous error in whichever zone the container
+  // was torn down in.
+  final rowStore = prefs;
+  if (rowStore is SharedRowPreferences) {
+    ref.onDispose(() {
+      rowStore.close().catchError((Object e) =>
+          _logger.w('the shared preference store did not close cleanly: $e'));
+    });
+  }
 
   // The retired per-station startup page (`startup_url`). A row of it in the
   // shared database would be copied over the local store on every sync, so
@@ -315,8 +392,17 @@ Future<Preferences> preferences(Ref ref) async {
   // `origin: 'system'`, which is how the mcp.config migration is recorded too.
   // `dropRetiredStartupUrl` never throws — a shared write with no Postgres is
   // logged and retried on the next connect.
-  // Then this station's own copy, which is the one a panel actually used.
-  await dropRetiredStartupUrl(prefs.systemWrites, logger: _logger);
+  //
+  // **The shared row is a direct-mode station's to delete.** On the relay
+  // transport the shared store is the backend's, and a panel deleting a row
+  // there would be one panel reaching across and changing a value it does
+  // not own — `gateway_preferences_route_test.dart` pins that. The key is
+  // routed device-local on both transports (`device_local_preferences.dart`),
+  // so this station's own copy below is the one a panel actually used, and
+  // is dropped either way.
+  if (!gateway.isGateway) {
+    await dropRetiredStartupUrl(systemWritesOf(prefs), logger: _logger);
+  }
   await dropRetiredStartupUrl(localCache, logger: _logger);
 
   return prefs;
@@ -346,8 +432,16 @@ Future<Preferences> preferences(Ref ref) async {
 /// go through the *checked* path with nobody signed in, be refused, and the
 /// station would come up without its `alarm_man_config`.
 @Riverpod(keepAlive: true)
-Future<Preferences> systemPreferences(Ref ref) async {
-  final prefs = await ref.watch(preferencesProvider.future);
+Future<Preferences> systemPreferences(Ref ref) async =>
+    systemWritesOf(await ref.watch(preferencesProvider.future));
+
+/// The unchecked arm of whichever store [preferences] built, or the store
+/// itself when it has none.
+///
+/// One implementation, called from two places — [systemPreferences] and the
+/// `startup_url` migration above — because the two-arm test is the kind of
+/// thing that gets an arm added in one copy and not the other.
+Preferences systemWritesOf(Preferences prefs) {
   if (prefs is SharedRowPreferences) return prefs.systemWrites;
   if (prefs is GuardedPreferences) return prefs.systemWrites;
   return prefs;

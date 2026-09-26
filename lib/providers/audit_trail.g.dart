@@ -6,7 +6,7 @@ part of 'audit_trail.dart';
 // RiverpodGenerator
 // **************************************************************************
 
-String _$auditTrailStoreHash() => r'dcb702afab835ae97102fe76cd489b29c637f072';
+String _$auditTrailStoreHash() => r'5d1dda178789538423946e8bf536df04a67f5d2b';
 
 /// Reads of `audit_entry`, or null when this station has no database.
 ///

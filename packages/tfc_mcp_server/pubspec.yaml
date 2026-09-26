@@ -42,33 +42,19 @@ dependencies:
   petitparser: ^7.0.0
 
 dependency_overrides:
-  # The panel leaks 72-122 MiB/h and is OOM-killed on a station capped at
-  # 1 GiB. Measured: a monitored item the server refuses -- which a key with a
-  # renamed tag is, forever, on the retry ladder -- leaked its native callback
-  # and the value map it captures on every rebuild, and `write()` closed its
-  # callback only on the success path. Fixed in open62541_dart#119.
-  #
-  # **The big one is the serializer.** `OpcUaDynamicValueSerializer.deserialize`
-  # calloc'd a 48-byte UA_ExtensionObject header for every struct-valued
-  # variant and never freed it -- per struct notification, per read, and per
-  # element of an array of structs. A station taking 380-393 notifications a
-  # second leaks ~1.07M of those an hour, ~70 MB/h before glibc arena
-  # fragmentation, which is the 97-110 MiB/h measured on a panel that is
-  # OOM-killed every six to nine hours. `serialize` had the same pattern.
-  # open62541_dart#121; found with a tcmalloc heap profile and confirmed
-  # independently from the notification rate.
-  #
-  # Pinned by SHA rather than by branch, the way the other overrides in this
-  # repository are: `pubspec.lock` is gitignored, so a branch ref lets a tagged
-  # build pick up untested code. Head of `dev-leakfixes`, which is #119 and
-  # #121 merged over main -- both fixes in one ref so a station takes one
-  # rebuild rather than two.
-  # This whole block goes when the fix is released to pub.dev and the
-  # `open62541: ^1.5.7+3` constraint above can name that version instead.
+  # This package depends on tfc_dart, and tfc_dart's `state_man.dart` and
+  # `alarm.dart` read `DynamicValue.statusCode` / `.sourceTimestamp` — members
+  # that exist only on the relay-quality fork. Without this override, a
+  # `dart pub get` HERE resolves open62541 from pub.dev, and tfc_dart then
+  # fails to compile inside this package's suite while compiling fine
+  # everywhere else. The root pubspec's note is the authority: every
+  # open62541 override in this repository carries THIS SHA, because two
+  # packages resolving two different open62541 builds is not a state this
+  # repository should ever be in. This is the sixth such entry.
   open62541:
     git:
       url: https://github.com/centroid-is/open62541_dart.git
-      ref: 19b40be99f433bc9dca8bdcbed25999a6e39536a
+      ref: 90281a6cf3ccca43ce79ac10a842cb680ea68f52
   postgres:
     git:
       url: https://github.com/centroid-is/postgresql-dart.git

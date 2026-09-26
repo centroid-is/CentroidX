@@ -28,6 +28,7 @@ import 'package:tfc_dart/core/state_man.dart';
 
 import '../helpers/test_helpers.dart';
 import '../helpers/golden_platform.dart';
+import '../helpers/golden_fonts.dart' show loadGoldenFonts;
 
 /// Tall enough that the expanded card is laid out and painted at once — the
 /// sections live in a SingleChildScrollView, and anything below the fold
@@ -68,6 +69,9 @@ Future<void> _loadFont(String family, String path) async {
 }
 
 void main() {
+  // The app's themes ask for `dejavu-sans` by name (#587); without it every
+  // themed string in these frames rendered as Ahem boxes.
+  setUpAll(loadGoldenFonts);
   setUp(() {
     final binding = TestWidgetsFlutterBinding.ensureInitialized();
     SharedPreferences.setMockInitialValues({});

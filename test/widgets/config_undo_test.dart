@@ -25,6 +25,8 @@ import 'package:drift/drift.dart'
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:tfc_dart/core/preferences.dart';
+import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/pages/audit_trail.dart';
 import 'package:tfc/pages/config_history.dart';
 import 'package:tfc/providers/access.dart';
@@ -189,6 +191,15 @@ Future<void> seedAuditHeader(AppDatabase db, String actionId) async {
 }
 
 void main() {
+  // `configHistoryActions` reaches `auditTrailStoreProvider`, which consults
+  // the transport row and so reaches the device-local store — a singleton
+  // `main()` opens before `runApp` since main's #465. Without the seed the
+  // provider throws, the list renders empty, and **the arms that expect no
+  // Undo control pass vacuously**: this is the seed that makes "offers none"
+  // mean something.
+  setUp(() => setDeviceLocalPreferencesForTest(InMemoryPreferences()));
+  tearDown(resetDeviceLocalPreferencesForTest);
+
   driftRuntimeOptions.dontWarnAboutMultipleDatabases = true;
 
   late AppDatabase remote;

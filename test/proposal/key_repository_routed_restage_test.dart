@@ -146,6 +146,15 @@ Future<_Rig> _pump(
 }
 
 void main() {
+  // `gatewayConfigProvider` decides where this panel's configuration rows
+  // come from, and it reads the device-local store to do it — so every
+  // provider graph that reaches the page manager, the key repository or the
+  // StateMan now needs one open. Without it the provider throws
+  // "initDeviceLocalPreferences() must run before
+  // createDeviceLocalPreferences()", which is the store saying so rather
+  // than anything about the case.
+  setUp(useInMemoryDeviceLocalPreferences);
+
   testWidgets('the strip stays down when the section is rebuilt after an '
       'accept', (tester) async {
     final rig = await _pump(tester, pending: true, routed: true);

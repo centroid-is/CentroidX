@@ -28,6 +28,7 @@ import 'package:tfc_dart/core/state_man.dart'
     show KeyMappingEntry, KeyMappings, OpcUANodeConfig;
 
 import '../helpers/test_helpers.dart';
+import 'package:tfc_dart/core/preferences_api.dart';
 
 AssetPage _page(String label, String path) => AssetPage(
       menuItem: MenuItem(label: label, path: path, icon: Icons.pageview),
@@ -43,10 +44,15 @@ Future<({ProviderContainer container, int Function() notifications})> _wiring({
 }) async {
   final prefs = await createTestPreferences();
   if (blob != null) {
-    await prefs.setString(
-      PageManager.storageKey,
-      jsonEncode(blob.map((path, page) => MapEntry(path, page.toJson()))),
-    );
+    final json =
+        jsonEncode(blob.map((path, page) => MapEntry(path, page.toJson())));
+    await prefs.setString(PageManager.storageKey, json);
+    // And into the device-local store, which is where `PageManager.load()`
+    // looks for the blob when there is one open. There did not use to be one
+    // in this test — `localPreferencesProvider` threw and the manager fell
+    // back to `prefs` — and there is now, because `gatewayConfigProvider`
+    // reads it to decide whether this panel's rows are local or relayed.
+    await _localStore!.setString(PageManager.storageKey, json);
   }
 
   final container = ProviderContainer(overrides: [
@@ -60,6 +66,8 @@ Future<({ProviderContainer container, int Function() notifications})> _wiring({
   return (container: container, notifications: () => notifications);
 }
 
+PreferencesApi? _localStore;
+
 Future<void> _writePages(
     GuardedConfigStore store, Map<String, AssetPage> pages) async {
   await store.inner.writeItems(
@@ -72,6 +80,16 @@ Future<void> _writePages(
 }
 
 void main() {
+  // `gatewayConfigProvider` decides where this panel's configuration rows
+  // come from, and it reads the device-local store to do it — so every
+  // provider graph that reaches the page manager, the key repository or the
+  // StateMan now needs one open. Without it the provider throws
+  // "initDeviceLocalPreferences() must run before
+  // createDeviceLocalPreferences()", which is the store saying so rather
+  // than anything about the case.
+  setUp(() => _localStore = useInMemoryDeviceLocalPreferences());
+  tearDown(() => _localStore = null);
+
   group('rows arriving over a blob fallback', () {
     test('the provider-held manager re-loads from rows and notifies', () async {
       final store = await createTestConfigStore();

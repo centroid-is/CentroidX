@@ -1,0 +1,25 @@
+# The relay package's own TimescaleDB stack, for the db-tagged legs.
+#
+# Modelled on packages/tfc_dart/test/integration/docker-compose.yml and
+# deliberately divergent in the two places that collide:
+#
+#  * no fixed host port — the mapping comes from CENTROIDX_TEST_PGPORT,
+#    which timescale_fixture.dart always sets (from the environment, or a
+#    kernel-drawn free port). tfc_dart's stack publishes 5432 and proxies it
+#    at a hardcoded 15432, and parallel worktree runs collide on exactly
+#    that (project memory).
+#  * no container_name and no fixed Compose project — the fixture passes
+#    `-p` per run, so this stack can never claim tfc_dart's `test-db` name
+#    or another worktree's copy of itself.
+#
+# No restart policy on purpose: test infrastructure that resurrects itself
+# after a reboot is how a developer machine ends up owning a port forever.
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg17
+    environment:
+      - POSTGRES_DB=testdb
+      - POSTGRES_USER=testuser
+      - POSTGRES_PASSWORD=testpass
+    ports:
+      - "${CENTROIDX_TEST_PGPORT:?set by timescale_fixture.dart}:5432"

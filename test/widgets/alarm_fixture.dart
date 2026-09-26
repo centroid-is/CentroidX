@@ -23,6 +23,8 @@ AlarmActive alarm(
   required DateTime at,
   DateTime? ended,
   String description = '',
+  List<String> staleInputs = const [],
+  DateTime? staleSince,
 }) {
   final rule = AlarmRule(
     level: level,
@@ -44,6 +46,8 @@ AlarmActive alarm(
       expression: 'x',
       rule: rule,
       timestamp: at,
+      staleInputs: staleInputs,
+      staleSince: staleSince,
     ),
     deactivated: ended,
   );
@@ -121,16 +125,24 @@ final alarmFixtureClock = DateTime(2026, 8, 29, 12);
 
 /// The alarm list in a column [width] wide, the way the Alarm View page hands
 /// it 2/5 of the window.
+///
+/// [extraOverrides] lets an arm drive the providers the list reads beside the
+/// alarm source — the local gateway alarm, for one. [clock] and [pickRange]
+/// drive the History period control; both default to what a golden needs.
 Widget alarmList(
   AlarmFixture alarms, {
   double width = 520,
   bool dark = false,
+  List<Override> extraOverrides = const [],
   DateTime? clock,
   PeriodRangePicker? pickRange,
 }) {
   final (light, darkTheme) = solarized();
   return ProviderScope(
-    overrides: [alarmManProvider.overrideWith((ref) async => alarms)],
+    overrides: [
+      alarmManProvider.overrideWith((ref) async => alarms),
+      ...extraOverrides,
+    ],
     child: MaterialApp(
       theme: dark ? darkTheme : light,
       home: Scaffold(
@@ -154,11 +166,38 @@ Future<void> pumpAlarmList(
   AlarmFixture alarms, {
   double width = 520,
   bool dark = false,
+  List<Override> extraOverrides = const [],
   DateTime? clock,
   PeriodRangePicker? pickRange,
 }) async {
   await tester.pumpWidget(alarmList(alarms,
-      width: width, dark: dark, clock: clock, pickRange: pickRange));
+      width: width,
+      dark: dark,
+      extraOverrides: extraOverrides,
+      clock: clock,
+      pickRange: pickRange));
+  await tester.pumpAndSettle();
+}
+
+/// The detail card alone, the way the Alarm View page and the visibility
+/// asset's pane both host it.
+Future<void> pumpAlarmDetail(
+  WidgetTester tester,
+  AlarmActive alarm, {
+  double width = 520,
+  bool dark = false,
+}) async {
+  final (light, darkTheme) = solarized();
+  await tester.pumpWidget(ProviderScope(
+    child: MaterialApp(
+      theme: dark ? darkTheme : light,
+      home: Scaffold(
+        body: Center(
+          child: SizedBox(width: width, child: ViewActiveAlarm(alarm: alarm)),
+        ),
+      ),
+    ),
+  ));
   await tester.pumpAndSettle();
 }
 

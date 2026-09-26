@@ -1,0 +1,17 @@
+name: tfc_plant_sim
+description: A fake plant — OPC UA servers stood up from a written spec, for the test bench.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ^3.5.1
+
+dependencies:
+  args: ^2.4.2
+  open62541: ^1.5.7+3
+  path: ^1.9.0
+  yaml: ^3.1.2
+
+dev_dependencies:
+  lints: ^4.0.0
+  test: ^1.24.0

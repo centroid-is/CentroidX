@@ -16,6 +16,7 @@ library;
 
 import 'package:dbus/dbus.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nm/nm.dart';
 import 'package:tfc/pages/ip_settings.dart';
@@ -42,14 +43,21 @@ Widget _buildPage(
     return now;
   }
 
-  return MaterialApp(
-    debugShowCheckedModeBanner: false,
-    home: Scaffold(
-      body: IpSettingsBody(
-        client: client,
-        probe: () async => internetReachable,
-        dnsProbe: () async => dnsWorking,
-        clock: clock,
+  // `ProviderScope`, because the body now renders [ThisPanelNotice] — a
+  // `ConsumerWidget` that asks `gatewayConfigProvider` which machine this
+  // panel is. With no override it answers the direct-mode default and the
+  // notice renders nothing, so every image in this file is unchanged; the
+  // relayed look has its own golden in `this_panel_notice_golden_test.dart`.
+  return ProviderScope(
+    child: MaterialApp(
+      debugShowCheckedModeBanner: false,
+      home: Scaffold(
+        body: IpSettingsBody(
+          client: client,
+          probe: () async => internetReachable,
+          dnsProbe: () async => dnsWorking,
+          clock: clock,
+        ),
       ),
     ),
   );

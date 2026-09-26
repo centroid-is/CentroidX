@@ -47,10 +47,16 @@ import 'package:riverpod/riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:tfc_access/tfc_access.dart';
 
+import 'package:tfc_dart/core/access/guarded_state_man.dart';
+
 import '../core/access_template_store.dart';
+import '../core/gateway_state_man.dart';
+import '../core/relayed_access_stores.dart';
 import 'access.dart';
 import 'access_policy.dart';
 import 'database.dart';
+import 'gateway.dart';
+import 'state_man.dart';
 
 part 'access_templates.g.dart';
 
@@ -150,6 +156,11 @@ TagBindingResolver tagBindingResolver(Ref ref) {
 /// opens. The loader below treats null as "nothing is bound", which is the
 /// deliberate ungated case.
 ///
+/// **In gateway mode the store is non-null with no database at all** — a
+/// [RelayedAccessTemplateStore] over the panel's one relay client, because in
+/// gateway mode the templates live behind the backend and the database route
+/// must be genuinely unnecessary, not merely unused (17-12, ACCESS-01).
+///
 /// The session is a **callback**, `sessionInForce(ref)`, and never a watch —
 /// see `access_policy.dart`'s library doc for the reasoning. A watch here would
 /// rebuild this provider, and with it the database handle it holds, on every
@@ -158,6 +169,36 @@ TagBindingResolver tagBindingResolver(Ref ref) {
 /// declaration.
 @Riverpod(keepAlive: true)
 Future<AccessTemplateStore?> accessTemplateStore(Ref ref) async {
+  // `ref.watch`, never `ref.read`, on the config AND the StateMan:
+  // `alarm.dart:45` records what `ref.read` behind a `keepAlive` cost — a
+  // stale transport over a disposed client whose streams CLOSE rather than
+  // error, so nothing reported it (the Phase 14 blocker).
+  final gateway = await ref.watch(gatewayConfigProvider.future);
+  if (gateway.isGateway) {
+    // The relayed route, through the ONE client the panel already holds —
+    // a second client would be a second socket, a second session and a
+    // second identity in the revocation sweep. The check, the audit row and
+    // every invariant live at the far end, above the backend's own store.
+    final stateMan = await ref.watch(stateManProvider.future);
+    final remote = stateMan is GuardedStateMan
+        ? stateMan.innerAs<GatewayStateMan>()?.remote
+        : null;
+    if (remote == null) {
+      // Refuse by name, exactly as `alarmManProvider` does: a silent
+      // fallback to the database here is how the local route quietly comes
+      // back, and a route that exists will be taken.
+      throw UnsupportedError(
+          'accessTemplateStoreProvider is not available in gateway mode: '
+          'this station resolved a StateMan with no relay client behind it. '
+          'Fix the gateway branch of lib/providers/state_man.dart — do not '
+          'fall back to the database here.');
+    }
+    return RelayedAccessTemplateStore(
+      api: remote.accessTemplates,
+      onDenied: (denial) => reportAccessDenial(ref, denial),
+    );
+  }
+
   final db = await ref.watch(databaseProvider.future);
   if (db == null) return null;
   return AccessTemplateStore(

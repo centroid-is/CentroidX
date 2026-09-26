@@ -10,7 +10,9 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:open62541/open62541.dart' show DynamicValue;
+// The FFI-free barrel: every HMI asset is in the page editor's closure, and
+// `open62541.dart` is `dart:ffi`, which dart2js cannot compile.
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 
 import '../../providers/state_man.dart';
 import '../../theme.dart' show HmiStateColors;

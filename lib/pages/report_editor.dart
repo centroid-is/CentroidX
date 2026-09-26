@@ -20,6 +20,13 @@ import '../theme.dart' show kAppFontFamily;
 /// Buffered like Server Config: edits accumulate in local copies, the JSON
 /// diff drives the unsaved marker, and Save writes both blobs through the
 /// [ReportStore] then invalidates the viewer's providers.
+/// The editor's save control.
+///
+/// A key rather than `find.text('Save')`: the word appears on the shift
+/// section too, and a case that tapped the wrong one would save the right
+/// thing for the wrong reason and pass.
+const Key kReportEditorSaveKey = ValueKey<String>('report-editor-save');
+
 class ReportEditorPage extends ConsumerStatefulWidget {
   const ReportEditorPage({super.key});
 
@@ -227,6 +234,7 @@ class _ReportEditorPageState extends ConsumerState<ReportEditorPage> {
                           else
                             const Spacer(),
                           FilledButton.icon(
+                            key: kReportEditorSaveKey,
                             onPressed: _hasUnsavedChanges && !_saving
                                 ? () => _save(store)
                                 : null,

@@ -215,6 +215,15 @@ class PageManager {
   final Future<ConfigWriteResult> Function(List<ConfigItem> wanted,
       {String? reason, List<ConfigItem>? derivedFrom})? writeItems;
 
+  /// The plant's rows, for a manager whose store is not in this process.
+  ///
+  /// [store] is a `ConfigStore` and a client served over the relay has none,
+  /// but it still has the plant's rows — fetched and held by
+  /// `RelayedConfigItems`. Without this seam such a manager would save with
+  /// no identities adopted and no merge, which mints a fresh id for every
+  /// page on every save and severs each one from the row it came from.
+  final List<ConfigItem> Function(Set<ConfigKind> kinds)? storedItemsOf;
+
   /// Where the `page_editor_data` blob is read from when [store] has no page
   /// rows: the **device-local** store, where the one-shot import put it.
   ///
@@ -256,6 +265,7 @@ class PageManager {
     required this.prefs,
     this.store,
     this.writeItems,
+    this.storedItemsOf,
     this.blobPrefs,
     this.preflight,
   });
@@ -337,6 +347,53 @@ class PageManager {
     // that used to follow this line is deleted.
     fromJson(_builtInLayoutJson);
     _source = PageSource.builtInDefault;
+  }
+
+  /// [load], with the rows handed in rather than read from [store].
+  ///
+  /// The entry point for a client with no mirror: its rows arrive over the
+  /// relay (`providers/page_manager.dart`, `relayed_config_items.dart`), and
+  /// this lands exactly where [_loadFromRows] lands — pages from the rows,
+  /// the baseline set, [PageSource.rows] — with the top-level order read out
+  /// of the preference row the same set carries, because there is no store
+  /// to ask and this client's shared store is the relay. No page rows at all
+  /// is the ordinary [load]: the blob, then the built-in default.
+  Future<void> loadFromItems(Iterable<ConfigItem> items) async {
+    final rows = items.toList(growable: false);
+    Map<String, AssetPage> fromRows;
+    try {
+      fromRows = pagesOf(rows);
+    } catch (e) {
+      _logger.e('The relayed page rows could not be read; this client falls '
+          'back to its stored layout: $e');
+      fromRows = const {};
+    }
+    if (fromRows.isEmpty) {
+      await load();
+      return;
+    }
+    pages = fromRows;
+    baselineItems = rows;
+    _source = PageSource.rows;
+
+    String? orderJson;
+    for (final item in rows) {
+      if (item.kind != ConfigKind.preference || item.id != orderStorageKey) {
+        continue;
+      }
+      final value = decodePreferencePayload(item.payload);
+      if (value is String) orderJson = value;
+    }
+    orderJson ??= await prefs.getString(orderStorageKey);
+    if (orderJson == null) {
+      topLevelOrder = [];
+      return;
+    }
+    try {
+      topLevelOrder = (jsonDecode(orderJson) as List).cast<String>();
+    } catch (_) {
+      topLevelOrder = [];
+    }
   }
 
   /// Serves [pages] out of [store]'s mirror, or answers false so [load] falls
@@ -543,9 +600,11 @@ class PageManager {
     final editorWanted = pageItems(pages);
     var items = editorWanted;
     final store = this.store;
-    List<ConfigItem>? stored;
-    if (store != null) {
-      stored = store.itemsOf(const {ConfigKind.page, ConfigKind.asset});
+    // The plant's rows, from the mirror or from the relay. A manager with
+    // neither writes a preference blob and has nothing to merge against.
+    List<ConfigItem>? stored =
+        _storedItems(const {ConfigKind.page, ConfigKind.asset});
+    if (stored != null) {
       // A layout this station is serving off the blob or the built-in default
       // is not the plant's rows, and writing it while the plant's own pages
       // have not arrived — no page rows, and no marker saying the plant has
@@ -553,7 +612,14 @@ class PageManager {
       // (the blob's, under freshly minted ids), or the built-in Home page
       // over a plant that has fifty. The rows arrive with the next sweep;
       // the save waits for them.
-      if (servingFallback && stored.isEmpty && !_plantPagesMigrated(store)) {
+      // The migration marker is a mirror's row and a relayed client has no
+      // mirror to read it from — but it also has no blob to be serving off,
+      // so the state this guard catches is unreachable there: its pages are
+      // the plant's or it has none.
+      if (store != null &&
+          servingFallback &&
+          stored.isEmpty &&
+          !_plantPagesMigrated(store)) {
         throw StateError('Not saved — this station has not received the '
             "plant's pages yet (their migration has not run, or its result "
             'has not reached here). Nothing was written; wait a moment and '
@@ -569,13 +635,14 @@ class PageManager {
     // from — so a page the sync pulls in between is neither merged over nor
     // diffed away.
     final result = await writeItems(items, reason: reason, derivedFrom: stored);
-    if (store != null) {
+    final storedNow = _storedItems(const {ConfigKind.page, ConfigKind.asset});
+    if (storedNow != null) {
       // The editor's view after this save — see `refreshedBaseline` for why
       // it is not simply the store's rows.
       baselineItems = refreshedBaseline(
         oldBaseline: baselineItems,
         editorWanted: editorWanted,
-        storedNow: store.itemsOf(const {ConfigKind.page, ConfigKind.asset}),
+        storedNow: storedNow,
       );
     }
     // The order is a shared row of its own, written after the rows landed. A
@@ -615,12 +682,22 @@ class PageManager {
   /// than derives. A no-op in every other state, including a store this
   /// station cannot read: the fallback there is a save that mints, which is
   /// the behaviour without this and no worse for having tried.
-  void _adoptStoredIdentities() {
+  /// The plant's rows of [kinds], from wherever this manager gets them.
+  ///
+  /// [store] on a station; [storedItemsOf] on a client whose configuration is
+  /// the relay's. Null when there is neither, which is a manager saving into
+  /// a preference blob and has no rows at all.
+  List<ConfigItem>? _storedItems(Set<ConfigKind> kinds) {
     final store = this.store;
-    if (store == null) return;
+    if (store != null) return store.itemsOf(kinds);
+    return storedItemsOf?.call(kinds);
+  }
+
+  void _adoptStoredIdentities() {
+    final stored = _storedItems(const {ConfigKind.page, ConfigKind.asset});
+    if (stored == null) return;
     try {
-      adoptRowIdentities(
-          pages, store.itemsOf(const {ConfigKind.page, ConfigKind.asset}));
+      adoptRowIdentities(pages, stored);
     } catch (e) {
       _logger.e('The stored page identities could not be read before saving; '
           'this save mints ids for any page that has none: $e');

@@ -1,0 +1,201 @@
+/// `/advanced/page-editor` — `configure` — over the relay.
+///
+/// Pages and their assets are `config_item` rows of kind `page` and `asset`.
+/// The editor reads them through `pageManagerProvider`, which on a station
+/// build is the device-local mirror (`page_manager.dart:48-70`), and saves
+/// through the same mirror (`page_editor.dart` `_saveToPrefs`). The wire has
+/// `configItems.items` for a browser to READ pages by, and no method to write
+/// one. So on a gateway station the editor is a full editor over a copy the
+/// backend never sees — which is what the two KNOWN RED cases below measure,
+/// against a page row seeded at the backend and a save made in the editor.
+library;
+
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show LogicalKeyboardKey;
+import 'package:flutter_test/flutter_test.dart';
+import 'package:tfc/models/menu_item.dart';
+import 'package:tfc/page_creator/page.dart' show AssetPage;
+import 'package:tfc/pages/page_editor.dart';
+import 'package:tfc/providers/access.dart';
+import 'package:tfc/widgets/access_gate.dart';
+import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' show AccessMethods;
+
+import '../support/backend_bench.dart';
+import '../support/panel.dart';
+import '../support/wire_probe.dart';
+
+const String _route = '/advanced/page-editor';
+const String _title = 'Page Editor';
+
+/// The page seeded at the backend: the label is what a page list renders.
+const String _seededPageId = 'e2e-seeded-page';
+const String _seededPageLabel = 'E2E Seeded Hall';
+
+Finder _saveFab() => find.byWidgetPredicate(
+    (w) => w is FloatingActionButton && w.heroTag == 'save');
+
+void pageEditorCases(BackendBench Function() bench) {
+  group('the page editor', () {
+    // The seeded page belongs to the GROUP, not to one case.
+    //
+    // It used to be written inside the first `knownRed` case, and the wire
+    // case below then asserted `configItems.items('page')` carries it. That
+    // made a green case depend on a skipped one: `knownRed` only runs under
+    // CENTROIDX_KNOWN_RED=1, so on an ordinary run nothing ever seeded the row
+    // and the wire case failed against an empty list -- a fixture fault that
+    // reads exactly like the gateway refusing to serve pages.
+    setUpAll(() => bench().seedPage(
+          _seededPageId,
+          AssetPage(
+            menuItem: const MenuItem(
+                label: _seededPageLabel,
+                path: '/e2e-seeded',
+                icon: Icons.factory),
+            assets: const [],
+            mirroringDisabled: false,
+          ).toJson(),
+        ));
+
+    testWidgets('opens for an engineer with its canvas and its save control',
+        (tester) async {
+      await useDesktopSurface(tester, size: const Size(1600, 1200));
+      final panel = await live(tester, () async {
+        final p = await Panel.dial(bench().port);
+        await p.ready();
+        expect(await p.signIn(kEngineer, kEngineerPassword),
+            AccessSignInResult.ok);
+        return p;
+      });
+      await tester.pumpWidget(
+          hostRoute(panel, _route, _title, PageEditor(proposalData: null)));
+      await untilFound(tester, _saveFab(), describe: 'the editor\'s save FAB');
+      expect(find.byKey(kAccessLockedBodyKey), findsNothing);
+      await dismount(tester);
+    });
+
+    testWidgets('the editor lists a page that exists at the backend',
+        (tester) async {
+      await useDesktopSurface(tester, size: const Size(1600, 1200));
+      final rows = await live(tester, bench().pageRows);
+      expect(rows.map((r) => r.id), contains(_seededPageId),
+          reason: 'the backend holds the row before the editor is opened');
+      final panel = await live(tester, () async {
+        final p = await Panel.dial(bench().port);
+        await p.ready();
+        expect(await p.signIn(kEngineer, kEngineerPassword),
+            AccessSignInResult.ok);
+        return p;
+      });
+      await tester.pumpWidget(
+          hostRoute(panel, _route, _title, PageEditor(proposalData: null)));
+      await untilFound(tester, _saveFab());
+      await untilFound(tester, find.textContaining(_seededPageLabel),
+          within: const Duration(seconds: 15),
+          describe: 'the backend\'s page "$_seededPageLabel" in the editor');
+      await dismount(tester);
+    });
+
+    testWidgets(
+        'a page added in the editor and saved lands in the backend\'s rows',
+        (tester) async {
+      // **The premise changed when the editor started reading the plant.**
+      // It used to hold the built-in layout its own mirror had seeded, so
+      // pressing Save at all would have grown the backend's rows. Now the
+      // editor opens on the plant's own pages, and a save of what it already
+      // holds is correctly a no-op — so the case has to make a real change,
+      // which is also the more honest test: an operator adds a page and
+      // presses Save.
+      const added = 'E2E Added Over The Relay';
+      await useDesktopSurface(tester, size: const Size(1600, 1200));
+      final before = await live(tester, bench().pageRows);
+      final panel = await live(tester, () async {
+        final p = await Panel.dial(bench().port);
+        await p.ready();
+        expect(await p.signIn(kEngineer, kEngineerPassword),
+            AccessSignInResult.ok);
+        return p;
+      });
+      await tester.pumpWidget(
+          hostRoute(panel, _route, _title, PageEditor(proposalData: null)));
+      await untilFound(tester, _saveFab());
+      // The plant's page first: adding one before the rows arrive would build
+      // the save on the built-in default and assert nothing about the relay.
+      await untilFound(tester, find.textContaining(_seededPageLabel),
+          within: const Duration(seconds: 15),
+          describe: 'the backend\'s pages to reach the editor');
+
+      // The page selector opens the page manager; the manager's "Page"
+      // button opens the create form.
+      await tester.tap(find.textContaining(_seededPageLabel).first);
+      await untilFound(tester, find.widgetWithText(TextButton, 'Page'),
+          describe: 'the page manager\'s Add Page button');
+      await tester.tap(find.widgetWithText(TextButton, 'Page').first);
+      final nameField = find.widgetWithText(TextField, 'Page Name');
+      await untilFound(tester, nameField, describe: 'the page-name field');
+      await tester.enterText(nameField, added);
+      await settleFrames(tester);
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Create'));
+      await settleFrames(tester, frames: 10);
+      // Out of the page manager, back to the canvas, and save. The manager
+      // has no Close button — it is a `showDialog`, dismissed the way every
+      // dialog is.
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await settleFrames(tester, frames: 10);
+      await untilFound(tester, _saveFab());
+      await tester.tap(_saveFab());
+      await settleFrames(tester, frames: 10);
+
+      await untilTrueWhilePumping(tester, () async {
+        final rows = await bench().pageRows();
+        return rows.length > before.length;
+      },
+          within: const Duration(seconds: 20),
+          describe: 'the backend\'s page rows to grow by the editor\'s save '
+              '(${before.length} before)');
+      await dismount(tester);
+    });
+
+    testWidgets(
+        'the gateway serves configItems.items(page) to the engineer and '
+        'refuses it to a session holding no group', (tester) async {
+      final port = bench().port;
+      await live(tester, () async {
+        final eng = await WireProbe.signedIn(port,
+            username: kEngineer, password: kEngineerPassword);
+        final items =
+            await eng.call(AccessMethods.configItemsItems, {'kind': 'page'});
+        expect(items.isError, isFalse, reason: '$items');
+        expect((items.result as List).map((r) => (r as Map)['id']),
+            contains(_seededPageId));
+        await eng.close();
+
+        await bench().revokeAnonymous();
+        try {
+          final nothing = await WireProbe.anonymous(port);
+          final refused = await nothing
+              .call(AccessMethods.configItemsItems, {'kind': 'page'});
+          expect(refused.errorCode, WireErrors.forbidden, reason: '$refused');
+          await nothing.close();
+        } finally {
+          await bench().restoreAnonymous();
+        }
+      });
+    });
+
+    testWidgets('the page locks for a verified operator', (tester) async {
+      await useDesktopSurface(tester, size: const Size(1600, 1200));
+      final panel = await live(tester, () async {
+        final p = await Panel.dial(bench().port);
+        await p.ready();
+        expect(await p.signIn(kOperator, kOperatorPassword),
+            AccessSignInResult.ok);
+        return p;
+      });
+      await tester.pumpWidget(
+          hostRoute(panel, _route, _title, PageEditor(proposalData: null)));
+      await untilFound(tester, find.byKey(kAccessLockedBodyKey));
+      expect(_saveFab(), findsNothing);
+      await dismount(tester);
+    });
+  });
+}

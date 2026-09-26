@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import '../onscreen_keyboard.dart';
 import 'pane_chrome.dart';
 import 'standard_dialog.dart';
+import '../hmi_motion.dart';
 
 /// A non-modal pane docked to the right edge of the screen.
 ///
@@ -329,6 +330,7 @@ class _SidePaneInsetState extends State<SidePaneInset>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller = AnimationController(
     vsync: this,
+    animationBehavior: kHmiAnimationBehavior,
     duration: const Duration(milliseconds: 220),
   );
 
@@ -707,6 +709,7 @@ class _SidePaneShellState extends State<_SidePaneShell>
   /// no scale, and the sheet itself never moves.
   late final AnimationController _fade = AnimationController(
     vsync: this,
+    animationBehavior: kHmiAnimationBehavior,
     duration: const Duration(milliseconds: 110),
     value: 1,
   );
@@ -740,6 +743,7 @@ class _SidePaneShellState extends State<_SidePaneShell>
 
   late final AnimationController _controller = AnimationController(
     vsync: this,
+    animationBehavior: kHmiAnimationBehavior,
     duration: const Duration(milliseconds: 220),
   );
 

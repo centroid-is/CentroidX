@@ -12,11 +12,15 @@ import 'option_variable.dart';
 import 'helper/database_recovery.dart';
 import 'helper/timeseries_notify_mixin.dart';
 import '../../providers/current_page_assets.dart';
-import '../../providers/database.dart';
+// `timeseries.dart` for the readout tracker this window seeds itself from,
+// `timeseries_source.dart` for the source it queries. Not `database.dart`:
+// a gateway panel has no local database and reads history over the pipe, so
+// the source is the seam and `databaseProvider` is not reachable here.
 import '../../providers/timeseries.dart';
+import '../../providers/timeseries_source.dart';
 import '../../widgets/graph.dart';
 import 'package:tfc/converter/color_converter.dart';
-import 'package:tfc_dart/core/database.dart';
+import '../../core/timeseries_source.dart';
 
 part 'bpm.g.dart';
 
@@ -449,7 +453,7 @@ class _BpmChartViewState extends ConsumerState<_BpmChartView> {
   Timer? _pollTimer;
   bool _realTimeActive = true;
   bool _fetchingOlder = false;
-  Database? _db;
+  TimeseriesSource? _source;
 
   /// Cached finalized (closed) buckets per interval.
   final Map<int, List<(int, int)>> _bucketCache = {}; // ms → count
@@ -465,11 +469,11 @@ class _BpmChartViewState extends ConsumerState<_BpmChartView> {
     _seedFromReadout();
     // This window is meant to be dragged off the readout and left running, so
     // it has to survive the database coming up after it did. See
-    // reinitOnDatabaseAvailable.
-    reinitOnDatabaseAvailable(
+    // reinitOnTimeseriesSourceAvailable.
+    reinitOnTimeseriesSourceAvailable(
       ref,
-      currentDatabase: () => _db,
-      onDatabaseAvailable: (_) {
+      currentSource: () => _source,
+      onSourceAvailable: (_) {
         if (!mounted) return;
         _pollTimer?.cancel();
         _init();
@@ -668,22 +672,23 @@ class _BpmChartViewState extends ConsumerState<_BpmChartView> {
   // ── Init / fetch ──────────────────────────────────────────────────────
 
   Future<void> _init() async {
-    _db = await ref.read(databaseProvider.future);
-    if (_db == null || !mounted) return;
+    _source = await ref.read(timeseriesSourceProvider.future);
+    if (_source == null || !mounted) return;
     await _fetchRawData();
     _schedulePoll();
   }
 
   Future<void> _fetchRawData() async {
-    if (_db == null || !mounted) return;
+    if (_source == null || !mounted) return;
     setState(() => _fetching = true);
     try {
+
       final maxMinutes = widget.config.intervalPresets.reduce(math.max);
       final totalWindow = Duration(minutes: maxMinutes * widget.config.howMany);
       _dataStart = DateTime.now().subtract(totalWindow);
       _dataEnd = DateTime.now();
 
-      final rows = await _db!.queryTimeseriesData(widget.config.key, _dataStart,
+      final rows = await _source!.queryTimeseriesData(widget.config.key, _dataStart,
           orderBy: 'time ASC');
       if (!mounted) return;
 
@@ -740,9 +745,9 @@ class _BpmChartViewState extends ConsumerState<_BpmChartView> {
   }
 
   Future<void> _pollNewData() async {
-    if (!_realTimeActive || _db == null || !mounted) return;
+    if (!_realTimeActive || _source == null || !mounted) return;
     try {
-      final rows = await _db!.queryTimeseriesData(
+      final rows = await _source!.queryTimeseriesData(
         widget.config.key,
         _dataEnd,
         orderBy: 'time ASC',
@@ -773,12 +778,12 @@ class _BpmChartViewState extends ConsumerState<_BpmChartView> {
   void _onPanEnd(GraphPanEvent event) => _onPanUpdate(event);
 
   Future<void> _fetchOlderData(DateTime newStart) async {
-    if (_fetchingOlder || _db == null || !mounted) return;
+    if (_fetchingOlder || _source == null || !mounted) return;
     _fetchingOlder = true;
     try {
       final fetchStart =
           newStart.subtract(_selectedInterval * widget.config.howMany);
-      final rows = await _db!.queryTimeseriesData(
+      final rows = await _source!.queryTimeseriesData(
         widget.config.key,
         _dataStart,
         from: fetchStart,

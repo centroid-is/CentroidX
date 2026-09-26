@@ -6,7 +6,9 @@ import 'package:tfc/page_creator/assets/button.dart';
 import 'package:tfc/page_creator/assets/common.dart';
 import 'package:tfc/core/feature_flags.dart';
 import 'package:tfc/drawings/drawing_overlay.dart';
-import 'package:tfc/providers/tech_doc.dart';
+// Only the PDF-bytes provider, through a seam: the rest of the knowledge
+// base is `tfc_mcp_server`, which does not compile for the browser.
+import 'package:tfc/providers/tech_doc_pdf.dart';
 import 'package:tfc/tech_docs/tech_doc_picker.dart';
 
 part 'drawing_viewer.g.dart';

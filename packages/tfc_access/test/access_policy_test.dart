@@ -1,21 +1,28 @@
+import 'dart:io';
+
 import 'package:tfc_access/tfc_access.dart';
 import 'package:test/test.dart';
 
 void main() {
   group('AccessSurface', () {
-    test('has exactly three values', () {
-      // Exact, not `greaterThan`. A fourth write surface is a decision: every
-      // surface this enum names has to have an answer in `groupForPref` or
-      // `groupForTag`, and a value added without one would ride the unmapped
-      // branch forever without anybody noticing.
-      expect(AccessSurface.values, hasLength(3));
+    test('has exactly six values', () {
+      // Exact, not `greaterThan`. A seventh write surface is a decision: every
+      // surface this enum names has to have an answer in `groupForPref`,
+      // `groupForTag`, `groupForRoute`, `groupForHistoryView`,
+      // `groupForAdmin` or `groupForBackendConfig`, and a value added without
+      // one would ride the unmapped branch forever without anybody noticing.
+      expect(AccessSurface.values, hasLength(6));
     });
 
-    test('values are tag, pref, route in that order', () {
+    test('values are tag, pref, route, historyView, accessAdmin, backendConfig',
+        () {
       expect(AccessSurface.values, [
         AccessSurface.tag,
         AccessSurface.pref,
         AccessSurface.route,
+        AccessSurface.historyView,
+        AccessSurface.accessAdmin,
+        AccessSurface.backendConfig,
       ]);
     });
 
@@ -24,13 +31,47 @@ void main() {
         'tag',
         'pref',
         'route',
+        'history_view',
+        'admin',
+        'config',
       ]);
     });
 
-    test('byWireName resolves each of the three wire names', () {
+    test('byWireName resolves each of the six wire names', () {
       expect(AccessSurface.byWireName('tag'), AccessSurface.tag);
       expect(AccessSurface.byWireName('pref'), AccessSurface.pref);
       expect(AccessSurface.byWireName('route'), AccessSurface.route);
+      expect(
+          AccessSurface.byWireName('history_view'), AccessSurface.historyView);
+      expect(AccessSurface.byWireName('admin'), AccessSurface.accessAdmin);
+      expect(AccessSurface.byWireName('config'), AccessSurface.backendConfig);
+    });
+
+    test("the admin surface uses the wire name Phase 6's rows already carry",
+        () {
+      // Plan 17-01 was written to add this as 'access_admin'. That would have
+      // been a second name for rows that already exist: every AuditRecord
+      // admin factory records surface 'admin', and a caller asking
+      // groupForWireSurface with a real row's surface would have fallen down
+      // the unmapped branch to `administer` while the row beside it said
+      // `groupRequired: users`. The name in the data wins.
+      final row = AuditRecord.roleCreate(
+        who: 'jon',
+        station: 'st101',
+        roleName: 'Engineer',
+        subject: 'Shift Leader',
+        groups: '["operate"]',
+        allowed: true,
+        actionId: newActionId(),
+      );
+      expect(row.surface, AccessSurface.accessAdmin.wireName,
+          reason: 'one string, not two that happen to match');
+      expect(const AccessPolicy().groupForWireSurface(row.surface, 'createRole'),
+          AccessGroup.users,
+          reason: 'the policy answers for the surface the row was recorded '
+              'under; before 17-01 this fell through to administer');
+      expect(row.groupRequired, AccessGroup.users.name,
+          reason: 'and it agrees with what the row itself recorded');
     });
 
     test('byWireName returns null for anything outside the vocabulary', () {
@@ -170,6 +211,45 @@ void main() {
     });
   });
 
+  group('groupForCamera', () {
+    // Viewing a camera is an operator act, graded by the same shape as
+    // groupForRoute: a camera nobody raised is an operator camera, the table
+    // is injected by the composition (tfc_access must not know the plant's
+    // camera list), and grading can only raise the requirement above the
+    // floor — never lower it past it. The relay's ticket handler is the
+    // caller; the rule lives here, once, per the one-master-system ruling
+    // (Jon, 2026-09-06).
+    test('an unknown camera answers the operate floor, never null', () {
+      const policy = AccessPolicy();
+      expect(policy.groupForCamera('cam_01'), AccessGroup.operate);
+      expect(policy.groupForCamera(''), AccessGroup.operate);
+      expect(policy.groupForCamera('anything_at_all'), AccessGroup.operate);
+    });
+
+    test('a raised camera passed in by the composition answers its group', () {
+      const policy = AccessPolicy(cameras: {
+        'cam_packhall': AccessGroup.operate,
+        'cam_serverroom': AccessGroup.administer,
+      });
+      expect(policy.groupForCamera('cam_packhall'), AccessGroup.operate);
+      expect(policy.groupForCamera('cam_serverroom'), AccessGroup.administer);
+      expect(policy.groupForCamera('cam_unlisted'), AccessGroup.operate);
+    });
+
+    test('grading raises above the floor but an absent entry stays the floor',
+        () {
+      // The same property groupForTag carries: an entry can demand more than
+      // operate; absence is the floor rather than "unrestricted", so there is
+      // no null for a caller to collapse into no-check-at-all.
+      const policy = AccessPolicy(
+        cameras: {'cam_serverroom': AccessGroup.administer},
+      );
+      expect(policy.groupForCamera('cam_serverroom'), AccessGroup.administer);
+      expect(policy.groupForCamera('cam_packhall'), isA<AccessGroup>());
+      expect(policy.groupForCamera('cam_packhall'), AccessGroup.operate);
+    });
+  });
+
   group('groupForWireSurface', () {
     test("the 'tag' wire name delegates to groupForTag and floors to operate",
         () {
@@ -236,9 +316,319 @@ void main() {
       expect(policy.groupForWireSurface('nonsense', 'anything'),
           AccessGroup.administer);
     });
+
+    test('each of the six surfaces routes to its own member', () {
+      const policy = AccessPolicy(routes: {
+        '/advanced/page-editor': AccessGroup.configure,
+      });
+      // One arm per surface, each asserting a value the *other* five members
+      // do not produce for the same key, so a switch arm wired to the wrong
+      // member cannot pass by coincidence.
+      expect(policy.groupForWireSurface('tag', 'CN01.MOT01'),
+          AccessGroup.operate);
+      expect(policy.groupForWireSurface('pref', 'key_mappings'),
+          AccessGroup.configure);
+      expect(policy.groupForWireSurface('route', '/advanced/page-editor'),
+          AccessGroup.configure);
+      expect(policy.groupForWireSurface('history_view', 'deleteHistoryView'),
+          AccessGroup.configure);
+      expect(policy.groupForWireSurface('admin', 'createRole'),
+          AccessGroup.users);
+      expect(policy.groupForWireSurface('config', 'opcua'),
+          AccessGroup.administer);
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // Plan 17-01. The four surfaces that were graded outside this file.
+  // ---------------------------------------------------------------------
+
+  group('groupForHistoryView', () {
+    test('the two destructive members require configure', () {
+      // The app's split wins over the relay's flat `operate` — the ruling of
+      // 2026-09-07, D-04. Deleting a saved view destroys work that was not
+      // yours, from a page anyone can open.
+      const policy = AccessPolicy();
+      expect(policy.groupForHistoryView(AccessPolicy.historyViewDelete),
+          AccessGroup.configure);
+      expect(policy.groupForHistoryView(AccessPolicy.historyViewDeletePeriod),
+          AccessGroup.configure);
+    });
+
+    test('the three non-destructive members are open, and open means null', () {
+      // The anti-vacuity half of the arm above: if every member answered
+      // `configure` the delete arm would pass while saying nothing.
+      const policy = AccessPolicy();
+      expect(policy.groupForHistoryView(AccessPolicy.historyViewCreate), isNull);
+      expect(policy.groupForHistoryView(AccessPolicy.historyViewUpdate), isNull);
+      expect(
+          policy.groupForHistoryView(AccessPolicy.historyViewAddPeriod), isNull);
+    });
+
+    test('a member this policy has never heard of answers administer, not null',
+        () {
+      // T-17-01a. An unknown member falling to "open" would make every future
+      // history-view method ungated by omission — the same shape of hole
+      // `groupForWireSurface`'s null arm exists to close. The strict answer is
+      // asserted explicitly rather than left to `isNotNull`, because
+      // `operate` would also be "not null" and would still be a hole.
+      const policy = AccessPolicy();
+      for (final member in [
+        'purgeHistoryViews',
+        'deleteHistoryViewS',
+        '',
+        'DeleteHistoryView',
+        'deleteHistoryView ',
+      ]) {
+        expect(policy.groupForHistoryView(member), AccessGroup.administer,
+            reason: 'unrecognised member "$member" must fail closed');
+      }
+    });
+
+    test('the member-name constants are the strings the store already audits',
+        () {
+      // These are the `reason` strings `guarded_history_views.dart` writes
+      // into its audit rows. Naming them here is what makes the group that was
+      // checked and the reason that was recorded one vocabulary rather than
+      // two.
+      expect(AccessPolicy.historyViewCreate, 'createHistoryView');
+      expect(AccessPolicy.historyViewUpdate, 'updateHistoryView');
+      expect(AccessPolicy.historyViewAddPeriod, 'addHistoryViewPeriod');
+      expect(AccessPolicy.historyViewDelete, 'deleteHistoryView');
+      expect(AccessPolicy.historyViewDeletePeriod, 'deleteHistoryViewPeriod');
+    });
+  });
+
+  group('groupForTemplate', () {
+    test('every template operation requires users', () {
+      const policy = AccessPolicy();
+      for (final member in [
+        AccessPolicy.templateCreate,
+        AccessPolicy.templateUpdate,
+        AccessPolicy.templateRename,
+        AccessPolicy.templateDelete,
+        AccessPolicy.templateBind,
+        AccessPolicy.templateUnbind,
+      ]) {
+        expect(policy.groupForTemplate(member), AccessGroup.users,
+            reason: '$member is a template operation');
+      }
+    });
+
+    test('an unrecognised template member requires users too', () {
+      // There is no open template operation, so the fail-closed proof here is
+      // that a made-up name gets the same answer as a real one rather than a
+      // weaker one. `isNotNull` would not do: the return type is already
+      // non-nullable, so an arm asserting that proves nothing.
+      const policy = AccessPolicy();
+      expect(policy.groupForTemplate('nonsense'), AccessGroup.users);
+      expect(policy.groupForTemplate(''), AccessGroup.users);
+    });
+
+    test('the member-name constants are the store method names', () {
+      expect(AccessPolicy.templateCreate, 'create');
+      expect(AccessPolicy.templateUpdate, 'update');
+      expect(AccessPolicy.templateRename, 'rename');
+      expect(AccessPolicy.templateDelete, 'delete');
+      expect(AccessPolicy.templateBind, 'bind');
+      expect(AccessPolicy.templateUnbind, 'unbind');
+    });
+  });
+
+  group('groupForAdmin', () {
+    test('all nine role and user operations require users', () {
+      const policy = AccessPolicy();
+      const members = [
+        AccessPolicy.adminCreateRole,
+        AccessPolicy.adminUpdateRole,
+        AccessPolicy.adminDeleteRole,
+        AccessPolicy.adminRenameRole,
+        AccessPolicy.adminCreateUser,
+        AccessPolicy.adminDeleteUser,
+        AccessPolicy.adminSetUserRole,
+        AccessPolicy.adminSetUserStationAccount,
+        AccessPolicy.adminSetUserPassword,
+      ];
+      expect(members, hasLength(9),
+          reason: 'nine members, and the count is asserted so a tenth is a '
+              'decision rather than an omission');
+      for (final member in members) {
+        expect(policy.groupForAdmin(member), AccessGroup.users,
+            reason: '$member is an access-admin operation');
+      }
+    });
+
+    test('an unrecognised admin member requires users too', () {
+      const policy = AccessPolicy();
+      expect(policy.groupForAdmin('grantEverything'), AccessGroup.users);
+      expect(policy.groupForAdmin(''), AccessGroup.users);
+    });
+
+    test('the member-name constants are the store method names', () {
+      expect(AccessPolicy.adminCreateRole, 'createRole');
+      expect(AccessPolicy.adminUpdateRole, 'updateRole');
+      expect(AccessPolicy.adminDeleteRole, 'deleteRole');
+      expect(AccessPolicy.adminRenameRole, 'renameRole');
+      expect(AccessPolicy.adminCreateUser, 'createUser');
+      expect(AccessPolicy.adminDeleteUser, 'deleteUser');
+      expect(AccessPolicy.adminSetUserRole, 'setUserRole');
+      expect(AccessPolicy.adminSetUserStationAccount, 'setUserStationAccount');
+      expect(AccessPolicy.adminSetUserPassword, 'setUserPassword');
+    });
+  });
+
+  group('groupForBackendConfig', () {
+    test('every section requires administer, including an unknown one', () {
+      const policy = AccessPolicy();
+      for (final section in [
+        'opcua',
+        'relay',
+        'database',
+        'collector',
+        'a_section_nobody_has_written_yet',
+        '',
+      ]) {
+        expect(policy.groupForBackendConfig(section), AccessGroup.administer,
+            reason: 'backend config section "$section"');
+      }
+    });
+
+    test('it agrees with the preference rule for the same concern', () {
+      // The backend's StateManConfig and the `state_man_config` preference row
+      // are the same concern written through two transports. If the two ever
+      // answered differently, an operator refused at a panel could get the
+      // same edit through over the wire.
+      const policy = AccessPolicy();
+      expect(policy.groupForBackendConfig('opcua'),
+          policy.groupForPref('state_man_config'));
+    });
+
+    test('it is derived from kPrefAccessRules rather than restating it', () {
+      // The live half of the arm above, and the reason that arm is not a
+      // tautology to be worried about: `groupForBackendConfig` reads the same
+      // rule table `groupForPref` reads, so the answer moves when the table
+      // moves. Mutate the `state_man_config` row and both change together.
+      final stateManRule = kPrefAccessRules.singleWhere(
+        (r) => r.kind == PrefRuleKind.exact && r.match == 'state_man_config',
+      );
+      expect(stateManRule.group, AccessGroup.administer,
+          reason: 'the one declaration of what state_man_config requires');
+      expect(const AccessPolicy().groupForBackendConfig('opcua'),
+          stateManRule.group);
+    });
+  });
+
+  group('groupForWireSurfaceOrOpen', () {
+    test('the strict member says configure where the nullable one says open',
+        () {
+      // The two members exist because exactly one surface has an open
+      // operation. A guard asks the nullable member whether to check at all;
+      // an audit row's `groupRequired` column asks the strict one.
+      const policy = AccessPolicy();
+      expect(
+        policy.groupForWireSurface('history_view', 'createHistoryView'),
+        AccessGroup.configure,
+      );
+      expect(
+        policy.groupForWireSurfaceOrOpen('history_view', 'createHistoryView'),
+        isNull,
+      );
+    });
+
+    test('the two members agree on a gated member — so neither is dead', () {
+      // Anti-vacuity for the arm above. If the pair ever agreed on
+      // everything, one of them would be redundant; if they ever disagreed on
+      // everything, the strict one would not be answering for this surface.
+      const policy = AccessPolicy();
+      expect(policy.groupForWireSurface('history_view', 'deleteHistoryView'),
+          AccessGroup.configure);
+      expect(
+          policy.groupForWireSurfaceOrOpen('history_view', 'deleteHistoryView'),
+          AccessGroup.configure);
+    });
+
+    test('the nullable member fails closed on an unknown surface too', () {
+      // The `null` here would be ambiguous — "open" and "unknown surface"
+      // must not look the same — so the unmapped branch answers administer on
+      // both members rather than null on one of them.
+      const policy = AccessPolicy();
+      expect(policy.groupForWireSurfaceOrOpen('nonsense', 'anything'),
+          AccessGroup.administer);
+      expect(policy.groupForWireSurfaceOrOpen('auth', 'anything'),
+          AccessGroup.administer);
+    });
+
+    test('only the history-view surface can answer open', () {
+      const policy = AccessPolicy();
+      for (final surface in ['tag', 'pref', 'route', 'admin', 'config']) {
+        expect(
+          policy.groupForWireSurfaceOrOpen(surface, 'createHistoryView'),
+          isNotNull,
+          reason: '"$surface" has no open operation',
+        );
+      }
+    });
+  });
+
+  group('one declaration, and it is in this package', () {
+    test("the app's history-view guard declares no group of its own", () {
+      // The phase's constitution: one master access-control system. The app
+      // file may *name* kHistoryViewDeleteGroup — other files and this
+      // milestone's docs refer to it — but it may not declare the value, or
+      // there would be two answers to one question and they would drift.
+      final file = File('${_repoRoot().path}/$_guardedHistoryViewsPath');
+
+      // Anti-vacuity, three ways. A pin on a file that has been renamed,
+      // emptied or stripped of the name passes by being unreachable, which is
+      // exactly how a grep pin dies quietly.
+      expect(file.existsSync(), isTrue,
+          reason: '$_guardedHistoryViewsPath must exist for this pin to mean '
+              'anything');
+      final lines = file.readAsLinesSync();
+      expect(lines.length, greaterThan(100),
+          reason: 'the guard is a real file, not a stub that passes this pin '
+              'by having nothing in it');
+      expect(lines.any((l) => l.contains('kHistoryViewDeleteGroup')), isTrue,
+          reason: 'the file still names the constant; this pin is about where '
+              'the value is declared, not about whether it is mentioned');
+
+      // Comments stripped first. `///` starts with `//`, so a doc comment
+      // quoting the old declaration — and this milestone's docs do quote it —
+      // is not a violation.
+      final code =
+          lines.where((l) => !l.trimLeft().startsWith('//')).join('\n');
+      expect(code, isNot(contains('const AccessGroup')),
+          reason: 'the group is looked up from AccessPolicy, not declared '
+              'a second time in the app');
+    });
   });
 
   _task2Tests();
+}
+
+/// The app file plan 17-01 empties of declarations, relative to the repo root.
+const String _guardedHistoryViewsPath = 'lib/core/guarded_history_views.dart';
+
+/// The repository root, found by walking up from wherever this suite was run.
+///
+/// Same shape as `package_purity_test.dart`'s `_packageRoot`, which walks up
+/// looking for a `pubspec.yaml`; this one walks further, because the file the
+/// pin above reads lives in the Flutter app rather than in this package.
+///
+/// Throws rather than returning null on purpose. A pin whose subject cannot be
+/// found must fail the suite, not skip itself.
+Directory _repoRoot() {
+  var dir = Directory.current.absolute;
+  for (var i = 0; i < 8; i++) {
+    if (File('${dir.path}/$_guardedHistoryViewsPath').existsSync()) return dir;
+    final parent = dir.parent;
+    if (parent.path == dir.path) break;
+    dir = parent;
+  }
+  throw StateError(
+    'could not find $_guardedHistoryViewsPath by walking up from '
+    '${Directory.current.path}; the no-second-declaration pin has no subject',
+  );
 }
 
 // ---------------------------------------------------------------------------

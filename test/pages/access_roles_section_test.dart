@@ -123,7 +123,7 @@ class _RecordingStore extends AccessAdminStore {
   }
 
   @override
-  Future<List<AppUserData>> listUsers() async {
+  Future<List<UserSummary>> listUsers() async {
     calls.add('listUsers');
     final hold = holdReads;
     if (hold != null) await hold.future;

@@ -375,4 +375,82 @@ void main() {
     });
   });
 
+
+  /// `config_change.station` answers "which machine did this come from".
+  ///
+  /// On a station the answer is the process's own hostname and always has
+  /// been. On the relay gateway one process writes on behalf of whichever
+  /// panel is connected, and the `audit_entry` row for the same action id
+  /// already names that panel — so a change row stamped with the gateway's
+  /// hostname gives one action two different origins, and the history this
+  /// branch just put on the wire shows both.
+  group('the change row names the station the write came from', () {
+    test('an override reaches every shape of change row', () async {
+      // One save that inserts, one that updates and removes — so all three
+      // `_appendChange` sites are exercised, not just the insert path.
+      await store.open();
+      await store.writeItems(
+        kinds: kPages,
+        wanted: layout('/roe', ['/roe-a0', '/roe-a1']),
+        actionId: 'act-insert',
+        who: 'jon',
+        roleName: 'Engineer',
+        station: 'svn-nes-ot-cl02',
+      );
+      await store.writeItems(
+        kinds: kPages,
+        wanted: layout('/roe', ['/roe-a0'], colours: {'/roe-a0': 'blue'}),
+        actionId: 'act-edit',
+        who: 'jon',
+        roleName: 'Engineer',
+        station: 'svn-nes-ot-cl02',
+      );
+
+      final log = await changesOn(remote);
+      expect(log.map((r) => r.op).toSet(),
+          containsAll(<String>['insert', 'update', 'delete']),
+          reason: 'the case is only meaningful if it reached all three '
+              '`_appendChange` call sites');
+      expect(log.map((r) => r.station).toSet(), {'svn-nes-ot-cl02'},
+          reason: 'every row of both saves carries the panel that asked, '
+              'not the process that wrote');
+    });
+
+    test('omitted, it is this process — the station case, unchanged',
+        () async {
+      await store.open();
+      await save(store, layout('/roe', ['/roe-a0']));
+
+      expect((await changesOn(remote)).map((r) => r.station).toSet(),
+          {kStation});
+    });
+
+    test('it is not derived from who — one account, two panels', () async {
+      // The same operator signs in at two panels. The station column is the
+      // only thing that tells the two saves apart; deriving it from the
+      // account would make them indistinguishable.
+      await store.open();
+      await store.writeItems(
+        kinds: kPages,
+        wanted: layout('/roe', ['/roe-a0']),
+        actionId: 'act-a',
+        who: 'jon',
+        roleName: 'Engineer',
+        station: 'panel-a',
+      );
+      await store.writeItems(
+        kinds: kPages,
+        wanted: layout('/roe', ['/roe-a0', '/roe-a1']),
+        actionId: 'act-b',
+        who: 'jon',
+        roleName: 'Engineer',
+        station: 'panel-b',
+      );
+
+      final byAction = {
+        for (final row in await changesOn(remote)) row.actionId: row.station,
+      };
+      expect(byAction, {'act-a': 'panel-a', 'act-b': 'panel-b'});
+    });
+  });
 }

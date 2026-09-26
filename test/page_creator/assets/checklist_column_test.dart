@@ -9,7 +9,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:open62541/open62541.dart' show DynamicValue, NodeId;
+import 'package:open62541/open62541_types.dart' show DynamicValue, NodeId;
 import 'package:tfc/page_creator/assets/checklists.dart';
 import 'package:tfc/page_creator/assets/led.dart';
 import 'package:tfc/providers/state_man.dart' show stateManProvider;
@@ -79,7 +79,7 @@ void main() {
         .widget<LinearProgressIndicator>(find.byType(LinearProgressIndicator));
     expect(bar.value, closeTo(2 / 3, 1e-9));
     // A done step gets a check; the open one does not.
-    expect(find.byIcon(Icons.check), findsNWidgets(2));
+    expect(find.byType(ChecklistDoneTick), findsNWidgets(2));
   });
 
   testWidgets('numbers the steps in order', (tester) async {
@@ -92,7 +92,7 @@ void main() {
     expect(find.text('2.'), findsOneWidget);
     expect(find.text('3.'), findsOneWidget);
     expect(find.text('0 / 3'), findsOneWidget);
-    expect(find.byIcon(Icons.check), findsNothing);
+    expect(find.byType(ChecklistDoneTick), findsNothing);
   });
 
   testWidgets('a done step steps back; an open one keeps the text colour',
@@ -126,7 +126,7 @@ void main() {
     );
     // The refused step is unknown, not done; the others still count.
     expect(find.text('2 / 3'), findsOneWidget);
-    expect(find.byIcon(Icons.check), findsNWidgets(2));
+    expect(find.byType(ChecklistDoneTick), findsNWidgets(2));
     expect(find.text('unserved'), findsOneWidget);
   });
 
@@ -146,7 +146,7 @@ void main() {
       (tester) async {
     await _pump(tester, [LEDConfig.preview()..text = 'p', _step('', 'blank')]);
     expect(find.text('1 / 2'), findsOneWidget);
-    expect(find.byIcon(Icons.check), findsOneWidget);
+    expect(find.byType(ChecklistDoneTick), findsOneWidget);
   });
 
   testWidgets('an empty line says so instead of showing nothing',

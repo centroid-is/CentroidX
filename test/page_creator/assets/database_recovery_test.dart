@@ -17,7 +17,7 @@
 // what it watches, then closes everything left over. A watch registered in
 // initState is never re-registered by build, so it is closed at the end of the
 // first build and never fires again. The first group below pins that down; it
-// is the reason `reinitOnDatabaseAvailable` uses `listenManual`.
+// is the reason `reinitOnTimeseriesSourceAvailable` uses `listenManual`.
 
 import 'dart:async';
 
@@ -30,10 +30,13 @@ import 'package:tfc/page_creator/assets/helper/database_recovery.dart';
 import 'package:tfc/page_creator/assets/helper/timeseries_notify_mixin.dart';
 import 'package:tfc/page_creator/assets/rate_value.dart';
 import 'package:tfc/providers/database.dart';
+import 'package:tfc/providers/preferences.dart';
+import 'package:tfc/core/timeseries_source.dart';
 import 'package:tfc/widgets/panes/standard_dialog.dart';
 import 'package:tfc/providers/state_man.dart';
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/database_drift.dart';
+import 'package:tfc_dart/core/preferences.dart' show InMemoryPreferences;
 import 'package:tfc_dart/core/state_man.dart';
 
 // ---------------------------------------------------------------------------
@@ -99,6 +102,11 @@ final _dbSourceProvider = StateProvider<Database?>((ref) => null);
 List<Override> _overrides(StateMan stateMan) => [
       databaseProvider.overrideWith((ref) async => ref.watch(_dbSourceProvider)),
       stateManProvider.overrideWith((ref) async => stateMan),
+      // The device-local store: the helper now listens to
+      // `timeseriesSourceProvider`, which consults the transport row before it
+      // decides where history comes from. An empty in-memory store reads as
+      // direct mode — the station every arm here is about.
+      localPreferencesProvider.overrideWithValue(InMemoryPreferences()),
     ];
 
 /// Wraps [child] and exposes the container so a test can flip the database on
@@ -277,24 +285,24 @@ void main() {
       expect(state.builds, equals(buildsBefore),
           reason: 'ref.watch outside build must not be trusted to notify — '
               'if this ever starts failing, riverpod changed and '
-              'reinitOnDatabaseAvailable can be reconsidered');
+              'reinitOnTimeseriesSourceAvailable can be reconsidered');
     });
   });
 
   // -------------------------------------------------------------------------
-  group('reinitOnDatabaseAvailable', () {
+  group('reinitOnTimeseriesSourceAvailable', () {
     testWidgets('fires when the database arrives after a null start',
         (tester) async {
-      final seen = <Database>[];
-      Database? current;
+      final seen = <TimeseriesSource>[];
+      TimeseriesSource? current;
 
       await tester.pumpWidget(_Harness(
         container: container,
         child: _CallbackHost(onInit: (ref) {
-          reinitOnDatabaseAvailable(
+          reinitOnTimeseriesSourceAvailable(
             ref,
-            currentDatabase: () => current,
-            onDatabaseAvailable: (db) {
+            currentSource: () => current,
+            onSourceAvailable: (db) {
               current = db;
               seen.add(db);
             },
@@ -306,21 +314,24 @@ void main() {
 
       databaseComesUp();
       await tester.pumpAndSettle();
-      expect(seen, equals([database]));
+      // A new `DatabaseTimeseriesSource` over the database that just arrived —
+      // the identity a caller compares is the source's, not the handle's.
+      expect(seen, hasLength(1));
+      expect(seen.single, isA<DatabaseTimeseriesSource>());
     });
 
     testWidgets('does not re-fire for the same database instance',
         (tester) async {
       var calls = 0;
-      Database? current;
+      TimeseriesSource? current;
 
       await tester.pumpWidget(_Harness(
         container: container,
         child: _CallbackHost(onInit: (ref) {
-          reinitOnDatabaseAvailable(
+          reinitOnTimeseriesSourceAvailable(
             ref,
-            currentDatabase: () => current,
-            onDatabaseAvailable: (db) {
+            currentSource: () => current,
+            onSourceAvailable: (db) {
               current = db;
               calls++;
             },
@@ -341,15 +352,15 @@ void main() {
 
     testWidgets('survives rebuilds of the host widget', (tester) async {
       var calls = 0;
-      Database? current;
+      TimeseriesSource? current;
 
       Widget host() => _Harness(
             container: container,
             child: _CallbackHost(onInit: (ref) {
-              reinitOnDatabaseAvailable(
+              reinitOnTimeseriesSourceAvailable(
                 ref,
-                currentDatabase: () => current,
-                onDatabaseAvailable: (db) {
+                currentSource: () => current,
+                onSourceAvailable: (db) {
                   current = db;
                   calls++;
                 },

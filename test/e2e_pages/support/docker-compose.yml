@@ -1,0 +1,26 @@
+# The Postgres the advanced-pages lane runs the REAL backend against.
+#
+# A copy of packages/tfc_relay_local/test/support/docker-compose.yml rather
+# than a reference to it, for the reason that file gives for not referencing
+# tfc_dart's: two lanes on one Compose project collide on `down -v`, and a
+# lane that tears down another lane's database is a flake that reads as a
+# backend bug. The port comes from CENTROIDX_TEST_PGPORT, which
+# postgres_fixture.dart always sets (from the environment, or a kernel-drawn
+# free port), so two worktrees can run this lane at once.
+#
+# The timescale image, not plain postgres: the schema `AppDatabase.open`
+# migrates a fresh database to creates hypertables, and that is what the
+# station's Postgres is. A lane on a database the migration cannot complete
+# proves nothing about the pages that read it.
+#
+# No restart policy on purpose: test infrastructure that resurrects itself
+# after a reboot is how a developer machine ends up owning a port forever.
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg17
+    environment:
+      - POSTGRES_DB=testdb
+      - POSTGRES_USER=testuser
+      - POSTGRES_PASSWORD=testpass
+    ports:
+      - "${CENTROIDX_TEST_PGPORT:?set by postgres_fixture.dart}:5432"

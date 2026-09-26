@@ -10,21 +10,22 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:postgres/postgres.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:tfc/providers/database.dart';
-import 'package:tfc_mcp_server/tfc_mcp_server.dart'
-    show
-        McpConfig,
-        McpToolToggles,
-        writeMcpConfigToPreferences;
 
-import '../core/feature_flags.dart';
+import '../core/gateway_config.dart';
 import '../core/update_channel.dart';
-import '../providers/mcp_bridge.dart';
+import '../providers/gateway.dart';
 import '../providers/preferences.dart';
 import '../providers/theme.dart';
 import '../theme.dart';
 import 'package:tfc_access/tfc_access.dart' show AccessDenied;
 import 'package:tfc_dart/core/preferences.dart';
-import 'package:tfc_dart/core/database.dart';
+// The settings type only — see the note in `pages/server_config.dart`.
+import 'package:tfc_dart/core/database_config.dart';
+import '../core/gateway_default.dart';
+
+/// The MCP card moved to its own library so this one compiles for the web;
+/// re-exported so the preferences page and its tests are unaffected.
+export 'mcp_server_section.dart';
 
 /// File-level logger. These diagnostics used to go to stderr, which in a
 /// windowed MSIX build with no console is discarded outright.
@@ -191,309 +192,6 @@ class _SchemeSwatches extends StatelessWidget {
   }
 }
 
-/// MCP Server settings section for the preferences page.
-///
-/// Contains the server enable toggle, port configuration, connection status,
-/// Claude Desktop config snippet, and tool group toggles.
-///
-/// All settings are stored as a single JSON blob under [McpConfig.kPrefKey].
-class McpServerSection extends ConsumerStatefulWidget {
-  const McpServerSection({super.key});
-
-  @override
-  ConsumerState<McpServerSection> createState() => _McpServerSectionState();
-}
-
-class _McpServerSectionState extends ConsumerState<McpServerSection> {
-  late TextEditingController _portController;
-  bool _loaded = false;
-  McpConfig _config = McpConfig.defaults;
-
-  @override
-  void initState() {
-    super.initState();
-    _portController =
-        TextEditingController(text: McpConfig.defaultPort.toString());
-  }
-
-  @override
-  void dispose() {
-    _portController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _loadState() async {
-    if (_loaded) return;
-    // mcpConfigProvider reads device-local preferences and runs the
-    // one-time migration off the shared database first.
-    _config = await ref.read(mcpConfigProvider.future);
-    _portController.text = _config.port.toString();
-    _loaded = true;
-  }
-
-  /// Saves the current [_config] to device-local preferences and
-  /// invalidates providers.
-  Future<void> _saveConfig() async {
-    await writeMcpConfigToPreferences(
-        ref.read(localPreferencesProvider), _config);
-    ref.invalidate(mcpConfigProvider);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (!_loaded) {
-      // Schedule initial load; will call setState when done.
-      _loadState().then((_) {
-        if (mounted) setState(() {});
-      });
-      return const SizedBox.shrink();
-    }
-
-    final bridge = ref.watch(mcpBridgeProvider);
-    final bridgeState = bridge.currentState;
-    final isRunning =
-        bridgeState.connectionState == McpConnectionState.connected;
-    final isStarting =
-        bridgeState.connectionState == McpConnectionState.connecting;
-
-    return Card(
-      child: ExpansionTile(
-        leading: const FaIcon(FontAwesomeIcons.robot, size: 20),
-        title: const Text('MCP Server'),
-        subtitle: Text(
-          isRunning
-              ? (bridgeState.port != null
-                  ? 'Running on port ${bridgeState.port}'
-                  : 'Running (in-process)')
-              : isStarting
-                  ? 'Starting…'
-                  : 'Stopped',
-          style: TextStyle(
-            color: isRunning
-                ? Colors.green
-                : isStarting
-                    ? Colors.orange
-                    : Colors.grey,
-            fontWeight: FontWeight.w500,
-          ),
-        ),
-        initiallyExpanded: false,
-        children: [
-          // Enable/Disable toggle
-          SwitchListTile(
-            title: const Text('Enable MCP Server'),
-            subtitle: const Text(
-                'Allow Claude Desktop to connect via Streamable HTTP'),
-            value: _config.serverEnabled,
-            onChanged: (value) async {
-              setState(() => _config = _config.copyWith(serverEnabled: value));
-              await _saveConfig();
-            },
-          ),
-
-          // Chat bubble toggle (only when server enabled, and only when the
-          // chat feature is compiled in — a flag-off build must not offer a
-          // toggle for a feature that is not in the binary)
-          if (kChatEnabled && _config.serverEnabled)
-            SwitchListTile(
-              title: const Text('Show Chat Bubble'),
-              subtitle: const Text(
-                  'Display AI copilot chat button on the main screen'),
-              value: _config.chatEnabled,
-              onChanged: (value) async {
-                setState(() => _config = _config.copyWith(chatEnabled: value));
-                await _saveConfig();
-              },
-            ),
-
-          // Port field
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: TextField(
-              controller: _portController,
-              decoration: const InputDecoration(
-                labelText: 'Server Port',
-                prefixIcon: FaIcon(FontAwesomeIcons.hashtag, size: 16),
-              ),
-              keyboardType: TextInputType.number,
-              onSubmitted: (v) async {
-                final port = int.tryParse(v) ?? McpConfig.defaultPort;
-                setState(() => _config = _config.copyWith(port: port));
-                await _saveConfig();
-              },
-            ),
-          ),
-
-          // Status indicator
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: isRunning
-                    ? Colors.green.withValues(alpha: 0.1)
-                    : bridgeState.connectionState == McpConnectionState.error
-                        ? Colors.red.withValues(alpha: 0.1)
-                        : Colors.grey.withValues(alpha: 0.1),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(
-                  color: isRunning
-                      ? Colors.green
-                      : bridgeState.connectionState == McpConnectionState.error
-                          ? Colors.red
-                          : Colors.grey,
-                ),
-              ),
-              child: Row(
-                children: [
-                  FaIcon(
-                    isRunning
-                        ? FontAwesomeIcons.circleCheck
-                        : bridgeState.connectionState ==
-                                McpConnectionState.error
-                            ? FontAwesomeIcons.circleExclamation
-                            : FontAwesomeIcons.circle,
-                    color: isRunning
-                        ? Colors.green
-                        : bridgeState.connectionState ==
-                                McpConnectionState.error
-                            ? Colors.red
-                            : Colors.grey,
-                    size: 16,
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      isRunning
-                          ? (bridgeState.port != null
-                              ? 'Server running on port ${bridgeState.port}'
-                              : 'Server running (in-process)')
-                          : bridgeState.connectionState ==
-                                  McpConnectionState.error
-                              ? 'Error: ${bridgeState.error}'
-                              : isStarting
-                                  ? 'Server starting…'
-                                  : 'Server stopped',
-                      style: const TextStyle(fontSize: 12),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-
-          // Claude Desktop config snippet (only when running with SSE port)
-          if (isRunning && bridgeState.port != null)
-            _ClaudeDesktopConfigSnippet(port: bridgeState.port!),
-
-          // Divider before tool toggles
-          if (_config.serverEnabled) const Divider(),
-
-          // Tool toggles (only visible when MCP enabled)
-          if (_config.serverEnabled)
-            Padding(
-              padding: const EdgeInsets.only(left: 16),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  'Tool Groups',
-                  style: Theme.of(context).textTheme.titleSmall,
-                ),
-              ),
-            ),
-          if (_config.serverEnabled)
-            for (final meta in McpToolToggles.toolGroupMeta)
-              SwitchListTile(
-                title: Text(meta.title),
-                subtitle: Text(meta.description),
-                value: _config.toggles.getByKey(meta.key),
-                onChanged: (value) async {
-                  final newToggles =
-                      _config.toggles.copyWithToggle(meta.key, value);
-                  setState(
-                      () => _config = _config.copyWith(toggles: newToggles));
-                  await _saveConfig();
-                  // An audit trail written to a discarded stream is not an
-                  // audit trail. This is the only record of who toggled what.
-                  _log.i(
-                    'AUDIT: toggle_change key=${meta.key} '
-                    'value=$value '
-                    'timestamp=${DateTime.now().toIso8601String()}',
-                  );
-                },
-              ),
-        ],
-      ),
-    );
-  }
-}
-
-/// Shows a copyable Claude Desktop config snippet.
-class _ClaudeDesktopConfigSnippet extends StatelessWidget {
-  final int port;
-  const _ClaudeDesktopConfigSnippet({required this.port});
-
-  @override
-  Widget build(BuildContext context) {
-    // Claude Desktop speaks Streamable HTTP directly -- the older
-    // `npx mcp-remote` stdio bridge is not needed.
-    final config = '''{
-  "mcpServers": {
-    "centroid-hmi": {
-      "type": "http",
-      "url": "http://127.0.0.1:$port/mcp"
-    }
-  }
-}''';
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Text(
-                'Claude Desktop Config',
-                style: Theme.of(context).textTheme.titleSmall,
-              ),
-              const Spacer(),
-              IconButton(
-                icon: const FaIcon(FontAwesomeIcons.copy, size: 14),
-                tooltip: 'Copy to clipboard',
-                onPressed: () {
-                  Clipboard.setData(ClipboardData(text: config));
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Config copied to clipboard'),
-                      duration: Duration(seconds: 2),
-                    ),
-                  );
-                },
-              ),
-            ],
-          ),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.black.withOpacity(0.05),
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: Colors.grey.shade300),
-            ),
-            child: SelectableText(
-              config,
-              style: const TextStyle(
-                fontFamily: 'monospace',
-                fontSize: 12,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
 
 class DatabaseConfigWidget extends ConsumerStatefulWidget {
   const DatabaseConfigWidget({super.key});
@@ -525,13 +223,39 @@ class _DatabaseConfigWidgetState extends ConsumerState<DatabaseConfigWidget> {
 
   @override
   Widget build(BuildContext context) {
+    // **The same card in both transports, editable in both.** The owner's
+    // ruling, at the rig: "i dont see a reason why we cannot change or see
+    // database config". These are this station's OWN settings — read from and
+    // written to device-local secure storage by `DatabaseConfig.fromPrefs` /
+    // `toPrefs`, never over the relay — and they are what the station runs on
+    // the moment somebody switches the transport back to Direct. A panel that
+    // could not show or edit them was stranded at exactly that moment.
+    //
+    // What the transport still decides is what this card may CLAIM. In
+    // gateway mode nothing dials: `databaseProvider` returns null before it
+    // reads the row, and `preferencesProvider` carries the same branch one
+    // level up so nothing pulls the pool in by watching. So there is no
+    // connection state to report and no pool to census, and the editor's
+    // `dialling` flag is false. A status line must be true or absent: rendering "Disconnected"
+    // in red would read as a fault on a healthy panel, and rendering
+    // "Connected" was the lie that branch exists to remove.
+    final gatewayAsync = ref.watch(gatewayConfigProvider);
+    if (gatewayAsync.isLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    final gateway = gatewayAsync.valueOrNull ?? defaultGatewayConfig();
     if (_loading || _config == null) {
       return const Center(child: CircularProgressIndicator());
     }
     return _DatabaseConfigEditor(
       config: _config!,
+      dialling: !gateway.isGateway,
       onSave: (newConfig) async {
         await newConfig.toPrefs();
+        // Safe in both transports: in gateway mode this provider answers null
+        // on its own transport branch without opening anything, and nothing
+        // in gateway mode watches it — the invalidate is a no-op there rather
+        // than a dial.
         ref.invalidate(databaseProvider);
         // Reload config after save so the editor reflects new values
         _loadConfig();
@@ -544,7 +268,23 @@ class _DatabaseConfigEditor extends ConsumerStatefulWidget {
   final DatabaseConfig config;
   final ValueChanged<DatabaseConfig> onSave;
 
-  const _DatabaseConfigEditor({required this.config, required this.onSave});
+  /// Whether this station is the one dialling these settings — true in
+  /// direct mode, false in gateway mode, where the backend owns the database
+  /// and this panel opens no pool of its own.
+  ///
+  /// It gates what the card SAYS, never what it lets an operator change: the
+  /// row is device-local and applies whenever the transport is Direct, so it
+  /// stays editable either way. False means no connection-state stream is
+  /// subscribed (there is none to describe), no census button (the census
+  /// reads a pool this station does not hold), and a neutral statement in
+  /// place of a green/red claim.
+  final bool dialling;
+
+  const _DatabaseConfigEditor({
+    required this.config,
+    required this.onSave,
+    this.dialling = true,
+  });
 
   @override
   ConsumerState<_DatabaseConfigEditor> createState() =>
@@ -579,7 +319,25 @@ class _DatabaseConfigEditorState extends ConsumerState<_DatabaseConfigEditor> {
   Widget build(BuildContext context) {
     // Use AsyncValue directly instead of FutureBuilder to avoid
     // Future identity changes that destroy ExpansionTile state on rebuild.
-    final prefsAsync = ref.watch(preferencesProvider);
+    //
+    // **Watched only where it is needed**, which is the transport that
+    // dials: the shared store is this card's source for ONE thing, the
+    // connection stream in the two `StreamBuilder`s below. Everything else
+    // it renders comes from `widget.config` and goes back out through
+    // `widget.onSave` to device-local secure storage. And `preferencesProvider`
+    // is not a cheap read — it builds the guarded store, the access policy and
+    // the audit sink, and those reach `databaseProvider` — so watching it from
+    // a gateway panel would drag the whole chain up to render a card that
+    // needs none of it. `preferences_database_section_test.dart` asserts the
+    // provider is never touched in gateway mode, and that arm is what noticed.
+    final AsyncValue<Preferences?> prefsAsync = widget.dialling
+        ? ref.watch(preferencesProvider)
+        : const AsyncValue<Preferences?>.data(null);
+    // The neutral voice for everything this card says when it is not the one
+    // dialling. `onSurface` with alpha, never `colorScheme.outline`: neither
+    // Solarized scheme sets that and it disappears on dark.
+    final muted =
+        Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.65);
 
     return prefsAsync.when(
       loading: () => const Padding(
@@ -598,29 +356,43 @@ class _DatabaseConfigEditorState extends ConsumerState<_DatabaseConfigEditor> {
               const Text('Database Configuration'),
               // Reaching the connection census through psql is exactly what
               // stops working when the server runs out of connections, so the
-              // way in has to be here, in an app that already holds one.
-              IconButton(
-                icon: const Icon(Icons.info_outline, size: 18),
-                visualDensity: VisualDensity.compact,
-                tooltip: 'Connection statistics',
-                onPressed: () => showDatabaseStatsPane(context),
-              ),
+              // way in has to be here, in an app that already holds one — and
+              // only where one is held. In gateway mode the census would
+              // report on a pool this station does not have.
+              if (widget.dialling)
+                IconButton(
+                  icon: const Icon(Icons.info_outline, size: 18),
+                  visualDensity: VisualDensity.compact,
+                  tooltip: 'Connection statistics',
+                  onPressed: () => showDatabaseStatsPane(context),
+                ),
             ],
           ),
-          subtitle: StreamBuilder<bool>(
-            stream: prefs.database?.connectionState,
-            initialData: false,
-            builder: (context, connectionSnapshot) {
-              final isConnected = connectionSnapshot.data ?? false;
-              return Text(
-                'Status: ${isConnected ? "Connected" : "Disconnected"}',
-                style: TextStyle(
-                  color: isConnected ? Colors.green : Colors.red,
-                  fontWeight: FontWeight.w500,
+          subtitle: widget.dialling
+              ? StreamBuilder<bool>(
+                  stream: prefs?.database?.connectionState,
+                  initialData: false,
+                  builder: (context, connectionSnapshot) {
+                    final isConnected = connectionSnapshot.data ?? false;
+                    return Text(
+                      'Status: ${isConnected ? "Connected" : "Disconnected"}',
+                      style: TextStyle(
+                        color: isConnected ? Colors.green : Colors.red,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    );
+                  },
+                )
+              // Not a status, because there is nothing to have a status: this
+              // station dials nothing in gateway mode. It says what the
+              // settings ARE for instead, which is the one thing an operator
+              // standing here needs to know before changing them.
+              : Text(
+                  'Not dialled in gateway mode — the backend owns the '
+                  'database. These settings apply when the transport is '
+                  'Direct.',
+                  style: TextStyle(color: muted),
                 ),
-              );
-            },
-          ),
           initiallyExpanded: false, // Default to folded
           children: [
             Padding(
@@ -628,46 +400,80 @@ class _DatabaseConfigEditorState extends ConsumerState<_DatabaseConfigEditor> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  StreamBuilder<bool>(
-                    stream: prefs.database?.connectionState,
-                    initialData: false,
-                    builder: (context, snapshot) {
-                      return Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: (snapshot.data ?? false)
-                              ? Colors.green.withOpacity(0.1)
-                              : Colors.red.withOpacity(0.1),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(
-                            color: (snapshot.data ?? false)
-                                ? Colors.green
-                                : Colors.red,
+                  if (!widget.dialling)
+                    // The same fact as the subtitle, in the place the green
+                    // or red box would be, so the operator who opened the
+                    // card is not left looking for a status that is missing.
+                    // Muted `onSurface`, never `colorScheme.outline`: neither
+                    // Solarized scheme sets it and it vanishes on dark
+                    // (project memory solarized-outline-is-invisible).
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: muted),
+                      ),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Icon(Icons.info_outline, size: 16, color: muted),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              // One line, because the subtitle two rows
+                              // above already says when these settings
+                              // apply and this is only here to occupy —
+                              // honestly — the place the green or red box
+                              // takes in the transport that dials.
+                              'No connection from this station — nothing '
+                              'here is dialling.',
+                              style: TextStyle(fontSize: 12, color: muted),
+                            ),
                           ),
-                        ),
-                        child: Row(
-                          children: [
-                            FaIcon(
-                              (snapshot.data ?? false)
-                                  ? FontAwesomeIcons.checkCircle
-                                  : FontAwesomeIcons.exclamationCircle,
+                        ],
+                      ),
+                    ),
+                  if (widget.dialling)
+                    StreamBuilder<bool>(
+                      stream: prefs?.database?.connectionState,
+                      initialData: false,
+                      builder: (context, snapshot) {
+                        return Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: (snapshot.data ?? false)
+                                ? Colors.green.withOpacity(0.1)
+                                : Colors.red.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
                               color: (snapshot.data ?? false)
                                   ? Colors.green
                                   : Colors.red,
-                              size: 16,
                             ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                'Connection Status: ${snapshot.data ?? false ? "Connected" : "Disconnected"}',
-                                style: const TextStyle(fontSize: 12),
+                          ),
+                          child: Row(
+                            children: [
+                              FaIcon(
+                                (snapshot.data ?? false)
+                                    ? FontAwesomeIcons.checkCircle
+                                    : FontAwesomeIcons.exclamationCircle,
+                                color: (snapshot.data ?? false)
+                                    ? Colors.green
+                                    : Colors.red,
+                                size: 16,
                               ),
-                            ),
-                          ],
-                        ),
-                      );
-                    },
-                  ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  'Connection Status: ${snapshot.data ?? false ? "Connected" : "Disconnected"}',
+                                  style: const TextStyle(fontSize: 12),
+                                ),
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
                   const SizedBox(height: 16),
                   TextField(
                     controller: hostController,

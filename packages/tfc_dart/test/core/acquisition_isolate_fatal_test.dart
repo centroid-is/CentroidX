@@ -93,7 +93,7 @@ void main() {
     // resolve once the OptionVariable asset that owns them publishes — but
     // the acquisition isolate has no assets and no UI, so NOTHING ever
     // publishes a substitution there and the key stays templated forever.
-    final stateMan = await StateMan.create(
+    final stateMan = await OpcUaStateMan.create(
       config: StateManConfig(opcua: []),
       keyMappings: KeyMappings(nodes: {
         r'Line1.$period.throughput': KeyMappingEntry(

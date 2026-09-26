@@ -117,6 +117,11 @@ class M2400FrameParser implements StreamTransformer<Uint8List, Uint8List> {
       StreamTransformer.castFrom<Uint8List, Uint8List, RS, RT>(this);
 }
 
+/// What [parseM2400Frame] has always done, kept as a named function so the
+/// default is one thing rather than a repeated expression.
+String _defaultFrameDecode(List<int> bytes) =>
+    utf8.decode(bytes, allowMalformed: true);
+
 /// Parse frame content (bytes between STX and ETX) into a structured record.
 ///
 /// Real M2400 frame content format:
@@ -129,10 +134,23 @@ class M2400FrameParser implements StreamTransformer<Uint8List, Uint8List> {
 /// elements starting at index 1.
 ///
 /// Returns null if [frameBytes] is empty or contains only whitespace.
-M2400Record? parseM2400Frame(Uint8List frameBytes) {
+///
+/// [decodeBytes] turns the frame's bytes into text. **Optional, and its default
+/// is exactly what this function always did** — `utf8.decode(bytes,
+/// allowMalformed: true)`. Nothing in this package passes it and no call site
+/// changed; it exists so that a caller which knows *which device* the bytes
+/// came from can decode them correctly. A weigher that speaks Latin-1 sends
+/// `Þorskflök í raspi` as bytes that `allowMalformed` silently replaces with
+/// U+FFFD, and this function has no way to know that — the server alias is not
+/// in scope here and should not be. See
+/// `packages/tfc_relay_local/lib/src/string_encoding.dart`.
+M2400Record? parseM2400Frame(
+  Uint8List frameBytes, {
+  String Function(List<int> bytes)? decodeBytes,
+}) {
   if (frameBytes.isEmpty) return null;
 
-  final content = utf8.decode(frameBytes, allowMalformed: true).trimRight();
+  final content = (decodeBytes ?? _defaultFrameDecode)(frameBytes).trimRight();
   if (content.isEmpty) return null;
 
   final parts = content.split('\t');

@@ -1,7 +1,7 @@
 import 'package:test/test.dart';
 import 'package:tfc_dart/core/modbus_device_client.dart';
 import 'package:tfc_dart/core/state_man.dart';
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 
 OpcUAConfig _opcua(String alias, {bool enabled = true}) => OpcUAConfig()
   ..endpoint = 'opc.tcp://$alias:4840'
@@ -177,7 +177,7 @@ void main() {
 
   group('StateMan with a disabled server', () {
     test('creates no OPC UA client for it', () async {
-      final stateMan = await StateMan.create(
+      final stateMan = await OpcUaStateMan.create(
         config: StateManConfig(opcua: [_opcua('plc1', enabled: false)]),
         keyMappings: _opcuaKey('pump.speed', 'plc1'),
       );
@@ -188,7 +188,7 @@ void main() {
 
     test('read() throws ServerDisabledException naming the key and server',
         () async {
-      final stateMan = await StateMan.create(
+      final stateMan = await OpcUaStateMan.create(
         config: StateManConfig(opcua: [_opcua('plc1', enabled: false)]),
         keyMappings: _opcuaKey('pump.speed', 'plc1'),
       );
@@ -204,7 +204,7 @@ void main() {
     });
 
     test('write() throws ServerDisabledException', () async {
-      final stateMan = await StateMan.create(
+      final stateMan = await OpcUaStateMan.create(
         config: StateManConfig(opcua: [_opcua('plc1', enabled: false)]),
         keyMappings: _opcuaKey('pump.speed', 'plc1'),
       );
@@ -218,7 +218,7 @@ void main() {
     });
 
     test('subscribe() throws instead of entering the 1 s retry loop', () async {
-      final stateMan = await StateMan.create(
+      final stateMan = await OpcUaStateMan.create(
         config: StateManConfig(opcua: [_opcua('plc1', enabled: false)]),
         keyMappings: _opcuaKey('pump.speed', 'plc1'),
       );
@@ -232,7 +232,7 @@ void main() {
     });
 
     test('readMany() skips disabled keys and keeps the rest', () async {
-      final stateMan = await StateMan.create(
+      final stateMan = await OpcUaStateMan.create(
         config: StateManConfig(opcua: [_opcua('plc1', enabled: false)]),
         keyMappings: _opcuaKey('pump.speed', 'plc1'),
       );
@@ -245,7 +245,7 @@ void main() {
     });
 
     test('isKeyDisabled reports per key, not per server', () async {
-      final stateMan = await StateMan.create(
+      final stateMan = await OpcUaStateMan.create(
         config: StateManConfig(
           opcua: [_opcua('plc1', enabled: false), _opcua('plc2')],
         ),
@@ -271,7 +271,7 @@ void main() {
         () async {
       // Regression guard: disabling one server must not turn every
       // unreachable server into a "disabled" report.
-      final stateMan = await StateMan.create(
+      final stateMan = await OpcUaStateMan.create(
         config: StateManConfig(opcua: [_opcua('plc1', enabled: false)]),
         keyMappings: _opcuaKey('other.key', 'plc2'),
       );

@@ -1,0 +1,5 @@
+.venv/
+generated/
+results/
+__pycache__/
+*.log

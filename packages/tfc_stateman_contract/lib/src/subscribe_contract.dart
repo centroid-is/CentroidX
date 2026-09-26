@@ -1,0 +1,422 @@
+/// The subscribe half of the contract: what a page is promised when it starts
+/// watching a key.
+///
+/// Cases derive from CONTEXT D-01 — `listen` is the primary read path, a
+/// `ValueListenable` over a batch-applied store, and `subscribe` is the derived
+/// compatibility adapter for stream-consuming code — and from the promise the
+/// whole project exists to keep: an operator can always trust what the screen
+/// shows. Each case below is one way that trust can be lost.
+///
+/// The structure follows dart-lang/http's `http_client_conformance_tests`
+/// (umbrella + per-area sub-suite + factory parameter), with one deliberate
+/// divergence. That suite inlines its assertions inside `test()` bodies, so its
+/// cases cannot be invoked outside the runner and therefore cannot themselves
+/// be proven to catch anything. Here every case is a named top-level function
+/// and registration is separate, so `test/sabotage_subscribe_test.dart` can run
+/// a case against a deliberately damaged implementation and assert that it
+/// fails — the suite's teeth are regression-tested, not assumed.
+///
+/// This file imports no implementation. The factory passed to
+/// [runSubscribeContract] is the only coupling to one, which is what lets one
+/// suite judge the server-side implementation, the client-side implementation,
+/// and later either of them through a fault-injection proxy.
+///
+/// Every await is wrapped in [within]. An implementation that goes silent must
+/// fail in 200 ms with a message naming the property an operator lost, not hang
+/// until the runner's timeout names a file.
+library;
+
+import 'package:test/test.dart';
+import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
+
+import 'check.dart';
+import 'harness.dart';
+
+/// A motor speed on the pre-freezer conveyor line: the ordinary case, a number
+/// an operator reads off a mimic.
+const _speedKey = 'ST101.CN01.MOT01.speed';
+
+/// A second live key, used as a barrier: awaiting a notification for a key that
+/// *should* fire is how a case proves a key that should *not* fire stayed
+/// silent, without sleeping for an arbitrary interval.
+const _otherKey = 'ST201.CN04.MOT01.speed';
+
+/// A key no source in this suite ever delivers — a tag mistyped into a page
+/// config, or one whose first batch has simply not landed yet.
+const _missingKey = 'ST301.CN17.VLV02.stat';
+
+/// A key that exists, is delivered, and is then retired: the tag renamed or
+/// deleted in the PLC under a page that still binds it. Distinct from
+/// [_missingKey], and the contract requires that they read differently.
+const _deletedKey = 'ST301.CN18.VLV01.stat';
+
+/// A freshly subscribed key carries its current value, and carries it good.
+///
+/// The first thing an operator sees when a page opens.
+Future<void> checkListenDeliversCurrentValue(StateManApi api) async {
+  final plant = harnessOf(api);
+
+  final node = api.listen(_speedKey);
+  final seen = observe(node);
+  plant.setValue(_speedKey, 1450);
+
+  await within(seen.next, 'the first value for a subscribed key');
+
+  expect(node.value.asInt, 1450,
+      reason: 'the handle a page holds must carry the number the source has — '
+          'an operator opening a page sees readings, not placeholders');
+  expect(node.value.quality.isGood, isTrue,
+      reason: 'a value delivered over a healthy link must arrive good; a page '
+          'of grey boxes on a working plant teaches operators to ignore '
+          'quality, which is the one thing they must never learn');
+}
+
+/// A listener attached before a change is notified of it, and the handle
+/// carries the new value when it fires.
+///
+/// The property an implementation loses when a subscription dies while the link
+/// stays up: the page keeps rendering the last number it saw, and nothing on
+/// screen says so.
+/// A key whose value was in place BEFORE anybody listened delivers that
+/// value to the listener without waiting for a change.
+///
+/// The case [checkListenDeliversCurrentValue] does not exercise: there the
+/// value is set after the listener attaches, so a source that only forwarded
+/// *changes* would pass it. On a plant most signals are stable by design — a
+/// healthy line is exactly the case where nothing changes — and a subscribe
+/// that produces nothing until the next change renders every one of them as
+/// unknown. The wire's answer is the snapshot in the subscribe result; this
+/// is the property, on every leg, that the snapshot exists and lands.
+Future<void> checkListenDeliversValueSetBeforeListening(
+    StateManApi api) async {
+  final plant = harnessOf(api);
+  plant.setValue(_speedKey, 1450);
+  // Do not attach anything first: the point is that nobody was listening
+  // when the value was set.
+  final node = api.listen(_speedKey);
+  final seen = observe(node);
+  try {
+    // An in-memory source may already hold it; a remote one lands it with
+    // the subscribe snapshot, which is a notification. Either is right; a
+    // source that does neither is the defect.
+    if (node.value.value != 1450) {
+      await within(seen.next,
+          'the value that was already in place arriving for a new listener');
+    }
+  } finally {
+    seen.stop();
+  }
+  expect(node.value.asInt, 1450,
+      reason: 'the key held 1450 before anybody listened and the listener '
+          'never received it — a subscribe that waits for the next change is '
+          'a replay-shaped contract, and a stable plant never changes');
+  expect(node.value.quality.isGood, isTrue,
+      reason: 'the snapshot must carry the quality the source holds, not a '
+          'placeholder; a value that arrived stale for having been stable is '
+          'the purple conveyor on a running line');
+}
+
+/// The `subscribe()` stream's FIRST event is the value that was already in
+/// place when the listener attached — without waiting for a change.
+///
+/// [checkListenDeliversValueSetBeforeListening] states this property for the
+/// listenable path and, until this case existed, nothing stated it for the
+/// stream: [checkSubscribeStreamMirrorsListen] takes the stream and THEN sets
+/// the value, so a `subscribe` that only forwards changes passed it. Two
+/// implementations then read the silence two ways — one opened every stream
+/// with the store's current value, the other opened it with nothing — and a
+/// page bound through the second showed `---` for every setpoint on a line,
+/// for as long as the setpoint stayed what it was. On a plant most signals
+/// are constants by design; a stream that owes its listener only the next
+/// change owes a constant nothing, ever.
+///
+/// So the decision, stated once here and again on `StateManApi.subscribe`: a
+/// snapshot-never-replay wire means the snapshot IS the current value, and a
+/// listener attaching after it landed is owed that value as its first event.
+/// Every listener, not the first one — a broadcast controller runs `onListen`
+/// once, and the second widget on a key is the ordinary case, not an edge.
+Future<void> checkSubscribeOpensWithValueSetBeforeListening(
+    StateManApi api) async {
+  final plant = harnessOf(api);
+  plant.setValue(_speedKey, 1450);
+  // Landed, on whatever leg this is, BEFORE the stream exists: the property
+  // is that a value already in the store reaches a listener who arrived late,
+  // and a case where the value was still in flight would be
+  // [checkSubscribeStreamMirrorsListen] over again.
+  await arrived(api, _speedKey);
+
+  final stream = api.subscribe(_speedKey);
+  final first = await within(stream.first,
+      'the value already in place opening a new subscribe() stream');
+  expect(first.asInt, 1450,
+      reason: 'the key held 1450 before the stream was listened to and the '
+          'first event was not it — a subscribe that opens with nothing until '
+          'the next change renders every constant on the plant as unknown');
+  expect(first.quality.isGood, isTrue,
+      reason: 'the opening event must carry the quality the source holds, not '
+          'a placeholder; a constant is not stale for being constant');
+
+  // And a second listener, attaching after the first one has already been
+  // served, is owed the same opening event. This is the arm a broadcast
+  // controller fails: its onListen runs for the first subscriber only, so the
+  // second widget bound to the key opens with nothing.
+  final second = await within(stream.first,
+      'the same value opening the stream for a SECOND, later listener');
+  expect(second, first,
+      reason: 'the second listener on one subscribe() stream did not receive '
+          'the opening value the first one did; two widgets watching one key '
+          'is the normal case, and the second one must not open blank');
+  expect(api.listen(_speedKey).value, first,
+      reason: 'the stream opened with something other than what listen() '
+          'holds; the stream is a view of the store, never a second source');
+}
+
+/// A `subscribe()` stream on a key nothing has arrived for opens with NO
+/// event, and then delivers the first value when it lands.
+///
+/// The other half of [checkSubscribeOpensWithValueSetBeforeListening], and
+/// the same rule as [checkUnknownKeyReportsConfigErrorNotThrow] states for the
+/// listenable: a key the source has heard nothing about invents no traffic.
+/// The not-yet-known placeholder is readable — `listen(key).value` carries
+/// it, `read(key)` answers null — and it is never pushed as an event, because
+/// every stream consumer already shows its own "no value yet" and an event
+/// carrying null would replace that with a rendered nothing. On a slow link
+/// every key on a page is in this state for one round trip.
+///
+/// "Nothing arrived" is asserted with a barrier, not a sleep: a value for a
+/// second key is sent and awaited on the same source, so by the time the
+/// assertion runs the source has demonstrably processed later traffic.
+Future<void> checkSubscribeStaysSilentUntilFirstValue(StateManApi api) async {
+  final plant = harnessOf(api);
+
+  final events = <DynamicValue>[];
+  final subscription = api.subscribe(_speedKey).listen(events.add);
+  try {
+    // The barrier: a batch to a different key, awaited through the same
+    // source, so an implementation that pushed an opening placeholder has
+    // had every chance to do so.
+    final live = api.listen(_otherKey);
+    final seen = observe(live);
+    plant.setValue(_otherKey, 3);
+    await within(seen.next, 'a batch reaching a key the source does have');
+    seen.stop();
+    // A microtask-delivered opening event would be queued before the barrier
+    // resolved on an in-process leg, but give the queue one more turn so the
+    // assertion below is about the implementation and not about ordering.
+    await Future<void>.delayed(Duration.zero);
+
+    expect(events, isEmpty,
+        reason: 'the stream for a key nothing has arrived for produced '
+            '${events.length} event(s) before any value landed. A stream '
+            'that opens with a placeholder makes every widget render a null '
+            'where it was already showing its own "no value yet"; the '
+            'placeholder is readable off listen(), it is not traffic');
+
+    plant.setValue(_speedKey, 1450);
+    await within(
+        Future.doWhile(() async {
+          await Future<void>.delayed(const Duration(milliseconds: 5));
+          return events.isEmpty;
+        }),
+        'the first value for the key reaching the stream that was waiting');
+    expect(events.single.asInt, 1450,
+        reason: 'the stream that waited through the unknown period must '
+            'deliver the first real value, and only that');
+    expect(events.single.quality.isGood, isTrue);
+  } finally {
+    await subscription.cancel();
+  }
+}
+
+Future<void> checkListenDeliversSubsequentChanges(StateManApi api) async {
+  final plant = harnessOf(api);
+
+  plant.setValue(_speedKey, 1450);
+  // The seed has to be *there* before a listener attaches, or the first
+  // notification this case sees is the seed's own and the assertion below reads
+  // 1450 against an implementation that delivered 1600 perfectly. Free
+  // in-process; a real wait only where the value crosses a boundary.
+  await arrived(api, _speedKey);
+  final node = api.listen(_speedKey);
+  final seen = observe(node);
+
+  plant.setValue(_speedKey, 1600);
+  await within(seen.next, 'the notification for a key that changed upstream');
+
+  expect(node.value.asInt, 1600,
+      reason: 'the listener fired but the handle still carried the old '
+          'reading — a page would rebuild and redraw the stale number');
+}
+
+/// The stream adapter and the listenable path never disagree.
+///
+/// `subscribe` exists for code that consumes streams; it is a second *view* of
+/// the store, never a second source of truth. Two consumers of one subscription
+/// must both be served — a fan-out, not a queue that the first listener drains.
+Future<void> checkSubscribeStreamMirrorsListen(StateManApi api) async {
+  final plant = harnessOf(api);
+
+  final node = api.listen(_speedKey);
+  final seen = observe(node);
+  final stream = api.subscribe(_speedKey);
+
+  late final List<Future<List<DynamicValue>>> takers;
+  try {
+    takers = [stream.take(1).toList(), stream.take(1).toList()];
+  } on StateError catch (error) {
+    fail('subscribe() handed out a single-subscription stream ($error) — two '
+        'widgets watching one key is the normal case, and the second one must '
+        'not be refused');
+  }
+
+  plant.setValue(_speedKey, 1450);
+
+  final first =
+      await within(takers[0], 'the subscribe() stream reaching its listener');
+  final second = await within(
+      takers[1], 'the subscribe() stream reaching a second listener');
+  await within(seen.next, 'the listen() handle seeing the same change');
+
+  expect(first.single.asInt, 1450,
+      reason: 'stream-consuming code must see the value the source has, or '
+          'ported widgets show something different from new ones');
+  expect(second.single, first.single,
+      reason: 'both consumers of one subscription must receive the value — a '
+          'compat adapter that serves only the first listener silently '
+          'freezes every widget after it');
+  expect(node.value, first.single,
+      reason: 'the stream path and the listenable path disagreed about the '
+          'current value; they are two views of one store, and two numbers for '
+          'one tag on one page is the worst thing this API can do');
+}
+
+/// An unknown key degrades to a visibly untrustworthy value; it never throws
+/// and never invents traffic. A key the source knows is *gone* reads
+/// differently from one it simply has not delivered yet.
+///
+/// A key mistyped into a page config, or a tag renamed in the PLC after the
+/// page was drawn, must take out that one box on the mimic — not the mimic.
+///
+/// The second half is the one an implementation is most likely to get wrong by
+/// collapsing both into [Quality.errorConfig]. "The tag has been deleted, go
+/// fix the page" and "the first batch has not landed yet" call for opposite
+/// actions from the operator, and on a slow link every key on a page passes
+/// through the second state for a round trip. An implementation that reports
+/// them identically teaches operators that the one non-transient error code
+/// heals on its own, after which nobody acts on the real one.
+Future<void> checkUnknownKeyReportsConfigErrorNotThrow(StateManApi api) async {
+  final plant = harnessOf(api);
+
+  ValueListenable<DynamicValue>? node;
+  Object? thrown;
+  try {
+    node = api.listen(_missingKey);
+  } catch (error) {
+    thrown = error;
+  }
+  expect(thrown, isNull,
+      reason: 'listen() on a key the source does not have threw $thrown — one '
+          'mistyped key in a page config must degrade to a bad-quality box, '
+          'not crash the whole mimic');
+
+  final unknown = node!;
+  final quiet = observe(unknown);
+
+  // A key the source has affirmatively been told is gone, to compare against.
+  plant.setValue(_deletedKey, 1);
+  final deleted = api.listen(_deletedKey);
+  plant.dropKey(_deletedKey);
+
+  final live = api.listen(_otherKey);
+  final seen = observe(live);
+  plant.setValues({_otherKey: 3});
+  await within(seen.next, 'a batch reaching a key the source does have');
+
+  expect(unknown.value.value, isNull,
+      reason: 'an unknown key reported a value; a number rendered for a tag '
+          'that does not exist is indistinguishable from a real reading');
+  expect(unknown.value.quality.isGood, isFalse,
+      reason: 'a key nothing has arrived for read as good quality — an '
+          'operator would believe a box that has never had a value in it');
+  expect(deleted.value.quality, Quality.errorConfig,
+      reason: 'a key the source was told is gone must read as a configuration '
+          'error: waiting will never fix a renamed tag, and the operator '
+          'needs to be told to fix the page');
+  expect(unknown.value.quality, isNot(Quality.errorConfig),
+      reason: 'a key whose first batch has not arrived reads the same as a tag '
+          'that has been deleted, so the two are indistinguishable on screen. '
+          'One of them heals by itself and the other never will');
+  expect(quiet.count, 0,
+      reason: 'the source notified listeners of a key it cannot serve — a page '
+          'would rebuild for a tag that will never have a value');
+}
+
+/// After `dispose`, a later change notifies nobody.
+///
+/// A disposed source that still fires keeps a closed page alive and rebuilding
+/// for the rest of the session — the leak that outlives the widget that caused
+/// it.
+Future<void> checkDisposeStopsNotifications(StateManApi api) async {
+  final plant = harnessOf(api);
+
+  plant.setValue(_speedKey, 1450);
+  final node = api.listen(_speedKey);
+  final seen = observe(node);
+
+  await within(api.dispose(), 'dispose() completing');
+
+  plant.setValue(_speedKey, 1600);
+  await within(Future<void>.delayed(Duration.zero),
+      'the event loop turning after dispose');
+
+  expect(seen.count, 0,
+      reason: 'a disposed source still notified its listeners; every closed '
+          'page would keep rebuilding for the rest of the session');
+}
+
+/// Every subscribe property, keyed by the sentence it asserts.
+///
+/// The key is the test name, so a failure in CI reads as the promise that was
+/// broken rather than as a function identifier.
+const subscribeChecks = <String, Check<StateManApi>>{
+  'a value in place before anybody listened is delivered without a change':
+      checkListenDeliversValueSetBeforeListening,
+  'a subscribed key delivers its current value, good':
+      checkListenDeliversCurrentValue,
+  'a listener is notified of every change after it attaches':
+      checkListenDeliversSubsequentChanges,
+  'the subscribe() stream mirrors listen() and serves every listener':
+      checkSubscribeStreamMirrorsListen,
+  'the subscribe() stream opens with a value in place before anybody listened, '
+          'for every listener':
+      checkSubscribeOpensWithValueSetBeforeListening,
+  'the subscribe() stream stays silent for an unarrived key, then delivers '
+          'its first value':
+      checkSubscribeStaysSilentUntilFirstValue,
+  'an unknown key reports a configuration error instead of throwing':
+      checkUnknownKeyReportsConfigErrorNotThrow,
+  'a disposed source notifies nobody': checkDisposeStopsNotifications,
+};
+
+/// Registers the subscribe contract against implementations from [make].
+///
+/// One fresh instance per case, disposed by `addTearDown`, so an
+/// implementation that leaks after dispose fails its own case rather than the
+/// next one.
+void runSubscribeContract(StateManApi Function() make) {
+  group('subscribe', () {
+    subscribeChecks.forEach((property, check) {
+      test(property, () async {
+        final api = make();
+        addTearDown(api.dispose);
+        // The link, before the property. On an in-process source this is a
+        // synchronous read and nothing more; behind a socket it is where the
+        // connect, the handshake and the first subscribe come due, and leaving
+        // them inside the case's own budget made the first check in this suite
+        // a measurement of the transport (`harness.dart`'s [linkUp]).
+        await linkUp(api);
+        await check(api);
+      });
+    });
+  });
+}

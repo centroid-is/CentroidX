@@ -13,6 +13,8 @@ import 'dart:io';
 import 'package:drift/drift.dart' show Value;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:riverpod/riverpod.dart';
+import 'package:tfc_dart/core/preferences.dart';
+import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/providers/config_history.dart';
 import 'package:tfc/providers/database.dart';
 import 'package:tfc/core/audit_trail_store.dart';
@@ -113,6 +115,13 @@ Future<void> _seedAudit(
 }
 
 void main() {
+  // `configHistoryActions` reaches `auditTrailStoreProvider`, which on this
+  // branch consults the transport row and so reaches the device-local store.
+  // Main's #465 made that a singleton `main()` opens before `runApp`; seeding
+  // it in memory is what a test does instead of opening a file.
+  setUp(() => setDeviceLocalPreferencesForTest(InMemoryPreferences()));
+  tearDown(resetDeviceLocalPreferencesForTest);
+
   late AppDatabase db;
   late ConfigChangeStore store;
 
@@ -888,7 +897,14 @@ void main() {
     late String source;
 
     setUpAll(() {
-      final file = File('lib/core/config_change_store.dart');
+      // The file the store actually lives in, **not** `lib/core/`'s ten-line
+      // re-export. The store moved to `tfc_dart` so the backend could serve
+      // the same class the panel calls; an assertion left pointing at the
+      // shim would pass vacuously against an export directive and say
+      // nothing about the reader it is meant to pin. The same step the audit
+      // store's own source assertions took when that file moved.
+      final file =
+          File('packages/tfc_dart/lib/core/config/config_change_store.dart');
       expect(file.existsSync(), isTrue,
           reason: 'run this suite from the repository root. Without the file '
               'these source assertions would pass vacuously.');

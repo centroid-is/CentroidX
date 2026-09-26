@@ -5,15 +5,36 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:tfc_dart/core/collector.dart';
 import 'package:tfc_dart/core/preferences.dart';
 
+import 'gateway.dart';
 import 'preferences.dart';
 import 'state_man.dart';
 import 'database.dart';
+import 'timeseries_source.dart';
 
 part 'collector.g.dart';
 
 @Riverpod(keepAlive: true)
 Future<Collector?> collector(Ref ref) async {
   final stateMan = await ref.watch(stateManProvider.future);
+
+  // A gateway panel has no database by design, and this used to answer null
+  // for it — so every trend that reads through the collector (conveyor,
+  // sensor, analog box, box erector, the history panes) drew "No collector
+  // available" on a plant that had been recording all along. The backend
+  // collects; this panel only reads, over the relay's timeseries family,
+  // which the gateway's policy gates per series. Nothing is read from the
+  // shared store either: the collector config only says whether to collect,
+  // and a gateway panel never does.
+  final gateway = await ref.watch(gatewayConfigProvider.future);
+  if (gateway.isGateway) {
+    final source = await ref.watch(timeseriesSourceProvider.future);
+    return Collector.readOnly(
+      config: CollectorConfig(collect: false),
+      stateMan: stateMan,
+      history: source!,
+    );
+  }
+
   final database = await ref.watch(databaseProvider.future);
   if (database == null) {
     Logger().e('Cannot create collector: Database is not connected');

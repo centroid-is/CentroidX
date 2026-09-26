@@ -22,10 +22,17 @@
 /// **The decision comes from [resolveAccessGate] and is not re-derived here.**
 /// A second copy of "locked when…" is how a lock ends up on a control that
 /// works, the first time one of the two copies is edited.
-/// [allowWhenRepositoryUnavailable] is false with no parameter to change it:
+/// [allowWhenNobodyCanSignIn] is false with no parameter to change it:
 /// the one route that stays open through a database outage is Server Config,
 /// for the reasons `access_gate.dart` sets out at length, and none of them is
 /// about setting a plant's clock.
+///
+/// **On a gateway panel these controls follow the relayed session**, because
+/// the gate asks `accessAuthorityProvider` rather than the repository. A
+/// station with no Postgres by design is not a station where nobody can sign
+/// in, and before that distinction existed the clock, the timezone and the
+/// reboot button were refused on every gateway panel no matter who was
+/// standing at it.
 library;
 
 import 'package:flutter/material.dart';
@@ -58,9 +65,9 @@ const String _anonymousWho = 'anonymous';
 bool groupAllowed(WidgetRef ref, AccessGroup group) =>
     resolveAccessGate(
       group: group,
-      repository: ref.watch(accessRepositoryProvider),
+      authority: ref.watch(accessAuthorityProvider),
       session: ref.watch(accessSessionProvider),
-      allowWhenRepositoryUnavailable: false,
+      allowWhenNobodyCanSignIn: false,
     ) ==
     AccessGateState.allowed;
 
@@ -85,9 +92,9 @@ Future<bool> guardGroupAction(
 }) async {
   if (resolveAccessGate(
         group: group,
-        repository: ref.read(accessRepositoryProvider),
+        authority: ref.read(accessAuthorityProvider),
         session: ref.read(accessSessionProvider),
-        allowWhenRepositoryUnavailable: false,
+        allowWhenNobodyCanSignIn: false,
       ) ==
       AccessGateState.allowed) {
     return true;

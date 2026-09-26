@@ -157,6 +157,32 @@ void main() {
     expect(find.byKey(PlantPageView.unverifiedBannerKey), findsNothing);
   });
 
+  testWidgets('a layout that failed to load says so instead of painting '
+      'nothing', (tester) async {
+    // Loading and failure used to render the same `SizedBox.shrink()`. In a
+    // browser build — no cached copy to fall back on — a provider that had
+    // thrown at boot was therefore a white screen with nothing on the
+    // console, because Riverpod holds a provider's error rather than
+    // reporting it. Loading still renders blank (the arm above); a failure
+    // must not.
+    await tester.pumpWidget(_app(overrides: [
+      pageManagerProvider.overrideWith(
+          (ref) async => throw StateError('the store could not be opened')),
+      bootstrapPageManagerProvider.overrideWithValue(null),
+    ]));
+    // Two pumps: the override's future fails on a microtask after the first
+    // build, and the second frame is the one that sees the error.
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.byKey(PlantPageView.loadFailureKey), findsOneWidget);
+    expect(find.textContaining('the store could not be opened'),
+        findsOneWidget,
+        reason: 'the cause is on the screen, not only in the log');
+    expect(find.byType(AssetStack), findsNothing);
+    expect(find.byKey(PlantPageView.unverifiedBannerKey), findsNothing);
+  });
+
   testWidgets('the database copy supersedes the cached one and clears the mark',
       (tester) async {
     final completer = Completer<PageManager>();

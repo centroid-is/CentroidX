@@ -213,7 +213,7 @@ AccessRole _shiftLead() => const AccessRole(
 ///
 /// Leaves out the reserved anonymous row the seed writes into every database:
 /// the assertions using this are about the accounts these tests create.
-Future<List<AppUserData>> _people(AccessRepository repository) async =>
+Future<List<UserSummary>> _people(AccessRepository repository) async =>
     (await repository.listUsers())
         .where((u) => u.username != kAnonymousUsername)
         .toList();
@@ -291,10 +291,27 @@ void main() {
   // The file itself
   // -------------------------------------------------------------------------
 
+  // Re-pathed by 17-02: the store moved into `tfc_dart`. Both assertions in
+  // this group are absences, and both would have gone on passing against the
+  // thirteen-line `export` left at `lib/core/access_admin_store.dart` — a file
+  // with no Drift import and no `AuditRecord(` in it for the same reason an
+  // empty file has neither. The line-count arm below is what makes them able
+  // to fail again.
+  const storePath = 'packages/tfc_dart/lib/core/access/access_admin_store.dart';
+
   group('the store owns no queries', () {
+    setUpAll(() {
+      final file = File(storePath);
+      expect(file.existsSync(), isTrue,
+          reason: 'run this suite from the repository root');
+      expect(file.readAsLinesSync().length, greaterThan(400),
+          reason: 'this must be the store, not the export file left behind at '
+              'the old path. The store was 670 lines when it moved; two '
+              'absences asserted against a stand-in prove nothing.');
+    });
+
     test('imports no Drift', () {
-      final source =
-          File('lib/core/access_admin_store.dart').readAsStringSync();
+      final source = File(storePath).readAsStringSync();
       expect(
         source.contains('package:drift'),
         isFalse,
@@ -305,7 +322,7 @@ void main() {
     });
 
     test('builds no bare AuditRecord', () {
-      final source = File('lib/core/access_admin_store.dart')
+      final source = File(storePath)
           .readAsLinesSync()
           .where((l) => !l.trimLeft().startsWith('//'))
           .join('\n');
@@ -1085,11 +1102,15 @@ void main() {
     test('setUserPassword', () async {
       await repository.createUser(
           username: 'bob', password: 'pw', roleName: 'Shift Leader');
-      final before = (await _people(repository)).single.passwordHash;
+      // Read through `user()`, not `listUsers()`. The roster answers
+      // `UserSummary`, which carries no credential at all — that is the point
+      // of it — so the stored hash is now only reachable through the
+      // credential read, which is the method that legitimately exposes one.
+      final before = (await repository.user('bob'))!.passwordHash;
       repository.calls.clear();
       await expectGated(
           'user.password', (s) => s.setUserPassword('bob', 'new-one'));
-      expect((await _people(repository)).single.passwordHash, before);
+      expect((await repository.user('bob'))!.passwordHash, before);
     });
 
     test('setRolePages', () async {

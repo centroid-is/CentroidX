@@ -78,13 +78,13 @@ import 'package:tfc/theme.dart' show muted;
 import 'package:tfc/widgets/key_mapping_sections.dart';
 import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/database.dart';
-import 'package:tfc_dart/core/database_drift.dart';
 import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc_dart/core/secure_storage/interface.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
 import '../helpers/golden_tolerance.dart';
 import '../helpers/golden_platform.dart';
+import '../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
 
 // ---------------------------------------------------------------------------
 // Fixtures — this file's own
@@ -323,6 +323,10 @@ Future<void> _loadRealFonts() async {
 }
 
 void main() {
+  // `gatewayConfigProvider` reads the device-local store (#465 made it a
+  // process-wide singleton opened in main()); a golden that builds the key
+  // repository reaches it, so it is seeded in memory.
+  setUp(useInMemoryDeviceLocalPreferences);
   final (light, _) = muted();
 
   useTolerantGoldenComparator();

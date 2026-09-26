@@ -44,10 +44,11 @@ import '../providers/current_page_assets.dart';
 import '../tech_docs/tech_doc_picker.dart';
 
 import 'package:flutter/foundation.dart' show kIsWeb, visibleForTesting;
-import '../chat/ai_context_action.dart';
-import '../chat/asset_context_menu.dart' show buildEditorAssetMenuItems;
+// Chat is not compiled for the browser; the web arm of this seam makes the
+// AI menu entries empty and the wrapper a pass-through. See `chat/editor_ai.dart`.
+import '../chat/editor_ai.dart';
 import '../core/feature_flags.dart';
-import '../chat/chat_overlay.dart' show ChatContext;
+import '../chat/chat_context_types.dart' show ChatContext, ChatContextType;
 import '../chat/hamburger_context_menu.dart';
 import '../chat/page_context_menu.dart';
 import '../chat/palette_context_menu.dart';
@@ -1043,6 +1044,14 @@ class _PageEditorState extends ConsumerState<PageEditor> {
       // staged batch there.
     }
     ref.read(pageManagerProvider.future).then((pageManager) {
+      // The editor can be gone before the manager resolves -- the access gate
+      // swaps this subtree out the moment the session answers, and an operator
+      // can leave the route while the pages are still loading. `setState` on a
+      // defunct state asserts in debug and dereferences a null element in
+      // release, so the load has to check before it lands. Found by
+      // `test/e2e_pages`'s page-editor case, which pumped the editor over the
+      // relay and took the assertion every time.
+      if (!mounted) return;
       setState(() {
         _temporaryPages = pageManager.copyWith().pages;
         _baselineItems = pageManager.baselineItems;
@@ -1828,7 +1837,7 @@ class _PageEditorState extends ConsumerState<PageEditor> {
     page.assets[result.index] = updated;
     _currentPage = targetPage;
     _isProposal = true;
-    _proposalTitle = updated.text ?? updated.runtimeType.toString();
+    _proposalTitle = updated.text ?? updated.assetName;
     _proposedAssets = {..._proposedAssets, updated};
   }
 
@@ -2242,7 +2251,19 @@ class _PageEditorState extends ConsumerState<PageEditor> {
     await _garbageCollectImages(pageManager);
     if (container != null) {
       container.invalidate(pageManagerProvider);
-    } else {
+    } else if (mounted) {
+      // `mounted` on the `ref` arm only. `container` is the captured handle
+      // and outlives this element deliberately — that is what it is for —
+      // while `ref` throws "cannot use ref after the widget was disposed"
+      // the moment the element is gone. There are awaits above this line, so
+      // the editor can be gone by the time it runs: an operator who saves and
+      // immediately leaves, and, reliably, a relayed save, whose round trip
+      // to the gateway is long enough that the window is no longer thin.
+      //
+      // Dropping the invalidate when this element is gone costs nothing: the
+      // provider is `keepAlive`, so it is re-read by whoever mounts next, and
+      // the rows are already written either way. Throwing here cost the whole
+      // rest of this method, including the proposal accounting below.
       ref.invalidate(pageManagerProvider);
     }
 
@@ -3437,6 +3458,44 @@ class _PageEditorState extends ConsumerState<PageEditor> {
     // Keeps the properties pane on the live selection; a no-op when it is
     // closed, which is the usual case.
     _refreshBulkPane();
+    // **The plant's pages can arrive after this editor opened.**
+    //
+    // `initState` reads the manager once, which is right on a direct station:
+    // its mirror is filled before anything renders. On a relayed panel the
+    // rows come over the socket, and a read is refused until somebody signs
+    // in — so the ordinary sequence is an editor that opens on the built-in
+    // default page and a fetch that lands a moment later. Without this the
+    // operator sits in front of an editor showing a plant that is not theirs,
+    // and the Save button would write that plant over the real one.
+    //
+    // **Only when there is nothing to lose.** Re-snapshotting over an open
+    // editing session would discard the operator's work without a word, which
+    // is worse than staleness — so a dirty editor keeps what it has and the
+    // fresh rows wait for the next open. `_hasUnsavedChanges` is the same
+    // question the leave-guard asks.
+    ref.listen(pageManagerProvider, (previous, next) {
+      final manager = next.valueOrNull;
+      if (manager == null || _hasUnsavedChanges) return;
+      setState(() {
+        _temporaryPages = manager.copyWith().pages;
+        _baselineItems = manager.baselineItems;
+        _topLevelOrder = List.of(manager.topLevelOrder);
+        // The page that was open may not exist in what the plant actually
+        // holds — the usual case, because what it was is the built-in
+        // default. Keeping it would leave the editor on a page nobody has,
+        // showing an empty canvas over a plant full of them.
+        if (_currentPage == null ||
+            !_temporaryPages.containsKey(_currentPage)) {
+          _currentPage = _temporaryPages.keys.firstOrNull;
+        }
+        // Re-encode and mark clean, in that order. `_currentJson` is a
+        // cached field and `_currentJsonStale` is what says the cache is
+        // behind the pages; setting the flag and reading the field would
+        // leave the editor permanently dirty over a snapshot nobody edited.
+        _updateCurrentJson();
+        _savedJson = _currentJson;
+      });
+    });
     // Reactively watch for new page/asset proposals arriving via MCP.
     ref.listen<ProposalState>(proposalStateProvider, (prev, next) {
       // Not while a single row is being saved: see [_savingOne].

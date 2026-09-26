@@ -49,6 +49,7 @@ import 'package:tfc/theme.dart' show muted;
 import 'package:tfc/widgets/audit_trail_filters.dart';
 import 'package:tfc/widgets/audit_trail_row.dart';
 import 'package:tfc_dart/core/database_drift.dart';
+import 'package:tfc_access/tfc_access.dart';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -60,7 +61,7 @@ final DateTime _now = DateTime.utc(2026, 8, 30, 12);
 
 /// One audit row, with every column defaulted to the ordinary case so a test
 /// names only the column it is about.
-AuditEntryData _row({
+AuditRecord _row({
   int id = 1,
   DateTime? at,
   String who = 'jon',
@@ -70,8 +71,7 @@ AuditEntryData _row({
   String surface = 'tag',
   String? actionId,
 }) =>
-    AuditEntryData(
-      id: id,
+    AuditRecord(
       at: at ?? _now.subtract(Duration(minutes: id)),
       who: who,
       station: 'ST101',
@@ -89,7 +89,7 @@ AuditEntryData _row({
     );
 
 /// [count] rows, newest first, each its own action — so one row is one tile.
-List<AuditEntryData> _rows(int count, {int from = 1}) =>
+List<AuditRecord> _rows(int count, {int from = 1}) =>
     [for (var i = 0; i < count; i++) _row(id: from + i)];
 
 /// A store that records every query and answers from a callback.
@@ -99,11 +99,11 @@ List<AuditEntryData> _rows(int count, {int from = 1}) =>
 /// page ask for the whole table" is testing two things and reporting one.
 class _FakeStore extends Fake implements AuditTrailStore {
   _FakeStore({
-    List<AuditEntryData> Function(AuditQuery query)? answer,
+    List<AuditRecord> Function(AuditQuery query)? answer,
     this.whoOptions = const <String>[],
-  }) : _answer = answer ?? ((_) => const <AuditEntryData>[]);
+  }) : _answer = answer ?? ((_) => const <AuditRecord>[]);
 
-  final List<AuditEntryData> Function(AuditQuery query) _answer;
+  final List<AuditRecord> Function(AuditQuery query) _answer;
 
   /// What `distinctWho` answers — the `who` dropdown's options.
   final List<String> whoOptions;
@@ -123,12 +123,12 @@ class _FakeStore extends Fake implements AuditTrailStore {
   bool hang = false;
 
   @override
-  Future<List<AuditEntryData>> entries(AuditQuery query) {
+  Future<List<AuditRecord>> entries(AuditQuery query) {
     recorded.add(query);
-    if (hang) return Completer<List<AuditEntryData>>().future;
+    if (hang) return Completer<List<AuditRecord>>().future;
     final err = error;
-    if (err != null) return Future<List<AuditEntryData>>.error(err);
-    return Future<List<AuditEntryData>>.value(_answer(query));
+    if (err != null) return Future<List<AuditRecord>>.error(err);
+    return Future<List<AuditRecord>>.value(_answer(query));
   }
 
   @override

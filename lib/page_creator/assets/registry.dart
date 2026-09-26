@@ -1,4 +1,4 @@
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 import 'package:logger/logger.dart';
 import 'common.dart';
 import 'led.dart';
@@ -43,8 +43,116 @@ import 'alarm_visibility.dart';
 import 'rtsp_camera.dart';
 import 'web_view.dart';
 
+/// Every asset type the plant can store, keyed by its Dart [Type], with the
+/// **name it is stored under**.
+///
+/// ## Why a table, and not `Type.toString()`
+///
+/// A page row carries each asset as `asset_name: "BpmConfig"`, and the
+/// registry used to find the factory by comparing that string with
+/// `factory.key.toString()`. On a station that is the class name and it
+/// works. A release web build is compiled by dart2js, which **minifies type
+/// names**: `BpmConfig.toString()` there is a couple of letters, no stored
+/// name ever matched, every asset fell to the unrecognized path, and every
+/// plant page drew as an empty canvas — silently, because the logger prints
+/// nothing in a release build. Measured 2026-09-16: the built bundle contained
+/// the literal `BpmConfig` zero times.
+///
+/// A `Type` is still a fine map key — its identity survives minification,
+/// only its spelling does not — so the factories stay keyed by type and this
+/// table pins the spelling beside them. It is the one place the stored names
+/// are written down, and they are literals on purpose: they are the plant's
+/// configuration, and renaming a Dart class must not rename what a thousand
+/// rows say. `asset_registry_names_test.dart` holds each literal equal to the
+/// class name on the VM, so a rename fails a test instead of orphaning rows.
+///
+/// Used in both directions: [AssetRegistry.parse] resolves a stored name to a
+/// factory through it, and `BaseAsset` takes its own `asset_name` from it
+/// when constructed by a default factory, so what a browser writes into a
+/// page is what a station will read back.
 class AssetRegistry {
   static final Logger _log = Logger();
+
+  static final Map<Type, String> _names = {
+    LEDConfig: 'LEDConfig',
+    ButtonConfig: 'ButtonConfig',
+    ConveyorConfig: 'ConveyorConfig',
+    RollerConveyorConfig: 'RollerConveyorConfig',
+    ConveyorGateConfig: 'ConveyorGateConfig',
+    SensorConfig: 'SensorConfig',
+    ConnectionInfoConfig: 'ConnectionInfoConfig',
+    EtherCatLinkConfig: 'EtherCatLinkConfig',
+    EtherCatDeviceTableConfig: 'EtherCatDeviceTableConfig',
+    ElevatorConfig: 'ElevatorConfig',
+    ConveyorColorPaletteConfig: 'ConveyorColorPaletteConfig',
+    ArrowConfig: 'ArrowConfig',
+    LEDColumnConfig: 'LEDColumnConfig',
+    DrawnBoxConfig: 'DrawnBoxConfig',
+    NumberConfig: 'NumberConfig',
+    GraphAssetConfig: 'GraphAssetConfig',
+    RatioNumberConfig: 'RatioNumberConfig',
+    BpmConfig: 'BpmConfig',
+    RateValueConfig: 'RateValueConfig',
+    Baader221Config: 'Baader221Config',
+    AnalogBoxConfig: 'AnalogBoxConfig',
+    OptionVariableConfig: 'OptionVariableConfig',
+    TextAssetConfig: 'TextAssetConfig',
+    BeckhoffCX5010Config: 'BeckhoffCX5010Config',
+    BeckhoffCX5340Config: 'BeckhoffCX5340Config',
+    BeckhoffEL1008Config: 'BeckhoffEL1008Config',
+    BeckhoffEL2008Config: 'BeckhoffEL2008Config',
+    BeckhoffEL9222Config: 'BeckhoffEL9222Config',
+    BeckhoffEL9186Config: 'BeckhoffEL9186Config',
+    BeckhoffEL9187Config: 'BeckhoffEL9187Config',
+    BeckhoffEK1100Config: 'BeckhoffEK1100Config',
+    BeckhoffEL3054Config: 'BeckhoffEL3054Config',
+    BeckhoffEL2912Config: 'BeckhoffEL2912Config',
+    BeckhoffEL6070Config: 'BeckhoffEL6070Config',
+    BeckhoffEK1110Config: 'BeckhoffEK1110Config',
+    BeckhoffPS2001Config: 'BeckhoffPS2001Config',
+    BeckhoffCU2508Config: 'BeckhoffCU2508Config',
+    BeckhoffEPBoxConfig: 'BeckhoffEPBoxConfig',
+    FestoVTUGConfig: 'FestoVTUGConfig',
+    STBDDI3725Config: 'STBDDI3725Config',
+    STBDDO3705Config: 'STBDDO3705Config',
+    STBNIP2311Config: 'STBNIP2311Config',
+    STBPDT3100Config: 'STBPDT3100Config',
+    SchneiderATV320Config: 'SchneiderATV320Config',
+    IconConfig: 'IconConfig',
+    ImageConfig: 'ImageConfig',
+    TableAssetConfig: 'TableAssetConfig',
+    StartStopPillButtonConfig: 'StartStopPillButtonConfig',
+    SectionButtonConfig: 'SectionButtonConfig',
+    AirCabConfig: 'AirCabConfig',
+    ChecklistsConfig: 'ChecklistsConfig',
+    ElCabConfig: 'ElCabConfig',
+    RecipesConfig: 'RecipesConfig',
+    SpeedBatcherConfig: 'SpeedBatcherConfig',
+    GateStatusConfig: 'GateStatusConfig',
+    DrawingViewerConfig: 'DrawingViewerConfig',
+    ThirdPartyEquipmentConfig: 'ThirdPartyEquipmentConfig',
+    AlarmVisibilityConfig: 'AlarmVisibilityConfig',
+    RtspCameraConfig: 'RtspCameraConfig',
+    WebViewAssetConfig: 'WebViewAssetConfig',
+  };
+
+  /// The stored name of [type], or null for a type nobody registered.
+  static String? nameOf(Type type) => _names[type];
+
+  /// Every registered type and the name it is stored under.
+  static Map<Type, String> get registeredNames => Map.unmodifiable(_names);
+
+  /// The reverse of [_names], rebuilt when a registration adds a name.
+  static Map<String, Type>? _typesByName;
+
+  static Type? _typeNamed(String name) =>
+      (_typesByName ??= {
+        for (final entry in _names.entries) entry.value: entry.key,
+      })[name];
+
+  /// Names this session has already complained about, so a page with fifty
+  /// assets of one unknown type is one line rather than fifty.
+  static final Set<String> _reportedUnrecognized = {};
 
   static final Map<Type, Asset Function(Map<String, dynamic>)>
       _fromJsonFactories = {
@@ -176,14 +284,27 @@ class AssetRegistry {
     if (kWebViewEnabled) WebViewAssetConfig: WebViewAssetConfig.preview,
   };
 
+  /// Registers a factory for [T] under [name] — the string its rows carry.
+  ///
+  /// [name] defaults to `T.toString()`, which is the class name on a station
+  /// and a minified token in a web build; a registration that has to work
+  /// in a browser passes the name. The built-in types are in [_names].
   static void registerFromJsonFactory<T extends Asset>(
-      Asset Function(Map<String, dynamic>) fromJson) {
+      Asset Function(Map<String, dynamic>) fromJson,
+      {String? name}) {
     _fromJsonFactories[T] = fromJson;
+    _name<T>(name);
   }
 
-  static void registerDefaultFactory<T extends Asset>(
-      Asset Function() preview) {
+  static void registerDefaultFactory<T extends Asset>(Asset Function() preview,
+      {String? name}) {
     defaultFactories[T] = preview;
+    _name<T>(name);
+  }
+
+  static void _name<T>(String? name) {
+    _names[T] = name ?? _names[T] ?? T.toString();
+    _typesByName = null;
   }
 
   /// How many times [parse] has run. Parsing walks every JSON node and
@@ -191,6 +312,10 @@ class AssetRegistry {
   /// a drag) never trigger it — undo snapshots stay encoded strings.
   @visibleForTesting
   static int debugParses = 0;
+
+  /// The types the fromJson table names, for the name-table test.
+  @visibleForTesting
+  static Iterable<Type> get fromJsonTypesForTest => _fromJsonFactories.keys;
 
   static List<Asset> parse(Map<String, dynamic> json) {
     debugParses++;
@@ -204,10 +329,12 @@ class AssetRegistry {
       if (jsonPart is Map<String, dynamic>) {
         if (jsonPart.containsKey(constAssetName)) {
           final assetName = jsonPart[constAssetName] as String;
-          for (final factory in _fromJsonFactories.entries) {
-            if (factory.key.toString() == assetName) {
-              try {
-                final asset = factory.value(jsonPart);
+          // By the name table, never by `Type.toString()` — see [_names].
+          final type = _typeNamed(assetName);
+          final factory = type == null ? null : _fromJsonFactories[type];
+          if (factory != null) {
+            try {
+                final asset = factory(jsonPart);
                 foundWidgets.add(asset);
                 return; // Found an asset, don't crawl deeper
               } catch (e, stackTrace) {
@@ -225,8 +352,11 @@ class AssetRegistry {
                   error: e,
                   stackTrace: stackTrace,
                 );
+                // The logger prints nothing in a release build, and a
+                // browser has no log file: this line is the only trace.
+                debugPrint('AssetRegistry: failed to parse asset of type '
+                    '"$assetName" — skipped: $e');
                 return;
-              }
             }
           }
           // A key under constAssetName that matched no registered factory:
@@ -236,6 +366,16 @@ class AssetRegistry {
           _log.w('Unrecognized asset type "$assetName" in page config — '
               'it will not render and will be dropped if the page is '
               're-saved by this build.');
+          // And where the logger is silent — every release build, and the
+          // browser in particular, where this exact path once emptied every
+          // page with nothing on the console — once per name, on the
+          // console that is there.
+          if (_reportedUnrecognized.add(assetName)) {
+            debugPrint('AssetRegistry: unrecognized asset type "$assetName" '
+                '— it will not render. Registered names: '
+                '${_names.values.length}; this build knows none by that '
+                'name.');
+          }
         }
         // If not an asset, crawl deeper
         jsonPart.values.forEach(crawlJson);
@@ -263,11 +403,8 @@ class AssetRegistry {
   /// server, and the full JSON for [parse] is not available (missing required
   /// fields like colors, sizes, etc.).
   static Asset? createDefaultAssetByName(String assetName) {
-    for (final entry in defaultFactories.entries) {
-      if (entry.key.toString() == assetName) {
-        return entry.value();
-      }
-    }
-    return null;
+    final type = _typeNamed(assetName);
+    if (type == null) return null;
+    return defaultFactories[type]?.call();
   }
 }

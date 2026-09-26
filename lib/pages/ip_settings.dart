@@ -11,11 +11,19 @@ import '../core/network_manager_ops.dart';
 import '../core/network_settings.dart';
 import '../widgets/base_scaffold.dart';
 import '../widgets/panes/pane_chrome.dart';
+import '../widgets/this_panel_notice.dart';
 import '../widgets/panes/standard_dialog.dart';
 
-/// Network configuration for the station: every ethernet/wifi/bond interface
-/// as a card with its live addressing, a per-interface IPv4 dialog, and
-/// creation of active-backup bonds for stations with redundant cabling.
+/// Network configuration for the machine this panel runs on: every
+/// ethernet/wifi/bond interface as a card with its live addressing, a
+/// per-interface IPv4 dialog, and creation of active-backup bonds for
+/// stations with redundant cabling.
+///
+/// **"the machine this panel runs on", not "the station".** The two are the
+/// same computer on a direct station and two computers on a relayed panel,
+/// where every card here describes the panel's own NetworkManager and an
+/// engineer reconfiguring one is changing the wrong host. [ThisPanelNotice]
+/// at the top of the body says so, and says it only where it is true.
 
 class IpSettingsPage extends StatelessWidget {
   final DBusClient dbusClient;
@@ -551,6 +559,10 @@ class IpSettingsBodyState extends State<IpSettingsBody> {
             body = Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                // Above the status chips, because it changes what they mean:
+                // "Internet" and "DNS" are this panel's reachability, not the
+                // plant's.
+                const ThisPanelNotice(subject: 'network configuration'),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
                   child: Row(

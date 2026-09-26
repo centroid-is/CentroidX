@@ -1,10 +1,10 @@
 import 'dart:async';
 
 import 'package:json_annotation/json_annotation.dart';
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 import 'package:rxdart/rxdart.dart';
 
-import 'state_man.dart';
+import 'state_man_types.dart';
 
 part 'boolean_expression.g.dart';
 
@@ -37,13 +37,37 @@ class ExpressionConfig {
   }
 }
 
+/// One evaluation of an [ExpressionConfig]: the verdict, and the bindings it
+/// was reached from.
+///
+/// Both halves travel on both branches. See [Evaluator.streamController] for
+/// why the [bindings] are handed over unformatted, and why they are handed
+/// over even when [satisfied] is false.
+class Evaluation {
+  const Evaluation({required this.satisfied, required this.bindings});
+
+  /// Whether the expression held for [bindings].
+  final bool satisfied;
+
+  /// Every variable the formula names, bound to the value the evaluation saw.
+  ///
+  /// Carries whatever metadata the value type carries -- for
+  /// `package:open62541`'s [DynamicValue] that includes `sourceTimestamp`,
+  /// which is the instant the PLC says the reading was produced.
+  final Map<String, DynamicValue> bindings;
+
+  @override
+  String toString() => 'Evaluation(satisfied: $satisfied, '
+      'bindings: ${bindings.keys.toList()})';
+}
+
 class Evaluator {
   final StateMan stateMan;
   final ExpressionConfig expression;
   StreamSubscription? subscription;
 
-  /// Each evaluation, as the variable bindings that satisfied the expression,
-  /// or null when it is not satisfied.
+  /// Each evaluation, as its verdict plus the variable bindings it was reached
+  /// from -- on **both** branches.
   ///
   /// This used to carry the *formatted* string -- `formatWithValues(map)` --
   /// which meant every listener paid for it whether or not it wanted one.
@@ -55,15 +79,26 @@ class Evaluator {
   /// condition is non-null, and the icon asset only calls [eval]. The
   /// bindings are already in hand, so handing them over and letting [state]
   /// -- the one caller that wants text -- do the formatting costs nothing and
-  /// takes the string builder off the path of the two that do not.
-  StreamController<Map<String, DynamicValue>?> streamController =
-      StreamController<Map<String, DynamicValue>?>.broadcast();
+  /// takes the string builder off the path of the two that do not. That
+  /// argument is unchanged, and [state] is still the only formatter.
+  ///
+  /// What changed is the **false** branch. It used to emit `null`: the verdict
+  /// survived and the bindings did not. But a deactivation is a transition, a
+  /// transition needs a timestamp, and the value that says *when* it happened
+  /// -- the `sourceTimestamp` of the reading that stopped satisfying the
+  /// expression -- lives in the bindings that were being discarded. Every
+  /// clear was therefore stamped with the machine's own clock, silently, and
+  /// no caller could have done better because nothing downstream of here could
+  /// see the plant's instant. Emitting the bindings on both branches is what
+  /// makes `resolveAlarmStamp` (see `alarm_stamp.dart`) possible at all.
+  StreamController<Evaluation> streamController =
+      StreamController<Evaluation>.broadcast();
 
   Evaluator({required this.stateMan, required this.expression});
 
   Stream<bool> eval() {
     return _evaluations()
-        .map((bindings) => bindings != null)
+        .map((evaluation) => evaluation.satisfied)
         .distinct()
         .startWith(false);
   }
@@ -71,11 +106,19 @@ class Evaluator {
   /// The satisfied expression rendered with its values, or null when it is
   /// not satisfied. Alarms show this text, so it is built here and only here.
   Stream<String?> state() {
-    return _evaluations().map((bindings) =>
-        bindings == null ? null : expression.value.formatWithValues(bindings));
+    return _evaluations().map((evaluation) => evaluation.satisfied
+        ? expression.value.formatWithValues(evaluation.bindings)
+        : null);
   }
 
-  Stream<Map<String, DynamicValue>?> _evaluations() {
+  /// Every evaluation, verdict and bindings alike.
+  ///
+  /// The surface an alarm engine needs: it must stamp a deactivation from the
+  /// same plant instants an activation was stamped from, and only this stream
+  /// carries them across the false branch.
+  Stream<Evaluation> evaluations() => _evaluations();
+
+  Stream<Evaluation> _evaluations() {
     streamController.onListen = () async {
       final variables = expression.value.extractVariables();
       final List<Stream<DynamicValue>> streams;
@@ -98,7 +141,12 @@ class Evaluator {
               .asMap()
               .entries
               .map((e) => MapEntry(e.value, values[e.key])));
-          streamController.add(expression.value.evaluate(map) ? map : null);
+          // One add, both branches: the bindings go over whatever the verdict
+          // is. See the streamController doc.
+          streamController.add(Evaluation(
+            satisfied: expression.value.evaluate(map),
+            bindings: map,
+          ));
         },
         onError: (error, stack) {
           streamController.addError(error, stack);

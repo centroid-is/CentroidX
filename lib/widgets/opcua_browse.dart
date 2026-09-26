@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
+import '../core/opcua_sessions.dart';
 import 'package:open62541/open62541.dart'
     show BrowseResultItem, NodeClass, NodeId, ClientApi, DynamicValue;
-import 'package:tfc_dart/core/state_man.dart' show StateMan;
+import 'package:tfc_dart/core/state_man_types.dart' show StateMan;
 
 import 'browse_panel.dart';
 
@@ -21,7 +22,7 @@ Future<BrowseResultItem?> browseOpcUaNode({
   String? initialNodeId,
 }) async {
   ClientApi? client;
-  for (final wrapper in stateMan.clients) {
+  for (final wrapper in opcUaSessionsOf(stateMan)) {
     if (wrapper.config.serverAlias == serverAlias) {
       client = wrapper.client;
       break;
@@ -37,7 +38,7 @@ Future<BrowseResultItem?> browseOpcUaNode({
     return null;
   }
 
-  final alias = serverAlias ?? stateMan.clients.first.config.endpoint;
+  final alias = serverAlias ?? opcUaSessionsOf(stateMan).first.config.endpoint;
   final dataSource = OpcUaBrowseDataSource(client);
 
   final result = await showBrowseDialog(

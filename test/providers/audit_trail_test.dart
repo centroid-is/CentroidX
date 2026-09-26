@@ -19,10 +19,12 @@ import 'package:tfc/core/audit_trail_grouping.dart';
 import 'package:tfc/core/audit_trail_store.dart';
 import 'package:tfc/providers/audit_trail.dart';
 import 'package:tfc/providers/database.dart';
+import 'package:tfc/providers/preferences.dart';
 import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/access/drift_audit_sink.dart';
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/database_drift.dart';
+import 'package:tfc_dart/core/preferences.dart' show InMemoryPreferences;
 
 /// The instant every window assertion is written against, matching
 /// `test/core/audit_trail_store_test.dart` so the two suites read alike.
@@ -53,7 +55,7 @@ class _CountingStore extends Fake implements AuditTrailStore {
   bool throwing = false;
 
   @override
-  Future<List<AuditEntryData>> entries(AuditQuery query) {
+  Future<List<AuditRecord>> entries(AuditQuery query) {
     entriesCalls++;
     if (throwing) throw StateError('the audit database blinked');
     return inner.entries(query);
@@ -112,9 +114,15 @@ void main() {
       ));
 
   /// A container over the in-memory database — the ordinary station.
+  ///
+  /// The device-local store is overridden because 17-12 made the store
+  /// provider consult the transport row (`gatewayConfigProvider`) before
+  /// deciding its route; an empty in-memory row reads as direct mode, which
+  /// is the station these arms are about.
   ProviderContainer wired() {
     final container = ProviderContainer(overrides: [
       databaseProvider.overrideWith((ref) async => _FakeDatabase(db)),
+      localPreferencesProvider.overrideWithValue(InMemoryPreferences()),
     ]);
     addTearDown(container.dispose);
     return container;
@@ -126,6 +134,7 @@ void main() {
   ProviderContainer databaseless() {
     final container = ProviderContainer(overrides: [
       databaseProvider.overrideWith((ref) async => null),
+      localPreferencesProvider.overrideWithValue(InMemoryPreferences()),
     ]);
     addTearDown(container.dispose);
     return container;

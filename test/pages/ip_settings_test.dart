@@ -1,5 +1,6 @@
 import 'package:dbus/dbus.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nm/nm.dart';
 import 'package:tfc/pages/ip_settings.dart';
@@ -13,13 +14,19 @@ Widget _buildPage(
   bool dnsWorking = true,
   DateTime Function()? clock,
 }) {
-  return MaterialApp(
-    home: Scaffold(
-      body: IpSettingsBody(
-        client: client,
-        probe: () async => internetReachable,
-        dnsProbe: () async => dnsWorking,
-        clock: clock,
+  // `ProviderScope`, because the body now renders [ThisPanelNotice] — a
+  // `ConsumerWidget` that asks `gatewayConfigProvider` which machine this
+  // panel is. With no override it answers the direct-mode default and the
+  // notice renders nothing, which is what every case in this file is about.
+  return ProviderScope(
+    child: MaterialApp(
+      home: Scaffold(
+        body: IpSettingsBody(
+          client: client,
+          probe: () async => internetReachable,
+          dnsProbe: () async => dnsWorking,
+          clock: clock,
+        ),
       ),
     ),
   );

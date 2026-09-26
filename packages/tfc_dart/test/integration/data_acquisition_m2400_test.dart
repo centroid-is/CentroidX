@@ -8,8 +8,6 @@
 import 'dart:async';
 
 import 'package:jbtm/jbtm.dart' hide ConnectionStatus;
-import 'package:jbtm/src/m2400.dart' show M2400RecordType;
-import 'package:open62541/open62541.dart' show DynamicValue;
 import 'package:test/test.dart';
 import 'package:tfc_dart/core/collector.dart';
 import 'package:tfc_dart/core/database.dart';
@@ -85,7 +83,7 @@ void main() {
           ),
         });
 
-        final stateMan = await StateMan.create(
+        final stateMan = await OpcUaStateMan.create(
           config: StateManConfig(opcua: [], jbtm: [m2400Config]),
           keyMappings: keyMappings,
           deviceClients: deviceClients,
@@ -157,7 +155,7 @@ void main() {
           ),
         });
 
-        final stateMan = await StateMan.create(
+        final stateMan = await OpcUaStateMan.create(
           config: StateManConfig(opcua: [], jbtm: configs),
           keyMappings: keyMappings,
           deviceClients: deviceClients,
@@ -222,7 +220,7 @@ void main() {
           ),
         });
 
-        final stateMan = await StateMan.create(
+        final stateMan = await OpcUaStateMan.create(
           config: StateManConfig(opcua: [], jbtm: [m2400Config]),
           keyMappings: keyMappings,
           deviceClients: deviceClients,

@@ -94,7 +94,8 @@ AssetUpdateResult applyAssetUpdate(
   final candidates = <int>[];
   for (var i = 0; i < assets.length; i++) {
     final a = assets[i];
-    if (a.runtimeType.toString() != assetType) continue;
+    // The stored name, not `runtimeType.toString()`, which dart2js minifies.
+    if (a.assetName != assetType) continue;
     if (title != null && !titleMatches(a)) continue;
     if (key != null && !keyMatches(a)) continue;
     candidates.add(i);

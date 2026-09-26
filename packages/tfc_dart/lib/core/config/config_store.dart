@@ -70,7 +70,11 @@ import 'package:meta/meta.dart';
 import '../database.dart';
 import '../database_connections.dart';
 import '../database_drift.dart';
-import '../state_man.dart' show KeyMappings;
+// The pure barrel, not `state_man.dart`: that library holds `OpcUaStateMan`
+// and so `dart:ffi`, and the configuration store is in the closure of every
+// screen that edits configuration — including in a browser, which has no
+// OPC UA client at all. See `test/web/web_closure_guard_test.dart`.
+import '../state_man_types.dart' show KeyMappings;
 import 'config_change.dart';
 import 'config_diff.dart';
 import 'config_history_policy.dart';
@@ -240,11 +244,21 @@ class ConfigWriteResult {
 
 /// The shared-configuration repository. See the library doc for ownership.
 class ConfigStore {
+  /// [startRemoteSync] false attaches [remote] without the sync engine's
+  /// timer, notification channel or reconcile.
+  ///
+  /// For the relay gateway, whose local half is an in-memory mirror nothing
+  /// reads: reconciling Postgres into it is pure cost, and the five-minute
+  /// sweep would hold a second long-lived transaction against the plant's
+  /// database for the sake of a copy that is discarded when the process ends.
+  /// A station leaves this alone — its mirror is what it serves from, and an
+  /// unsynced mirror is a station serving yesterday's configuration.
   ConfigStore({
     required AppDatabase local,
     required ConfigScope stationScope,
     required String station,
     Database? remote,
+    bool startRemoteSync = true,
     Duration sweepInterval = kConfigSweepInterval,
   })  : _local = local,
         _stationScope = stationScope,
@@ -253,7 +267,7 @@ class ConfigStore {
     // A remote given here is attached exactly as one given later is, timer and
     // notification channel included. Two ways to hand over a remote is
     // tolerable; two meanings of "attached" is not.
-    if (remote != null) _attach(remote.db);
+    if (remote != null) _attach(remote.db, startSync: startRemoteSync);
   }
 
   /// `config.sqlite` — the mirror of the shared rows and the owner of this
@@ -637,14 +651,36 @@ class ConfigStore {
   /// moved in between fails its compare-and-swap, which is the right answer.
   /// Omitted, the snapshot at write time is used, which is only correct for
   /// a caller that built [wanted] on the chain itself (undo does).
+  ///
+  /// ## [station]: whose write this was, not whose process wrote it
+  ///
+  /// `config_change.station` is [_station] — this process's hostname — for
+  /// every caller that omits it, which is right for a panel writing its own
+  /// configuration: the machine that ran the write is the machine the
+  /// operator sat at.
+  ///
+  /// It is wrong for the relay gateway. There, one process writes on behalf
+  /// of whichever panel is connected, and the `audit_entry` row for the same
+  /// action already carries **that** panel's station (D-11, the gateway's
+  /// knowledge of the socket). Leaving this to default would put the
+  /// gateway's own hostname in the change row and the panel's in the audit
+  /// row — one action id, two answers to "where did this come from", in the
+  /// history this branch just put on the wire. So a caller that knows better
+  /// than this process's hostname says so here.
+  ///
+  /// It is not derived from [who]: an account is not a machine, the same
+  /// account signs in from several panels, and the history's station column
+  /// exists precisely to tell those apart.
   Future<ConfigWriteResult> writeItems({
     required Set<ConfigKind> kinds,
     required List<ConfigItem> wanted,
     required String actionId,
     required String who,
     required String roleName,
+    String? station,
     String? reason,
     List<ConfigItem>? derivedFrom,
+    Map<String, int>? baseRevisions,
   }) =>
       serialiseWrite(() => _writeItems(
             kinds: kinds,
@@ -652,8 +688,10 @@ class ConfigStore {
             actionId: actionId,
             who: who,
             roleName: roleName,
+            station: station,
             reason: reason,
             derivedFrom: derivedFrom,
+            baseRevisions: baseRevisions,
           ));
 
   Future<ConfigWriteResult> _writeItems({
@@ -662,9 +700,16 @@ class ConfigStore {
     required String actionId,
     required String who,
     required String roleName,
+    String? station,
     String? reason,
     List<ConfigItem>? derivedFrom,
+    Map<String, int>? baseRevisions,
   }) async {
+    // Resolved once, here, rather than at each of the three change-row sites:
+    // three `station ?? _station` spellings is three places for one of them
+    // to be missed, and the miss would be a single row in a trail nobody
+    // re-reads.
+    final changeStation = station ?? _station;
     final attempted = _describeItems(kinds, wanted);
     final seen = <String>{};
     for (final item in wanted) {
@@ -748,7 +793,15 @@ class ConfigStore {
     // SC-1's other half. Save pressed twice is not a change, so it is not a
     // row, not a change entry, not an audit entry and not an event — the same
     // rule the local row writer applies at `sqlite_preferences.dart:399`.
-    if (diff.isEmpty) {
+    //
+    // **Except when a caller brought revisions to swap on.** An empty diff
+    // means "what I want is what I derived from", and a caller whose base is
+    // stale can produce one while the plant has moved under it — that is the
+    // same nothing-to-write path, but answering it `success` tells the caller
+    // its view is current when it is not. So a caller with [baseRevisions]
+    // goes through the transaction, has its base verified, and only then is
+    // told nothing changed. It still writes nothing.
+    if (diff.isEmpty && baseRevisions == null) {
       return ConfigWriteResult(diff: ConfigDiff.none, actionId: actionId);
     }
 
@@ -756,6 +809,53 @@ class ConfigStore {
     final written = <String, ConfigItem>{};
     try {
       await remote.transaction(() async {
+        // **The whole kind set, compared inside the transaction.**
+        //
+        // The per-row guards below only cover rows this save *moves*: an
+        // `UPDATE … WHERE rev = ?` for a change, a `DELETE … WHERE rev = ?`
+        // for a removal. A row the caller holds **unchanged** produces no
+        // statement at all, and therefore no guard — so a caller whose base
+        // was read before somebody else's commit can be told its save
+        // succeeded while a row it listed as present has been deleted
+        // underneath it.
+        //
+        // That is not hypothetical: a caller's base is read outside this
+        // transaction and outside `serialiseWrite`, so another write can
+        // commit in between. Two panels, pages P and Q, both at rev 3: A
+        // deletes P; B adds a page and leaves P and Q alone. B's base check
+        // passes against the pre-commit read, B's diff lists P as unchanged,
+        // no statement is issued for it, and B is answered "+1" over a plant
+        // that no longer has P.
+        //
+        // [baseRevisions] closes it by making the kind set the unit of the
+        // compare-and-swap, which is what the wire's own contract
+        // (`ConfigItemsReplaceRequest.baseRevisions`) already claims. One
+        // query, in the transaction, before anything is applied: same ids,
+        // same revisions, no more and no fewer.
+        if (baseRevisions != null) {
+          final rows = await (remote.select(remote.configItemTable)
+                ..where((t) =>
+                    t.kind.isIn([for (final kind in kinds) kind.wireName]) &
+                    t.scope.equals(ConfigScope.shared.wireName)))
+              .get();
+          final live = {
+            for (final row in rows) '${row.kind}/${row.id}': row.rev,
+          };
+          for (final entry in live.entries) {
+            final base = baseRevisions[entry.key];
+            if (base == null) {
+              throw ConfigConflict(entry.key, expectedRev: entry.value);
+            }
+            if (base != entry.value) {
+              throw ConfigConflict(entry.key, expectedRev: base);
+            }
+          }
+          for (final id in baseRevisions.keys) {
+            if (!live.containsKey(id)) {
+              throw ConfigConflict(id, expectedRev: baseRevisions[id]!);
+            }
+          }
+        }
         for (final item in diff.added) {
           // C-12. An insert has no `rev` to compare against, so its collision
           // is the (kind, id, scope) primary key — and left to the driver that
@@ -792,7 +892,7 @@ class ConfigStore {
                 at: at,
                 actionId: actionId,
                 who: who,
-                station: _station,
+                station: changeStation,
                 roleName: roleName,
                 after: item,
                 reason: reason,
@@ -832,7 +932,7 @@ class ConfigStore {
                 at: at,
                 actionId: actionId,
                 who: who,
-                station: _station,
+                station: changeStation,
                 roleName: roleName,
                 before: stored,
                 after: item,
@@ -856,7 +956,7 @@ class ConfigStore {
                 at: at,
                 actionId: actionId,
                 who: who,
-                station: _station,
+                station: changeStation,
                 roleName: roleName,
                 before: item,
                 reason: reason,
@@ -875,6 +975,14 @@ class ConfigStore {
         throw ConfigStoreOfflineException(attempted: attempted, cause: e);
       }
       rethrow;
+    }
+
+    // A verified base with nothing to write: the transaction proved the
+    // caller's view is current, and there is no row, change row or event to
+    // produce. Returned here rather than skipped above, because the proof is
+    // the whole reason this call went through the transaction at all.
+    if (diff.isEmpty) {
+      return ConfigWriteResult(diff: ConfigDiff.none, actionId: actionId);
     }
 
     // Past here the remote has committed and the save has happened. The mirror
@@ -1385,6 +1493,45 @@ class ConfigStore {
     _logger.w('key_mappings watermark is unreadable (${row.payload}); '
         'consuming the change log from the beginning');
     return 0;
+  }
+
+  /// The plant's shared rows of [kinds], read from the attached remote.
+  ///
+  /// **Not the snapshot.** Every other reader here serves the mirror, which
+  /// is the right answer for a station: the mirror is filled at boot and kept
+  /// level by the sync engine, so reading it is reading the plant without
+  /// touching the network.
+  ///
+  /// The relay gateway has no such mirror. It writes on behalf of connected
+  /// panels through an ephemeral in-memory local database that nothing ever
+  /// fills, so its snapshot is empty — and a replace set built from an empty
+  /// snapshot is a save that deletes every shared row of those kinds. This is
+  /// how that caller reads what it must not delete.
+  ///
+  /// Shared scope only, to match what [writeItems] will accept. Rows of a
+  /// kind or scope this build does not know are skipped with a log line, the
+  /// same forward-compatibility rule [_itemOf] states.
+  ///
+  /// Throws [ConfigStoreOfflineException] when no remote is attached, rather
+  /// than answering an empty list: "the plant has no pages" and "this process
+  /// never reached Postgres" must not look the same to a caller about to
+  /// derive a write from the answer.
+  Future<List<ConfigItem>> readRemoteShared(Set<ConfigKind> kinds) async {
+    final remote = _remote;
+    if (remote == null) {
+      throw ConfigStoreOfflineException(
+          attempted: kinds.map((k) => k.wireName).join(', '));
+    }
+    final wireNames = [for (final kind in kinds) kind.wireName];
+    final rows = await (remote.select(remote.configItemTable)
+          ..where((t) =>
+              t.kind.isIn(wireNames) &
+              t.scope.equals(ConfigScope.shared.wireName)))
+        .get();
+    return [
+      for (final row in rows)
+        if (_itemOf(row) case final item?) item,
+    ];
   }
 
   /// The item a stored row describes, or null when this build does not know

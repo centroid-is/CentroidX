@@ -10,6 +10,7 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 import '../theme.dart';
 import '../providers/theme.dart';
 import 'button_graph.dart';
+import 'hmi_motion.dart';
 
 part 'graph.g.dart';
 
@@ -395,7 +396,10 @@ class _GraphRevealState extends State<_GraphReveal>
     // is -- would otherwise touch the field for the first time in `dispose`,
     // and creating a ticker while the element is being unmounted throws
     // "Looking up a deactivated widget's ancestor is unsafe".
-    _controller = AnimationController(vsync: this, duration: _duration)
+    _controller = AnimationController(
+        vsync: this,
+        animationBehavior: kHmiAnimationBehavior,
+        duration: _duration)
       ..addStatusListener((status) {
         if (status == AnimationStatus.completed && mounted) {
           setState(() => _outgoing = null);

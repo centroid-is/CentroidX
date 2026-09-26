@@ -50,6 +50,9 @@ class _LiveCollector extends Fake implements Collector {
   @override
   final Database database;
 
+  @override
+  TimeseriesReader get history => database;
+
   final _live = StreamController<List<TimeseriesData<dynamic>>>.broadcast();
 
   @override

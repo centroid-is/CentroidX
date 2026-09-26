@@ -42,6 +42,7 @@ import 'package:tfc/theme.dart' show muted;
 import 'package:tfc/widgets/audit_trail_row.dart';
 import 'package:tfc/widgets/config_change_row.dart';
 import 'package:tfc_dart/core/config/config_item.dart';
+import 'package:tfc_access/tfc_access.dart' show AuditRecord;
 import 'package:tfc_dart/core/database_drift.dart';
 
 import 'audit_trail_fixture.dart';
@@ -54,7 +55,7 @@ const Key _boundary = Key('audit-trail-unified-golden-boundary');
 /// audit lines — a sign-in, a refused setpoint write and an allowed one.
 ///
 /// Written as what the `WHERE` clause returned, newest first.
-List<AuditEntryData> _trailRows() => <AuditEntryData>[
+List<AuditRecord> _trailRows() => <AuditRecord>[
       ...configGoldenFieldDiffHeaders(),
       ...auditGoldenPopulatedRows().take(3),
     ];
@@ -63,10 +64,10 @@ List<AuditEntryData> _trailRows() => <AuditEntryData>[
 class _GoldenAuditStore extends Fake implements AuditTrailStore {
   _GoldenAuditStore(this.rows);
 
-  final List<AuditEntryData> rows;
+  final List<AuditRecord> rows;
 
   @override
-  Future<List<AuditEntryData>> entries(AuditQuery query) async => rows;
+  Future<List<AuditRecord>> entries(AuditQuery query) async => rows;
 
   @override
   Future<Map<String, int>> memberCountsByAction(

@@ -16,7 +16,6 @@ library;
 
 import 'dart:io';
 
-import 'package:drift/drift.dart' hide isNull;
 import 'package:drift/native.dart';
 import 'package:test/test.dart';
 import 'package:tfc_dart/core/database.dart';
@@ -27,6 +26,23 @@ Future<List<String>> _userColumns(AppDatabase db) async {
       await db.customSelect("PRAGMA table_info('app_user')").get();
   return rows.map((r) => r.read<String>('name')).toList();
 }
+
+/// Undoes what schema **v7** added to `alarm_history`.
+///
+/// This file's v5 fixture is built by creating the CURRENT schema and removing
+/// what came later, so every version after v6 has to add its own rollback here
+/// or the fixture is not the shape it claims to be. Without these,
+/// `onUpgrade(5, 8)`'s SQLite arm aborts on
+/// `duplicate column name: rule_index` — the fixture, not the migration: a
+/// real v5 SQLite database has none of these columns.
+///
+/// The index goes first. SQLite refuses to drop a column an index refers to.
+const _v7Rollback = [
+  'DROP INDEX IF EXISTS idx_alarm_history_open',
+  'ALTER TABLE alarm_history DROP COLUMN rule_index',
+  'ALTER TABLE alarm_history DROP COLUMN ts_source',
+  'ALTER TABLE alarm_history DROP COLUMN deactivated_reason',
+];
 
 void main() {
   test('a fresh install carries station_account, defaulting false', () async {
@@ -86,6 +102,9 @@ void main() {
       await db.customStatement('DROP TABLE audit_entry');
       await db.customStatement('DROP TABLE app_user');
       await db.customStatement('DROP TABLE app_role');
+      for (final stmt in _v7Rollback) {
+        await db.customStatement(stmt);
+      }
       await db.customStatement('PRAGMA user_version = 5');
       await db.close();
     }

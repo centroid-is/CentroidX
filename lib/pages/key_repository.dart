@@ -1,22 +1,22 @@
 import 'dart:async';
 import 'package:tfc/widgets/panes/standard_dialog.dart';
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
-import 'package:file_picker/file_picker.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:path/path.dart' as path;
 import '../widgets/base_scaffold.dart';
 import '../widgets/proposal_visual.dart';
 import '../providers/proposal_state.dart';
-import 'package:tfc_dart/core/state_man.dart';
+import 'package:tfc_dart/core/state_man_types.dart';
+import 'key_mappings_file.dart';
+import 'package:tfc_dart/core/state_man_config_storage.dart';
 import 'package:tfc_dart/core/modbus_client_wrapper.dart' show ModbusDataType;
-import 'package:tfc_dart/core/collector.dart';
+// `CollectEntry`/`CollectConfig` only — see the note in `assets/common.dart`.
+import 'package:tfc_dart/core/collect_config.dart';
 import 'package:tfc_dart/core/database.dart';
-import 'package:tfc_dart/core/config/config_item.dart' show ConfigItem;
+import 'package:tfc_dart/core/config/config_item.dart' show ConfigItem, ConfigKind;
+import 'package:tfc_dart/core/config/key_mapping_codec.dart' as codec;
 import 'package:tfc_dart/core/config/config_store_errors.dart';
 import 'package:jbtm/src/m2400.dart' show M2400RecordType;
 import '../widgets/fuzzy_search_bar.dart';
@@ -26,7 +26,10 @@ import '../providers/access_templates.dart';
 import '../providers/preferences.dart';
 import '../providers/state_man.dart';
 import '../providers/database.dart';
+import '../providers/gateway.dart';
 import '../providers/config_store.dart';
+import '../providers/device_local_store_open.dart';
+import '../core/relayed_config_items.dart';
 import 'access_templates_section.dart';
 import 'package:tfc_access/tfc_access.dart'
     show AccessTemplate, TagBindingResolver;
@@ -211,6 +214,15 @@ class KeyRepositoryContent extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final dbAsync = ref.watch(databaseProvider);
+    // **Is there a database** is the wrong question on a gateway panel, and
+    // asking it put a "no database" banner on every browser. A browser has no
+    // SQLite by design and permanently — the key mappings on this page do not
+    // come from one: they are `config_item` rows the gateway serves, reaching
+    // the store through `RelayedConfigItems`, exactly as this panel's
+    // preferences do. The banner means "this station's own database is
+    // missing", which is a real fault on a station and a category error here.
+    final isGateway =
+        ref.watch(gatewayConfigProvider).valueOrNull?.isGateway ?? false;
 
     // The key list scrolls on its own (see [_KeyMappingsSection]) instead of
     // the whole page living in a SingleChildScrollView. A scroll view with a
@@ -219,14 +231,18 @@ class KeyRepositoryContent extends ConsumerWidget {
     final content = Column(
       children: [
         // Database status indicator
-        dbAsync.when(
-          data: (db) {
-            if (db != null) return const SizedBox.shrink();
-            return _DatabaseStatusBanner(connected: false);
-          },
-          loading: () => _DatabaseStatusBanner(connected: false, loading: true),
-          error: (_, __) => _DatabaseStatusBanner(connected: false),
-        ),
+        if (isGateway)
+          const SizedBox.shrink()
+        else
+          dbAsync.when(
+            data: (db) {
+              if (db != null) return const SizedBox.shrink();
+              return _DatabaseStatusBanner(connected: false);
+            },
+            loading: () =>
+                _DatabaseStatusBanner(connected: false, loading: true),
+            error: (_, __) => _DatabaseStatusBanner(connected: false),
+          ),
         Expanded(child: _KeyMappingsSection(proposalData: proposalData)),
         const SizedBox(height: 16),
         const AccessTemplatesSection(),
@@ -376,28 +392,23 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
     // `origin: 'mcp'`. That is named in the copy below, not only here.
     // ---------------------------------------------------------------------
     try {
-      final store = await ref.read(configStoreProvider.future);
-      final keyMappings = store.inner.keyMappings;
+      // What the plant holds: the mirror on a DIRECT station, the relayed
+      // rows on a browser or a gateway panel — never this screen's unsaved
+      // edits. See [configRowsComeOverTheWire] for why a relayed station
+      // reads the wire rather than the mirror it happens to have.
+      final keyMappings =
+          await _fromWire() ? (await _relayedRows()).keyMappings
+              : (await ref.read(configStoreProvider.future)).inner.keyMappings;
       final jsonString =
           const JsonEncoder.withIndent('  ').convert(keyMappings.toJson());
 
-      String? savePath;
-      if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
-        savePath = await FilePicker.platform.saveFile(
-          dialogTitle: 'Export Key Mappings',
-          fileName: 'key_mappings.json',
-          type: FileType.custom,
-          allowedExtensions: ['json'],
-        );
-      } else {
-        final dir = await getApplicationDocumentsDirectory();
-        final ts = DateTime.now().toIso8601String().replaceAll(':', '-');
-        savePath = path.join(dir.path, 'key_mappings_$ts.json');
-      }
-      if (savePath == null) return;
-
-      final file = File(savePath);
-      await file.writeAsString(jsonString);
+      // Where the file went, as a sentence for the strip below: a real path on
+      // a station, a download name in a browser. Null means the operator
+      // dismissed the dialog. See `key_mappings_file.dart` — this is the one
+      // part of the page that touches a filesystem, behind a seam because a
+      // browser cannot.
+      final savedAs = await saveKeyMappingsFile(jsonString);
+      if (savedAs == null) return;
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -407,7 +418,7 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'Key mappings exported to ${file.path}',
+                'Key mappings exported to $savedAs',
                 // The path is the one line here that may be elided: it can be
                 // arbitrarily long, and letting it wrap without limit would
                 // push the disclosure below off the strip — which is the line
@@ -441,17 +452,24 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
   }
 
   Future<void> _onImport() async {
+    if (!kHasDeviceLocalMirror) {
+      // Refused before the file picker, not after it: an import is a save,
+      // and a browser cannot save key mappings (see [_saveKeyMappings]).
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        backgroundColor: Theme.of(context).colorScheme.error,
+        content: const Text('This browser reads the key mappings over the '
+            'relay and cannot write them back, so it cannot import. Import on '
+            'a station.'),
+      ));
+      return;
+    }
     try {
-      final pick = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: ['json'],
-        dialogTitle: 'Import Key Mappings',
-      );
-      if (pick == null || pick.files.single.path == null) return;
+      // A browser hands over bytes and no path, so the read is behind the same
+      // seam as the write. Null is a dismissed dialog, not a failure.
+      final text = await pickKeyMappingsFile();
+      if (text == null) return;
 
-      final file = File(pick.files.single.path!);
-      final jsonMap =
-          jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+      final jsonMap = jsonDecode(text) as Map<String, dynamic>;
       final imported = KeyMappings.fromJson(jsonMap);
 
       if (!mounted) return;
@@ -702,6 +720,7 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
   void initState() {
     super.initState();
     _loadKeyMappings();
+    _followRelayedRows();
     // Whole queue, not just the one the banner routed us with -- but fall back
     // to that one when state is empty, because the chat batch card empties
     // proposalStateProvider before it navigates here.
@@ -709,6 +728,33 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
       _stageRoutedProposal(widget.proposalData);
     }
   }
+
+  /// Re-reads when the plant's rows arrive after this screen opened.
+  ///
+  /// [_loadKeyMappings] runs once, which is right on a direct station: its
+  /// mirror is filled before anything renders. On a relayed panel the rows
+  /// come over the socket and a read is refused until somebody signs in, so
+  /// the ordinary sequence is a screen that opens on "No keys configured" and
+  /// a fetch that lands a moment later. Without this the operator sits in
+  /// front of an empty key repository on a plant with five hundred keys —
+  /// and the Save button would write that emptiness over them.
+  ///
+  /// **Only when there is nothing to lose.** Re-reading over unsaved edits
+  /// would discard the operator's work without a word, which is worse than
+  /// staleness, so a dirty screen keeps what it has.
+  void _followRelayedRows() {
+    unawaited(() async {
+      if (!await _fromWire() || !mounted) return;
+      final relayed = await _relayedRows();
+      if (!mounted) return;
+      _rowSub = relayed.changed.listen((_) {
+        if (!mounted || _hasUnsavedChanges) return;
+        unawaited(_loadKeyMappings());
+      });
+    }());
+  }
+
+  StreamSubscription<void>? _rowSub;
 
   /// Stages the proposal the route carried, when state has none.
   ///
@@ -780,6 +826,8 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
 
   @override
   void dispose() {
+    unawaited(_rowSub?.cancel());
+    _rowSub = null;
     // The banner holds these closures over this State; left set they would
     // fire into a disposed State after navigating away.
     //
@@ -1137,13 +1185,32 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
       // The plant's wiring comes from the shared configuration store, one row
       // per key. `state_man_config` is not this phase's key and still comes
       // out of preferences.
-      final store = await ref.read(configStoreProvider.future);
-      _keyMappings = store.inner.keyMappings;
-      _baselineItems = store.inner.keyMappingItems;
+      if (await _fromWire()) {
+        // A browser has no mirror at all, and a relayed station has one that
+        // nothing fills. The rows come over the relay instead — the same
+        // `RelayedConfigItems` the page manager and the StateMan read — and a
+        // copy is held, so an edit on this screen never reaches the object the
+        // running panel resolves keys from.
+        final relayed = await _relayedRows();
+        _keyMappings = KeyMappings.fromJson(relayed.keyMappings.toJson());
+        _baselineItems = relayed.itemsOf(const {ConfigKind.keyMapping});
+      } else {
+        final store = await ref.read(configStoreProvider.future);
+        _keyMappings = store.inner.keyMappings;
+        _baselineItems = store.inner.keyMappingItems;
+      }
       _invalidateDerived();
       _savedJson = _currentJson();
-      final prefs = await ref.read(preferencesProvider.future);
-      _stateManConfig = await StateManConfig.fromPrefs(prefs);
+      // The server list only feeds the alias pickers. Read apart from the
+      // mappings: on a gateway panel it is a preference the session may not
+      // be allowed to read, and a list of keys is worth showing without it.
+      try {
+        final prefs = await ref.read(preferencesProvider.future);
+        _stateManConfig = await StateManConfigStorage.fromPrefs(prefs);
+      } catch (e) {
+        if (!await _fromWire()) rethrow;
+        _stateManConfig = null;
+      }
       _rebuildAliasLists();
     } catch (e) {
       _error = e.toString();
@@ -1154,6 +1221,32 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
       }
     }
   }
+
+  /// Whether this panel's key-mapping rows come over the relay.
+  ///
+  /// A browser has no mirror; a relayed station has one that nothing fills.
+  /// Asked through [configRowsComeOverTheWire] rather than through
+  /// `kHasDeviceLocalMirror`, which answers the narrower question of whether
+  /// a mirror could exist on this platform at all.
+  ///
+  /// `gatewayConfigProvider` is a cached future, so asking repeatedly costs
+  /// one lookup; it is read at each site rather than held in state because
+  /// this page outlives none of it and a field would be one more thing to
+  /// keep level with a transport change.
+  Future<bool> _fromWire() async => configRowsComeOverTheWire(
+      isGateway: (await _read(gatewayConfigProvider.future)).isGateway);
+
+  Future<RelayedConfigItems> _relayedRows() =>
+      _read(relayedConfigItemsProvider.future);
+
+  /// The captured container when the banner drove us here, `ref` otherwise.
+  ///
+  /// The same rule the save below states: `ref` throws "cannot use ref after
+  /// the widget was disposed", and accepting a batch from the banner can
+  /// dispose this section while a save is still in flight. The container
+  /// outlives it deliberately — that is what it is for.
+  Future<T> _read<T>(ProviderListenable<Future<T>> provider) =>
+      _container?.read(provider) ?? ref.read(provider);
 
   String _currentJson() =>
       _currentJsonCache ??= jsonEncode(_keyMappings!.toJson());
@@ -1181,6 +1274,56 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
     // pending, so they came back on the next load.
     final messenger = _messenger;
     final errorColour = _errorColour;
+    if (await _fromWire()) {
+      // Over the relay, through `configItems.replace`. It used to be refused
+      // by name — the row route was reads only — and it is not any more: the
+      // gateway grades this at `key_mappings`, the same key the direct path
+      // checks, and compares and swaps against the revisions this screen
+      // read, so a save built on rows another panel has since moved is
+      // refused rather than obeyed.
+      //
+      // `_baselineItems` is what the screen loaded, never a fresh fetch:
+      // re-basing onto rows the operator never saw is the lost write those
+      // revisions exist to prevent.
+      try {
+        _invalidateDerived();
+        final json = _currentJson();
+        final relayed = await _relayedRows();
+        await relayed.replace(
+          kinds: const {ConfigKind.keyMapping},
+          wanted: codec.keyMappingItems(_keyMappings!),
+          derivedFrom: _baselineItems ??
+              relayed.itemsOf(const {ConfigKind.keyMapping}),
+        );
+        _savedJson = json;
+        _baselineItems = relayed.itemsOf(const {ConfigKind.keyMapping});
+        if (mounted) {
+          setState(() {});
+          // `mounted`, and not only a messenger resolved early. The relayed
+          // save's round trip is long enough that the operator can leave
+          // before it answers, and `showSnackBar` asserts when the tree it
+          // would present into is gone. The save landed either way; telling
+          // nobody about it is the right outcome, and asserting is not.
+          messenger?.showSnackBar(const SnackBar(
+              content: Text('Key mappings saved successfully!'),
+              backgroundColor: Colors.green));
+        }
+        return true;
+      } catch (e) {
+        // One arm, deliberately. The direct path below separates offline from
+        // conflict from denial because it can: those are typed exceptions
+        // from a store in this process. Over the wire they arrive as
+        // `RpcException`s whose shape this screen would have to parse, and a
+        // wrong guess would tell an operator to reload over a permission
+        // problem. The gateway's own sentence is the honest thing to show.
+        if (mounted) {
+          messenger?.showSnackBar(SnackBar(
+              backgroundColor: errorColour,
+              content: Text('Not saved: $e')));
+        }
+        return false;
+      }
+    }
     try {
       // The container when the banner drove us here, because `ref` is gone by
       // then; `ref` for an ordinary Save, where no container was ever taken.

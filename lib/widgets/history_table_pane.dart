@@ -108,7 +108,7 @@ class _HistoryTablePaneState extends ConsumerState<HistoryTablePane> {
         final liveStream = collector.collectStream(k, since: since);
         final cutoff = DateTime.now().toUtc().subtract(since);
         final dbStream = Stream.fromFuture(
-          collector.database
+          collector.history
               .queryTimeseriesData(k, DateTime.now().toUtc(), from: cutoff)
               // See the same guard in history_graph_pane: `combineLatest2`
               // emits nothing until every source has, so an erroring
@@ -134,7 +134,7 @@ class _HistoryTablePaneState extends ConsumerState<HistoryTablePane> {
         );
       } else {
         // Use extended range for fetching
-        return Stream.fromFuture(collector.database
+        return Stream.fromFuture(collector.history
             .queryTimeseriesData(k, fetchRange!.end, from: fetchRange!.start));
       }
     }).toList();

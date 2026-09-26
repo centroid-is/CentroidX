@@ -2,7 +2,7 @@ import 'dart:ui';
 
 import 'package:flutter/material.dart' show Widget;
 import 'package:flutter_test/flutter_test.dart';
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 import 'package:tfc/page_creator/assets/common.dart';
 import 'package:tfc/page_creator/assets/ethercat_link.dart';
 import 'package:tfc/page_creator/assets/ethercat_link_painter.dart';

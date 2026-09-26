@@ -12,12 +12,25 @@ import 'package:tfc/widgets/panes/standard_dialog.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:tfc_dart/core/fuzzy_match.dart';
-import 'package:tfc_dart/core/state_man.dart';
+// The config types and where they are stored. Not `state_man.dart`: its other
+// occupant is the OPC UA client, which is `dart:ffi`, and every HMI asset
+// imports this file — so that one import decided whether the page editor
+// could be built for the browser at all.
+import 'package:tfc_dart/core/state_man_types.dart';
+import 'package:tfc_dart/core/state_man_config_storage.dart';
 import 'package:tfc_dart/core/modbus_client_wrapper.dart' show ModbusDataType;
-import 'package:tfc_dart/core/collector.dart';
-import 'package:tfc_dart/core/database.dart';
+// `CollectEntry` only, from its own pure file. `collector.dart` names
+// `AutoDisposingStream`, which lives beside the OPC UA client in
+// `state_man.dart` and is welded to it by private state — so importing the
+// collector for one config type put `dart:ffi` in every asset's closure.
+import 'package:tfc_dart/core/collect_config.dart';
 import 'package:tfc_dart/core/config/config_store_errors.dart';
 import 'package:tfc_dart/core/boolean_expression.dart';
+// RetentionPolicy only, from its own pure file. `core/database.dart` re-exports
+// it but also carries the drift-backed runtime, and every HMI asset imports
+// this file — so that one convenience import put `dart:ffi` in the closure of
+// the entire page editor.
+import 'package:tfc_dart/core/retention_policy.dart';
 import 'package:jbtm/src/m2400.dart' show M2400RecordType;
 import '../../providers/state_man.dart';
 import '../../providers/preferences.dart';
@@ -26,6 +39,11 @@ import '../../widgets/boolean_expression.dart';
 import '../../widgets/bit_mask_grid.dart';
 import '../../widgets/key_mapping_sections.dart';
 import 'bulk_property.dart';
+// For the stored name of this asset's own type. An import cycle with the
+// registry (it imports every asset file), and a deliberate one: the name a
+// freshly built asset writes into a page has to be the name the registry
+// reads back, and there is exactly one place both are pinned.
+import 'registry.dart';
 
 // The `Asset.bulkProperties` contract is declared here, so every asset file
 // that implements it gets the descriptor types along with `Asset` itself.
@@ -308,12 +326,19 @@ abstract class BaseAsset implements Asset {
 
   BaseAsset() {
     if (variant == 'unknown') {
-      variant = runtimeType.toString();
+      // The registry's name for this type, never `runtimeType.toString()`:
+      // in a release web build that is a minified token, and an asset built
+      // from the palette would write it into the page as its `asset_name` —
+      // a row no station could ever read back. The fallback is for a type
+      // registered without a name, which on a station still spells itself.
+      variant = AssetRegistry.nameOf(runtimeType) ?? runtimeType.toString();
     }
   }
 
+  // From the stored name, for the same reason: a palette that read the
+  // runtime type would list minified tokens in a browser.
   @override
-  String get displayName => _humanize(runtimeType.toString());
+  String get displayName => _humanize(assetName);
 
   @override
   String get category => 'General';
@@ -1394,7 +1419,7 @@ class _KeyMappingEntryDialogState extends ConsumerState<KeyMappingEntryDialog> {
   Future<void> _loadConfig() async {
     try {
       final prefs = await ref.read(preferencesProvider.future);
-      final config = await StateManConfig.fromPrefs(prefs);
+      final config = await StateManConfigStorage.fromPrefs(prefs);
       if (mounted) {
         setState(() {
           _config = config;

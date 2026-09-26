@@ -1,0 +1,523 @@
+/// The transmission, attacked, with a real plant moving underneath it.
+///
+/// `end_to_end_test.dart` proves the layers agree on a cooperative link.
+/// `ws_harness.dart` breaks the panel-facing link but has a `FakeStateMan`
+/// behind the server. This file is the crossing of the two: the panel's own
+/// socket is cut, stalled, throttled and flapped **while a PLC keeps changing
+/// the values the panel was already showing**.
+///
+/// That combination is what the branch's central promise is about. "The screen
+/// stops lying when the link dies" is not a claim about a link — it is a claim
+/// about what a panel displays while a machine it can no longer hear keeps
+/// moving. A fake source cannot make that claim false, because nothing under
+/// it changes while the link is down.
+///
+/// ## Every write case counts at the plant
+///
+/// `RunningServer.actuationCount` is taken inside the OPC UA server, by the
+/// node that received the write, before any answer is composed. A duplicated
+/// command is **invisible to a read-back** — the node holds the same number
+/// whether it was moved once or twice — so a suite that asserted on what the
+/// panel was told afterwards would pass on a stack that silently actuated
+/// twice. This is the only instrument in the repository that can fail that
+/// way, and the reason the bench stands up a real plant at all.
+///
+/// ## Budgets
+///
+/// Generous and named. Nothing here is a latency measurement; every budget is
+/// a liveness bound that converts *nothing happening* into a named failure,
+/// and a tight one on a loaded CI box produces a red suite that says nothing
+/// about the code.
+@TestOn('!windows')
+@Tags(['opcua', 'e2e'])
+library;
+
+import 'package:test/test.dart';
+import 'package:tfc_relay_client/tfc_relay_client.dart';
+import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
+
+import '../support/plant_bench.dart';
+
+/// The ramping node: it moves every 100 ms, so a frozen reading is visible.
+final String speedKey = plantKey('HALL1', 'CN01.speed_hz');
+
+/// The recording node: what a write actuates, and what the plant counts.
+const String setpointNode = 'CN01.setpoint_kg';
+final String setpointKey = plantKey('HALL1', setpointNode);
+
+/// The struct with an enum member — #588's violet-conveyor shape.
+final String driveKey = plantKey('HALL1', 'CN01.drive');
+
+/// A rate that sits at zero: "no data" and "zero" must not look the same.
+final String rateKey = plantKey('HALL1', 'CN01.rate');
+
+/// After this much silence the client must have stopped calling its cache
+/// good. `ClientConfig.freshnessDeadline` is 3 s by default; the margin is for
+/// the sweep's own cadence and a loaded machine, not for the property.
+const Duration honestyDeadline = Duration(seconds: 8);
+
+void main() {
+  group('the screen stops lying when the link dies', () {
+    test(
+        'the panel publishes the link-staleness verdict once it can no longer '
+        'hear the plant, while the plant goes on moving without it', () async {
+      final bench = await standUpPlant();
+      expect(bench.panel.read(speedKey)!.quality.isGood, isTrue,
+          reason: 'the case begins from a link that demonstrably worked');
+      expect(bench.panel.viewIsStale, isFalse);
+
+      // The plant keeps ramping throughout, which is the difference between
+      // this file and every harness with a fake source behind the server:
+      // while the link is down the number on the panel is not merely old, it
+      // is wrong about a machine that has moved on.
+      //
+      // `blackhole` is the fault this project says it is built against — "a
+      // peer that has not closed anything and has simply stopped answering,
+      // which no `onDone` will ever report" (`fault_proxy.dart:564-566`).
+      bench.link.blackhole();
+
+      await until(() => bench.panel.viewIsStale,
+          within: honestyDeadline,
+          describe: "the panel to publish that its view is no longer the "
+              "current connection's");
+
+      // And it stays honest. A one-shot check at the end of a window is a
+      // claim about one instant; the promise is about every instant.
+      await neverDuring(
+        () => !bench.panel.viewIsStale,
+        const Duration(seconds: 3),
+        describe: 'the panel called its view fresh again while the link was '
+            'still blackholed and the plant had moved on without it',
+      );
+    });
+
+    test(
+        'LAYERING: the per-value quality is NOT the link-staleness signal, '
+        'and a consumer that reads it instead re-opens the rig defect',
+        () async {
+      // This case pins a seam that has already failed in the field, so the
+      // next time it slips it is a red test and not a site visit.
+      //
+      // `lib/core/value_freshness.dart:4-14` records it: on 2026-09-07 an
+      // attended rig run cut a connected panel's link, and at +25 s and again
+      // at +65 s the app-bar chip read yellow `No gateway` while **every plant
+      // value on the home page still rendered definite**. The cause was not
+      // missing plumbing — `viewIsStale` and `viewFreshness` simply "had no
+      // reader in any `lib/`".
+      //
+      // The split is deliberate: `read(key)` keeps the last value the plant
+      // actually sent, at the quality it actually had, and link-level
+      // staleness is published separately. Both halves are asserted, because
+      // a change to EITHER changes the contract every widget depends on:
+      //   * if the quality starts degrading, this goes red and the withholding
+      //     story has moved — a decision, not a tidy-up;
+      //   * if `viewIsStale` stops flipping, the rig defect is back.
+      final bench = await standUpPlant();
+      bench.link.blackhole();
+
+      await until(() => bench.panel.viewIsStale,
+          within: honestyDeadline, describe: 'the staleness verdict');
+
+      // Well past any per-value deadline, and the ramp has gone round many
+      // times at the plant.
+      await Future<void>.delayed(const Duration(seconds: 6));
+
+      expect(bench.panel.read(speedKey)!.quality.isGood, isTrue,
+          reason: 'the client deliberately does NOT degrade a value it merely '
+              'stopped hearing about — it keeps the last thing the plant '
+              'actually said. Anything rendering from this alone shows a '
+              'definite number for a machine it cannot hear, which is what '
+              'the rig saw at +65 s');
+      expect(bench.panel.viewIsStale, isTrue,
+          reason: 'and the verdict a widget must actually consult is true');
+    });
+
+    test('the panel recovers to what is true NOW, not to a replayed backlog',
+        () async {
+      final bench = await standUpPlant();
+
+      bench.link.blackhole();
+      await until(() => bench.panel.viewIsStale,
+          within: honestyDeadline,
+          describe: 'the view to be declared stale');
+
+      // Long enough that a queue would have built a visible backlog: the ramp
+      // steps every 100 ms.
+      await Future<void>.delayed(const Duration(seconds: 3));
+      bench.link.blackhole(enabled: false);
+
+      await until(() => !bench.panel.viewIsStale,
+          within: const Duration(seconds: 45),
+          describe: 'the panel to declare its view fresh again — which the '
+              'supervisor does only from `_enter(LinkState.ready)`, after '
+              'every page snapshot has been adopted, so this means "these '
+              'values are the current connection\'s" and not "a frame '
+              'arrived"');
+
+      // Conflate, never queue: what comes back is the latest value, and the
+      // panel converges rather than animating thirty seconds of history it
+      // cannot act on. Sampled twice a second apart — a backlog being drained
+      // would still be marching through old values here.
+      final first = bench.panel.read(speedKey)!.value! as num;
+      await Future<void>.delayed(const Duration(seconds: 1));
+      final second = bench.panel.read(speedKey)!.value! as num;
+      expect(second, isNot(equals(first)),
+          reason: 'a recovered link is a live link: the ramp is still moving '
+              'and the panel is still following it');
+    });
+
+    test('zero arrives as a number, not as an absence', () async {
+      final bench = await standUpPlant();
+      final rate = bench.panel.read(rateKey)!;
+      expect(rate.value, 0,
+          reason: 'a rate sitting at zero is a number; "no data" and "zero" '
+              'look identical on a chart and only one of them is a fault');
+      expect(rate.quality.isGood, isTrue,
+          reason: 'and on arrival it is a good zero, not an uncertain one');
+    });
+
+    test(
+        'a live, correct, unchanging value stays believable — the link\'s '
+        'keep-alive vouches for it', () async {
+      // This arm replaces a CHARACTERISATION one that asserted the opposite,
+      // and it is replaced rather than re-baselined because that is what its
+      // own comment said to do if the behaviour was ever fixed.
+      //
+      // What it used to record, measured on this bench: `CN01.rate` — a rate
+      // sitting at zero, published by a running PLC over a live subscription,
+      // value correct, `linkState` ready throughout — went quality 192 to 516
+      // at `staleAfter`. An OPC UA monitored item reports ON CHANGE, so a
+      // constant tag emitted no notification and `FreshnessSweep` aged it on
+      // `_lastArrival` alone.
+      //
+      // That mattered because most tags on a plant are constant most of the
+      // time: a setpoint, a recipe number, a mode that has been in auto all
+      // shift, a counter on a stopped line. Every one of them rendered `---`
+      // `staleAfter` after its last change — the inverse of the failure this
+      // branch exists to prevent, and the more corrosive one, because a
+      // screen that withholds correct values teaches an operator that the
+      // badge means nothing.
+      //
+      // The project had already measured this on the plant (1103 of 1437
+      // values wrongly badged) and fixed it in `tfc_dart` as a per-link
+      // keep-alive anchor; `tfc_relay_local` never got the port, so the two
+      // sweeps disagreed on the one question they exist to answer. It is
+      // ported now, and this is the arm that holds it: a link whose
+      // keep-alives keep arriving vouches for the values on it.
+      final bench = await standUpPlant();
+      expect(bench.panel.read(rateKey)!.quality.isGood, isTrue);
+
+      // Well past `staleAfter` (2 s on this bench) and past the sweep cadence
+      // that used to badge it.
+      await Future<void>.delayed(const Duration(seconds: 6));
+
+      expect(bench.panel.read(rateKey)!.quality.isGood, isTrue,
+          reason: 'the PLC is up, the subscription is live and the value is '
+              'correct. A stopped drive reading 0.0 Hz for an hour is a good '
+              'value an hour old, not an unknown one');
+      expect(bench.panel.read(rateKey)!.value, 0,
+          reason: 'and it is still the right number');
+      expect(bench.panel.read(speedKey)!.quality.isGood, isTrue,
+          reason: 'while a neighbour that does change is believed too — the '
+              'fix must not have turned the sweep off');
+    });
+
+    test('but a link that goes silent still stales every key on it', () async {
+      // The other half, and the one the keep-alive port must not have cost.
+      // A frozen session, a PLC that stopped scanning and a weigher that
+      // answered its last frame an hour ago all go quiet on every tag at
+      // once; the link anchor ages with them and every key on it must still
+      // go stale at the deadline. Without this arm the fix above is
+      // indistinguishable from deleting the sweep.
+      final bench = await standUpPlant(breakableUpstream: true);
+      expect(bench.panel.read(rateKey)!.quality.isGood, isTrue);
+
+      // Cut the GATEWAY's link to the PLC — not the panel's link to the
+      // gateway. The panel stays connected and keeps being told things; what
+      // stops is the plant.
+      bench.upstream.blackhole();
+
+      await until(() => !bench.panel.read(rateKey)!.quality.isGood,
+          within: const Duration(seconds: 45),
+          describe: 'a key on a dead link to go stale even though nothing '
+              'about it was ever going to change');
+      expect(bench.panel.linkState, LinkState.ready,
+          reason: 'and the panel\'s own link is fine throughout — this is the '
+              'plant going quiet, not the socket');
+    });
+
+  });
+
+  group('a write is never applied twice, counted at the machine', () {
+    test(
+        'a write that REACHED the plant but whose answer was lost is never '
+        'actuated a second time', () async {
+      final bench = await standUpPlant();
+      expect(bench.actuations(setpointNode), 0,
+          reason: 'nothing has commanded this node yet');
+
+      // The command's way out stays open and only its answer is held
+      // (`fault_proxy.dart:728-736` — "forwarding client->server keeps the
+      // server side alive and answering, so the peer does not time out while
+      // its replies are held"). So the machine really does move, and the panel
+      // really does not hear that it did.
+      //
+      // This is the exact case `WriteUnknown` exists for, and the only case
+      // where a retry would be a second command to a machine. A blackhole in
+      // both directions cannot test it: there the write may never arrive, and
+      // "at most one actuation" is then satisfied by zero — which is how the
+      // earlier shape of this case passed against a mutant that wrote to the
+      // plant twice.
+      bench.link.bufferServerToClient = true;
+      final pending = bench.panel.write(setpointKey, 21.5);
+
+      await until(() => bench.actuations(setpointNode) == 1,
+          within: const Duration(seconds: 30),
+          describe: 'the command to reach the plant while its answer is '
+              'withheld — if this times out the case is vacuous and proves '
+              'nothing about retries');
+
+      final outcome = await pending;
+      expect(outcome, isNot(isA<WriteApplied>()),
+          reason: 'an answer that never came back cannot be reported as a '
+              'fact about the machine');
+      expect(outcome, isNot(isA<WriteNotReceived>()),
+          reason: 'THE PLANT MOVED. `notReceived` is the one outcome that '
+              'says "safe to re-send", and saying it about a command that has '
+              'already actuated is how a machine gets commanded twice by a '
+              'panel doing exactly what it was told');
+
+      bench.link.bufferServerToClient = false;
+      await until(() => bench.panel.linkState == LinkState.ready,
+          within: const Duration(seconds: 60),
+          describe: 'the panel to recover and re-query its unresolved '
+              'command through writeStatus');
+      // Time for a retry to have happened, if one were going to.
+      await Future<void>.delayed(const Duration(seconds: 3));
+
+      expect(bench.actuations(setpointNode), 1,
+          reason: 'NOTHING auto-retries: not the RPC layer, not the send '
+              'buffer, not the client. A second actuation here is a second '
+              'command to a machine that nobody issued. Actuations seen: '
+              '${bench.server().actuationsOf(setpointNode)}');
+    });
+
+    test(
+        'a write whose command may never have left actuates at most once',
+        () async {
+      // The other half: both directions cut, so the command may or may not
+      // have reached the plant. Zero actuations is a legitimate outcome here,
+      // which is why this case asserts the OUTCOME AND THE COUNT AGREE rather
+      // than a bare upper bound.
+      final bench = await standUpPlant();
+
+      final pending = bench.panel.write(setpointKey, 26.5);
+      bench.link.blackhole();
+      final outcome = await pending;
+      expect(outcome, isNot(isA<WriteApplied>()));
+
+      bench.link.blackhole(enabled: false);
+      await until(() => bench.panel.linkState == LinkState.ready,
+          within: const Duration(seconds: 60),
+          describe: 'the panel to reconnect');
+      await Future<void>.delayed(const Duration(seconds: 3));
+
+      final count = bench.actuations(setpointNode);
+      expect(count, lessThanOrEqualTo(1),
+          reason: 'one command cannot become two movements');
+      if (outcome is WriteNotReceived) {
+        expect(count, 0,
+            reason: 'notReceived is an affirmative claim that the plant was '
+                'not touched, and a panel is entitled to re-send on it');
+      }
+    });
+
+    test('a burst of writes across a flapping link never over-actuates',
+        () async {
+      final bench = await standUpPlant();
+      const sent = <double>[31.0, 32.0, 33.0, 34.0, 35.0];
+
+      bench.link.flap(const Duration(milliseconds: 700),
+          const Duration(milliseconds: 400));
+      final outcomes = <WriteResult>[];
+      for (final value in sent) {
+        try {
+          outcomes.add(await bench.panel.write(setpointKey, value));
+        } on Object {
+          // A write that throws is a write that did not resolve; the count at
+          // the plant is still the thing under test.
+        }
+      }
+      bench.link.flap(Duration.zero, Duration.zero, enabled: false);
+
+      await until(() => bench.panel.linkState == LinkState.ready,
+          within: const Duration(seconds: 60),
+          describe: 'the link to settle after the flapping stopped');
+      await Future<void>.delayed(const Duration(seconds: 3));
+
+      final actuations = bench.server().actuationsOf(setpointNode);
+      // **Non-vacuity first.** "At most five" is trivially satisfied by zero,
+      // and zero is what a flap that happened to block every write would
+      // produce — a green case proving only that nothing got through. The
+      // upper bound means something only once something landed.
+      expect(actuations, isNotEmpty,
+          reason: 'not one of five writes reached the plant, so the bound '
+              'below is satisfied by an empty link rather than by the '
+              'no-retry rule. Slow the flap down until writes get through');
+      expect(actuations.length, lessThanOrEqualTo(sent.length),
+          reason: 'five commands cannot become six movements: '
+              '${actuations.map((a) => a.value.asDouble).toList()}');
+
+      // Nothing was invented on the way. A value at the plant that the panel
+      // never sent would mean a frame was replayed, reordered or synthesised.
+      for (final actuation in actuations) {
+        expect(sent, contains(actuation.value.asDouble),
+            reason: 'the plant moved to a value no panel ever commanded');
+      }
+
+      // And every outcome reported as applied really did reach the plant.
+      final applied = outcomes.whereType<WriteApplied>().length;
+      expect(actuations.length, greaterThanOrEqualTo(applied),
+          reason: 'an outcome cannot report more actuations than the machine '
+              'performed');
+    });
+
+    test('the same command id is not actuated twice across a reconnect',
+        () async {
+      final bench = await standUpPlant();
+      final first = await bench.panel.write(setpointKey, 44.0);
+      expect(first, isA<WriteApplied>());
+      await until(() => bench.actuations(setpointNode) == 1,
+          describe: 'the first write to land at the node');
+
+      // Drop the session entirely. On redial the client re-queries
+      // `writeStatus` for anything unresolved; nothing here is unresolved, so
+      // nothing may be re-sent.
+      //
+      // Through `breakAndHeal` so the drop is PROVEN to have happened: a
+      // `killOnce` that did nothing would leave this case asserting that a
+      // link which never broke did not replay a write.
+      await breakAndHeal(bench, pull: bench.link.killOnce);
+      await Future<void>.delayed(const Duration(seconds: 3));
+
+      expect(bench.actuations(setpointNode), 1,
+          reason: 'a resolved write is finished business; a reconnect must '
+              'not replay it');
+    });
+  });
+
+  group('one bad tag costs one tag', () {
+    test('a node that leaves the address space does not take the page with it',
+        () async {
+      final bench = await standUpPlant();
+      expect(bench.panel.read(rateKey)!.quality.isGood, isTrue);
+
+      // What a key mapping pointing at a tag the PLC does not have looks like
+      // from a panel: BadNodeIdUnknown, for ever.
+      bench.server().remove('CN01.rate');
+
+      await until(() => !bench.panel.read(rateKey)!.quality.isGood,
+          within: const Duration(seconds: 30),
+          describe: 'the removed node to stop reading good at the panel');
+
+      // Containment. The neighbours are still live, and the panel is still
+      // following the ramp.
+      final before = bench.panel.read(speedKey)!.value! as num;
+      await until(() => bench.panel.read(speedKey)!.value != before,
+          within: const Duration(seconds: 20),
+          describe: 'the rest of the page to keep flowing while one tag is '
+              'broken');
+      expect(bench.panel.read(speedKey)!.quality.isGood, isTrue,
+          reason: 'a missing tag is one tag, not a page');
+      expect(bench.panel.linkState, LinkState.ready,
+          reason: 'and it is certainly not a reason to drop the link');
+    });
+  });
+
+  group('conflation holds under a starved link', () {
+    test('a throttled panel converges on the latest value, not a backlog',
+        () async {
+      final bench = await standUpPlant();
+
+      // A trickle, against a ramp stepping every 100 ms across a page of
+      // keys: production far outruns delivery.
+      bench.link.throttleBytesPerSec = 256;
+      await Future<void>.delayed(const Duration(seconds: 4));
+      bench.link.throttleBytesPerSec = null;
+
+      await until(() => bench.panel.linkState == LinkState.ready,
+          within: const Duration(seconds: 45),
+          describe: 'the link to recover after the throttle lifted');
+
+      // The property: once the pipe is open again the panel is following the
+      // plant within a couple of ramp steps, rather than working through
+      // everything it missed.
+      await until(
+        () {
+          final value = bench.panel.read(speedKey);
+          return value != null && value.quality.isGood;
+        },
+        within: const Duration(seconds: 30),
+        describe: 'a good value after the throttle lifted',
+      );
+      final first = bench.panel.read(speedKey)!.value! as num;
+      await Future<void>.delayed(const Duration(milliseconds: 800));
+      final second = bench.panel.read(speedKey)!.value! as num;
+      expect(second, isNot(equals(first)),
+          reason: 'a conflating buffer hands over the newest value per key; a '
+              'queue would still be draining what it kept');
+    });
+  });
+
+  group('the shapes that broke things, through the gateway', () {
+    test('a struct keeps its MEMBER names across a reconnect (the enum names '
+        'are a separate gap, see the comment)',
+        () async {
+      final bench = await standUpPlant();
+      // Waited for, not read once: since d713e72ea a key yields nothing until
+      // its first value arrives (no placeholder), and on a slow runner the
+      // stand-up can return a turn before the struct's first push lands —
+      // measured on the macOS CI runner as `null`.
+      await until(() => bench.panel.read(driveKey) != null,
+          within: const Duration(seconds: 30),
+          describe: 'the drive struct\'s first value');
+      expect(bench.panel.read(driveKey)!.toString(), contains('run_mode'),
+          reason: 'the type dictionary reached the panel on the first '
+              'snapshot');
+
+      await breakAndHeal(bench, pull: bench.link.killOnce);
+
+      // **Scope, stated honestly.** This holds the MEMBER names across a
+      // resync — `run_mode` is still a named member and not an index — which
+      // is carried by the struct value itself.
+      //
+      // The enum NAMES are a different thing and this arm does not reach
+      // them: they ride in the type dictionary, and a gateway composed by
+      // `buildGateway` serves none, because `LocalStateMan` implements no
+      // `TypeDescriptions`. A resync is a fresh snapshot and is precisely
+      // where a dictionary can be dropped, so that IS the case worth pinning
+      // — it is pinned in `test/e2e_assets/`, parked on the same gap. When
+      // the gap closes this arm should assert the enum names survive the
+      // resync too, which is the half the 2026-09-17 plant defect was about.
+      //
+      // Asserted on the value the wait itself accepted, never on a re-read:
+      // after a resync the store is re-seeded, so a second `read` can answer a
+      // different value than the one that satisfied the condition — and a case
+      // that waits for one value and asserts on another is reporting a race.
+      late final String recovered;
+      await until(
+        () {
+          final value = bench.panel.read(driveKey);
+          if (value?.value == null) return false;
+          recovered = value.toString();
+          return true;
+        },
+        within: const Duration(seconds: 30),
+        describe: 'the struct to come back after the resync',
+      );
+      expect(recovered, contains('run_mode'),
+          reason: 'the member names must survive a resync, not just the '
+              'first snapshot');
+    });
+  });
+}

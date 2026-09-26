@@ -43,12 +43,34 @@ class ReportStore {
   /// seam are drift builders now and need no placeholder dialect.
   ReportStore(this._db,
       {this.isPostgres = true,
-      Future<void> Function(String key, String json)? write})
-      : _write = write;
+      Future<void> Function(String key, String json)? write,
+      Future<String?> Function(String key)? read})
+      : _write = write,
+        _read = read,
+        assert(_db != null || read != null,
+            'a store with no database needs a read seam: without either, '
+            'every load would answer an empty configuration, and an empty '
+            'report list is indistinguishable from a plant nobody has '
+            'authored reports for');
 
   final Future<void> Function(String key, String json)? _write;
 
-  final McpDatabase _db;
+  /// Where [loadReports], [loadShifts] and [loadAlarmMeta] get their
+  /// documents when there is no database to read.
+  ///
+  /// The mirror of [_write], added for the same reason it exists: a **relayed
+  /// panel has no database at all**, so the three documents have to come from
+  /// the shared preference store, which on that transport is the wire. A
+  /// gateway panel used to get `null` from `reportStoreProvider` and the whole
+  /// report subsystem with it — the editor said "Database is not connected",
+  /// which was true about the panel and false about the plant.
+  ///
+  /// Answers the document's JSON **text**, the same thing [_write] is handed,
+  /// so the two seams are inverses and a save made through one reads back
+  /// through the other.
+  final Future<String?> Function(String key)? _read;
+
+  final McpDatabase? _db;
 
   /// False only under the SQLite test harness.
   final bool isPostgres;
@@ -105,8 +127,25 @@ class ReportStore {
   /// on. A report engine reading the old table would have used the alarm
   /// titles and stop flags as they were on cutover day, forever, and the
   /// downtime pareto would have named raw uids for every alarm added since.
-  Future<Map<String, dynamic>?> _loadJson(String key) =>
-      readSharedPreferencePayload(_db, key);
+  Future<Map<String, dynamic>?> _loadJson(String key) async {
+    final read = _read;
+    if (read == null) return readSharedPreferencePayload(_db!, key);
+    // The seam answers the document's text. Decoded here rather than at the
+    // seam so both paths hand `fromJson` the same shape, and so a caller
+    // cannot supply a seam that returns a half-decoded map.
+    final text = await read(key);
+    if (text == null) return null;
+    try {
+      final decoded = jsonDecode(text);
+      return decoded is Map<String, dynamic> ? decoded : null;
+    } on FormatException {
+      // The same verdict `readSharedPreferencePayload` reaches for a row it
+      // cannot decode: null, which every caller already renders as "no
+      // configuration" rather than as an error. A throw here would take the
+      // report editor down over one malformed document.
+      return null;
+    }
+  }
 
   Future<void> _saveJson(String key, Map<String, dynamic> json) async {
     final write = _write;
@@ -124,7 +163,16 @@ class ReportStore {
   /// to the other stations. A row written here reaches them only at their
   /// next sweep, and reaches the change log never.
   Future<void> _upsertRow(String key, String value) async {
-    final table = $ConfigItemTableTable(_db);
+    final db = _db;
+    if (db == null) {
+      throw UnsupportedError(
+          'ReportStore has no database and no write seam, so this save has '
+          'nowhere to land. A store built with `read:` for a relayed panel '
+          'must be built with `write:` too — otherwise the editor would '
+          'accept an edit that goes nowhere, which is the one failure a save '
+          'must never have.');
+    }
+    final table = $ConfigItemTableTable(db);
     final item = ConfigItem.of(
       kind: ConfigKind.preference,
       id: key,
@@ -135,7 +183,7 @@ class ReportStore {
         t.id.equals(key) &
         t.scope.equals(ConfigScope.shared.wireName);
     final existing =
-        await (_db.select(table)..where(identity)).getSingleOrNull();
+        await (db.select(table)..where(identity)).getSingleOrNull();
     final companion = ConfigItemTableCompanion.insert(
       kind: item.kind.wireName,
       id: key,
@@ -146,9 +194,9 @@ class ReportStore {
       updatedBy: 'report_store',
     );
     if (existing == null) {
-      await _db.into(table).insert(companion);
+      await db.into(table).insert(companion);
     } else {
-      await (_db.update(table)..where(identity)).write(companion);
+      await (db.update(table)..where(identity)).write(companion);
     }
   }
 }

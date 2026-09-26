@@ -105,13 +105,23 @@ void main() {
     );
   }
 
-  Widget host(BeamerDelegate router, {required Set<String> allowedPages}) {
+  /// [signedInAs] is what tells the two whitelist refusals apart. With nobody
+  /// signed in and no page granted, the panel leads with the sign-in
+  /// (`anonymousSeesNothing`); with an account signed in, "not available" is
+  /// the honest first sentence, because a credential is not what is missing.
+  /// The bar cases below do not care either way and leave it null.
+  Widget host(BeamerDelegate router,
+      {required Set<String> allowedPages, AuthenticatedUser? signedInAs}) {
     return ProviderScope(
       overrides: [
         accessSessionProvider.overrideWith(() => _FixedSession(
               AsyncValue.data(AccessSession(
+                user: signedInAs,
                 groups: const {AccessGroup.operate},
                 allowedPages: allowedPages,
+                expiresAt: signedInAs == null
+                    ? null
+                    : DateTime.utc(2026, 9, 17, 12),
               )),
             )),
         accessRepositoryProvider.overrideWith((ref) async => _StubRepository()),
@@ -243,7 +253,12 @@ void main() {
       ..addAll(const [_home, _lines]);
 
     final router = buildRouter();
-    await tester.pumpWidget(host(router, allowedPages: const <String>{}));
+    await tester.pumpWidget(host(
+      router,
+      allowedPages: const <String>{},
+      signedInAs: const AuthenticatedUser(
+          username: 'lina', roleName: 'Line Lead', displayName: 'Lina R'),
+    ));
     await tester.pumpAndSettle();
 
     expect(find.byKey(kPageNotAvailableBodyKey), findsOneWidget);

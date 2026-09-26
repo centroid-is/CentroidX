@@ -465,5 +465,49 @@ void main() {
       expect(await _tableNames(upgraded), containsAll(_configTables));
       expect(await _indexNames(upgraded), containsAll(_configIndexes));
     });
+
+    test('a station that ran main\'s build — stamped 13, alarm_history '
+        'without the v14 columns — gets them on the next open', () async {
+      // The collision this pin exists for. Main (#580) stamps 13 for its
+      // widened config arm; the alarm_history arm used to be `from < 13` on
+      // this line too, so a database main had stamped 13 opened here, skipped
+      // the arm, and never gained `rule_index` — every alarm write would then
+      // fail on a column that no later upgrade creates. The arm is v14 now,
+      // and existence-guarded, so it runs here and is a no-op anywhere it
+      // already ran.
+      final db = await open();
+      for (final stmt in const [
+        'DROP INDEX IF EXISTS idx_alarm_history_open',
+        'ALTER TABLE alarm_history DROP COLUMN rule_index',
+        'ALTER TABLE alarm_history DROP COLUMN ts_source',
+        'ALTER TABLE alarm_history DROP COLUMN deactivated_reason',
+      ]) {
+        await db.customStatement(stmt);
+      }
+      await db.customStatement('PRAGMA user_version = 13');
+      await db.close();
+
+      final upgraded = await open();
+      addTearDown(() => upgraded.close());
+
+      expect(await userVersion(upgraded), 14);
+      final columns = {
+        for (final row in await upgraded
+            .customSelect("PRAGMA table_info('alarm_history')")
+            .get())
+          row.read<String>('name'),
+      };
+      expect(columns,
+          containsAll(['rule_index', 'ts_source', 'deactivated_reason']));
+      expect(await _indexNames(upgraded), contains('idx_alarm_history_open'));
+    });
+
+    test('and a station already at 14 reopens as a no-op', () async {
+      final db = await open();
+      await db.close();
+      final again = await open();
+      addTearDown(() => again.close());
+      expect(await userVersion(again), 14);
+    });
   });
 }

@@ -1,0 +1,37 @@
+# One suite at a time.
+#
+# package:test loads several suites at once by default, and on the VM they
+# share one process — so they share the file-descriptor table and the machine's
+# idea of how long a millisecond takes. Both are things the fault kit measures.
+# `openSocketCount()` counts the whole process, so a leak arm running beside
+# another suite that is opening sockets reads its neighbour's connections as a
+# leak: measured here at a delta of 40 over ten cycles ("about 4.00 per cycle")
+# against a proxy that leaks nothing, and it broke `fd_count_test.dart` — which
+# passes alone — the moment this phase added a second socket-heavy file. The
+# wall-clock arms have the same problem from the other end: a 12-second
+# bounded-memory window and, from plan 02-04, a latency band of 2d + 20 ms are
+# measurements of a machine, and a machine running four suites is a different
+# machine.
+#
+# The cost is the contract suite's own parallelism, which is a few seconds on a
+# suite that is otherwise pure computation. The alternative is a leak criterion
+# whose resolution is one descriptor competing with neighbours that allocate
+# hundreds, which is not a criterion.
+concurrency: 1
+
+# Declaring tags here is what makes `--tags` / `--exclude-tags` usable without
+# the "unknown tag" warning package:test prints for undeclared tags.
+tags:
+  contract:
+    # Cases every StateManApi implementation must pass, run against a factory.
+  meta:
+    # Cases that test the harness itself: that a check bites a deliberately
+    # broken implementation, and that the helpers fail the way they promise.
+  faults:
+    # The socket-level fault kit. Wall-clock by design — it measures real
+    # delays through real loopback sockets — so it is slower than the contract
+    # suite and worth being able to exclude while iterating on one.
+  oslevel:
+    # Kernel traffic shaping (tc netem, dnctl/pf). Needs root and the tool
+    # present, and skips by name naming which half of the probe failed rather
+    # than passing vacuously where neither is available.

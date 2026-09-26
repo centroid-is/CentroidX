@@ -14,7 +14,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:tfc_dart/core/database_connections.dart';
 
+import '../../core/gateway_default.dart';
 import '../../providers/database.dart';
+import '../../providers/gateway.dart';
 import 'pane_chrome.dart';
 import 'side_pane.dart';
 
@@ -112,6 +114,17 @@ class _DatabaseStatsPaneState extends ConsumerState<DatabaseStatsPane> {
   /// look.
   static const bool _collectsInThisProcess = false;
 
+  /// Whether this panel reads the plant through a relay rather than holding
+  /// its own pool.
+  ///
+  /// `valueOrNull` with the direct-mode default, never a spinner: this decides
+  /// one sentence inside a pane that is already drawn, and the honest failure
+  /// while the preference is still loading is the old sentence — which is
+  /// right on a station and is the case this pane was written for.
+  bool get _relayed =>
+      (ref.watch(gatewayConfigProvider).valueOrNull ?? defaultGatewayConfig())
+          .isGateway;
+
   @override
   Widget build(BuildContext context) {
     final census = _census;
@@ -121,9 +134,24 @@ class _DatabaseStatsPaneState extends ConsumerState<DatabaseStatsPane> {
       icon: Icons.storage,
       status: census == null ? const PaneStatus.unknown() : censusPaneStatus(census),
       child: !_postgres
-          ? const PaneSection(
-              child: Text('This database is local storage, not a Postgres '
-                  'server, so there are no connections to count.'),
+          // Two different facts wear the same `_postgres == false`, and
+          // saying the wrong one is how this pane lied on every relayed
+          // panel. `databaseProvider` answers **null** in gateway mode
+          // (`lib/providers/database.dart:50-52`) — deliberately, because the
+          // panel is not supposed to hold a second connection to the plant's
+          // Postgres — and a null database took the local-storage branch.
+          // "This database is local storage, not a Postgres server" is then
+          // false twice over: the plant's database is a Postgres, and the
+          // reason there is nothing to count here is that this panel is not
+          // the machine holding the connections.
+          ? PaneSection(
+              child: Text(_relayed
+                  ? 'This panel is relayed, so it opens no database '
+                      'connection of its own. The plant\'s Postgres is '
+                      'behind the gateway, and its connections are counted '
+                      'on the machine that holds them.'
+                  : 'This database is local storage, not a Postgres '
+                      'server, so there are no connections to count.'),
             )
           : census != null
               ? Column(

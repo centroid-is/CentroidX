@@ -116,6 +116,15 @@ Future<_Staged> _stageBatch(WidgetTester tester) async {
 }
 
 void main() {
+  // `gatewayConfigProvider` decides where this panel's configuration rows
+  // come from, and it reads the device-local store to do it — so every
+  // provider graph that reaches the page manager, the key repository or the
+  // StateMan now needs one open. Without it the provider throws
+  // "initDeviceLocalPreferences() must run before
+  // createDeviceLocalPreferences()", which is the store saying so rather
+  // than anything about the case.
+  setUp(useInMemoryDeviceLocalPreferences);
+
   testWidgets('each staged row is offered to the banner on its own',
       (tester) async {
     final staged = await _stageBatch(tester);
