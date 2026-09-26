@@ -266,9 +266,15 @@ class _WebHome extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final manager = ref.watch(pageManagerProvider).valueOrNull ??
         ref.watch(bootstrapPageManagerProvider);
+    // `fallbackRootPath` is `firstMenuPath` renamed and given a routability
+    // test (#603): the fallback now honours the order the operator arranged
+    // and skips the Advanced grouping. On web the set this page can actually
+    // render is the manager's own pages — the same map consulted one line
+    // above for `/` — so that is the predicate.
     final target = manager == null || manager.pages.containsKey('/')
         ? null
-        : firstMenuPath(manager.getRootMenuItems());
+        : fallbackRootPath(manager.getRootMenuItems(),
+            isRoutable: manager.pages.containsKey);
     if (target == null) {
       return const PageAccessGate(
         path: '/',
