@@ -42,11 +42,22 @@ class DynamicValueConverter implements JsonConverter<DynamicValue, dynamic> {
         result = DynamicValue();
         break;
       case 'object':
-        final map = (value as LinkedHashMap<String, dynamic>).map(
-          (k, v) => MapEntry(
-              k,
-              const DynamicValueConverter()
-                  .fromJson(v as LinkedHashMap<String, dynamic>)),
+        // `Map`, not `LinkedHashMap`. The concrete class is the shape the VM's
+        // `jsonDecode` happens to return -- its maps come from a `{}` literal,
+        // which is a LinkedHashMap -- so casting to it worked on every panel
+        // and failed on every browser: dart2js returns a lazy `_JsonMap` over
+        // `JSON.parse`, which is a `Map<String, dynamic>` and is not a
+        // LinkedHashMap. That cast is what showed the operator
+        // "Error loading recipes: type ... is not a subtype of ...".
+        //
+        // Nothing needs the ordering guarantee here; `DynamicValue.fromMap`
+        // takes its own LinkedHashMap copy on the line below, which is where
+        // the insertion order the members are read back in is actually fixed.
+        final map = (value as Map<String, dynamic>).map(
+          // The recursive call takes `dynamic` and checks the shape itself,
+          // reporting a FormatException that names the offending value rather
+          // than a cast failure with a minified type in it.
+          (k, v) => MapEntry(k, const DynamicValueConverter().fromJson(v)),
         );
         result = DynamicValue.fromMap(LinkedHashMap<String, dynamic>.from(map));
         break;
